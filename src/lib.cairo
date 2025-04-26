@@ -4,3 +4,7 @@ pub mod contracts {
     pub mod types;
 }
 pub mod components {}
+
+pub mod base {
+    pub mod types;
+}
