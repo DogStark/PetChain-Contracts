@@ -1,5 +1,5 @@
 // use petchain::base::types::{PetOwner};
-use petchain::contracts::interface::{IPetChainDispatcher, IPetChainDispatcherTrait};
+use petchain::contracts::interface::{IPetOwnerDispatcher, IPetOwnerDispatcherTrait};
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
     stop_cheat_caller_address,
@@ -20,21 +20,9 @@ fn setup() -> ContractAddress {
 
 
 #[test]
-fn test_initial_data() {
-    let contract_address = setup();
-
-    let dispatcher = IPetChainDispatcher { contract_address };
-
-    let petowner_id = dispatcher.deployed_succefully();
-
-    assert(petowner_id == true, 'deployment failed');
-}
-
-
-#[test]
 fn test_register_pet_owner() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -64,7 +52,7 @@ fn test_register_pet_owner() {
 #[should_panic(expected: ('Already Registered',))]
 fn test_register_pet_owner_twice() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -85,7 +73,7 @@ fn test_register_pet_owner_twice() {
 #[test]
 fn test_update_owner_profile() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -121,7 +109,7 @@ fn test_update_owner_profile() {
 #[test]
 fn test_register_two_profiles() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -149,7 +137,7 @@ fn test_register_two_profiles() {
 #[should_panic(expected: ('Not Your Profile',))]
 fn test_update_another_profile() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -185,7 +173,7 @@ fn test_update_another_profile() {
 #[should_panic(expected: ('Not Registered',))]
 fn test_update_profile_without_registering() {
     let contract_address = setup();
-    let dispatcher = IPetChainDispatcher { contract_address };
+    let dispatcher = IPetOwnerDispatcher { contract_address };
 
     let owner_address: ContractAddress = 12345.try_into().unwrap();
     let another_address: ContractAddress = 467372.try_into().unwrap();

@@ -1,54 +1,40 @@
 #[starknet::contract]
 mod PetChain {
-    use petchain::contracts::interface::IPetChain;
+    use petchain::contracts::interface::IPetOwner;
     use petchain::base::types::{PetOwner};
-    use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
-    use starknet::storage::Map;
+    use starknet::{ContractAddress, get_caller_address};
+    use starknet::storage::{Map};
+    use petchain::components::petowner_component;
+
+    component!(
+        path: petowner_component::PetOwner_component, storage: pet_storage, event: PetOwnerEvent,
+    );
 
     #[storage]
     struct Storage {
         pet_owner: Map<ContractAddress, PetOwner>,
-        pet_owner_id_address: Map<u256, ContractAddress>,
-        petowner_ids: u256,
-        deployed: bool // FOR TEST PURPOSE
+        deployed: bool, // FOR TEST PURPOSE
+        counter: u128,
+        #[substorage(v0)]
+        pet_storage: petowner_component::PetOwner_component::Storage,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
-    pub enum Event {
-        PetOwnerCreated: PetOwnerCreated,
-        PetOwnerUpdated: PetOwnerUpdated,
+    enum Event {
+        PetOwnerEvent: petowner_component::PetOwner_component::Event,
     }
 
-    #[derive(Drop, starknet::Event)]
-    struct PetOwnerCreated {
-        #[key]
-        owner_address: ContractAddress,
-        owner_id: u256,
-    }
-    #[derive(Drop, starknet::Event)]
-    struct PetOwnerUpdated {
-        #[key]
-        owner_address: ContractAddress,
-        owner_id: u256,
-    }
-
-    #[constructor]
-    fn constructor(ref self: ContractState) {
-        // FOR TEST PURPOSE
-        self.deployed.write(true);
-    }
 
     #[abi(embed_v0)]
-    impl PetChainImpl of IPetChain<ContractState> {
+    impl PetChainImpl of IPetOwner<ContractState> {
         fn is_owner_registered(self: @ContractState, pet_owner: ContractAddress) -> bool {
-            let pet_owner = self.pet_owner.read(pet_owner);
-            pet_owner.is_pet_owner
+            let registerd = self.pet_storage.is_owner_registered(pet_owner);
+            registerd
         }
 
         fn is_pet_owner(self: @ContractState, id: u256, pet_owner: ContractAddress) -> bool {
-            let pet_owner = self.pet_owner.read(pet_owner);
-            let is_owner = id == pet_owner.id;
+            let is_owner = self.pet_storage.is_pet_owner(id, pet_owner);
             is_owner
         }
         fn register_pet_owner(
@@ -61,28 +47,8 @@ mod PetChain {
             let is_owner = self.is_owner_registered(caller);
             assert(!is_owner, 'Already Registered');
 
-            let cur_id = self.petowner_ids.read() + 1;
-            let pet_owner = PetOwner {
-                owners_address: caller,
-                id: cur_id,
-                name: name,
-                email: email,
-                emergency_contact: emergency_contact,
-                created_at: get_block_timestamp(),
-                updated_at: get_block_timestamp(),
-                is_pet_owner: true,
-            };
-
-            self.pet_owner.write(caller, pet_owner);
-            self.petowner_ids.write(cur_id);
-            self.pet_owner_id_address.write(cur_id, caller);
-            self
-                .emit(
-                    Event::PetOwnerCreated(
-                        PetOwnerCreated { owner_address: caller, owner_id: cur_id },
-                    ),
-                );
-            cur_id
+            let id = self.pet_storage.register_pet_owner(name, email, emergency_contact);
+            id
         }
 
         fn update_owner_profile(
@@ -92,42 +58,15 @@ mod PetChain {
             email: ByteArray,
             emergency_contact: ByteArray,
         ) -> bool {
-            let caller = get_caller_address();
-            let is_registered = self.is_owner_registered(caller);
-            assert(is_registered, 'Not Registered');
-
-            let is_owner = self.is_pet_owner(id, caller);
-            assert(is_owner, 'Not Your Profile');
-
-            let mut pet_owner = self.pet_owner.read(caller);
-
-            pet_owner.name = name;
-            pet_owner.email = email;
-            pet_owner.emergency_contact = emergency_contact;
-            pet_owner.updated_at = get_block_timestamp();
-
-            let id = pet_owner.id;
-            self.pet_owner.write(caller, pet_owner);
-            self.pet_owner_id_address.write(id, caller);
-            self
-                .emit(
-                    Event::PetOwnerUpdated(PetOwnerUpdated { owner_address: caller, owner_id: id }),
-                );
-            true
+            let success = self.pet_storage.update_owner_profile(id, name, email, emergency_contact);
+            success
         }
 
         fn return_pet_owner_info(
             ref self: ContractState, pet_owner_addr: ContractAddress,
         ) -> PetOwner {
-            let pet_owner = self.pet_owner.read(pet_owner_addr);
+            let pet_owner = self.pet_storage.return_pet_owner_info(pet_owner_addr);
             pet_owner
-        }
-
-        // FOR TEST PURPOSE
-        fn deployed_succefully(self: @ContractState) -> bool {
-            let mut deployed = self.deployed.read();
-            deployed
         }
     }
 }
-
