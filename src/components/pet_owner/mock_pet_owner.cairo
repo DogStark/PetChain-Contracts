@@ -5,7 +5,6 @@ mod PetChain {
     use super::IPetOwner;
     use petchain::base::types::{PetOwner};
     use starknet::{ContractAddress, get_caller_address};
-    use starknet::storage::{Map};
     use petchain::components::pet_owner::petowner_component;
 
     component!(
