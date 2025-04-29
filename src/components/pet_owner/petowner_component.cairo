@@ -1,8 +1,4 @@
-// use starknet::ContractAddress;
-// use petchain::base::types::{PetOwner};
-use petchain::contracts::interface::IPetOwner;
-
-
+use petchain::components::pet_owner::IPetOwner::{IPetOwner};
 #[starknet::component]
 pub mod PetOwner_component {
     use petchain::base::types::PetOwner;
