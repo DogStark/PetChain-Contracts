@@ -4,7 +4,6 @@ use starknet::ContractAddress;
 #[derive(Drop, Serde, starknet::Store)]
 pub struct PetOwner {
     #[key]
-    pub id: u256, // Unique ID for the owner
     pub owners_address: ContractAddress,
     pub name: ByteArray, // Owner's full name
     pub email: ByteArray, // Email address

@@ -1,15 +1,14 @@
 #[cfg(test)]
 mod tests {
-// use petchain::base::types::{PetOwner};
-use petchain::components::pet_owner::IPetOwner::{IPetOwnerDispatcher, IPetOwnerDispatcherTrait};
-use snforge_std::{
-    ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
-    stop_cheat_caller_address,
-};
-use starknet::{ContractAddress};
+    use petchain::components::pet_owner::IPetOwner::{IPetOwnerDispatcher, IPetOwnerDispatcherTrait};
+    use snforge_std::{
+        ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
+        stop_cheat_caller_address,
+    };
+    use starknet::{ContractAddress};
 
     fn setup() -> ContractAddress {
-        let declare_result = declare("PetChain");
+        let declare_result = declare("MockPetOwner");
         assert(declare_result.is_ok(), 'Contract declaration failed');
         // Deploy PetChain
         let contract_class = declare_result.unwrap().contract_class();
@@ -33,14 +32,11 @@ use starknet::{ContractAddress};
         let emergency_contact: ByteArray = "1234567890";
 
         start_cheat_caller_address(contract_address, owner_address);
-        let owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
+        dispatcher.register_pet_owner(name, email, emergency_contact);
         stop_cheat_caller_address(owner_address);
 
-        // Validate that the owner_id is correctly incremented
-        assert(owner_id == 1, 'owner_id should start from 1');
-
         // Retrieve the account to verify it was stored correctly
-        let owner_account = dispatcher.return_pet_owner_info(owner_address);
+        let owner_account = dispatcher.get_pet_owner(owner_address);
 
         assert(owner_account.is_pet_owner, 'registration failed');
         assert(owner_account.name == "John", 'name mismatch');
@@ -66,8 +62,8 @@ use starknet::{ContractAddress};
         let emergency_contact1: ByteArray = "1234567890";
 
         start_cheat_caller_address(contract_address, owner_address);
-        let _owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
-        let _owner_id2 = dispatcher.register_pet_owner(name1, email1, emergency_contact1);
+        dispatcher.register_pet_owner(name, email, emergency_contact);
+        dispatcher.register_pet_owner(name1, email1, emergency_contact1);
         stop_cheat_caller_address(owner_address);
     }
 
@@ -88,20 +84,20 @@ use starknet::{ContractAddress};
         let emergency_contact1: ByteArray = "10987654321";
 
         start_cheat_caller_address(contract_address, owner_address);
-        let owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
+        dispatcher.register_pet_owner(name, email, emergency_contact);
         // Retrieve the account to verify it was stored correctly
-        let owner_account = dispatcher.return_pet_owner_info(owner_address);
-        assert(owner_id == 1, 'Profile no updated');
+        let owner_account = dispatcher.get_pet_owner(owner_address);
+
         assert(owner_account.name == "John", 'name mismatch');
         assert(owner_account.email == "John@yahoo.com", 'email mismatch');
         assert(owner_account.emergency_contact == "1234567890", 'emergency_contact mismatch');
 
         start_cheat_caller_address(contract_address, owner_address);
-        let success = dispatcher.update_owner_profile(owner_id, name1, email1, emergency_contact1);
+        let success = dispatcher.update_owner_profile(name1, email1, emergency_contact1);
         stop_cheat_caller_address(owner_address);
 
         // Retrieve the account to verify it was stored correctly
-        let owner_account_1 = dispatcher.return_pet_owner_info(owner_address);
+        let owner_account_1 = dispatcher.get_pet_owner(owner_address);
         assert(success, 'Profile no updated');
         assert(owner_account_1.name == "James", 'name mismatch');
         assert(owner_account_1.email == "James@yahoo.com", 'email mismatch');
@@ -126,50 +122,14 @@ use starknet::{ContractAddress};
         let emergency_contact1: ByteArray = "10987654321";
 
         start_cheat_caller_address(contract_address, owner_address);
-        let _owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
+        dispatcher.register_pet_owner(name, email, emergency_contact);
         stop_cheat_caller_address(owner_address);
 
         start_cheat_caller_address(contract_address, another_address);
-        let owner_id_2 = dispatcher.register_pet_owner(name1, email1, emergency_contact1);
-        stop_cheat_caller_address(another_address);
-        assert(owner_id_2 == 2, 'Id did not increment');
-    }
-    #[test]
-    #[should_panic(expected: ('Not Your Profile',))]
-    fn test_update_another_profile() {
-        let contract_address = setup();
-        let dispatcher = IPetOwnerDispatcher { contract_address };
-
-        let owner_address: ContractAddress = 12345.try_into().unwrap();
-
-        let another_address: ContractAddress = 467372.try_into().unwrap();
-
-        // Test input values
-        let name: ByteArray = "John";
-        let email: ByteArray = "John@yahoo.com";
-        let emergency_contact: ByteArray = "1234567890";
-
-        let name1: ByteArray = "James";
-        let email1: ByteArray = "James@yahoo.com";
-        let emergency_contact1: ByteArray = "10987654321";
-
-        let name_1: ByteArray = "James";
-        let email_1: ByteArray = "James@yahoo.com";
-        let emergency_contact_1: ByteArray = "10987654321";
-
-        start_cheat_caller_address(contract_address, owner_address);
-        let owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
-        stop_cheat_caller_address(owner_address);
-
-        start_cheat_caller_address(contract_address, another_address);
-        let _owner_id_2 = dispatcher.register_pet_owner(name1, email1, emergency_contact1);
-        stop_cheat_caller_address(another_address);
-
-        start_cheat_caller_address(contract_address, another_address);
-        let _success = dispatcher
-            .update_owner_profile(owner_id, name_1, email_1, emergency_contact_1);
+        dispatcher.register_pet_owner(name1, email1, emergency_contact1);
         stop_cheat_caller_address(another_address);
     }
+
 
     #[test]
     #[should_panic(expected: ('Not Registered',))]
@@ -190,11 +150,11 @@ use starknet::{ContractAddress};
         let emergency_contact1: ByteArray = "10987654321";
 
         start_cheat_caller_address(contract_address, owner_address);
-        let owner_id = dispatcher.register_pet_owner(name, email, emergency_contact);
+        dispatcher.register_pet_owner(name, email, emergency_contact);
         stop_cheat_caller_address(owner_address);
 
         start_cheat_caller_address(contract_address, another_address);
-        let _success = dispatcher.update_owner_profile(owner_id, name1, email1, emergency_contact1);
+        let _success = dispatcher.update_owner_profile(name1, email1, emergency_contact1);
         stop_cheat_caller_address(another_address);
     }
 }
