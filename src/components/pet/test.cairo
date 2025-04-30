@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use petchain::components::pet::IPet::{IPetDispatcher, IPetDispatcherTrait};
+    use petchain::components::pet::interface::{IPetDispatcher, IPetDispatcherTrait};
     use snforge_std::{
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
         stop_cheat_caller_address,
@@ -8,7 +8,7 @@ mod tests {
     use starknet::{ContractAddress};
 
     fn setup() -> ContractAddress {
-        let declare_result = declare("PetChain");
+        let declare_result = declare("MockPet");
         assert(declare_result.is_ok(), 'Contract declaration failed');
 
         let contract_class = declare_result.unwrap().contract_class();

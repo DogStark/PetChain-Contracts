@@ -1,5 +1,5 @@
 use starknet::ContractAddress;
-use petchain::base::types::{Pet};
+use petchain::components::pet::types::{Pet};
 #[starknet::interface]
 pub trait IPet<TContractState> {
     fn register_pet(
@@ -12,4 +12,5 @@ pub trait IPet<TContractState> {
     fn is_pet_active(self: @TContractState, id: u256) -> bool;
     fn get_pet_owner(self: @TContractState, id: u256) -> ContractAddress;
     fn get_pets_by_owner(self: @TContractState, owner: ContractAddress) -> Array<Pet>;
+    fn get_all_pets(self: @TContractState) -> Array<Pet>;
 }
