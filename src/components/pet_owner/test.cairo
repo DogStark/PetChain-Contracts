@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use petchain::components::pet_owner::IPetOwner::{IPetOwnerDispatcher, IPetOwnerDispatcherTrait};
+    use petchain::components::pet_owner::interface::{IPetOwnerDispatcher, IPetOwnerDispatcherTrait};
     use snforge_std::{
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
         stop_cheat_caller_address,
