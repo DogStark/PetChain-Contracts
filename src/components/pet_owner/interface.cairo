@@ -1,5 +1,5 @@
 use starknet::ContractAddress;
-use petchain::base::types::{PetOwner};
+use petchain::components::pet_owner::types::{PetOwner};
 #[starknet::interface]
 pub trait IPetOwner<TContractState> {
     fn is_owner_registered(self: @TContractState, pet_owner: ContractAddress) -> bool;
