@@ -10,8 +10,16 @@ pub mod components {
         pub mod IPet;
         pub mod pet_test;
     }
+    pub mod pet_owner {
+        pub mod pet_owner;
+        pub mod mock;
+        pub mod interface;
+        pub mod test;
+        pub mod types;
+    }
 }
 
 pub mod base {
     pub mod types;
 }
+
