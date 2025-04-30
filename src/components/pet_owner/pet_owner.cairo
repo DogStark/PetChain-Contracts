@@ -1,7 +1,7 @@
-use petchain::components::pet_owner::IPetOwner::{IPetOwner};
+use petchain::components::pet_owner::interface::{IPetOwner};
 #[starknet::component]
 pub mod PetOwnerComponent {
-    use petchain::base::types::PetOwner;
+    use petchain::components::pet_owner::types::PetOwner;
     use starknet::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
     };
