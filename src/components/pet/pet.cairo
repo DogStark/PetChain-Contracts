@@ -1,8 +1,8 @@
-use petchain::components::pet::IPet::{IPet};
+use petchain::components::pet::interface::{IPet};
 #[starknet::component]
-pub mod Pet_component {
+pub mod PetComponent {
     use core::array::{Array, ArrayTrait};
-    use petchain::base::types::Pet;
+    use petchain::components::pet::types::Pet;
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
@@ -10,6 +10,7 @@ pub mod Pet_component {
     pub struct Storage {
         pets: Map<u256, Pet>,
         pet_by_owners: Map<ContractAddress, u256>,
+        owner_pet_index: Map<(ContractAddress, u256), u256>,
         pet_count_by_owner: Map<ContractAddress, u256>,
         total_pet_count: u256,
     }
@@ -35,8 +36,8 @@ pub mod Pet_component {
         pet_id: u256,
     }
 
-    #[embeddable_as(PetComponent)]
-    impl PetImpl<
+    #[embeddable_as(PetImpl)]
+    impl PetComponentImpl<
         TContractState, +HasComponent<TContractState>,
     > of super::IPet<ComponentState<TContractState>> {
         fn register_pet(
@@ -61,10 +62,9 @@ pub mod Pet_component {
             self.pets.write(id, pet);
             self.total_pet_count.write(id);
             self.pet_by_owners.write(caller, id);
-
-            let current_owner_pet_count = self.pet_count_by_owner.read(caller);
-            self.pet_count_by_owner.write(caller, current_owner_pet_count + 1);
-
+            let owner_pet_count = self.pet_count_by_owner.read(caller) + 1;
+            self.pet_count_by_owner.write(caller, owner_pet_count);
+            self.owner_pet_index.write((caller, owner_pet_count), id);
             self.emit(Event::PetCreated(PetCreated { owner: caller, pet_id: id }));
 
             id
@@ -113,32 +113,45 @@ pub mod Pet_component {
         fn get_pets_by_owner(
             self: @ComponentState<TContractState>, owner: ContractAddress,
         ) -> Array<Pet> {
-            self.get_pets_by_owner(owner)
+            self.get_all_pets_by_owner(owner)
+        }
+        fn get_all_pets(self: @ComponentState<TContractState>) -> Array<Pet> {
+            let mut all_pets = ArrayTrait::new();
+            let total_pets = self.total_pet_count.read();
+
+            for i in 1..total_pets {
+                let pet = self.pets.read(i);
+                all_pets.append(pet);
+            };
+
+            all_pets
         }
     }
 
     #[generate_trait]
-    pub impl InternalImpl<TContractState, +HasComponent<TContractState>,> of InternalTrait<TContractState> {
-        fn get_owner_pets_id(self: @ComponentState<TContractState>, owner: ContractAddress) -> Array<u256> {
-            let mut pets = ArrayTrait::new();
-            let pet_count = self.pet_count_by_owner.read(owner);
-            for i in 1..pet_count {
-                if self.pet_by_owners.read(owner) {
-                    pets.append(i);
-                }
+    pub impl InternalImpl<
+        TContractState, +HasComponent<TContractState>,
+    > of InternalTrait<TContractState> {
+        fn get_pet_ids_by_owner(
+            self: @ComponentState<TContractState>, owner: ContractAddress,
+        ) -> Array<u256> {
+            let mut pet_ids = ArrayTrait::new();
+            let count = self.pet_count_by_owner.read(owner);
+
+            for i in 1..count {
+                let pet_id = self.owner_pet_index.read((owner, i));
+                pet_ids.append(pet_id);
             };
-            pets
+            pet_ids
         }
-
-
-        fn get_pets_by_owner(
+        fn get_all_pets_by_owner(
             self: @ComponentState<TContractState>, owner: ContractAddress,
         ) -> Array<Pet> {
-            let pets_id = self.get_owner_pets_id(owner);
-
+            let pet_ids = self.get_pet_ids_by_owner(owner);
             let mut pets = ArrayTrait::new();
-            for i in 0..pets_id.len() {
-                let pet_id = *pets_id[i];
+
+            for i in 0..pet_ids.len() {
+                let pet_id = *pet_ids.at(i);
                 let pet = self.pets.read(pet_id);
                 pets.append(pet);
             };

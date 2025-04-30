@@ -5,10 +5,11 @@ pub mod contracts {
 }
 pub mod components {
     pub mod pet {
-        pub mod pet_component;
-        pub mod mock_pet;
-        pub mod IPet;
-        pub mod pet_test;
+        pub mod pet;
+        pub mod mock;
+        pub mod interface;
+        pub mod test;
+        pub mod types;
     }
     pub mod pet_owner {
         pub mod pet_owner;
@@ -18,8 +19,3 @@ pub mod components {
         pub mod types;
     }
 }
-
-pub mod base {
-    pub mod types;
-}
-
