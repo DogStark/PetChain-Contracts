@@ -4,6 +4,13 @@ pub mod contracts {
     pub mod types;
 }
 pub mod components {
+    pub mod pet {
+        pub mod pet;
+        pub mod mock;
+        pub mod interface;
+        pub mod test;
+        pub mod types;
+    }
     pub mod pet_owner {
         pub mod pet_owner;
         pub mod mock;
