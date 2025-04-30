@@ -398,6 +398,5 @@ mod tests {
         start_cheat_caller_address(contract_address, vet_address);
         dispatcher.verify_vet(vet_address);
         stop_cheat_caller_address(contract_address);
-
-      }
+    }
 }
