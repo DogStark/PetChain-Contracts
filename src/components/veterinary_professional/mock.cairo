@@ -1,28 +1,23 @@
 #[starknet::contract]
 mod MockVeterinaryProfessional {
-    use petchain::components::veterinary_professional::vet::VeterinaryProfessionalComponent;
+    use petchain::components::veterinary_professional::vet::VetComponent;
 
-    component!(
-        path: VeterinaryProfessionalComponent,
-        storage: vet_storage,
-        event: VeterinaryProfessionalEvent,
-    );
+    component!(path: VetComponent, storage: vet_storage, event: VeterinaryProfessionalEvent);
 
     #[storage]
     struct Storage {
         #[substorage(v0)]
-        vet_storage: VeterinaryProfessionalComponent::Storage,
+        vet_storage: VetComponent::Storage,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
-        VeterinaryProfessionalEvent: VeterinaryProfessionalComponent::Event,
+        VeterinaryProfessionalEvent: VetComponent::Event,
     }
 
 
     #[abi(embed_v0)]
-    impl VeterinaryProfessionalImpl =
-        VeterinaryProfessionalComponent::VeterinaryProfessionalComponentImpl<ContractState>;
+    impl Vet = VetComponent::VetComponentImpl<ContractState>;
 }
 

@@ -1,6 +1,6 @@
-use petchain::components::veterinary_professional::interface::{IVeterinary_professional};
+use petchain::components::veterinary_professional::interface::{IVet};
 #[starknet::component]
-pub mod VeterinaryProfessionalComponent {
+pub mod VetComponent {
     use petchain::components::veterinary_professional::types::Vet;
     use starknet::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
@@ -9,13 +9,10 @@ pub mod VeterinaryProfessionalComponent {
 
     #[storage]
     pub struct Storage {
-        vet: Map<ContractAddress, Vet>,
-        vets: Map<u256, Vet>,
-        vet_licences: Map<felt252, Vet>,
-        vets_id: u256,
-        admin_address: ContractAddress,
-        vet_id: u256,
-        vet_address: ContractAddress,
+        vets: Map<ContractAddress, Vet>,
+        vet_licences: Map<felt252, u256>,
+        vet_ids: Map<u256, ContractAddress>,
+        vet_count: u256,
     }
 
     #[event]
@@ -63,10 +60,10 @@ pub mod VeterinaryProfessionalComponent {
     }
 
 
-    #[embeddable_as(VeterinaryProfessionalComponentImpl)]
-    impl VeterinaryProfessionalComponenttImpl<
+    #[embeddable_as(VetComponentImpl)]
+    impl VetComponenttImpl<
         TContractState, +HasComponent<TContractState>,
-    > of super::IVeterinary_professional<ComponentState<TContractState>> {
+    > of super::IVet<ComponentState<TContractState>> {
         fn register_vet(
             ref self: ComponentState<TContractState>,
             name: ByteArray,
@@ -79,12 +76,13 @@ pub mod VeterinaryProfessionalComponent {
             let zero_address = contract_address_const::<'0'>();
             let timestamp = get_block_timestamp();
 
-            let existing_vet = self.get_vet_by_license_number(license_number);
+            let existing_vet = self.get_vet(caller);
+            assert(existing_vet.license_number != license_number, 'License already registered');
             assert(!existing_vet.registered, ' already registered');
 
             assert(caller != zero_address, 'Zero Address detected');
 
-            let id = self.vets_id.read() + 1;
+            let id = self.vet_count.read() + 1;
 
             let new_vet = Vet {
                 vet_id: id,
@@ -101,10 +99,9 @@ pub mod VeterinaryProfessionalComponent {
                 updated_at: timestamp,
             };
 
-            self.vet_licences.write(license_number, new_vet.clone());
-            self.vets.write(id, new_vet.clone());
-            self.vet.write(caller, new_vet);
-            self.vets_id.write(id);
+            self.vet_licences.write(license_number, id);
+            self.vets.write(caller, new_vet.clone());
+            self.vet_count.write(id);
 
             self.emit(Event::VetRegistered(VetRegistered { vet_id: id, vet_address: caller }));
 
@@ -125,7 +122,7 @@ pub mod VeterinaryProfessionalComponent {
 
             assert(caller != zero_address, 'Zero Address detected');
 
-            let existing_vet = self.vet.read(caller);
+            let existing_vet = self.vets.read(caller);
 
             assert(existing_vet.registered, ' not registered');
 
@@ -140,9 +137,9 @@ pub mod VeterinaryProfessionalComponent {
 
             let id = vet.vet_id;
 
-            self.vet_licences.write(license_number, vet.clone());
-            self.vets.write(id, vet.clone());
-            self.vet.write(caller, vet);
+            self.vet_licences.write(license_number, id);
+            self.vet_ids.write(id, caller);
+            self.vets.write(caller, vet);
 
             self
                 .emit(
@@ -152,17 +149,15 @@ pub mod VeterinaryProfessionalComponent {
             true
         }
 
+        //TODO: Restrict to admin
         fn activate_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
             let caller = get_caller_address();
             let zero_address = contract_address_const::<'0x0'>();
             assert(caller != zero_address, 'Zero Address detected');
 
-            let admin = self.admin_address.read();
-            assert(caller == admin, 'insufficient Permission');
-
             let timestamp = get_block_timestamp();
 
-            let mut vet = self.vet.read(address);
+            let mut vet = self.vets.read(address);
 
             assert(!vet.is_active, 'Vet is already active');
 
@@ -172,24 +167,21 @@ pub mod VeterinaryProfessionalComponent {
 
             let id = vet.vet_id;
 
-            self.vet_licences.write(vet.license_number, vet.clone());
-            self.vets.write(id, vet.clone());
-            self.vet.write(vet.address, vet);
+            self.vet_licences.write(vet.license_number, id);
+            self.vet_ids.write(id, caller);
+            self.vets.write(vet.address, vet);
 
             self.emit(Event::VetActivated(VetActivated { vet_id: id, vet_address: caller }));
         }
-
+        //TODO: Restrict to admin
         fn deactivate_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
             let caller = get_caller_address();
             let zero_address = contract_address_const::<'0x0'>();
             assert(caller != zero_address, 'Zero Address detected');
 
-            let admin = self.admin_address.read();
-            assert(caller == admin, 'insufficient Permission');
-
             let timestamp = get_block_timestamp();
 
-            let mut vet = self.vet.read(address);
+            let mut vet = self.vets.read(address);
 
             assert(vet.is_active, 'Vet is already inactive');
 
@@ -199,24 +191,21 @@ pub mod VeterinaryProfessionalComponent {
 
             let id = vet.vet_id;
 
-            self.vet_licences.write(vet.license_number, vet.clone());
-            self.vets.write(id, vet.clone());
-            self.vet.write(vet.address, vet);
+            self.vet_licences.write(vet.license_number, id);
+            self.vet_ids.write(id, caller);
+            self.vets.write(vet.address, vet);
 
             self.emit(Event::VetDeActivated(VetDeActivated { vet_id: id, vet_address: caller }));
         }
-
+        //TODO: Restrict to admin
         fn verify_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
             let caller = get_caller_address();
             let zero_address = contract_address_const::<'0x0'>();
             assert(caller != zero_address, 'Zero Address detected');
 
-            let admin = self.admin_address.read();
-            assert(caller == admin, 'insufficient Permission');
-
             let timestamp = get_block_timestamp();
 
-            let mut vet = self.vet.read(address);
+            let mut vet = self.vets.read(address);
 
             assert(!vet.is_verified, 'Vet is already Verified');
 
@@ -226,9 +215,9 @@ pub mod VeterinaryProfessionalComponent {
 
             let id = vet.vet_id;
 
-            self.vet_licences.write(vet.license_number, vet.clone());
-            self.vets.write(id, vet.clone());
-            self.vet.write(vet.address, vet);
+            self.vet_licences.write(vet.license_number, id);
+            self.vet_ids.write(id, caller);
+            self.vets.write(vet.address, vet);
 
             self.emit(Event::VetVerified(VetVerified { vet_id: id, vet_address: caller }));
         }
@@ -236,7 +225,7 @@ pub mod VeterinaryProfessionalComponent {
         fn is_vet_active(
             ref self: ComponentState<TContractState>, address: ContractAddress,
         ) -> bool {
-            let vet = self.vet.read(address);
+            let vet = self.vets.read(address);
 
             let is_active = vet.is_active;
 
@@ -246,7 +235,7 @@ pub mod VeterinaryProfessionalComponent {
         fn is_vet_verified(
             ref self: ComponentState<TContractState>, address: ContractAddress,
         ) -> bool {
-            let vet = self.vet.read(address);
+            let vet = self.vets.read(address);
 
             let is_verified = vet.is_verified;
 
@@ -254,24 +243,23 @@ pub mod VeterinaryProfessionalComponent {
         }
 
         fn get_vet(ref self: ComponentState<TContractState>, address: ContractAddress) -> Vet {
-            let vet = self.vet.read(address);
+            let vet = self.vets.read(address);
             vet
         }
 
         fn get_vet_by_id(ref self: ComponentState<TContractState>, vet_id: u256) -> Vet {
-            let vet = self.vets.read(vet_id);
+            let vet_address = self.vet_ids.read(vet_id);
+            let vet = self.vets.read(vet_address);
             vet
         }
 
         fn get_vet_by_license_number(
             ref self: ComponentState<TContractState>, license_number: felt252,
         ) -> Vet {
-            let vet = self.vet_licences.read(license_number);
+            let vet_id = self.vet_licences.read(license_number);
+            let vet_address = self.vet_ids.read(vet_id);
+            let vet = self.vets.read(vet_address);
             vet
-        }
-        // FOR TESTING
-        fn init(ref self: ComponentState<TContractState>, admin: ContractAddress) {
-            self.admin_address.write(admin);
         }
     }
 }

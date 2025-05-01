@@ -1,7 +1,7 @@
 use starknet::ContractAddress;
 use petchain::components::veterinary_professional::types::{Vet};
 #[starknet::interface]
-pub trait IVeterinary_professional<TContractState> {
+pub trait IVet<TContractState> {
     fn register_vet(
         ref self: TContractState,
         name: ByteArray,
@@ -35,8 +35,5 @@ pub trait IVeterinary_professional<TContractState> {
     fn is_vet_active(ref self: TContractState, address: ContractAddress) -> bool;
 
     fn verify_vet(ref self: TContractState, address: ContractAddress);
-
-    // for TESTING
-    fn init(ref self: TContractState, admin: ContractAddress);
 }
 

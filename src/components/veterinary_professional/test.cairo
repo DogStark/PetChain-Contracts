@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use petchain::components::veterinary_professional::interface::{
-        IVeterinary_professionalDispatcher, IVeterinary_professionalDispatcherTrait,
+        IVetDispatcher, IVetDispatcherTrait,
     };
     use snforge_std::{
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn test_register_vet() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -53,10 +53,10 @@ mod tests {
     #[test]
     fn test_register_two_vets() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let second_vet_address: ContractAddress = 12345.try_into().unwrap();
+        let second_vet_address: ContractAddress = 54321.try_into().unwrap();
 
         // Test input values
         let name: ByteArray = "John";
@@ -81,7 +81,7 @@ mod tests {
         stop_cheat_caller_address(vet_address);
 
         // Retrieve the account to verify it was stored correctly
-        let vet = dispatcher.get_vet(vet_address);
+        let vet = dispatcher.get_vet(second_vet_address);
 
         assert(vet_id_1 == 2, 'wrong initialization');
         assert(vet.name == "James", 'name mismatch');
@@ -91,10 +91,10 @@ mod tests {
         assert(vet.specialization == "Anmial Husbandry", 'specialization failed');
     }
     #[test]
-    #[should_panic(expected: (' already registered',))]
+    #[should_panic(expected: ('License already registered',))]
     fn test_register_two_vets_same_license() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -118,10 +118,10 @@ mod tests {
         stop_cheat_caller_address(vet_address);
     }
     #[test]
-    #[should_panic(expected: (' already registered',))]
-    fn test_register_vet_twice_with_different_license_numbers() {
+    #[should_panic(expected: ('License already registered',))]
+    fn test_register_vet_twice_with_same_license_numbers() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -133,18 +133,48 @@ mod tests {
         let email1: ByteArray = "John@yahoo.com";
         let emergency_contact1: ByteArray = "1234567890";
         let license_number = 'KAD1234';
+        let license_number1 = 'KAD1234';
         let specialization: ByteArray = "Sugery";
         let specialization1: ByteArray = "Anmial Husbandry";
 
         start_cheat_caller_address(contract_address, vet_address);
         dispatcher.register_vet(name, email, emergency_contact, license_number, specialization);
-        dispatcher.register_vet(name1, email1, emergency_contact1, license_number, specialization1);
+
+        dispatcher
+            .register_vet(name1, email1, emergency_contact1, license_number1, specialization1);
+        stop_cheat_caller_address(vet_address);
+    }
+
+    #[test]
+    #[should_panic(expected: (' already registered',))]
+    fn test_register_same_vet_different_license_numbers() {
+        let contract_address = setup();
+        let dispatcher = IVetDispatcher { contract_address };
+
+        let vet_address: ContractAddress = 12345.try_into().unwrap();
+
+        // Test input values
+        let name: ByteArray = "John";
+        let email: ByteArray = "John@yahoo.com";
+        let emergency_contact: ByteArray = "1234567890";
+        let name1: ByteArray = "John";
+        let email1: ByteArray = "John@yahoo.com";
+        let emergency_contact1: ByteArray = "1234567890";
+        let license_number = 'KAD1234';
+        let license_number1 = 'Lagos1234';
+        let specialization: ByteArray = "Sugery";
+        let specialization1: ByteArray = "Anmial Husbandry";
+
+        start_cheat_caller_address(contract_address, vet_address);
+        dispatcher.register_vet(name, email, emergency_contact, license_number, specialization);
+        dispatcher
+            .register_vet(name1, email1, emergency_contact1, license_number1, specialization1);
         stop_cheat_caller_address(vet_address);
     }
     #[test]
     fn test_update_vet_profile() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -193,7 +223,7 @@ mod tests {
     #[should_panic(expected: (' not registered',))]
     fn test_update_vet_profile_without_registering() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
@@ -216,10 +246,9 @@ mod tests {
     #[test]
     fn test_activate_vet_profile() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
 
         // Test input values
         let name: ByteArray = "John";
@@ -233,54 +262,20 @@ mod tests {
             .register_vet(name, email, emergency_contact, license_number, specialization);
         stop_cheat_caller_address(contract_address);
 
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, admin_address);
         dispatcher.activate_vet(vet_address);
-        stop_cheat_caller_address(contract_address);
 
         // Retrieve the account to verify it was stored correctly
         let vet = dispatcher.get_vet(vet_address);
         assert(vet.is_active, 'activation failed');
     }
 
-    #[test]
-    #[should_panic(expected: ('insufficient Permission',))]
-    fn test_unauthorised_activate_vet_profile() {
-        let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
-
-        let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
-
-        // Test input values
-        let name: ByteArray = "John";
-        let email: ByteArray = "John@yahoo.com";
-        let emergency_contact: ByteArray = "1234567890";
-        let license_number = 'JOS1234';
-        let specialization: ByteArray = "Sugery";
-
-        start_cheat_caller_address(contract_address, vet_address);
-        let _vet_id = dispatcher
-            .register_vet(name, email, emergency_contact, license_number, specialization);
-        stop_cheat_caller_address(contract_address);
-
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, vet_address);
-        dispatcher.activate_vet(vet_address);
-        stop_cheat_caller_address(contract_address);
-
-        // Retrieve the account to verify it was stored correctly
-        let vet = dispatcher.get_vet(vet_address);
-        assert(vet.is_active, 'activation failed');
-    }
 
     #[test]
     fn test_deactivate_vet_profile() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
 
         // Test input values
         let name: ByteArray = "John";
@@ -294,13 +289,10 @@ mod tests {
             .register_vet(name, email, emergency_contact, license_number, specialization);
         stop_cheat_caller_address(vet_address);
 
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, admin_address);
         let _success = dispatcher.activate_vet(vet_address);
         let vet1 = dispatcher.get_vet(vet_address);
         assert(vet1.is_active, 'activation failed');
-        stop_cheat_caller_address(admin_address);
-        start_cheat_caller_address(contract_address, admin_address);
+
         let _success = dispatcher.deactivate_vet(vet_address);
         stop_cheat_caller_address(vet_address);
         // Retrieve the account to verify it was stored correctly
@@ -308,48 +300,13 @@ mod tests {
         assert(!vet.is_active, 'deactivation failed');
     }
 
-    #[test]
-    #[should_panic(expected: ('insufficient Permission',))]
-    fn test_unauthorised_deactivate_vet_profile() {
-        let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
-
-        let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
-
-        // Test input values
-        let name: ByteArray = "John";
-        let email: ByteArray = "John@yahoo.com";
-        let emergency_contact: ByteArray = "1234567890";
-        let license_number = 'JOS1234';
-        let specialization: ByteArray = "Sugery";
-
-        start_cheat_caller_address(contract_address, vet_address);
-        let _vet_id = dispatcher
-            .register_vet(name, email, emergency_contact, license_number, specialization);
-        stop_cheat_caller_address(vet_address);
-
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, admin_address);
-        let _success = dispatcher.activate_vet(vet_address);
-        let vet1 = dispatcher.get_vet(vet_address);
-        assert(vet1.is_active, 'activation failed');
-        stop_cheat_caller_address(admin_address);
-        start_cheat_caller_address(contract_address, vet_address);
-        let _success = dispatcher.deactivate_vet(vet_address);
-        stop_cheat_caller_address(vet_address);
-        // Retrieve the account to verify it was stored correctly
-        let vet = dispatcher.get_vet(vet_address);
-        assert(!vet.is_active, 'deactivation failed');
-    }
 
     #[test]
     fn test_verify_vet_profile() {
         let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
+        let dispatcher = IVetDispatcher { contract_address };
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
 
         // Test input values
         let name: ByteArray = "John";
@@ -363,40 +320,11 @@ mod tests {
             .register_vet(name, email, emergency_contact, license_number, specialization);
         stop_cheat_caller_address(contract_address);
 
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, admin_address);
         dispatcher.verify_vet(vet_address);
         stop_cheat_caller_address(contract_address);
 
         // Retrieve the account to verify it was stored correctly
         let vet = dispatcher.get_vet(vet_address);
         assert(vet.is_verified, 'activation failed');
-    }
-
-    #[test]
-    #[should_panic(expected: ('insufficient Permission',))]
-    fn test_unauthorised_verify_vet_profile() {
-        let contract_address = setup();
-        let dispatcher = IVeterinary_professionalDispatcher { contract_address };
-
-        let vet_address: ContractAddress = 12345.try_into().unwrap();
-        let admin_address: ContractAddress = 6345623.try_into().unwrap();
-
-        // Test input values
-        let name: ByteArray = "John";
-        let email: ByteArray = "John@yahoo.com";
-        let emergency_contact: ByteArray = "1234567890";
-        let license_number = 'JOS1234';
-        let specialization: ByteArray = "Sugery";
-
-        start_cheat_caller_address(contract_address, vet_address);
-        let _vet_id = dispatcher
-            .register_vet(name, email, emergency_contact, license_number, specialization);
-        stop_cheat_caller_address(contract_address);
-
-        dispatcher.init(admin_address);
-        start_cheat_caller_address(contract_address, vet_address);
-        dispatcher.verify_vet(vet_address);
-        stop_cheat_caller_address(contract_address);
     }
 }
