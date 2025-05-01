@@ -98,7 +98,7 @@ mod tests {
 
         let vet_address: ContractAddress = 12345.try_into().unwrap();
 
-        let malicious_address: ContractAddress = 12345.try_into().unwrap();
+        let malicious_address: ContractAddress = 21563.try_into().unwrap();
 
         // Test input values
         let name: ByteArray = "John";
@@ -118,7 +118,7 @@ mod tests {
         stop_cheat_caller_address(vet_address);
     }
     #[test]
-    #[should_panic(expected: ('License already registered',))]
+    #[should_panic(expected: ('Already registered',))]
     fn test_register_vet_twice_with_same_license_numbers() {
         let contract_address = setup();
         let dispatcher = IVetDispatcher { contract_address };
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected: (' already registered',))]
+    #[should_panic(expected: ('Already registered',))]
     fn test_register_same_vet_different_license_numbers() {
         let contract_address = setup();
         let dispatcher = IVetDispatcher { contract_address };
@@ -220,7 +220,7 @@ mod tests {
 
 
     #[test]
-    #[should_panic(expected: (' not registered',))]
+    #[should_panic(expected: ('Not registered',))]
     fn test_update_vet_profile_without_registering() {
         let contract_address = setup();
         let dispatcher = IVetDispatcher { contract_address };

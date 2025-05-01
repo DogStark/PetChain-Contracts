@@ -1,6 +1,7 @@
 use petchain::components::veterinary_professional::interface::{IVet};
 #[starknet::component]
 pub mod VetComponent {
+    use super::IVet;
     use petchain::components::veterinary_professional::types::Vet;
     use starknet::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
@@ -76,11 +77,13 @@ pub mod VetComponent {
             let zero_address = contract_address_const::<'0'>();
             let timestamp = get_block_timestamp();
 
-            let existing_vet = self.get_vet(caller);
-            assert(existing_vet.license_number != license_number, 'License already registered');
-            assert(!existing_vet.registered, ' already registered');
-
             assert(caller != zero_address, 'Zero Address detected');
+
+            let existing_vet = self.get_vet(caller);
+            assert(!existing_vet.registered, 'Already registered');
+
+            let existing_license_owner = self.vet_licences.read(license_number);
+            assert(existing_license_owner == 0, 'License already registered');
 
             let id = self.vet_count.read() + 1;
 
@@ -108,6 +111,7 @@ pub mod VetComponent {
             id
         }
 
+
         fn update_vet_profile(
             ref self: ComponentState<TContractState>,
             name: ByteArray,
@@ -122,12 +126,31 @@ pub mod VetComponent {
 
             assert(caller != zero_address, 'Zero Address detected');
 
-            let existing_vet = self.vets.read(caller);
+            let mut vet = self.vets.read(caller);
+            assert(vet.registered, 'Not registered');
+            assert(caller == vet.address, 'Only owner can update');
 
-            assert(existing_vet.registered, ' not registered');
+            // Handle license change
+            if vet.license_number != license_number {
+                // Invalidate old license
+                self.vet_licences.write(vet.license_number, 0);
 
-            let mut vet = existing_vet;
+                // Reset vet record (optional depending on business logic)
+                vet.vet_id = 0;
+                vet.address = zero_address;
+                vet.name = "";
+                vet.email = "";
+                vet.emergency_contact = "";
+                vet.license_number = '';
+                vet.registered = false;
+                vet.specialization = "";
+                vet.is_verified = false;
+                vet.is_active = false;
+                vet.created_at = 0;
+                vet.updated_at = 0;
+            }
 
+            // Update profile
             vet.name = name;
             vet.email = email;
             vet.emergency_contact = emergency_contact;
@@ -137,10 +160,12 @@ pub mod VetComponent {
 
             let id = vet.vet_id;
 
+            // Write updated state
             self.vet_licences.write(license_number, id);
             self.vet_ids.write(id, caller);
             self.vets.write(caller, vet);
 
+            // Emit event
             self
                 .emit(
                     Event::VetProfileUpdated(VetProfileUpdated { vet_id: id, vet_address: caller }),
@@ -148,6 +173,7 @@ pub mod VetComponent {
 
             true
         }
+
 
         //TODO: Restrict to admin
         fn activate_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
