@@ -172,7 +172,7 @@ mod tests {
         stop_cheat_caller_address(vet_address);
     }
     #[test]
-    fn test_update_vet_profile() {
+    fn test_update_vet_profile_ok() {
         let contract_address = setup();
         let dispatcher = IVetDispatcher { contract_address };
 
@@ -210,6 +210,13 @@ mod tests {
 
         // Retrieve the account to verify it was stored correctly
         let vet = dispatcher.get_vet(vet_address);
+
+        let vet_0 = dispatcher.get_vet_by_license_number(license_number);
+        assert(vet_0.vet_id == 0, 'vet id should be 0');
+
+        let vet_1 = dispatcher.get_vet_by_license_number(license_number1);
+        assert(vet_1.vet_id == vet.vet_id, 'vet id mismatch');
+
         assert(success, 'Profile no updated');
         assert(vet.name == "James", 'name mismatch');
         assert(vet.email == "James@yahoo.com", 'email mismatch');

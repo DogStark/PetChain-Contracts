@@ -103,6 +103,7 @@ pub mod VetComponent {
             };
 
             self.vet_licences.write(license_number, id);
+            self.vet_ids.write(id, caller);
             self.vets.write(caller, new_vet.clone());
             self.vet_count.write(id);
 
@@ -110,7 +111,6 @@ pub mod VetComponent {
 
             id
         }
-
 
         fn update_vet_profile(
             ref self: ComponentState<TContractState>,
@@ -134,20 +134,6 @@ pub mod VetComponent {
             if vet.license_number != license_number {
                 // Invalidate old license
                 self.vet_licences.write(vet.license_number, 0);
-
-                // Reset vet record (optional depending on business logic)
-                vet.vet_id = 0;
-                vet.address = zero_address;
-                vet.name = "";
-                vet.email = "";
-                vet.emergency_contact = "";
-                vet.license_number = '';
-                vet.registered = false;
-                vet.specialization = "";
-                vet.is_verified = false;
-                vet.is_active = false;
-                vet.created_at = 0;
-                vet.updated_at = 0;
             }
 
             // Update profile
@@ -162,7 +148,6 @@ pub mod VetComponent {
 
             // Write updated state
             self.vet_licences.write(license_number, id);
-            self.vet_ids.write(id, caller);
             self.vets.write(caller, vet);
 
             // Emit event
@@ -173,7 +158,6 @@ pub mod VetComponent {
 
             true
         }
-
 
         //TODO: Restrict to admin
         fn activate_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
@@ -199,6 +183,7 @@ pub mod VetComponent {
 
             self.emit(Event::VetActivated(VetActivated { vet_id: id, vet_address: caller }));
         }
+
         //TODO: Restrict to admin
         fn deactivate_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
             let caller = get_caller_address();
@@ -223,6 +208,7 @@ pub mod VetComponent {
 
             self.emit(Event::VetDeActivated(VetDeActivated { vet_id: id, vet_address: caller }));
         }
+
         //TODO: Restrict to admin
         fn verify_vet(ref self: ComponentState<TContractState>, address: ContractAddress) {
             let caller = get_caller_address();
