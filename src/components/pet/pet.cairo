@@ -2,7 +2,7 @@ use petchain::components::pet::interface::{IPet};
 #[starknet::component]
 pub mod PetComponent {
     use core::array::{Array, ArrayTrait};
-    use petchain::components::pet::types::Pet;
+    use petchain::components::pet::types::{Pet, Gender};
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
@@ -20,6 +20,9 @@ pub mod PetComponent {
     pub enum Event {
         PetCreated: PetCreated,
         PetUpdated: PetUpdated,
+        PetActivated: PetActivated,
+        PetDeActivated: PetDeActivated,
+        PetOwnershipTransferred: PetOwnershipTransferred,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -36,6 +39,26 @@ pub mod PetComponent {
         pet_id: u256,
     }
 
+    #[derive(Drop, starknet::Event)]
+    struct PetActivated {
+        #[key]
+        vet_id: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct PetDeActivated {
+        #[key]
+        vet_id: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct PetOwnershipTransferred {
+        #[key]
+        pet_id: u256,
+        from: ContractAddress,
+        to: ContractAddress,
+    }
+
     #[embeddable_as(PetImpl)]
     impl PetComponentImpl<
         TContractState, +HasComponent<TContractState>,
@@ -44,8 +67,11 @@ pub mod PetComponent {
             ref self: ComponentState<TContractState>,
             name: ByteArray,
             birthday: ByteArray,
-            active: bool,
+            gender: Gender,
+            species: felt252,
         ) -> u256 {
+            assert(name != "", 'name is empty');
+            assert(birthday != "", 'birthday is empty');
             let caller = get_caller_address();
             let total_pet_count = self.total_pet_count.read();
             let id: u256 = total_pet_count + 1;
@@ -54,9 +80,12 @@ pub mod PetComponent {
                 owner: caller,
                 name,
                 birthday,
-                active,
+                active: false,
                 created_at: get_block_timestamp(),
                 updated_at: get_block_timestamp(),
+                new_owner: caller,
+                species: species,
+                gender: gender,
             };
 
             self.pets.write(id, pet);
@@ -75,8 +104,13 @@ pub mod PetComponent {
             id: u256,
             name: ByteArray,
             birthday: ByteArray,
-            active: bool,
+            gender: Gender,
+            species: felt252,
         ) -> bool {
+            assert(id > 0, 'invalid id');
+            assert(name != "", 'name is empty');
+            assert(birthday != "", 'birthday is empty');
+
             let pet = self.pets.read(id);
             assert(pet.id == id, 'Pet not found');
             let caller = get_caller_address();
@@ -84,9 +118,13 @@ pub mod PetComponent {
 
             let mut pet = self.pets.read(id);
 
+            let active = pet.active;
+
             pet.name = name;
             pet.birthday = birthday;
             pet.active = active;
+            pet.species = species;
+            pet.gender = gender;
             pet.updated_at = get_block_timestamp();
 
             self.pets.write(pet.id, pet);
@@ -94,6 +132,90 @@ pub mod PetComponent {
             self.emit(Event::PetUpdated(PetUpdated { owner: caller, pet_id: id }));
             true
         }
+
+        //TODO: Restrict to admin
+        fn activate_pet(ref self: ComponentState<TContractState>, id: u256) {
+            let mut pet = self.pets.read(id);
+            assert(pet.id == id, 'Pet not found');
+
+            let mut pet = self.pets.read(id);
+
+            let timestamp = get_block_timestamp();
+
+            assert(!pet.active, 'Pet is already active');
+
+            pet.active = true;
+
+            pet.updated_at = timestamp;
+
+            self.pets.write(pet.id, pet);
+
+            self.emit(Event::PetActivated(PetActivated { vet_id: id }));
+        }
+
+        //TODO: Restrict to admin
+        fn deactivate_pet(ref self: ComponentState<TContractState>, id: u256) {
+            let mut pet = self.pets.read(id);
+            assert(pet.id == id, 'Pet not found');
+
+            let timestamp = get_block_timestamp();
+
+            assert(pet.active, 'Pet is not active');
+
+            pet.active = false;
+
+            pet.updated_at = timestamp;
+
+            self.pets.write(pet.id, pet);
+
+            self.emit(Event::PetDeActivated(PetDeActivated { vet_id: id }));
+        }
+
+        fn transfer_pet_ownership(
+            ref self: ComponentState<TContractState>, id: u256, to: ContractAddress,
+        ) {
+            let mut pet = self.pets.read(id);
+            let caller = get_caller_address();
+            assert(pet.id == id, 'Pet not found');
+            assert(pet.owner == caller, 'Not your pet');
+            assert(pet.owner != to, 'Already the owner');
+
+            pet.new_owner = to;
+            pet.updated_at = get_block_timestamp();
+            self.pets.write(id, pet);
+        }
+
+        fn accept_pet_transfer(ref self: ComponentState<TContractState>, id: u256) {
+            let mut pet = self.pets.read(id);
+            let caller = get_caller_address();
+            assert(pet.id == id, 'Pet not found');
+            assert(pet.new_owner == caller, 'Transfer not assigned to caller');
+
+            // Old owner mappings
+            let old_owner = pet.owner;
+            let old_owner_count = self.pet_count_by_owner.read(old_owner);
+            let new_owner_count = self.pet_count_by_owner.read(caller);
+
+            // Update mappings
+            self.pet_by_owners.write(caller, id);
+            self.pet_count_by_owner.write(old_owner, old_owner_count - 1);
+            self.pet_count_by_owner.write(caller, new_owner_count + 1);
+            self.owner_pet_index.write((caller, new_owner_count + 1), id);
+
+            // Update pet ownership
+            pet.owner = caller;
+            pet.new_owner = caller;
+            pet.updated_at = get_block_timestamp();
+            self.pets.write(id, pet);
+
+            self
+                .emit(
+                    Event::PetOwnershipTransferred(
+                        PetOwnershipTransferred { pet_id: id, from: old_owner, to: caller },
+                    ),
+                );
+        }
+
 
         fn get_pet(self: @ComponentState<TContractState>, id: u256) -> Pet {
             let pet = self.pets.read(id);

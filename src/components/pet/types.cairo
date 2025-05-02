@@ -11,4 +11,16 @@ pub struct Pet {
     pub active: bool,
     pub created_at: u64,
     pub updated_at: u64,
+    pub new_owner: ContractAddress,
+    pub species: felt252,
+    pub gender: Gender,
 }
+
+#[derive(Serde, Copy, Drop, PartialEq, Debug, starknet::Store)]
+pub enum Gender {
+    #[default]
+    NotSpecified,
+    Male,
+    Female,
+}
+
