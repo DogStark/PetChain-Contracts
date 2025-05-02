@@ -18,4 +18,12 @@ pub mod components {
         pub mod test;
         pub mod types;
     }
+
+    pub mod veterinary_professional {
+        pub mod vet;
+        pub mod mock;
+        pub mod interface;
+        pub mod test;
+        pub mod types;
+    }
 }
