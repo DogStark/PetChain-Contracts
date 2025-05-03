@@ -2,7 +2,7 @@ use petchain::components::pet::interface::{IPet};
 #[starknet::component]
 pub mod PetComponent {
     use core::array::{Array, ArrayTrait};
-    use petchain::components::pet::types::{Pet, Gender};
+    use petchain::components::pet::types::{Pet, Gender, Species};
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
@@ -68,7 +68,8 @@ pub mod PetComponent {
             name: ByteArray,
             birthday: ByteArray,
             gender: Gender,
-            species: felt252,
+            species: Species,
+            breed: felt252,
         ) -> u256 {
             assert(name != "", 'name is empty');
             assert(birthday != "", 'birthday is empty');
@@ -86,6 +87,7 @@ pub mod PetComponent {
                 new_owner: caller,
                 species: species,
                 gender: gender,
+                breed: breed,
             };
 
             self.pets.write(id, pet);
@@ -105,12 +107,12 @@ pub mod PetComponent {
             name: ByteArray,
             birthday: ByteArray,
             gender: Gender,
-            species: felt252,
+            species: Species,
+            breed: felt252,
         ) -> bool {
             assert(id > 0, 'invalid id');
             assert(name != "", 'name is empty');
             assert(birthday != "", 'birthday is empty');
-
             let pet = self.pets.read(id);
             assert(pet.id == id, 'Pet not found');
             let caller = get_caller_address();
@@ -125,6 +127,7 @@ pub mod PetComponent {
             pet.active = active;
             pet.species = species;
             pet.gender = gender;
+            pet.breed = breed;
             pet.updated_at = get_block_timestamp();
 
             self.pets.write(pet.id, pet);

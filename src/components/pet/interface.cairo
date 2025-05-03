@@ -1,5 +1,5 @@
 use starknet::ContractAddress;
-use petchain::components::pet::types::{Pet, Gender};
+use petchain::components::pet::types::{Pet, Gender, Species};
 #[starknet::interface]
 pub trait IPet<TContractState> {
     fn register_pet(
@@ -7,7 +7,8 @@ pub trait IPet<TContractState> {
         name: ByteArray,
         birthday: ByteArray,
         gender: Gender,
-        species: felt252,
+        species: Species,
+        breed: felt252,
     ) -> u256;
     fn update_pet_profile(
         ref self: TContractState,
@@ -15,7 +16,8 @@ pub trait IPet<TContractState> {
         name: ByteArray,
         birthday: ByteArray,
         gender: Gender,
-        species: felt252,
+        species: Species,
+        breed: felt252,
     ) -> bool;
     fn get_pet(self: @TContractState, id: u256) -> Pet;
     fn is_pet_active(self: @TContractState, id: u256) -> bool;

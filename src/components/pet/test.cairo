@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use petchain::components::pet::interface::{IPetDispatcher, IPetDispatcherTrait};
-    use petchain::components::pet::types::{Gender};
+    use petchain::components::pet::types::{Gender, Species};
     use snforge_std::{
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
         stop_cheat_caller_address,
@@ -31,10 +31,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Dog';
+        let species = Species::Dog;
+        let breed = 'British-Shorthair';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -43,12 +44,13 @@ mod tests {
 
         assert(pet.name == "Pablo", 'name mismatch');
         assert(pet.birthday == "20-10-2024", 'birthday mismatch');
-        assert(pet.species == 'Dog', 'species not set well');
-        assert(pet.gender == Gender::Male, 'gender not set well');
+        assert(pet.species == Species::Dog, 'species set correctly');
+        assert(pet.gender == Gender::Male, 'gender set correctly');
+        assert(pet.breed == 'British-Shorthair', 'breed not set correctly')
     }
 
     #[test]
-    #[should_panic(expected: ('gender not set well',))]
+    #[should_panic(expected: ('gender set correctly',))]
     fn test_register_pet_assert_wrong_gender() {
         let contract_address = setup();
         let dispatcher = IPetDispatcher { contract_address };
@@ -59,10 +61,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Goat';
+        let species = Species::Dog;
+        let breed = 'Golden-Retriever';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -71,12 +74,12 @@ mod tests {
 
         assert(pet.name == "Pablo", 'name mismatch');
         assert(pet.birthday == "20-10-2024", 'birthday mismatch');
-        assert(pet.species == 'Goat', 'species not set well');
-        assert(pet.gender == Gender::Female, 'gender not set well');
+        assert(pet.species == Species::Dog, 'species set correctly');
+        assert(pet.gender == Gender::Female, 'gender set correctly');
     }
 
     #[test]
-    #[should_panic(expected: ('species not set well',))]
+    #[should_panic(expected: ('species set correctly',))]
     fn test_register_pet_assert_wrong_specie() {
         let contract_address = setup();
         let dispatcher = IPetDispatcher { contract_address };
@@ -87,10 +90,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Bird';
+        let species = Species::Dog;
+        let breed = 'Labrador-Retriever';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -99,8 +103,8 @@ mod tests {
 
         assert(pet.name == "Pablo", 'name mismatch');
         assert(pet.birthday == "20-10-2024", 'birthday mismatch');
-        assert(pet.species == 'cat', 'species not set well');
-        assert(pet.gender == Gender::Male, 'gender not set well');
+        assert(pet.species == Species::Bird, 'species set correctly');
+        assert(pet.gender == Gender::Male, 'gender set correctly');
     }
 
 
@@ -116,10 +120,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Female;
-        let species = 'Cow';
+        let species = Species::Cat;
+        let breed = 'Russian-Blue';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -137,10 +142,11 @@ mod tests {
         let birthday: ByteArray = "";
 
         let gender = Gender::Male;
-        let species = 'Bird';
+        let species = Species::Bird;
+        let breed = 'Parrot';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -161,20 +167,23 @@ mod tests {
         let birthday1: ByteArray = "01-01-2025";
 
         let gender = Gender::Male;
-        let species = 'Horse';
+        let species = Species::Bird;
+        let breed = 'Parrot';
 
         let gender1 = Gender::Female;
-        let species1 = 'Bird';
+        let species1 = Species::Bird;
+        let breed1 = 'Duck';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
 
         let pet = dispatcher.get_pet(pet_id);
         assert(pet_id == 1, 'Pet not updated');
         assert(pet.name == "Jake", 'name mismatch');
         assert(pet.birthday == "02-02-2023", 'birthday mismatch');
         start_cheat_caller_address(contract_address, owner);
-        let success = dispatcher.update_pet_profile(pet_id, name1, birthday1, gender1, species1);
+        let success = dispatcher
+            .update_pet_profile(pet_id, name1, birthday1, gender1, species1, breed1);
         stop_cheat_caller_address(owner);
 
         let pet_1 = dispatcher.get_pet(pet.id);
@@ -197,17 +206,19 @@ mod tests {
         let name1: ByteArray = "Rambo";
         let birthday1: ByteArray = "01-01-2025";
         let gender = Gender::Male;
-        let species = 'Bird';
+        let species = Species::Dog;
+        let breed = 'Poodle';
 
         let gender1 = Gender::Female;
-        let species1 = 'Dog';
+        let species1 = Species::Bird;
+        let breed1 = 'Chicken';
 
         start_cheat_caller_address(contract_address, owner);
-        let _id = dispatcher.register_pet(name, birthday, gender, species1);
+        let _id = dispatcher.register_pet(name, birthday, gender, species1, breed1);
         stop_cheat_caller_address(owner);
 
         start_cheat_caller_address(contract_address, another_address);
-        let pet_id_2 = dispatcher.register_pet(name1, birthday1, gender1, species);
+        let pet_id_2 = dispatcher.register_pet(name1, birthday1, gender1, species, breed);
         stop_cheat_caller_address(another_address);
         assert(pet_id_2 == 2, 'Id did not increment');
     }
@@ -231,21 +242,24 @@ mod tests {
         let birthday2: ByteArray = "30-12-2019";
 
         let gender = Gender::Male;
-        let species = 'Cat';
+        let species = Species::Dog;
+        let breed = 'French-Bulldog';
 
         let gender1 = Gender::Female;
-        let species1 = 'Pig';
+        let species1 = Species::Cat;
+        let breed1 = 'Ragdol';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         start_cheat_caller_address(contract_address, another_address);
-        let _pet_id1 = dispatcher.register_pet(name1, birthday1, gender, species);
+        let _pet_id1 = dispatcher.register_pet(name1, birthday1, gender, species, breed);
         stop_cheat_caller_address(another_address);
 
         start_cheat_caller_address(contract_address, another_address);
-        let success = dispatcher.update_pet_profile(pet_id, name2, birthday2, gender1, species1);
+        let _success = dispatcher
+            .update_pet_profile(pet_id, name2, birthday2, gender1, species1, breed1);
         stop_cheat_caller_address(another_address);
     }
 
@@ -265,17 +279,20 @@ mod tests {
         let birthday1: ByteArray = "01-01-2025";
 
         let gender = Gender::Male;
-        let species = 'Bird';
+        let species = Species::Dog;
+        let breed = 'bull-Dog';
 
         let gender1 = Gender::Female;
-        let species1 = 'Cat';
+        let species1 = Species::Bird;
+        let breed1 = 'Chicken';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         start_cheat_caller_address(contract_address, another_address);
-        let success = dispatcher.update_pet_profile(pet_id, name1, birthday1, gender1, species1);
+        let _success = dispatcher
+            .update_pet_profile(pet_id, name1, birthday1, gender1, species1, breed1);
         stop_cheat_caller_address(another_address);
     }
 
@@ -289,10 +306,11 @@ mod tests {
         let name: ByteArray = "Pablo";
         let birthday: ByteArray = "20-10-2024";
         let gender = Gender::Male;
-        let species = 'Goat';
+        let species = Species::Dog;
+        let breed = 'German shepard';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -315,10 +333,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Cat';
+        let species = Species::Dog;
+        let breed = 'pit-bull';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -344,10 +363,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Bird';
+        let species = Species::Cat;
+        let breed = 'maine-coon';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -369,10 +389,11 @@ mod tests {
         let birthday: ByteArray = "20-10-2024";
 
         let gender = Gender::Male;
-        let species = 'Cat';
+        let species = Species::Bird;
+        let breed = 'Duck';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species);
+        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
