@@ -50,8 +50,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected: ('gender set correctly',))]
-    fn test_register_pet_assert_wrong_gender() {
+    fn test_register_pet_correct_data() {
         let contract_address = setup();
         let dispatcher = IPetDispatcher { contract_address };
 
@@ -60,12 +59,13 @@ mod tests {
         let name: ByteArray = "Pablo";
         let birthday: ByteArray = "20-10-2024";
 
-        let gender = Gender::Male;
-        let species = Species::Dog;
+        let expected_gender = Gender::Male;
+        let expected_species = Species::Dog;
         let breed = 'Golden-Retriever';
 
         start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
+        let pet_id = dispatcher
+            .register_pet(name, birthday, expected_gender, expected_species, breed);
         stop_cheat_caller_address(owner);
 
         assert(pet_id == 1, 'pet_id should start from 1');
@@ -74,37 +74,9 @@ mod tests {
 
         assert(pet.name == "Pablo", 'name mismatch');
         assert(pet.birthday == "20-10-2024", 'birthday mismatch');
-        assert(pet.species == Species::Dog, 'species set correctly');
-        assert(pet.gender == Gender::Female, 'gender set correctly');
-    }
-
-    #[test]
-    #[should_panic(expected: ('species set correctly',))]
-    fn test_register_pet_assert_wrong_specie() {
-        let contract_address = setup();
-        let dispatcher = IPetDispatcher { contract_address };
-
-        let owner: ContractAddress = 12345.try_into().unwrap();
-
-        let name: ByteArray = "Pablo";
-        let birthday: ByteArray = "20-10-2024";
-
-        let gender = Gender::Male;
-        let species = Species::Dog;
-        let breed = 'Labrador-Retriever';
-
-        start_cheat_caller_address(contract_address, owner);
-        let pet_id = dispatcher.register_pet(name, birthday, gender, species, breed);
-        stop_cheat_caller_address(owner);
-
-        assert(pet_id == 1, 'pet_id should start from 1');
-
-        let pet = dispatcher.get_pet(pet_id);
-
-        assert(pet.name == "Pablo", 'name mismatch');
-        assert(pet.birthday == "20-10-2024", 'birthday mismatch');
-        assert(pet.species == Species::Bird, 'species set correctly');
-        assert(pet.gender == Gender::Male, 'gender set correctly');
+        assert(pet.gender == expected_gender, 'gender mismatch');
+        assert(pet.species == expected_species, 'species mismatch');
+        assert(pet.breed == 'Golden-Retriever', 'breed mismatch');
     }
 
 
