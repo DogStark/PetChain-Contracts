@@ -56,5 +56,5 @@ Have questions or feedback?
 
 ⭐️ [Star this repo](https://github.com/DogStark/PetMedTracka-Contracts) to stay updated on new features and releases.
 
-### Licence
+### License
 PetChain is licensed under the MIT License.
