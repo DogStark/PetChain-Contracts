@@ -34,3 +34,19 @@ pub enum Gender {
     Female,
 }
 
+#[derive(Drop, Serde, starknet::Store, Clone, Copy, PartialEq)]
+pub enum MedicalRecord {
+    #[default]
+    Undetermined,
+    Diagnosis,
+    Prescription,
+    Surgery,
+}
+#[derive(Drop, Serde, starknet::Store, Clone, Copy, PartialEq)]
+pub enum Vaccine {
+    #[default]
+    Undetermined,
+    Rabies,
+    Distemper,
+    Parvovirus,
+}

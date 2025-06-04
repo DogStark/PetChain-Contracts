@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use petchain::components::pet::interface::{IPetDispatcher, IPetDispatcherTrait};
-    use petchain::components::pet::types::{Gender, Species};
+    use petchain::components::pet::types::{Gender, Species, Vaccine, MedicalRecord};
     use snforge_std::{
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
         stop_cheat_caller_address,
@@ -371,5 +371,44 @@ mod tests {
         assert(pet_id == 1, 'pet_id should start from 1');
 
         dispatcher.deactivate_pet(pet_id);
+    }
+    #[test]
+    fn test_felt_enum_vaccine_conversion() {
+        let contract_address = setup();
+        let dispatcher = IPetDispatcher { contract_address };
+        let raabies = 'Rabies';
+
+        // felt to vaccine
+        let Rabies = dispatcher.felt_into_vaccine(raabies);
+        assert(Vaccine::Rabies == Rabies, 'felt to vaccine failed');
+
+        // vaccine to felt
+        let Distemper = dispatcher.vaccine_into_felt(Vaccine::Distemper);
+        assert(Distemper == 'Distemper', 'vaccine to felt failed');
+
+        // Error handling
+        // felt to vaccine
+        let rabies = dispatcher.felt_into_vaccine('raabies');
+        assert(Vaccine::Undetermined == rabies, 'felt to vaccine EH failed');
+    }
+
+    #[test]
+    fn test_felt_enum_medical_record_conversion() {
+        let contract_address = setup();
+        let dispatcher = IPetDispatcher { contract_address };
+        let sugery = 'Surgery';
+
+        // felt to medical record
+        let Surgery = dispatcher.felt_into_medical_record(sugery);
+        assert(MedicalRecord::Surgery == Surgery, 'felt to medical record failed');
+
+        // medical record to felt
+        let Prescription = dispatcher.medical_record_type_into_felt(MedicalRecord::Prescription);
+        assert(Prescription == 'Prescription', 'medical_record to felt failed');
+
+        // Error handling
+        // felt to medical_record
+        let rabies = dispatcher.felt_into_medical_record('Prescriptionn');
+        assert(MedicalRecord::Undetermined == rabies, 'felt to medical EH failed');
     }
 }

@@ -2,7 +2,7 @@ use petchain::components::pet::interface::{IPet};
 #[starknet::component]
 pub mod PetComponent {
     use core::array::{Array, ArrayTrait};
-    use petchain::components::pet::types::{Pet, Gender, Species};
+    use petchain::components::pet::types::{Pet, Gender, Species, Vaccine, MedicalRecord};
     use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
@@ -250,6 +250,63 @@ pub mod PetComponent {
             };
 
             all_pets
+        }
+
+
+        fn vaccine_into_felt(
+            ref self: ComponentState<TContractState>, vaccine: Vaccine,
+        ) -> felt252 {
+            match vaccine {
+                Vaccine::Undetermined => 'Undetermined',
+                Vaccine::Rabies => 'Rabies',
+                Vaccine::Distemper => 'Distemper',
+                Vaccine::Parvovirus => 'Parvovirus',
+                _ => 'undetermined',
+            }
+        }
+
+        fn felt_into_vaccine(
+            ref self: ComponentState<TContractState>, vaccine_felt: felt252,
+        ) -> Vaccine {
+            if vaccine_felt == 'Undetermined' {
+                Vaccine::Undetermined
+            } else if vaccine_felt == 'Rabies' {
+                Vaccine::Rabies
+            } else if vaccine_felt == 'Distemper' {
+                Vaccine::Distemper
+            } else if vaccine_felt == 'Parvovirus' {
+                Vaccine::Parvovirus
+            } else {
+                Vaccine::Undetermined
+            }
+        }
+
+        fn medical_record_type_into_felt(
+            ref self: ComponentState<TContractState>, record_type: MedicalRecord,
+        ) -> felt252 {
+            match record_type {
+                MedicalRecord::Undetermined => 'Undetermined',
+                MedicalRecord::Diagnosis => 'Diagnosis',
+                MedicalRecord::Prescription => 'Prescription',
+                MedicalRecord::Surgery => 'Surgery',
+                _ => 'undetermined',
+            }
+        }
+
+        fn felt_into_medical_record(
+            ref self: ComponentState<TContractState>, felt: felt252,
+        ) -> MedicalRecord {
+            if felt == 'Undetermined' {
+                MedicalRecord::Undetermined
+            } else if felt == 'Diagnosis' {
+                MedicalRecord::Diagnosis
+            } else if felt == 'Prescription' {
+                MedicalRecord::Prescription
+            } else if felt == 'Surgery' {
+                MedicalRecord::Surgery
+            } else {
+                MedicalRecord::Undetermined
+            }
         }
     }
 

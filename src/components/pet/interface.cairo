@@ -1,5 +1,5 @@
 use starknet::ContractAddress;
-use petchain::components::pet::types::{Pet, Gender, Species};
+use petchain::components::pet::types::{Pet, Gender, Species, Vaccine, MedicalRecord};
 #[starknet::interface]
 pub trait IPet<TContractState> {
     fn register_pet(
@@ -28,5 +28,11 @@ pub trait IPet<TContractState> {
     fn activate_pet(ref self: TContractState, id: u256);
     fn transfer_pet_ownership(ref self: TContractState, id: u256, to: ContractAddress);
     fn accept_pet_transfer(ref self: TContractState, id: u256);
+    fn vaccine_into_felt(ref self: TContractState, vaccine: Vaccine) -> felt252;
+    fn felt_into_vaccine(ref self: TContractState, vaccine_felt: felt252) -> Vaccine;
+    fn felt_into_medical_record(ref self: TContractState, felt: felt252) -> MedicalRecord;
+    fn medical_record_type_into_felt(
+        ref self: TContractState, record_type: MedicalRecord,
+    ) -> felt252;
 }
 
