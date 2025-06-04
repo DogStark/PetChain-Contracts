@@ -26,4 +26,10 @@ pub mod components {
         pub mod test;
         pub mod types;
     }
+
+    pub mod medical_record {
+        pub mod medical_record;
+        pub mod interface;
+        pub mod types;
+    }
 }
