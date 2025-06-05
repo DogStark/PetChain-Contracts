@@ -31,5 +31,7 @@ pub mod components {
         pub mod medical_record;
         pub mod interface;
         pub mod types;
+        pub mod test;
+        pub mod mock;
     }
 }

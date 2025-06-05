@@ -3,6 +3,7 @@ pub mod MedicalRecordsComponent {
     use petchain::components::medical_record::interface::IMedicalRecords;
     use petchain::components::medical_record::types::{
         MedicalRecord, Vaccination, LabResult, Medication, MedicalRecordType, VaccineType,
+        VaccineToFelt, FeltToVaccine, MedicalRecordToFelt, FelttoRecordType,
     };
     use starknet::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
@@ -37,6 +38,7 @@ pub mod MedicalRecordsComponent {
         vet_records: Map<(ContractAddress, u256), u256>, // (vet_address, index) -> record_id
         vet_record_count: Map<ContractAddress, u256>,
         // Emergency and Follow-up Tracking
+        emergency_count: u256,
         emergency_records: Map<(u256, u256), u256>, // (pet_id, index) -> record_id
         emergency_record_count: Map<u256, u256>,
         follow_up_required: Map<u256, bool>, // record_id -> needs_follow_up
@@ -64,8 +66,101 @@ pub mod MedicalRecordsComponent {
             is_follow_up_required: bool,
             visit_cost: u256,
         ) -> u256 {
-            0_u256
+            // Increment global medical record counter
+            let record_id = self.medical_record_count.read() + 1_u256;
+
+            // Get current timestamp and caller address
+            let timestamp = get_block_timestamp();
+            let vet_address = get_caller_address();
+
+            // Convert enum to felt252
+            let record_type_felt: felt252 = MedicalRecordToFelt::into(record_type);
+
+            // Build and store medical record
+            let record = MedicalRecord {
+                id: record_id,
+                pet_id,
+                vet_address,
+                record_type: record_type_felt,
+                title: title.clone(),
+                description: description.clone(),
+                diagnosis: diagnosis.clone(),
+                treatment: treatment.clone(),
+                next_visit_date,
+                is_emergency,
+                is_follow_up_required,
+                visit_cost,
+                created_at: timestamp,
+                updated_at: timestamp,
+            };
+
+            if is_emergency {
+                let new_count = self.emergency_count.read() + 1;
+                self.emergency_count.write(new_count);
+
+                let pet_emergencies_count = self.emergency_record_count.read(pet_id) + 1;
+                self.emergency_record_count.write(pet_id, pet_emergencies_count);
+            }
+
+            if is_follow_up_required {
+                self.follow_up_required.write(record_id, true);
+            }
+
+            self.medical_records.write(record_id, record);
+
+            // Store medications
+            let total_meds = medications.len();
+            let mut i = 0;
+            loop {
+                if i == total_meds {
+                    break;
+                }
+
+                let medi = medications.at(i);
+
+                let medication = Medication {
+                    id: *medi.id,
+                    medical_record_id: *medi.medical_record_id,
+                    pet_id: *medi.pet_id,
+                    name: medi.name.clone(),
+                    dosage: medi.dosage.clone(),
+                    frequency: medi.frequency.clone(),
+                    duration_days: *medi.duration_days,
+                    instructions: medi.instructions.clone(),
+                    prescribed_date: *medi.prescribed_date,
+                    start_date: *medi.start_date,
+                    end_date: *medi.end_date,
+                    is_completed: *medi.is_completed,
+                    is_active: *medi.is_active,
+                    created_at: *medi.created_at,
+                };
+
+                let medication_id = self.medication_count.read() + 1;
+                self.medication_count.write(medication_id);
+                self.medications.write(medication_id, medication);
+
+                self.medical_record_medications.write((record_id, i.into()), medication_id);
+
+                i += 1;
+            };
+
+            // Record how many medications are linked to this medical record
+            self.medical_record_medication_count.write(record_id, total_meds.into());
+
+            // Store the medical record index for the pet
+            let pet_record_index = self.pet_record_count.read(pet_id);
+            self.pet_medical_records.write((pet_id, pet_record_index.into()), record_id);
+
+            // Increment pet's total medical records
+            let pet_new_count = pet_record_index + 1;
+            self.pet_record_count.write(pet_id, pet_new_count);
+
+            // Update global medical record count
+            self.medical_record_count.write(record_id);
+
+            record_id
         }
+
 
         // TODO
         fn record_vaccination(
@@ -93,7 +188,29 @@ pub mod MedicalRecordsComponent {
         fn get_pet_medical_history(
             self: @ComponentState<TContractState>, pet_id: u256,
         ) -> Span<MedicalRecord> {
-            array![].span()
+            let total_records = self.pet_record_count.read(pet_id);
+
+            if total_records == 0 {
+                return array![].span();
+            }
+
+            let mut records: Array<MedicalRecord> = array![];
+
+            let mut i = 0;
+            loop {
+                if i == total_records {
+                    break;
+                };
+
+                let record_id = self.pet_medical_records.read((pet_id, i.into()));
+                let record = self.medical_records.read(record_id);
+
+                records.append(record);
+
+                i += 1;
+            };
+
+            records.span()
         }
 
         // TODO
@@ -115,6 +232,17 @@ pub mod MedicalRecordsComponent {
             self: @ComponentState<TContractState>, pet_id: u256,
         ) -> Span<MedicalRecord> {
             array![].span()
+        }
+
+        fn get_emergency_count(self: @ComponentState<TContractState>) -> u256 {
+            self.emergency_count.read()
+        }
+
+        fn get_is_follow_up_required(
+            self: @ComponentState<TContractState>, record_id: u256,
+        ) -> bool {
+            let require_follow_up = self.follow_up_required.read(record_id);
+            require_follow_up
         }
 
         // TODO

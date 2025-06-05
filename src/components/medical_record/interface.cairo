@@ -83,12 +83,15 @@ pub trait IMedicalRecords<TContractState> {
     // Emergency and Critical Functions
     fn mark_as_emergency(ref self: TContractState, record_id: u256) -> bool;
     fn get_emergency_records(self: @TContractState, pet_id: u256) -> Span<MedicalRecord>;
+    fn get_emergency_count(self: @TContractState) -> u256;
     fn get_critical_alerts(self: @TContractState, pet_id: u256) -> Span<ByteArray>;
 
     // Access Control Helpers
     fn is_authorized_to_view(self: @TContractState, pet_id: u256, viewer: ContractAddress) -> bool;
     fn is_authorized_to_edit(self: @TContractState, pet_id: u256, editor: ContractAddress) -> bool;
 
+    // Follow up
+    fn get_is_follow_up_required(self: @TContractState, record_id: u256) -> bool;
     fn mark_medication_completed(ref self: TContractState, medication_id: u256) -> bool;
     fn update_medication(
         ref self: TContractState,
