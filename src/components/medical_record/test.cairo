@@ -10,9 +10,7 @@ mod tests {
         stop_cheat_caller_address, start_cheat_block_timestamp_global,
     };
     use starknet::{ContractAddress, get_block_timestamp};
-        stop_cheat_caller_address,
-    };
-    use starknet::{ContractAddress};
+
 
     fn setup() -> ContractAddress {
         let declare_result = declare("MockMedicalRecordsComponent");
@@ -695,6 +693,4 @@ mod tests {
 
         medications
     }
-}
-
 }
