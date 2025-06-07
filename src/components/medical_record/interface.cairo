@@ -78,7 +78,7 @@ pub trait IMedicalRecords<TContractState> {
         self: @TContractState, vet_address: ContractAddress,
     ) -> Span<MedicalRecord>;
     fn get_medical_record_medications(self: @TContractState, record_id: u256) -> Span<Medication>;
-    fn get_pet_active_medications(self: @TContractState, pet_id: u256) -> Span<Medication>;
+    fn get_pet_active_medications(self: @TContractState, pet_id: u256) -> u256;
 
     // Emergency and Critical Functions
     fn mark_as_emergency(ref self: TContractState, record_id: u256) -> bool;
@@ -99,9 +99,14 @@ pub trait IMedicalRecords<TContractState> {
         name: ByteArray,
         dosage: ByteArray,
         frequency: ByteArray,
-        duration_days: u32,
+        duration_days: u64,
         instructions: ByteArray,
         start_date: u64,
         is_active: bool,
     ) -> bool;
+
+    // FOR TEST
+    fn get_total_medication_count(self: @TContractState) -> u256;
+
+    fn get_medication(ref self: TContractState, medication_id: u256) -> Medication;
 }

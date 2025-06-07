@@ -110,6 +110,7 @@ pub mod MedicalRecordsComponent {
 
             // Store medications
             let total_meds = medications.len();
+            
             let mut i = 0;
             loop {
                 if i == total_meds {
@@ -117,11 +118,12 @@ pub mod MedicalRecordsComponent {
                 }
 
                 let medi = medications.at(i);
+                let medication_id = self.medication_count.read() + 1;
 
                 let medication = Medication {
-                    id: *medi.id,
-                    medical_record_id: *medi.medical_record_id,
-                    pet_id: *medi.pet_id,
+                    id: medication_id,
+                    medical_record_id: record_id,
+                    pet_id: pet_id,
                     name: medi.name.clone(),
                     dosage: medi.dosage.clone(),
                     frequency: medi.frequency.clone(),
@@ -129,16 +131,20 @@ pub mod MedicalRecordsComponent {
                     instructions: medi.instructions.clone(),
                     prescribed_date: *medi.prescribed_date,
                     start_date: *medi.start_date,
-                    end_date: *medi.end_date,
+                    end_date: *medi.start_date + (*medi.duration_days * 86400),
                     is_completed: *medi.is_completed,
                     is_active: *medi.is_active,
                     created_at: *medi.created_at,
                 };
 
-                let medication_id = self.medication_count.read() + 1;
                 self.medication_count.write(medication_id);
                 self.medications.write(medication_id, medication);
 
+                
+                let cur_pet_med_count = self.pet_medication_count.read(pet_id) + 1;
+                
+                self.pet_medications.write((pet_id, cur_pet_med_count), medication_id);
+                self.pet_medication_count.write(pet_id, cur_pet_med_count);
                 self.medical_record_medications.write((record_id, i.into()), medication_id);
 
                 i += 1;
@@ -332,6 +338,7 @@ pub mod MedicalRecordsComponent {
             true
         }
 
+
         // TODO
         fn get_critical_alerts(
             self: @ComponentState<TContractState>, pet_id: u256,
@@ -343,37 +350,198 @@ pub mod MedicalRecordsComponent {
         fn get_medical_record_medications(
             self: @ComponentState<TContractState>, record_id: u256,
         ) -> Span<Medication> {
-            array![].span()
+            let total_meds = self.medical_record_medication_count.read(record_id);
+
+            if total_meds == 0 {
+                return array![].span();
+            }
+
+            let mut medications: Array<Medication> = array![];
+
+            let mut i = 0;
+            loop {
+                if i == total_meds {
+                    break;
+                }
+
+                let medication_id = self.medical_record_medications.read((record_id, i.into()));
+                let mut medication = self.medications.read(medication_id);
+                let timestamp = get_block_timestamp();
+
+                if (timestamp > medication.end_date) {
+                    medication.is_active = false;
+                    medication.is_completed = true;
+                    // self.active_medications.write(medication_id, false);
+                }
+
+                // Ensure medication belongs to the correct medical record
+                if medication.medical_record_id == record_id {
+                    medications.append(medication);
+                }
+
+                i += 1;
+            };
+
+            medications.span()
         }
+
 
         // TODO
         fn get_pet_active_medications(
             self: @ComponentState<TContractState>, pet_id: u256,
-        ) -> Span<Medication> {
-            array![].span()
+        ) -> u256 {
+            let total_meds = self.pet_medication_count.read(pet_id);
+
+            // if total_meds == 0 {
+            //     return array![].span();
+            // }
+
+            // let timestamp = get_block_timestamp();
+            // let mut active_meds: Array<Medication> = array![];
+
+            // let mut i = 0;
+            // loop {
+            //     if i == total_meds {
+            //         break;
+            //     }
+
+            //     let medication_id = self.pet_medications.read((pet_id, i.into()));
+
+            //     // Check if medication is marked active
+            //     let is_active = self.active_medications.read(medication_id);
+
+            //     if is_active {
+            //         let medication = self.medications.read(medication_id);
+
+            //         // Check pet ownership and expiration
+            //         if medication.pet_id == pet_id
+            //             && !medication.is_completed
+            //             && timestamp < medication.end_date {
+            //             active_meds.append(medication);
+            //         }
+            //     }
+
+            //     i += 1;
+            // };
+
+            // active_meds.span()
+            total_meds
         }
 
-        //TODO
+
         fn mark_medication_completed(
             ref self: ComponentState<TContractState>, medication_id: u256,
         ) -> bool {
-            true
+            let timestamp = get_block_timestamp();
+
+            // Read medication from storage
+            let mut medication = self.get_medication(medication_id);
+
+            // Validate that medication exists
+            assert(medication.id == medication_id, 'medication not found');
+
+            // Validate medication is not already completed
+            assert(!medication.is_completed, 'medication already completed');
+
+            // Mark as completed only if current time is past end_date
+            if timestamp > medication.end_date {
+                medication.is_active = false;
+                medication.is_completed = true;
+                medication.end_date = timestamp; // update to actual completion time
+                self.active_medications.write(medication_id, false);
+            } else {
+                // Optionally: decide if you want to allow early completion
+                medication.is_active = false;
+                medication.is_completed = true;
+                medication.end_date = timestamp; // mark as early completion
+                self.active_medications.write(medication_id, false);
+            }
+
+            // Write updated medication back to storage
+            self.medications.write(medication_id, medication);
+
+            return true;
         }
 
-        // TODO
+
         fn update_medication(
             ref self: ComponentState<TContractState>,
             medication_id: u256,
             name: ByteArray,
             dosage: ByteArray,
             frequency: ByteArray,
-            duration_days: u32,
+            duration_days: u64,
             instructions: ByteArray,
             start_date: u64,
             is_active: bool,
         ) -> bool {
-            // TODO: Implement medication update logic
-            true
+            assert(duration_days > 0, 'duration must be greater than 0');
+
+            let timestamp = get_block_timestamp();
+
+            // Read medication from storage
+            let mut medication = self.medications.read(medication_id);
+            assert(medication.id == medication_id, 'medication not found');
+
+            // Validate: medication must not be completed
+            assert(!medication.is_completed, 'medication already completed');
+
+            // Update mutable fields
+            medication.name = name;
+            medication.dosage = dosage;
+            medication.frequency = frequency;
+            medication.duration_days = duration_days;
+            medication.instructions = instructions;
+            medication.start_date = start_date;
+            medication.end_date = start_date + (duration_days * 86400);
+
+            // Check if new schedule already ended
+            if timestamp >= medication.end_date {
+                medication.is_completed = true;
+                medication.is_active = false;
+                self.active_medications.write(medication_id, false);
+            } else {
+                // If explicitly marked as inactive, assume it was manually completed
+                if !is_active {
+                    medication.is_completed = true;
+                    medication.is_active = false;
+                    medication.end_date = timestamp; // actual completion time
+                    self.active_medications.write(medication_id, false);
+                } else {
+                    // Active medication update
+                    if medication.is_active != is_active {
+                        medication.is_active = is_active;
+                        self.active_medications.write(medication_id, is_active);
+                    }
+                }
+            }
+
+            // Write back to storage
+            self.medications.write(medication_id, medication);
+
+            return true;
+        }
+
+        // FOR TEST PURPOSE
+        fn get_total_medication_count(self: @ComponentState<TContractState>) -> u256 {
+            // let total = self.medication_count.read();
+            let total = self.medical_record_medication_count.read(1);
+            total
+        }
+        fn get_medication(
+            ref self: ComponentState<TContractState>, medication_id: u256,
+        ) -> Medication {
+            let mut medication = self.medications.read(medication_id);
+            let timestamp = get_block_timestamp();
+
+            if !medication.is_completed && timestamp > medication.end_date {
+                medication.is_completed = true;
+                medication.is_active = false;
+                self.active_medications.write(medication_id, false);
+                self.medications.write(medication_id, medication.clone());
+            }
+
+            medication
         }
     }
 }

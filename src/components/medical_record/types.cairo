@@ -67,7 +67,7 @@ pub struct Medication {
     pub name: ByteArray,
     pub dosage: ByteArray,
     pub frequency: ByteArray,
-    pub duration_days: u32,
+    pub duration_days: u64,
     pub instructions: ByteArray,
     pub prescribed_date: u64,
     pub start_date: u64,
