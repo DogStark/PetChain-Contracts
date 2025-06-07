@@ -108,7 +108,7 @@ pub mod MedicalRecordsComponent {
 
             // Store medications
             let total_meds = medications.len();
-
+            
             let mut i = 0;
             loop {
                 if i == total_meds {
@@ -135,7 +135,6 @@ pub mod MedicalRecordsComponent {
                     is_active: *medi.is_active,
                     created_at: *medi.created_at,
                 };
-
                 self.medication_count.write(medication_id);
                 self.medications.write(medication_id, medication);
 
