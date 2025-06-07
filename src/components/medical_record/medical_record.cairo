@@ -5,9 +5,7 @@ pub mod MedicalRecordsComponent {
         MedicalRecord, Vaccination, LabResult, Medication, MedicalRecordType, VaccineType,
         VaccineToFelt, FeltToVaccine, MedicalRecordToFelt, FelttoRecordType,
     };
-    use starknet::{
-        ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
-    };
+    use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
     #[storage]
@@ -110,7 +108,7 @@ pub mod MedicalRecordsComponent {
 
             // Store medications
             let total_meds = medications.len();
-            
+
             let mut i = 0;
             loop {
                 if i == total_meds {
@@ -119,6 +117,7 @@ pub mod MedicalRecordsComponent {
 
                 let medi = medications.at(i);
                 let medication_id = self.medication_count.read() + 1;
+                let cur_pet_med_count = self.pet_medication_count.read(pet_id) + 1;
 
                 let medication = Medication {
                     id: medication_id,
@@ -140,9 +139,6 @@ pub mod MedicalRecordsComponent {
                 self.medication_count.write(medication_id);
                 self.medications.write(medication_id, medication);
 
-                
-                let cur_pet_med_count = self.pet_medication_count.read(pet_id) + 1;
-                
                 self.pet_medications.write((pet_id, cur_pet_med_count), medication_id);
                 self.pet_medication_count.write(pet_id, cur_pet_med_count);
                 self.medical_record_medications.write((record_id, i.into()), medication_id);
@@ -388,44 +384,34 @@ pub mod MedicalRecordsComponent {
 
         // TODO
         fn get_pet_active_medications(
-            self: @ComponentState<TContractState>, pet_id: u256,
-        ) -> u256 {
+            ref self: ComponentState<TContractState>, pet_id: u256,
+        ) -> Span<Medication> {
             let total_meds = self.pet_medication_count.read(pet_id);
 
-            // if total_meds == 0 {
-            //     return array![].span();
-            // }
+            if total_meds == 0 {
+                return array![].span();
+            }
 
-            // let timestamp = get_block_timestamp();
-            // let mut active_meds: Array<Medication> = array![];
+            let mut active_meds: Array<Medication> = array![];
 
-            // let mut i = 0;
-            // loop {
-            //     if i == total_meds {
-            //         break;
-            //     }
+            let mut i = 0;
+            loop {
+                if i == total_meds {
+                    break;
+                }
 
-            //     let medication_id = self.pet_medications.read((pet_id, i.into()));
+                let medication_id = self.pet_medications.read((pet_id, i.into() + 1));
 
-            //     // Check if medication is marked active
-            //     let is_active = self.active_medications.read(medication_id);
+                let mut medication = self.get_medication(medication_id);
 
-            //     if is_active {
-            //         let medication = self.medications.read(medication_id);
+                if (medication.is_active) {
+                    active_meds.append(medication);
+                }
 
-            //         // Check pet ownership and expiration
-            //         if medication.pet_id == pet_id
-            //             && !medication.is_completed
-            //             && timestamp < medication.end_date {
-            //             active_meds.append(medication);
-            //         }
-            //     }
+                i += 1;
+            };
 
-            //     i += 1;
-            // };
-
-            // active_meds.span()
-            total_meds
+            active_meds.span()
         }
 
 
@@ -524,8 +510,8 @@ pub mod MedicalRecordsComponent {
 
         // FOR TEST PURPOSE
         fn get_total_medication_count(self: @ComponentState<TContractState>) -> u256 {
-            // let total = self.medication_count.read();
-            let total = self.medical_record_medication_count.read(1);
+            let total = self.medication_count.read();
+
             total
         }
         fn get_medication(

@@ -78,7 +78,7 @@ pub trait IMedicalRecords<TContractState> {
         self: @TContractState, vet_address: ContractAddress,
     ) -> Span<MedicalRecord>;
     fn get_medical_record_medications(self: @TContractState, record_id: u256) -> Span<Medication>;
-    fn get_pet_active_medications(self: @TContractState, pet_id: u256) -> u256;
+    fn get_pet_active_medications(ref self: TContractState, pet_id: u256) -> Span<Medication>;
 
     // Emergency and Critical Functions
     fn mark_as_emergency(ref self: TContractState, record_id: u256) -> bool;

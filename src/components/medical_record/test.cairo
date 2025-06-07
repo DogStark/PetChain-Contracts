@@ -316,7 +316,7 @@ mod tests {
         assert(med1.end_date == calculate_seconds_in_day(30), 'end date mismatch');
     }
 
-    
+
     #[test]
     fn test_medications_complete() {
         let contract_address = setup();
@@ -351,7 +351,7 @@ mod tests {
         let visit_cost = 250_u256;
 
         start_cheat_caller_address(contract_address, vet_address);
-        let record_id = dispatcher
+        let _record_id = dispatcher
             .create_medical_record(
                 pet_id,
                 record_type,
@@ -367,7 +367,7 @@ mod tests {
             );
         stop_cheat_caller_address(vet_address);
 
-        // Warp time forward by 50 days (half the duration)
+        // Warp time forward by 12 days (half the duration)
         let time_passed = calculate_seconds_in_day(12);
         println!("Time to warp forward: {} seconds", time_passed);
         start_cheat_block_timestamp_global(time_passed);
@@ -457,9 +457,9 @@ mod tests {
         stop_cheat_caller_address(vet_address);
 
         let med = dispatcher.get_medical_record_medications(record_id);
-            assert(*med.at(0).id == 1, 'med1 id mismatch');
-            assert(*med.at(1).id == 2, 'med2 id mismatch');
-            assert(*med.at(2).id == 3, 'med3 id mismatch');
+        assert(*med.at(0).id == 1, 'med1 id mismatch');
+        assert(*med.at(1).id == 2, 'med2 id mismatch');
+        assert(*med.at(2).id == 3, 'med3 id mismatch');
     }
 
     fn calculate_seconds_in_day(day: u64) -> u64 {
@@ -527,8 +527,8 @@ mod tests {
             0,
             "Med E",
             "50mg",
-            "Once weekly",
-            15,
+            "Once daily",
+            3,
             "Store in cool place",
             calculate_seconds_in_day(0), // prescribed_date
             calculate_seconds_in_day(0), // start_date
@@ -551,7 +551,7 @@ mod tests {
         let visit_cost = 250_u256;
 
         start_cheat_caller_address(contract_address, vet_address);
-        let record_id = dispatcher
+        let _record_id = dispatcher
             .create_medical_record(
                 pet_id,
                 record_type,
@@ -567,31 +567,25 @@ mod tests {
             );
         stop_cheat_caller_address(vet_address);
 
-        let pet_medication_count = dispatcher.get_pet_active_medications(pet_id);
-        // assert(pet_medication_count.len() == 5, 'pet_medication_count error');
-        println!("pet medication count : {}", pet_medication_count);
+        let pet_medication1 = dispatcher.get_pet_active_medications(pet_id);
+        assert(pet_medication1.len() == 5, 'pet_medication before error');
 
-        // let success = dispatcher
-        //     .update_medication(
-        //         5, "Med E1", "100mg", "once a day", 30, "keep away from sunlight", 0, true,
-        //     );
-        // let med1 = dispatcher.get_medication(5);
+        // Warp time forward by 4 days (half the duration)
+        let time_passed = calculate_seconds_in_day(4);
+        start_cheat_block_timestamp_global(time_passed);
 
-        // assert(success, 'update failed');
+        let pet_medication = dispatcher.get_pet_active_medications(pet_id);
+        assert(pet_medication.len() == 4, 'pet_medication error');
 
-        // assert(med1.id == 5, 'get med error');
-        // assert(med1.medical_record_id == record_id, 'record id mismatch');
-        // assert(med1.pet_id == pet_id, 'pet id mismatch');
-        // assert(med1.name == "Med E1", 'name mismatch');
-        // assert(med1.dosage == "100mg", 'dosage mismatch');
-        // assert(med1.frequency == "once a day", 'frequency mismatch');
-        // assert(med1.instructions == "keep away from sunlight", 'instructions mismatch');
-        // assert(!med1.is_completed, 'id mismatch');
-        // assert(med1.is_active, 'is active mismatch');
-        // assert(med1.duration_days == 30, 'duration days mismatch');
-        // assert(med1.prescribed_date == 0, 'prescribed mismatch');
-        // assert(med1.start_date == 0, 'start date mismatch');
-        // assert(med1.end_date == calculate_seconds_in_day(30), 'end date mismatch');
+        assert(*pet_medication.at(0).id == 1, 'med1 id mismatch');
+        assert(*pet_medication.at(1).id == 2, 'med2 id mismatch');
+        assert(*pet_medication.at(2).id == 3, 'med3 id mismatch');
+        assert(*pet_medication.at(3).id == 4, 'med4 id mismatch');
+
+        assert(pet_medication.at(0).name.clone() == "Med A", 'name A id mismatch');
+        assert(pet_medication.at(1).name.clone() == "Med B", 'name B id mismatch');
+        assert(pet_medication.at(2).name.clone() == "Med C", 'name C id mismatch');
+        assert(pet_medication.at(3).name.clone() == "Med D", 'name D id mismatch');
     }
 
 
