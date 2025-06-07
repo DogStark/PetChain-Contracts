@@ -108,7 +108,7 @@ pub mod MedicalRecordsComponent {
 
             // Store medications
             let total_meds = medications.len();
-            
+
             let mut i = 0;
             loop {
                 if i == total_meds {
