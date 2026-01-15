@@ -1,11 +1,11 @@
 use petchain::components::pet_owner::interface::{IPetOwner};
-#[starknet::component]
+#[stellar::component]
 pub mod PetOwnerComponent {
     use petchain::components::pet_owner::types::PetOwner;
-    use starknet::{
+    use stellar::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
     };
-    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
+    use stellar::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
 
     #[storage]
@@ -15,19 +15,19 @@ pub mod PetOwnerComponent {
     }
 
     #[event]
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     pub enum Event {
         PetOwnerCreated: PetOwnerCreated,
         PetOwnerUpdated: PetOwnerUpdated,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetOwnerCreated {
         #[key]
         owner_address: ContractAddress,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetOwnerUpdated {
         #[key]
         owner_address: ContractAddress,

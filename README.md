@@ -2,15 +2,15 @@
 This repo is specific for handling all smart contract-based contributions. 
 
 ## Teck Stack
-* Language: Cairo
-* Network: StarkNet
+* Language: Rust
+* Network: Stellar
 
 ## 🚀 Getting Started
 Check out the [main petchain repo](https://github.com/DogStark/petChain-Frontend) to get a clear overview of the entire PetChain project—its purpose, how it works
 
 ### 🔨 Build and Test Smart Contracts
 
-Before contributing to PetChain's smart contracts, make sure you have [Scarb](https://docs.swmansion.com/scarb/) installed — it's the Cairo package manager and build tool.
+Before contributing to PetChain's smart contracts, make sure you have [Scarb](https://docs.swmansion.com/scarb/) installed — it's the Rust package manager and build tool.
 
 Once you’ve cloned the repo and installed the dependencies, here are the most important commands to get started:
 

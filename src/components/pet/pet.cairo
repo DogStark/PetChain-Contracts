@@ -1,10 +1,10 @@
 use petchain::components::pet::interface::{IPet};
-#[starknet::component]
+#[stellar::component]
 pub mod PetComponent {
     use core::array::{Array, ArrayTrait};
     use petchain::components::pet::types::{Pet, Gender, Species};
-    use starknet::{ContractAddress, get_block_timestamp, get_caller_address};
-    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
+    use stellar::{ContractAddress, get_block_timestamp, get_caller_address};
+    use stellar::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
     #[storage]
     pub struct Storage {
@@ -16,7 +16,7 @@ pub mod PetComponent {
     }
 
     #[event]
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     pub enum Event {
         PetCreated: PetCreated,
         PetUpdated: PetUpdated,
@@ -25,33 +25,33 @@ pub mod PetComponent {
         PetOwnershipTransferred: PetOwnershipTransferred,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetCreated {
         #[key]
         owner: ContractAddress,
         pet_id: u256,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetUpdated {
         #[key]
         owner: ContractAddress,
         pet_id: u256,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetActivated {
         #[key]
         vet_id: u256,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetDeActivated {
         #[key]
         vet_id: u256,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct PetOwnershipTransferred {
         #[key]
         pet_id: u256,

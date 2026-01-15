@@ -1,4 +1,4 @@
-#[starknet::contract]
+#[stellar::contract]
 mod MockVeterinaryProfessional {
     use petchain::components::veterinary_professional::vet::VetComponent;
 
@@ -11,7 +11,7 @@ mod MockVeterinaryProfessional {
     }
 
     #[event]
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     enum Event {
         VeterinaryProfessionalEvent: VetComponent::Event,
     }

@@ -5,7 +5,7 @@ mod tests {
         ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address,
         stop_cheat_caller_address,
     };
-    use starknet::{ContractAddress};
+    use stellar::{ContractAddress};
 
     fn setup() -> ContractAddress {
         let declare_result = declare("MockPetOwner");

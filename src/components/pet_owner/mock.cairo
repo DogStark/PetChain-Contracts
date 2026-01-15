@@ -1,4 +1,4 @@
-#[starknet::contract]
+#[stellar::contract]
 mod MockPetOwner {
     use petchain::components::pet_owner::pet_owner::PetOwnerComponent;
 
@@ -11,7 +11,7 @@ mod MockPetOwner {
     }
 
     #[event]
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     enum Event {
         PetOwnerEvent: PetOwnerComponent::Event,
     }
