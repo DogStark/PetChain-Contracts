@@ -10,25 +10,36 @@ Check out the [main petchain repo](https://github.com/DogStark/petChain-Frontend
 
 ### 🔨 Build and Test Smart Contracts
 
-Before contributing to PetChain's smart contracts, make sure you have [Scarb](https://docs.swmansion.com/scarb/) installed — it's the Rust package manager and build tool.
-
-Once you’ve cloned the repo and installed the dependencies, here are the most important commands to get started:
-
+#### Prerequisites
+Install Stellar CLI:
 ```bash
-# Build the contracts
-scarb build
+cargo install --locked stellar-cli --features opt
 ```
- This compiles all the smart contracts in the project. Run this after making changes to confirm everything still compiles correctly.
 
+#### Build the Stellar Contracts
 ```bash
-# Run the tests
-scarb test
+cd stellar-contracts
+cargo build --target wasm32-unknown-unknown --release
 ```
-This runs the test suite for the contracts. Use it to make sure your changes don’t break existing functionality.
+This compiles the Stellar smart contracts. Run this after making changes to confirm everything still compiles correctly.
+
+#### Run Tests
+```bash
+cd stellar-contracts
+cargo test
+```
+This runs the test suite for the contracts. Use it to make sure your changes don't break existing functionality.
+
+#### Deploy to Testnet
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/petchain_stellar.wasm \
+  --network testnet
+```
 
 
 ### 🤝 Contributing
-We’re excited to have you contribute! Check out our [Contribution Guide](https://github.com/DogStark/petChain-Frontend/blob/main/contributing.md) to explore:
+We're excited to have you contribute! Check out our [Contribution Guide](https://github.com/DogStark/petChain-Frontend/blob/main/contributing.md) to explore:
 
 *  Code of Conduct
 *  Step-by-step contribution process 
