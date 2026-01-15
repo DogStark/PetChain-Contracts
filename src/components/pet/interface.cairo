@@ -1,6 +1,6 @@
-use starknet::ContractAddress;
+use stellar::ContractAddress;
 use petchain::components::pet::types::{Pet, Gender, Species};
-#[starknet::interface]
+#[stellar::interface]
 pub trait IPet<TContractState> {
     fn register_pet(
         ref self: TContractState,

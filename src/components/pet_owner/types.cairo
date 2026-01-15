@@ -1,7 +1,7 @@
-use starknet::ContractAddress;
+use stellar::ContractAddress;
 
 /// @notice Struct containing all data for a pet owner
-#[derive(Drop, Serde, starknet::Store)]
+#[derive(Drop, Serde, stellar::Store)]
 pub struct PetOwner {
     #[key]
     pub owners_address: ContractAddress,

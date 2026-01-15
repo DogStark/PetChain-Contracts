@@ -1,7 +1,7 @@
-use starknet::ContractAddress;
+use stellar::ContractAddress;
 
 /// @notice Pet strcut
-#[derive(Drop, Serde, starknet::Store)]
+#[derive(Drop, Serde, stellar::Store)]
 pub struct Pet {
     #[key]
     pub id: u256,
@@ -17,7 +17,7 @@ pub struct Pet {
     pub breed: felt252,
 }
 
-#[derive(Serde, Copy, Drop, PartialEq, Debug, starknet::Store)]
+#[derive(Serde, Copy, Drop, PartialEq, Debug, stellar::Store)]
 pub enum Species {
     #[default]
     Other,
@@ -26,7 +26,7 @@ pub enum Species {
     Bird,
 }
 
-#[derive(Serde, Copy, Drop, PartialEq, Debug, starknet::Store)]
+#[derive(Serde, Copy, Drop, PartialEq, Debug, stellar::Store)]
 pub enum Gender {
     #[default]
     NotSpecified,

@@ -1,12 +1,12 @@
 use petchain::components::veterinary_professional::interface::{IVet};
-#[starknet::component]
+#[stellar::component]
 pub mod VetComponent {
     use super::IVet;
     use petchain::components::veterinary_professional::types::Vet;
-    use starknet::{
+    use stellar::{
         ContractAddress, get_block_timestamp, get_caller_address, contract_address_const,
     };
-    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
+    use stellar::storage::{StoragePointerReadAccess, StoragePointerWriteAccess, Map};
 
     #[storage]
     pub struct Storage {
@@ -17,7 +17,7 @@ pub mod VetComponent {
     }
 
     #[event]
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     pub enum Event {
         VetRegistered: VetRegistered,
         VetProfileUpdated: VetProfileUpdated,
@@ -26,34 +26,34 @@ pub mod VetComponent {
         VetVerified: VetVerified,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct VetRegistered {
         #[key]
         vet_id: u256,
         vet_address: ContractAddress,
     }
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct VetProfileUpdated {
         #[key]
         vet_id: u256,
         vet_address: ContractAddress,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct VetActivated {
         #[key]
         vet_id: u256,
         vet_address: ContractAddress,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct VetDeActivated {
         #[key]
         vet_id: u256,
         vet_address: ContractAddress,
     }
 
-    #[derive(Drop, starknet::Event)]
+    #[derive(Drop, stellar::Event)]
     struct VetVerified {
         #[key]
         vet_id: u256,

@@ -1,6 +1,6 @@
-use starknet::ContractAddress;
+use stellar::ContractAddress;
 use petchain::components::veterinary_professional::types::{Vet};
-#[starknet::interface]
+#[stellar::interface]
 pub trait IVet<TContractState> {
     fn register_vet(
         ref self: TContractState,

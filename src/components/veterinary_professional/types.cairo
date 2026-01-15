@@ -1,7 +1,7 @@
-use starknet::ContractAddress;
+use stellar::ContractAddress;
 
 /// @notice Struct containing all data for a Vet
-#[derive(Clone, Drop, Serde, starknet::Store)]
+#[derive(Clone, Drop, Serde, stellar::Store)]
 pub struct Vet {
     #[key]
     pub vet_id: u256,
