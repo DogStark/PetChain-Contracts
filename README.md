@@ -61,8 +61,8 @@ Explore other parts of the PetChain ecosystem:
 ### Contact & Community
 For feedback, questions or collaboration:
 
-* Contact project lead: [@manlike_HB](https://t.me/manlike_HB), [@llins_x](https://t.me/llins_x) 
-* Join Community Chat: [@PetChain Telegram Group](https://t.me/+fLbWYLN8jZw3ZTNk) 
+* Contact project lead: [@llins_x](https://t.me/llins_x) 
+* Join Community Chat: [@PetChain Telegram Group](https://t.me/+Jw8HkvUhinw2YjE0) 
 Have questions or feedback?
 
 [Star this repo](https://github.com/DogStark/PetMedTracka-Contracts) to stay updated on new features and releases.
