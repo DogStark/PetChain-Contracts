@@ -47,6 +47,28 @@ pub struct PetOwner {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VaccineType {
+    Rabies,
+    Parvovirus,
+    Leukemia,
+    Bordetella,
+    Other,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Vaccination {
+    pub id: u64,
+    pub pet_id: u64,
+    pub veterinarian: Address,
+    pub vaccine_type: VaccineType,
+    pub administered_at: u64,
+    pub next_due_date: u64,
+    pub created_at: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Pet(u64),
     PetCount,
@@ -54,6 +76,12 @@ pub enum DataKey {
     PetOwner(Address),
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
+
+    // Vaccination DataKey
+    Vaccination(u64),
+    VaccinationCount,
+    PetVaccinations(Address),
+    PetVaccinationIndex((Address, u64))
 }
 
 #[contract]
@@ -240,8 +268,52 @@ impl PetChainContract {
         }
     }
     
-    pub fn get_pet_owner(env: Env, owner_addr: Address) -> Option<PetOwner> {
-        env.storage().instance().get(&DataKey::PetOwner(owner_addr))
+    // pub fn get_pet_owner(env: Env, owner_addr: Address) -> Option<PetOwner> {
+    //     env.storage().instance().get(&DataKey::PetOwner(owner_addr))
+    // }
+
+        // Pet Vaccination Record
+    pub fn record_vaccination(
+        env: Env,
+        pet_id: u64,
+        veterinarian: Address,
+        vaccine_type: VaccineType,
+        administered_at: u64,
+        next_due_date: u64,
+        // side_effects: Vec<String>
+    ) -> u64 {
+        veterinarian.require_auth();
+
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        let vaccine_count: u64 = env.storage().instance().get(&DataKey::VaccinationCount).unwrap_or(0);
+        let vaccine_id = vaccine_count + 1;
+        let now = env.ledger().timestamp();
+
+        let record = Vaccination {
+            id: vaccine_id,
+            pet_id,
+            veterinarian,
+            vaccine_type,
+            administered_at,
+            next_due_date,
+            created_at: now,
+        };
+
+        env.storage().instance().set(&DataKey::Vaccination(vaccine_id), &record);
+        env.storage().instance().set(&DataKey::VaccinationCount, &vaccine_id);
+
+        let pet_vaccine_count_key = DataKey::PetVaccinations(pet.owner.clone());
+        let mut pet_vaccine_count: u64 = env.storage().instance().get(&pet_vaccine_count_key).unwrap_or(0);
+        pet_vaccine_count += 1;
+
+        env.storage().instance().set(&pet_vaccine_count_key, &pet_vaccine_count);
+        env.storage().instance().set(&DataKey::PetVaccinationIndex((pet.owner.clone(), pet_vaccine_count)),&vaccine_id,);
+
+        vaccine_id
+    }
+
+    pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
+        env.storage().instance().get(&DataKey::Vaccination(vaccine_id))
     }
 }
 
@@ -249,10 +321,13 @@ impl PetChainContract {
 mod test {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
+    use crate::{PetChainContract, PetChainContractClient};
 
     #[test]
     fn test_register_pet() {
         let env = Env::default();
+        env.mock_all_auths();
+
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
         
@@ -272,6 +347,8 @@ mod test {
     #[test]
     fn test_register_pet_owner() {
         let env = Env::default();
+        env.mock_all_auths();
+
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
         
@@ -285,4 +362,108 @@ mod test {
         let is_registered = client.is_owner_registered(&owner);
         assert_eq!(is_registered, true);
     }
+
+    #[test]
+    fn test_record_and_get_vaccination() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+
+        // Register pet first
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(&owner, &name, &birthday, &Gender::Male, &Species::Dog, &breed);
+
+        let administered_time = 1735689600; 
+        let next_due_date = administered_time + 31536000; 
+        let now = env.ledger().timestamp();
+
+        let vaccine_id = client.record_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &administered_time,
+            &next_due_date,
+        );
+        assert_eq!(vaccine_id, 1u64);
+
+        let record = client.get_vaccinations(&vaccine_id).unwrap();
+
+        assert_eq!(record.id, 1);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vaccine_type, VaccineType::Rabies);
+        assert_eq!(record.administered_at, administered_time);
+        assert_eq!(record.next_due_date, next_due_date);
+        assert!(record.created_at == now);
+    }
+
+
+     #[test]
+    fn test_multiple_record_and_get_vaccination() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+
+        // Register pet first
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(&owner, &name, &birthday, &Gender::Male, &Species::Dog, &breed);
+
+        let pet_id_2 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2021-05-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        let administered_time = 1735689600; 
+        let next_due_date = administered_time + 31536000; 
+        let now = env.ledger().timestamp();
+        let vaccine_id = client.record_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &administered_time,
+            &next_due_date,
+        );
+        assert_eq!(vaccine_id, 1u64);
+
+        let administered_time = 2735689600; 
+        let next_due_date = administered_time + 31536000; 
+        let now = env.ledger().timestamp();
+        let vaccine_id_2 = client.record_vaccination(
+            &pet_id_2,
+            &vet,
+            &VaccineType::Other,
+            &administered_time,
+            &next_due_date,
+        );
+        assert_eq!(vaccine_id_2, 2u64);
+
+        let record_2 = client.get_vaccinations(&vaccine_id_2).unwrap();
+
+        assert_eq!(record_2.id, 2);
+        assert_eq!(record_2.pet_id, pet_id_2);
+        assert_eq!(record_2.veterinarian, vet);
+        assert_eq!(record_2.vaccine_type, VaccineType::Other);
+        assert_eq!(record_2.administered_at, administered_time);
+        assert_eq!(record_2.next_due_date, next_due_date);
+        assert!(record_2.created_at == now);
+    }
+
 }
