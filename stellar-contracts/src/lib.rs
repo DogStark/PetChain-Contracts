@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -206,7 +206,7 @@ impl PetChainContract {
         if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(id)) {
             pet.new_owner.require_auth();
             
-            let old_owner = pet.owner.clone();
+            let _old_owner = pet.owner.clone();
             pet.owner = pet.new_owner.clone();
             pet.updated_at = env.ledger().timestamp();
             
@@ -433,7 +433,7 @@ mod test {
 
         let administered_time = 1735689600; 
         let next_due_date = administered_time + 31536000; 
-        let now = env.ledger().timestamp();
+        let _now = env.ledger().timestamp();
         let vaccine_id = client.record_vaccination(
             &pet_id,
             &vet,
