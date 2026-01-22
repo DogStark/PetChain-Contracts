@@ -158,8 +158,7 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
-
-pub fn register_pet(
+    pub fn register_pet(
         env: Env,
         owner: Address,
         name: String,
@@ -190,8 +189,8 @@ pub fn register_pet(
             species,
             gender,
             breed,
-            
-            emergency_contacts: Vec::new(&env), 
+
+            emergency_contacts: Vec::new(&env),
             medical_alerts: String::from_str(&env, "None"),
         };
 
@@ -245,14 +244,17 @@ pub fn register_pet(
         }
     }
 
-    
     pub fn set_emergency_contacts(
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContactInfo>,
         medical_notes: String,
     ) {
-        if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
             //  Solo el dueño puede modificar la info
             pet.owner.require_auth();
 
@@ -267,10 +269,14 @@ pub fn register_pet(
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64) -> (Vec<EmergencyContactInfo>, String) {
-        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
         (pet.emergency_contacts, pet.medical_alerts)
     }
-    
+
     pub fn get_pet(env: Env, id: u64) -> Option<Pet> {
         env.storage().instance().get(&DataKey::Pet(id))
     }
@@ -853,42 +859,6 @@ pub fn register_pet(
         }
 
         accessible_pets
-  
-    #[test]
-     fn test_emergency_info_system() {
-      let env = Env::default();
-      env.mock_all_auths();
-
-      let contract_id = env.register_contract(None, PetChainContract);
-      let client = PetChainContractClient::new(&env, &contract_id);
-
-      let owner = Address::generate(&env);
-      let pet_id = client.register_pet(&owner, &String::from_str(&env, "Rex"), &String::from_str(&env, "2022"), &Gender::Male, &Species::Dog, &String::from_str(&env, "Labrador"));
-
-     // 1. Verificamos que soporta MÚLTIPLES contactos (Criterio: Soporta múltiples contactos)
-      let mut contacts = Vec::new(&env);
-     contacts.push_back(EmergencyContactInfo {
-        name: String::from_str(&env, "Ana"),
-        phone: String::from_str(&env, "123456"),
-        relationship: String::from_str(&env, "Veterinaria"),
-     });
-     contacts.push_back(EmergencyContactInfo {
-        name: String::from_str(&env, "Juan"),
-        phone: String::from_str(&env, "654321"),
-        relationship: String::from_str(&env, "Vecino"),
-     });
-
-    // 2. Verificamos Alertas Médicas (Criterio: Incluye alertas médicas críticas)
-     let medical_notes = String::from_str(&env, "Alergia a la penicilina. Diabético.");
-
-     client.set_emergency_contacts(&pet_id, &contacts, &medical_notes);
-
-    // 3. Verificamos Recuperación Rápida (Criterio: Acceso público/recuperación rápida)
-     let (saved_contacts, saved_notes) = client.get_emergency_info(&pet_id);
-
-     assert_eq!(saved_contacts.len(), 2);
-     assert_eq!(saved_notes, medical_notes);
     }
 }
-
 mod test;
