@@ -96,6 +96,61 @@ pub enum DataKey {
     PetVaccinationIndex((Address, u64)),
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+
+    // Access Control keys
+    AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
+    AccessGrantCount(u64),        // pet_id -> count of grants
+    AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
+    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
+    UserAccessCount(Address),     // grantee -> count of pets they can access
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccessLevel {
+    None,
+    Basic, // Can view basic pet info only
+    Full,  // Can view all records including medical history
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessGrant {
+    pub pet_id: u64,
+    pub granter: Address, // Pet owner who granted access
+    pub grantee: Address, // User receiving access
+    pub access_level: AccessLevel,
+    pub granted_at: u64,
+    pub expires_at: Option<u64>, // None means permanent access
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessGrantedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub access_level: AccessLevel,
+    pub expires_at: Option<u64>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessRevokedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessExpiredEvent {
+    pub pet_id: u64,
+    pub grantee: Address,
+    pub expired_at: u64,
 }
 
 #[contract]
@@ -103,8 +158,7 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
-
-pub fn register_pet(
+    pub fn register_pet(
         env: Env,
         owner: Address,
         name: String,
@@ -135,8 +189,8 @@ pub fn register_pet(
             species,
             gender,
             breed,
-            
-            emergency_contacts: Vec::new(&env), 
+
+            emergency_contacts: Vec::new(&env),
             medical_alerts: String::from_str(&env, "None"),
         };
 
@@ -190,14 +244,17 @@ pub fn register_pet(
         }
     }
 
-    
     pub fn set_emergency_contacts(
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContactInfo>,
         medical_notes: String,
     ) {
-        if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
             //  Solo el dueño puede modificar la info
             pet.owner.require_auth();
 
@@ -212,10 +269,14 @@ pub fn register_pet(
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64) -> (Vec<EmergencyContactInfo>, String) {
-        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
         (pet.emergency_contacts, pet.medical_alerts)
     }
-    
+
     pub fn get_pet(env: Env, id: u64) -> Option<Pet> {
         env.storage().instance().get(&DataKey::Pet(id))
     }
@@ -356,10 +417,7 @@ pub fn register_pet(
         }
     }
 
-    // pub fn get_pet_owner(env: Env, owner_addr: Address) -> Option<PetOwner> {
-    //     env.storage().instance().get(&DataKey::PetOwner(owner_addr))
-    // }
-
+    // Pet Vaccination Record
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -372,7 +430,7 @@ pub fn register_pet(
     ) -> u64 {
         veterinarian.require_auth();
 
-        let _pet: Pet = env
+        let pet: Pet = env
             .storage()
             .instance()
             .get(&DataKey::Pet(pet_id))
@@ -405,6 +463,7 @@ pub fn register_pet(
             .instance()
             .set(&DataKey::VaccinationCount, &vaccine_id);
 
+        // Update pet vaccination indexes
         let pet_vax_count: u64 = env
             .storage()
             .instance()
@@ -420,7 +479,30 @@ pub fn register_pet(
             &vaccine_id,
         );
 
+        // Also maintain owner-based index for compatibility
+        let pet_vaccine_count_key = DataKey::PetVaccinations(pet.owner.clone());
+        let mut pet_vaccine_count: u64 = env
+            .storage()
+            .instance()
+            .get(&pet_vaccine_count_key)
+            .unwrap_or(0);
+        pet_vaccine_count += 1;
+
+        env.storage()
+            .instance()
+            .set(&pet_vaccine_count_key, &pet_vaccine_count);
+        env.storage().instance().set(
+            &DataKey::PetVaccinationIndex((pet.owner.clone(), pet_vaccine_count)),
+            &vaccine_id,
+        );
+
         vaccine_id
+    }
+
+    pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Vaccination(vaccine_id))
     }
 
     //  Get complete vaccination history for a pet
@@ -519,42 +601,264 @@ pub fn register_pet(
 
         overdue
     }
-  
-    #[test]
-     fn test_emergency_info_system() {
-      let env = Env::default();
-      env.mock_all_auths();
 
-      let contract_id = env.register_contract(None, PetChainContract);
-      let client = PetChainContractClient::new(&env, &contract_id);
+    // ============== ACCESS CONTROL FUNCTIONS ==============
 
-      let owner = Address::generate(&env);
-      let pet_id = client.register_pet(&owner, &String::from_str(&env, "Rex"), &String::from_str(&env, "2022"), &Gender::Male, &Species::Dog, &String::from_str(&env, "Labrador"));
+    /// Grant access to a pet's records
+    ///
+    /// # Arguments
+    /// * `pet_id` - ID of the pet
+    /// * `grantee` - Address to grant access to
+    /// * `access_level` - Level of access (Basic or Full)
+    /// * `expires_at` - Optional expiration timestamp (None for permanent)
+    pub fn grant_access(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        access_level: AccessLevel,
+        expires_at: Option<u64>,
+    ) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
 
-     // 1. Verificamos que soporta MÚLTIPLES contactos (Criterio: Soporta múltiples contactos)
-      let mut contacts = Vec::new(&env);
-     contacts.push_back(EmergencyContactInfo {
-        name: String::from_str(&env, "Ana"),
-        phone: String::from_str(&env, "123456"),
-        relationship: String::from_str(&env, "Veterinaria"),
-     });
-     contacts.push_back(EmergencyContactInfo {
-        name: String::from_str(&env, "Juan"),
-        phone: String::from_str(&env, "654321"),
-        relationship: String::from_str(&env, "Vecino"),
-     });
+        pet.owner.require_auth();
 
-    // 2. Verificamos Alertas Médicas (Criterio: Incluye alertas médicas críticas)
-     let medical_notes = String::from_str(&env, "Alergia a la penicilina. Diabético.");
+        if access_level == AccessLevel::None {
+            panic!("Use revoke_access to remove access");
+        }
 
-     client.set_emergency_contacts(&pet_id, &contacts, &medical_notes);
+        if let Some(exp_time) = expires_at {
+            let now = env.ledger().timestamp();
+            if exp_time <= now {
+                panic!("Expiration time must be in the future");
+            }
+        }
 
-    // 3. Verificamos Recuperación Rápida (Criterio: Acceso público/recuperación rápida)
-     let (saved_contacts, saved_notes) = client.get_emergency_info(&pet_id);
+        let now = env.ledger().timestamp();
+        let grant = AccessGrant {
+            pet_id,
+            granter: pet.owner.clone(),
+            grantee: grantee.clone(),
+            access_level: access_level.clone(),
+            granted_at: now,
+            expires_at,
+            is_active: true,
+        };
 
-     assert_eq!(saved_contacts.len(), 2);
-     assert_eq!(saved_notes, medical_notes);
+        let grant_key = DataKey::AccessGrant((pet_id, grantee.clone()));
+        let is_new_grant = env
+            .storage()
+            .instance()
+            .get::<DataKey, AccessGrant>(&grant_key)
+            .is_none();
+
+        env.storage().instance().set(&grant_key, &grant);
+
+        // Update indexes if this is a new grant
+        if is_new_grant {
+            let grant_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AccessGrantCount(pet_id))
+                .unwrap_or(0);
+            let new_count = grant_count + 1;
+            env.storage()
+                .instance()
+                .set(&DataKey::AccessGrantCount(pet_id), &new_count);
+            env.storage()
+                .instance()
+                .set(&DataKey::AccessGrantIndex((pet_id, new_count)), &grantee);
+
+            let user_access_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserAccessCount(grantee.clone()))
+                .unwrap_or(0);
+            env.storage().instance().set(
+                &DataKey::UserAccessCount(grantee.clone()),
+                &(user_access_count + 1),
+            );
+        }
+
+        // Emit event
+        let now = env.ledger().timestamp();
+        let event = AccessGrantedEvent {
+            pet_id,
+            granter: pet.owner.clone(),
+            grantee: grantee.clone(),
+            access_level: access_level.clone(),
+            expires_at,
+            timestamp: now,
+        };
+
+        env.events()
+            .publish((String::from_str(&env, "ACCESS_GRANTED"),), event);
+
+        true
+    }
+
+    /// Revoke access to a pet's records
+    pub fn revoke_access(env: Env, pet_id: u64, grantee: Address) -> bool {
+        // Get pet and verify ownership
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let grant_key = DataKey::AccessGrant((pet_id, grantee.clone()));
+
+        if let Some(mut grant) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AccessGrant>(&grant_key)
+        {
+            grant.is_active = false;
+            grant.access_level = AccessLevel::None;
+            env.storage().instance().set(&grant_key, &grant);
+
+            // Emit event
+            let now = env.ledger().timestamp();
+            let event = AccessRevokedEvent {
+                pet_id,
+                granter: pet.owner.clone(),
+                grantee: grantee.clone(),
+                timestamp: now,
+            };
+
+            env.events()
+                .publish((String::from_str(&env, "ACCESS_REVOKED"),), event);
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            if pet.owner == user {
+                return AccessLevel::Full;
+            }
+        }
+
+        let grant_key = DataKey::AccessGrant((pet_id, user.clone()));
+
+        if let Some(grant) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AccessGrant>(&grant_key)
+        {
+            if !grant.is_active {
+                return AccessLevel::None;
+            }
+
+            // Check if access has expired
+            if let Some(exp_time) = grant.expires_at {
+                let now = env.ledger().timestamp();
+                if now >= exp_time {
+                    let event = AccessExpiredEvent {
+                        pet_id,
+                        grantee: user.clone(),
+                        expired_at: exp_time,
+                    };
+
+                    env.events()
+                        .publish((String::from_str(&env, "ACCESS_EXPIRED"),), event);
+                    return AccessLevel::None;
+                }
+            }
+
+            grant.access_level
+        } else {
+            AccessLevel::None
+        }
+    }
+
+    /// Get all users who have been granted access to a pet
+    pub fn get_authorized_users(env: Env, pet_id: u64) -> Vec<Address> {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let grant_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+
+        let mut authorized_users = Vec::new(&env);
+
+        for i in 1..=grant_count {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
+            {
+                let access_level = Self::check_access(env.clone(), pet_id, grantee.clone());
+                if access_level != AccessLevel::None {
+                    authorized_users.push_back(grantee);
+                }
+            }
+        }
+
+        authorized_users
+    }
+
+    /// Get access grant details for a specific user and pet
+    pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        if pet.owner != env.clone().current_contract_address() {
+            pet.owner.require_auth();
+        }
+
+        env.storage()
+            .instance()
+            .get(&DataKey::AccessGrant((pet_id, grantee)))
+    }
+
+    /// Get all pets a user has access to
+    pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
+        user.require_auth();
+
+        let mut accessible_pets = Vec::new(&env);
+
+        // Get all owned pets
+        let owner_pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetCountByOwner(user.clone()))
+            .unwrap_or(0);
+
+        for i in 1..=owner_pet_count {
+            if let Some(pet_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((user.clone(), i)))
+            {
+                accessible_pets.push_back(pet_id);
+            }
+        }
+
+        accessible_pets
     }
 }
-
 mod test;

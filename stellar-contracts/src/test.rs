@@ -436,9 +436,9 @@ mod test {
             &String::from_str(&env, "BATCH-008"),
         );
 
-        let overdue = client.get_overdue_vaccinations(&pet_id);
+        let overdue = client.get_overdue_vaccinations(&pet_id).len();
 
-        assert!(overdue.len() >= 0);
+        assert!(overdue == 0);
     }
 
     #[test]
@@ -554,10 +554,10 @@ mod test {
         env.mock_all_auths();
 
         let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+        let _client = PetChainContractClient::new(&env, &contract_id);
 
-        let vet = Address::generate(&env);
-        let current_time = env.ledger().timestamp();
+        let _vet = Address::generate(&env);
+        let _current_time = env.ledger().timestamp();
     }
 
     #[test]
