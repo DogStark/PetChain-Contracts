@@ -373,7 +373,7 @@ impl PetChainContract {
     }
 
     // Pet Vaccination Record
-    pub fn record_vaccination(
+    pub fn add_vaccination(
         env: Env,
         pet_id: u64,
         veterinarian: Address,
