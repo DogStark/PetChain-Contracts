@@ -158,6 +158,69 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
+    fn get_owner_pet_count(env: &Env, owner: &Address) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PetCountByOwner(owner.clone()))
+            .unwrap_or(0)
+    }
+
+    fn add_pet_to_owner_index(env: &Env, owner: &Address, pet_id: u64) {
+        let count = Self::get_owner_pet_count(env, owner);
+        let new_count = count.checked_add(1).expect("Owner pet count overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCountByOwner(owner.clone()), &new_count);
+        env.storage().instance().set(
+            &DataKey::OwnerPetIndex((owner.clone(), new_count)),
+            &pet_id,
+        );
+    }
+
+    fn remove_pet_from_owner_index(env: &Env, owner: &Address, pet_id: u64) {
+        let count = Self::get_owner_pet_count(env, owner);
+        if count == 0 {
+            panic!("Owner has no pets");
+        }
+
+        let mut remove_index: Option<u64> = None;
+        for i in 1..=count {
+            if let Some(existing_pet_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
+            {
+                if existing_pet_id == pet_id {
+                    remove_index = Some(i);
+                    break;
+                }
+            }
+        }
+
+        let remove_index = remove_index.expect("Pet not found for owner");
+        if remove_index != count {
+            let last_pet_id: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::OwnerPetIndex((owner.clone(), count)))
+                .expect("Owner pet index missing");
+            env.storage().instance().set(
+                &DataKey::OwnerPetIndex((owner.clone(), remove_index)),
+                &last_pet_id,
+            );
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::OwnerPetIndex((owner.clone(), count)));
+
+        let new_count = count.checked_sub(1).expect("Owner pet count underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCountByOwner(owner.clone()), &new_count);
+    }
+
     pub fn register_pet(
         env: Env,
         owner: Address,
@@ -174,7 +237,7 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCount)
             .unwrap_or(0);
-        let pet_id = pet_count + 1;
+        let pet_id = pet_count.checked_add(1).expect("Pet count overflow");
         let timestamp = env.ledger().timestamp();
 
         let pet = Pet {
@@ -196,20 +259,7 @@ impl PetChainContract {
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
-
-        let owner_pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
-        env.storage().instance().set(
-            &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
-            &pet_id,
-        );
+        Self::add_pet_to_owner_index(&env, &owner, pet_id);
 
         pet_id
     }
@@ -281,6 +331,33 @@ impl PetChainContract {
         env.storage().instance().get(&DataKey::Pet(id))
     }
 
+    pub fn get_all_pets_by_owner(env: Env, owner: Address) -> Vec<Pet> {
+        owner.require_auth();
+
+        let pet_count = Self::get_owner_pet_count(&env, &owner);
+        let mut pets = Vec::new(&env);
+
+        for i in 1..=pet_count {
+            if let Some(pet_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
+            {
+                if let Some(pet) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+                {
+                    if pet.owner == owner {
+                        pets.push_back(pet);
+                    }
+                }
+            }
+        }
+
+        pets
+    }
+
     pub fn is_pet_active(env: Env, id: u64) -> bool {
         if let Some(pet) = Self::get_pet(env, id) {
             pet.active
@@ -335,6 +412,59 @@ impl PetChainContract {
         }
     }
 
+    pub fn batch_transfer_pet_ownership(
+        env: Env,
+        owner: Address,
+        pet_ids: Vec<u64>,
+        to: Address,
+    ) {
+        owner.require_auth();
+        let timestamp = env.ledger().timestamp();
+
+        for pet_id in pet_ids.iter() {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("Pet not found");
+
+            if pet.owner != owner {
+                panic!("Not pet owner");
+            }
+
+            pet.new_owner = to.clone();
+            pet.updated_at = timestamp;
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        }
+    }
+
+    pub fn transfer_all_pets(env: Env, owner: Address, to: Address) {
+        owner.require_auth();
+        let timestamp = env.ledger().timestamp();
+        let pet_count = Self::get_owner_pet_count(&env, &owner);
+
+        for i in 1..=pet_count {
+            let pet_id: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::OwnerPetIndex((owner.clone(), i)))
+                .expect("Pet not found for owner");
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("Pet not found");
+
+            if pet.owner != owner {
+                panic!("Pet owner mismatch");
+            }
+
+            pet.new_owner = to.clone();
+            pet.updated_at = timestamp;
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        }
+    }
+
     pub fn accept_pet_transfer(env: Env, id: u64) {
         if let Some(mut pet) = env
             .storage()
@@ -343,11 +473,44 @@ impl PetChainContract {
         {
             pet.new_owner.require_auth();
 
-            let _old_owner = pet.owner.clone();
-            pet.owner = pet.new_owner.clone();
+            let old_owner = pet.owner.clone();
+            let new_owner = pet.new_owner.clone();
+            pet.owner = new_owner.clone();
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+
+            if old_owner != new_owner {
+                Self::remove_pet_from_owner_index(&env, &old_owner, id);
+                Self::add_pet_to_owner_index(&env, &new_owner, id);
+            }
+        }
+    }
+
+    pub fn batch_accept_pet_transfers(env: Env, new_owner: Address, pet_ids: Vec<u64>) {
+        new_owner.require_auth();
+        let timestamp = env.ledger().timestamp();
+
+        for pet_id in pet_ids.iter() {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("Pet not found");
+
+            if pet.new_owner != new_owner {
+                panic!("Transfer not authorized");
+            }
+
+            let old_owner = pet.owner.clone();
+            pet.owner = new_owner.clone();
+            pet.updated_at = timestamp;
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            if old_owner != new_owner {
+                Self::remove_pet_from_owner_index(&env, &old_owner, pet_id);
+                Self::add_pet_to_owner_index(&env, &new_owner, pet_id);
+            }
         }
     }
 
@@ -842,11 +1005,7 @@ impl PetChainContract {
         let mut accessible_pets = Vec::new(&env);
 
         // Get all owned pets
-        let owner_pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCountByOwner(user.clone()))
-            .unwrap_or(0);
+        let owner_pet_count = Self::get_owner_pet_count(&env, &user);
 
         for i in 1..=owner_pet_count {
             if let Some(pet_id) = env
