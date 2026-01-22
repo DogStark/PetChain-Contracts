@@ -11,33 +11,19 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "register_pet",
+              "function_name": "register_pet_owner",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
-                },
-                {
-                  "string": "Golden Retriever"
+                  "string": "555-1234"
                 }
               ]
             }
@@ -85,61 +71,15 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "OwnerPetIndex"
+                              "symbol": "PetOwner"
                             },
                             {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                                },
-                                {
-                                  "u64": 1
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Pet"
-                            },
-                            {
-                              "u64": 1
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
                         "val": {
                           "map": [
-                            {
-                              "key": {
-                                "symbol": "active"
-                              },
-                              "val": {
-                                "bool": false
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "birthday"
-                              },
-                              "val": {
-                                "string": "2020-01-01"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "breed"
-                              },
-                              "val": {
-                                "string": "Golden Retriever"
-                              }
-                            },
                             {
                               "key": {
                                 "symbol": "created_at"
@@ -150,38 +90,26 @@
                             },
                             {
                               "key": {
-                                "symbol": "emergency_contacts"
+                                "symbol": "email"
                               },
                               "val": {
-                                "vec": []
+                                "string": "john@example.com"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "gender"
+                                "symbol": "emergency_contact"
                               },
                               "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Male"
-                                  }
-                                ]
+                                "string": "555-1234"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "id"
+                                "symbol": "is_pet_owner"
                               },
                               "val": {
-                                "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "medical_alerts"
-                              },
-                              "val": {
-                                "string": "None"
+                                "bool": true
                               }
                             },
                             {
@@ -189,35 +117,15 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Buddy"
+                                "string": "John Doe"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "new_owner"
+                                "symbol": "owner_address"
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "owner"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "species"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Dog"
-                                  }
-                                ]
                               }
                             },
                             {
@@ -229,33 +137,6 @@
                               }
                             }
                           ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCount"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCountByOwner"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
                         }
                       }
                     ]
@@ -340,7 +221,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "register_pet_owner"
               }
             ],
             "data": {
@@ -349,27 +230,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
-                },
-                {
-                  "string": "Golden Retriever"
+                  "string": "555-1234"
                 }
               ]
             }
@@ -390,12 +257,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "register_pet_owner"
               }
             ],
-            "data": {
-              "u64": 1
-            }
+            "data": "void"
           }
         }
       },
@@ -416,11 +281,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_pet"
+                "symbol": "get_owner_profile"
               }
             ],
             "data": {
-              "u64": 1
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }
@@ -439,35 +304,11 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_pet"
+                "symbol": "get_owner_profile"
               }
             ],
             "data": {
               "map": [
-                {
-                  "key": {
-                    "symbol": "active"
-                  },
-                  "val": {
-                    "bool": false
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "birthday"
-                  },
-                  "val": {
-                    "string": "2020-01-01"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "breed"
-                  },
-                  "val": {
-                    "string": "Golden Retriever"
-                  }
-                },
                 {
                   "key": {
                     "symbol": "created_at"
@@ -478,38 +319,26 @@
                 },
                 {
                   "key": {
-                    "symbol": "emergency_contacts"
+                    "symbol": "email"
                   },
                   "val": {
-                    "vec": []
+                    "string": "john@example.com"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "gender"
+                    "symbol": "emergency_contact"
                   },
                   "val": {
-                    "vec": [
-                      {
-                        "symbol": "Male"
-                      }
-                    ]
+                    "string": "555-1234"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "id"
+                    "symbol": "is_pet_owner"
                   },
                   "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "medical_alerts"
-                  },
-                  "val": {
-                    "string": "None"
+                    "bool": true
                   }
                 },
                 {
@@ -517,35 +346,15 @@
                     "symbol": "name"
                   },
                   "val": {
-                    "string": "Buddy"
+                    "string": "John Doe"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "new_owner"
+                    "symbol": "owner_address"
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Dog"
-                      }
-                    ]
                   }
                 },
                 {

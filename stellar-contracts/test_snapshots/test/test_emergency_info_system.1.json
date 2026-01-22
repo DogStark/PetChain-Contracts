@@ -1,12 +1,12 @@
 {
   "generators": {
-    "address": 3,
+    "address": 2,
     "nonce": 0
   },
   "auth": [
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
         {
           "function": {
             "contract_fn": {
@@ -14,13 +14,13 @@
               "function_name": "register_pet",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "Rex"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "2022"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "Golden Retriever"
+                  "string": "Labrador"
                 }
               ]
             }
@@ -53,26 +53,73 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "record_vaccination",
+              "function_name": "set_emergency_contacts",
               "args": [
                 {
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
                   "vec": [
                     {
-                      "symbol": "Rabies"
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Ana"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "123456"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Veterinaria"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Juan"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "654321"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vecino"
+                          }
+                        }
+                      ]
                     }
                   ]
                 },
                 {
-                  "u64": 1735689600
-                },
-                {
-                  "u64": 1767225600
+                  "string": "Alergia a la penicilina. Diab\\xc3\\xa9tico."
                 }
               ]
             }
@@ -125,7 +172,7 @@
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                                 },
                                 {
                                   "u64": 1
@@ -164,7 +211,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2020-01-01"
+                                "string": "2022"
                               }
                             },
                             {
@@ -172,7 +219,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Golden Retriever"
+                                "string": "Labrador"
                               }
                             },
                             {
@@ -188,7 +235,64 @@
                                 "symbol": "emergency_contacts"
                               },
                               "val": {
-                                "vec": []
+                                "vec": [
+                                  {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "name"
+                                        },
+                                        "val": {
+                                          "string": "Ana"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "phone"
+                                        },
+                                        "val": {
+                                          "string": "123456"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "relationship"
+                                        },
+                                        "val": {
+                                          "string": "Veterinaria"
+                                        }
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "name"
+                                        },
+                                        "val": {
+                                          "string": "Juan"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "phone"
+                                        },
+                                        "val": {
+                                          "string": "654321"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "relationship"
+                                        },
+                                        "val": {
+                                          "string": "Vecino"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
                               }
                             },
                             {
@@ -216,7 +320,7 @@
                                 "symbol": "medical_alerts"
                               },
                               "val": {
-                                "string": "None"
+                                "string": "Alergia a la penicilina. Diab\\xc3\\xa9tico."
                               }
                             },
                             {
@@ -224,7 +328,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Buddy"
+                                "string": "Rex"
                               }
                             },
                             {
@@ -232,7 +336,7 @@
                                 "symbol": "new_owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -240,7 +344,7 @@
                                 "symbol": "owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -285,132 +389,7 @@
                               "symbol": "PetCountByOwner"
                             },
                             {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetVaccinationIndex"
-                            },
-                            {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                                },
-                                {
-                                  "u64": 1
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetVaccinations"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Vaccination"
-                            },
-                            {
-                              "u64": 1
-                            }
-                          ]
-                        },
-                        "val": {
-                          "map": [
-                            {
-                              "key": {
-                                "symbol": "administered_at"
-                              },
-                              "val": {
-                                "u64": 1735689600
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "created_at"
-                              },
-                              "val": {
-                                "u64": 0
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "id"
-                              },
-                              "val": {
-                                "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "next_due_date"
-                              },
-                              "val": {
-                                "u64": 1767225600
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "pet_id"
-                              },
-                              "val": {
-                                "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "vaccine_type"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Rabies"
-                                  }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "veterinarian"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "VaccinationCount"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
@@ -426,6 +405,39 @@
             "ext": "v0"
           },
           4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 801925984706572462
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 801925984706572462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
         ]
       ],
       [
@@ -450,39 +462,6 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 801925984706572462
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 801925984706572462
                   }
                 },
                 "durability": "temporary",
@@ -539,13 +518,13 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "Rex"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "2022"
                 },
                 {
                   "vec": [
@@ -562,7 +541,7 @@
                   ]
                 },
                 {
-                  "string": "Golden Retriever"
+                  "string": "Labrador"
                 }
               ]
             }
@@ -609,7 +588,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "set_emergency_contacts"
               }
             ],
             "data": {
@@ -618,20 +597,67 @@
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
                   "vec": [
                     {
-                      "symbol": "Rabies"
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Ana"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "123456"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Veterinaria"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Juan"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "654321"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vecino"
+                          }
+                        }
+                      ]
                     }
                   ]
                 },
                 {
-                  "u64": 1735689600
-                },
-                {
-                  "u64": 1767225600
+                  "string": "Alergia a la penicilina. Diab\\xc3\\xa9tico."
                 }
               ]
             }
@@ -652,12 +678,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "set_emergency_contacts"
               }
             ],
-            "data": {
-              "u64": 1
-            }
+            "data": "void"
           }
         }
       },
@@ -678,7 +702,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_vaccinations"
+                "symbol": "get_emergency_info"
               }
             ],
             "data": {
@@ -701,70 +725,73 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_vaccinations"
+                "symbol": "get_emergency_info"
               }
             ],
             "data": {
-              "map": [
+              "vec": [
                 {
-                  "key": {
-                    "symbol": "administered_at"
-                  },
-                  "val": {
-                    "u64": 1735689600
-                  }
+                  "vec": [
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Ana"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "123456"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Veterinaria"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Juan"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "654321"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vecino"
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 },
                 {
-                  "key": {
-                    "symbol": "created_at"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "next_due_date"
-                  },
-                  "val": {
-                    "u64": 1767225600
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "vaccine_type"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Rabies"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "veterinarian"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
+                  "string": "Alergia a la penicilina. Diab\\xc3\\xa9tico."
                 }
               ]
             }
