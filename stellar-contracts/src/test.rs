@@ -35,9 +35,9 @@ mod test {
     use soroban_sdk::{testutils::Address as _, Env};
 
     // ============ PET REGISTRATION TESTS ============
-    
+
     /// Tests basic pet registration functionality.
-    /// 
+    ///
     /// Verifies:
     /// - Sequential ID assignment (first pet gets ID 1)
     /// - Correct owner assignment
@@ -74,7 +74,7 @@ mod test {
     // ============ OWNER REGISTRATION TESTS ============
 
     /// Tests pet owner registration.
-    /// 
+    ///
     /// Verifies:
     /// - Owner profile creation
     /// - is_owner_registered returns true after registration
@@ -101,7 +101,7 @@ mod test {
     // ============ VACCINATION MANAGEMENT TESTS ============
 
     /// Tests vaccination record creation and retrieval.
-    /// 
+    ///
     /// Verifies:
     /// - Vaccination ID assignment
     /// - All vaccination fields stored correctly
@@ -858,7 +858,7 @@ mod test {
     // ============ UPDATE PET PROFILE TESTS ============
 
     /// Tests pet profile update functionality.
-    /// 
+    ///
     /// Verifies:
     /// - All profile fields can be updated
     /// - Returns true on successful update
@@ -901,7 +901,7 @@ mod test {
     }
 
     /// Tests update operation on non-existent pet.
-    /// 
+    ///
     /// Verifies:
     /// - Returns false for invalid pet ID
     /// - No panic occurs
@@ -928,7 +928,7 @@ mod test {
     // ============ EMERGENCY CONTACTS TESTS ============
 
     /// Tests emergency contact storage and retrieval.
-    /// 
+    ///
     /// Verifies:
     /// - Multiple contacts can be stored
     /// - Medical notes are saved
@@ -1014,7 +1014,7 @@ mod test {
     // ============ PET STATUS TESTS ============
 
     /// Tests pet active status queries.
-    /// 
+    ///
     /// Verifies:
     /// - New pets are inactive by default
     /// - Status changes with activate/deactivate
@@ -1095,7 +1095,7 @@ mod test {
     // ============ ACTIVATE/DEACTIVATE TESTS ============
 
     /// Tests pet activation and deactivation.
-    /// 
+    ///
     /// Verifies:
     /// - Pets start inactive
     /// - activate_pet sets active to true
@@ -1184,7 +1184,7 @@ mod test {
     // ============ OWNERSHIP TRANSFER TESTS ============
 
     /// Tests ownership transfer initiation.
-    /// 
+    ///
     /// Verifies:
     /// - new_owner field is set
     /// - owner field remains unchanged until acceptance
@@ -1246,7 +1246,7 @@ mod test {
     // ============ OWNER PROFILE TESTS ============
 
     /// Tests owner profile update functionality.
-    /// 
+    ///
     /// Verifies:
     /// - Name, email, emergency contact can be updated
     /// - Returns true on successful update
@@ -1300,7 +1300,7 @@ mod test {
     // ============ ACCESS CONTROL TESTS ============
 
     /// Tests access granting and checking.
-    /// 
+    ///
     /// Verifies:
     /// - Access can be granted to users
     /// - check_access returns correct level
@@ -1609,7 +1609,7 @@ mod test {
     // ============ EDGE CASE TESTS ============
 
     /// Tests all Species enum variants.
-    /// 
+    ///
     /// Verifies:
     /// - Dog, Cat, Bird, Other all work correctly
     /// - Each species is stored and retrieved properly
@@ -1757,7 +1757,7 @@ mod test {
     // ============ INTEGRATION TESTS ============
 
     /// Tests complete pet lifecycle from registration to medical records.
-    /// 
+    ///
     /// Workflow:
     /// 1. Register owner
     /// 2. Register pet
@@ -1765,7 +1765,7 @@ mod test {
     /// 4. Set emergency contacts
     /// 5. Add vaccination
     /// 6. Grant vet access
-    /// 
+    ///
     /// Verifies all operations complete successfully and state is consistent.
     #[test]
     fn test_complete_pet_lifecycle_with_access_control() {
