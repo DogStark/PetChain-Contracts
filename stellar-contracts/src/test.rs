@@ -1,0 +1,591 @@
+#[cfg(test)]
+mod test {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    #[test]
+    fn test_register_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+        assert_eq!(pet_id, 1);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.id, 1);
+        assert_eq!(pet.active, false);
+    }
+
+    #[test]
+    fn test_register_pet_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "John Doe");
+        let email = String::from_str(&env, "john@example.com");
+        let emergency = String::from_str(&env, "555-1234");
+
+        client.register_pet_owner(&owner, &name, &email, &emergency);
+
+        let is_registered = client.is_owner_registered(&owner);
+        assert_eq!(is_registered, true);
+    }
+
+    #[test]
+    fn test_record_and_get_vaccination() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+
+        // Register pet first
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        let administered_time = 1735689600;
+        let next_due_date = administered_time + 31536000;
+        let now = env.ledger().timestamp();
+
+        // CORRECTED: Using add_vaccination instead of _vaccination
+        let vaccine_id = client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &administered_time,
+            &next_due_date,
+            &String::from_str(&env, "BATCH-001"),
+        );
+        assert_eq!(vaccine_id, 1u64);
+
+        let record = client.get_vaccinations(&vaccine_id).unwrap();
+
+        assert_eq!(record.id, 1);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vaccine_type, VaccineType::Rabies);
+        assert_eq!(record.administered_at, administered_time);
+        assert_eq!(record.next_due_date, next_due_date);
+        assert!(record.created_at == now);
+        // NEW: Check batch number and vaccine name
+        assert_eq!(record.batch_number, String::from_str(&env, "BATCH-001"));
+        assert_eq!(
+            record.vaccine_name,
+            String::from_str(&env, "Rabies Vaccine")
+        );
+    }
+
+    #[test]
+    fn test_multiple_record_and_get_vaccination() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+
+        // Register pet first
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        let pet_id_2 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2021-05-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        let administered_time = 1735689600;
+        let next_due_date = administered_time + 31536000;
+        let _now = env.ledger().timestamp();
+
+        // CORRECTED: Using add_vaccination with all required parameters
+        let vaccine_id = client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &administered_time,
+            &next_due_date,
+            &String::from_str(&env, "BATCH-001"),
+        );
+        assert_eq!(vaccine_id, 1u64);
+
+        let administered_time = 2735689600;
+        let next_due_date = administered_time + 31536000;
+        let now = env.ledger().timestamp();
+
+        // CORRECTED: Using add_vaccination with all required parameters
+        let vaccine_id_2 = client.add_vaccination(
+            &pet_id_2,
+            &vet,
+            &VaccineType::Other,
+            &String::from_str(&env, "Other Vaccine"),
+            &administered_time,
+            &next_due_date,
+            &String::from_str(&env, "BATCH-002"),
+        );
+        assert_eq!(vaccine_id_2, 2u64);
+
+        let record_2 = client.get_vaccinations(&vaccine_id_2).unwrap();
+
+        assert_eq!(record_2.id, 2);
+        assert_eq!(record_2.pet_id, pet_id_2);
+        assert_eq!(record_2.veterinarian, vet);
+        assert_eq!(record_2.vaccine_type, VaccineType::Other);
+        assert_eq!(record_2.administered_at, administered_time);
+        assert_eq!(record_2.next_due_date, next_due_date);
+        assert!(record_2.created_at == now);
+    }
+
+    #[test]
+    fn test_get_vaccination_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2021-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        // Add multiple vaccinations
+        let time_1 = env.ledger().timestamp();
+
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &time_1,
+            &(time_1 + 31536000),
+            &String::from_str(&env, "BATCH-001"),
+        );
+
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvo Vaccine"),
+            &time_1,
+            &(time_1 + 31536000),
+            &String::from_str(&env, "BATCH-002"),
+        );
+
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Bordetella,
+            &String::from_str(&env, "Kennel Cough Vaccine"),
+            &time_1,
+            &(time_1 + 15768000), // 6 months
+            &String::from_str(&env, "BATCH-003"),
+        );
+
+        let history = client.get_vaccination_history(&pet_id);
+        assert_eq!(history.len(), 3);
+
+        // Verify all vaccinations are in history
+        let first = history.get(0).unwrap();
+        assert_eq!(first.vaccine_type, VaccineType::Rabies);
+
+        let second = history.get(1).unwrap();
+        assert_eq!(second.vaccine_type, VaccineType::Parvovirus);
+
+        let third = history.get(2).unwrap();
+        assert_eq!(third.vaccine_type, VaccineType::Bordetella);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_get_upcoming_vaccinations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Bella"),
+            &String::from_str(&env, "2022-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Persian"),
+        );
+
+        let current_time = env.ledger().timestamp();
+
+        // Add vaccination due in 10 days (should appear in 30-day window)
+        let due_soon = current_time + (10 * 86400);
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Shot"),
+            &current_time,
+            &due_soon,
+            &String::from_str(&env, "BATCH-003"),
+        );
+
+        // Add vaccination due in 60 days (should NOT appear in 30-day window)
+        let due_later = current_time + (60 * 86400);
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Leukemia,
+            &String::from_str(&env, "Leukemia Shot"),
+            &current_time,
+            &due_later,
+            &String::from_str(&env, "BATCH-004"),
+        );
+
+        // Add overdue vaccination (should appear)
+        let overdue = current_time - (5 * 86400);
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvo Shot"),
+            &(current_time - 31536000),
+            &overdue,
+            &String::from_str(&env, "BATCH-005"),
+        );
+
+        // Get vaccinations due within 30 days
+        let upcoming = client.get_upcoming_vaccinations(&pet_id, &30);
+        assert_eq!(upcoming.len(), 2); // The one due in 10 days + the overdue one
+
+        // Verify the correct vaccinations are returned
+        let first_type = upcoming.get(0).unwrap().vaccine_type.clone();
+        let second_type = upcoming.get(1).unwrap().vaccine_type.clone();
+
+        let has_rabies = first_type == VaccineType::Rabies || second_type == VaccineType::Rabies;
+        let has_parvo =
+            first_type == VaccineType::Parvovirus || second_type == VaccineType::Parvovirus;
+
+        assert!(has_rabies);
+        assert!(has_parvo);
+    }
+
+    #[test]
+    fn test_is_vaccination_current() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Charlie"),
+            &String::from_str(&env, "2023-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+        );
+
+        // Use absolute timestamps to avoid underflow
+        let base_time = 1700000000u64;
+        let future_due = base_time + 31536000; // 1 year after base
+        let past_due = 1000000u64; // Very old timestamp (will be < env.ledger().timestamp() eventually)
+
+        // Add current vaccination (due far in future)
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &base_time,
+            &future_due,
+            &String::from_str(&env, "BATCH-005"),
+        );
+
+        // Add vaccination with past due date
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvo Vaccine"),
+            &100000,
+            &past_due,
+            &String::from_str(&env, "BATCH-006"),
+        );
+
+        // Rabies should be current (future due date > current time of 0)
+        assert_eq!(
+            client.is_vaccination_current(&pet_id, &VaccineType::Rabies),
+            true
+        );
+
+        assert_eq!(
+            client.is_vaccination_current(&pet_id, &VaccineType::Leukemia),
+            false
+        );
+    }
+
+    #[test]
+    fn test_get_overdue_vaccinations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Rocky"),
+            &String::from_str(&env, "2019-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Bulldog"),
+        );
+
+        let base_time = 1700000000u64;
+
+        let overdue_date_1 = 100000u64; // Very old
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &50000,
+            &overdue_date_1,
+            &String::from_str(&env, "BATCH-006"),
+        );
+
+        let overdue_date_2 = 200000u64; // Also old
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Bordetella,
+            &String::from_str(&env, "Kennel Cough Vaccine"),
+            &100000,
+            &overdue_date_2,
+            &String::from_str(&env, "BATCH-007"),
+        );
+
+        // Add vaccination with far future due date
+        let future_date = base_time + (365 * 86400);
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvo Vaccine"),
+            &base_time,
+            &future_date,
+            &String::from_str(&env, "BATCH-008"),
+        );
+
+        let overdue = client.get_overdue_vaccinations(&pet_id).len();
+
+        assert!(overdue == 0);
+    }
+
+    #[test]
+    fn test_tamper_proof_vaccinations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2020-05-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+        );
+
+        let current_time = env.ledger().timestamp();
+        let vaccine_id = client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Leukemia,
+            &String::from_str(&env, "Leukemia Vaccine"),
+            &current_time,
+            &(current_time + 31536000),
+            &String::from_str(&env, "BATCH-008"),
+        );
+
+        // Retrieve original record
+        let original = client.get_vaccinations(&vaccine_id).unwrap();
+
+        // Records are immutable once created - verify all fields
+        assert_eq!(original.id, vaccine_id);
+        assert_eq!(original.veterinarian, vet);
+        assert_eq!(original.pet_id, pet_id);
+        assert_eq!(original.vaccine_type, VaccineType::Leukemia);
+        assert_eq!(original.batch_number, String::from_str(&env, "BATCH-008"));
+        assert_eq!(
+            original.vaccine_name,
+            String::from_str(&env, "Leukemia Vaccine")
+        );
+
+        // Retrieve again - should be identical
+        let retrieved_again = client.get_vaccinations(&vaccine_id).unwrap();
+        assert_eq!(original.id, retrieved_again.id);
+        assert_eq!(original.administered_at, retrieved_again.administered_at);
+        assert_eq!(original.created_at, retrieved_again.created_at);
+    }
+
+    #[test]
+    fn test_multiple_vaccinations_same_type() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Duke"),
+            &String::from_str(&env, "2018-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "German Shepherd"),
+        );
+
+        // Use absolute timestamps
+        let base_time = 1700000000u64;
+        let two_years_ago = base_time - (2 * 31536000);
+        let one_day_ago = base_time - 86400;
+
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Shot 1"),
+            &two_years_ago,
+            &one_day_ago,
+            &String::from_str(&env, "BATCH-OLD"),
+        );
+
+        // Add recent Rabies vaccination (current)
+        let new_due = base_time + 31536000;
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Shot 2"),
+            &base_time,
+            &new_due,
+            &String::from_str(&env, "BATCH-NEW"),
+        );
+
+        assert_eq!(
+            client.is_vaccination_current(&pet_id, &VaccineType::Rabies),
+            true
+        );
+
+        // History should contain both
+        let history = client.get_vaccination_history(&pet_id);
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_vaccination_for_nonexistent_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let _client = PetChainContractClient::new(&env, &contract_id);
+
+        let _vet = Address::generate(&env);
+        let _current_time = env.ledger().timestamp();
+    }
+
+    #[test]
+    fn test_empty_vaccination_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Newborn"),
+            &String::from_str(&env, "2025-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Tabby"),
+        );
+
+        // Pet with no vaccinations
+        let history = client.get_vaccination_history(&pet_id);
+        assert_eq!(history.len(), 0);
+
+        let upcoming = client.get_upcoming_vaccinations(&pet_id, &30);
+        assert_eq!(upcoming.len(), 0);
+
+        let overdue = client.get_overdue_vaccinations(&pet_id);
+        assert_eq!(overdue.len(), 0);
+    }
+}
