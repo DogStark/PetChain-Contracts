@@ -30,6 +30,14 @@ cargo test
 ```
 This runs the test suite for the contracts. Use it to make sure your changes don't break existing functionality.
 
+#### Gas Optimization Benchmarks
+The contract includes comprehensive gas optimization improvements. Run the gas benchmarks:
+```bash
+cd stellar-contracts
+cargo test gas_benchmarks
+```
+See [GAS_OPTIMIZATION.md](stellar-contracts/GAS_OPTIMIZATION.md) for detailed performance analysis.
+
 #### Deploy to Testnet
 ```bash
 stellar contract deploy \
