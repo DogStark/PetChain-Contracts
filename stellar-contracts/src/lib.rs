@@ -816,3 +816,5 @@ impl PetChainContract {
         accessible_pets
     }
 }
+
+mod test;
