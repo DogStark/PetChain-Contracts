@@ -436,9 +436,10 @@ mod test {
             &String::from_str(&env, "BATCH-008"),
         );
 
-        let overdue = client.get_overdue_vaccinations(&pet_id);
+        let overdue = client.get_overdue_vaccinations(&pet_id).len();
 
         assert!(!overdue.is_empty() || overdue.is_empty()); // Vaccination list retrieved successfully
+        assert!(overdue == 0);
     }
 
     #[test]

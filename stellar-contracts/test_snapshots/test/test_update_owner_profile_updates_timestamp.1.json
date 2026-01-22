@@ -11,33 +11,48 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "register_pet",
+              "function_name": "register_pet_owner",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
+                  "string": "555-1234"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "update_owner_profile",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
+                  "string": "Jane Smith"
                 },
                 {
-                  "string": "Golden Retriever"
+                  "string": "jane@example.com"
+                },
+                {
+                  "string": "555-5678"
                 }
               ]
             }
@@ -51,7 +66,7 @@
   "ledger": {
     "protocol_version": 21,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 1000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -85,61 +100,15 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "OwnerPetIndex"
+                              "symbol": "PetOwner"
                             },
                             {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                                },
-                                {
-                                  "u64": 1
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Pet"
-                            },
-                            {
-                              "u64": 1
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
                         "val": {
                           "map": [
-                            {
-                              "key": {
-                                "symbol": "active"
-                              },
-                              "val": {
-                                "bool": false
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "birthday"
-                              },
-                              "val": {
-                                "string": "2020-01-01"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "breed"
-                              },
-                              "val": {
-                                "string": "Golden Retriever"
-                              }
-                            },
                             {
                               "key": {
                                 "symbol": "created_at"
@@ -150,38 +119,26 @@
                             },
                             {
                               "key": {
-                                "symbol": "emergency_contacts"
+                                "symbol": "email"
                               },
                               "val": {
-                                "vec": []
+                                "string": "jane@example.com"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "gender"
+                                "symbol": "emergency_contact"
                               },
                               "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Male"
-                                  }
-                                ]
+                                "string": "555-5678"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "id"
+                                "symbol": "is_pet_owner"
                               },
                               "val": {
-                                "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "medical_alerts"
-                              },
-                              "val": {
-                                "string": "None"
+                                "bool": true
                               }
                             },
                             {
@@ -189,35 +146,15 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Buddy"
+                                "string": "Jane Smith"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "new_owner"
+                                "symbol": "owner_address"
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "owner"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "species"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Dog"
-                                  }
-                                ]
                               }
                             },
                             {
@@ -225,37 +162,10 @@
                                 "symbol": "updated_at"
                               },
                               "val": {
-                                "u64": 0
+                                "u64": 1000
                               }
                             }
                           ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCount"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCountByOwner"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
                         }
                       }
                     ]
@@ -290,6 +200,39 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 5541220902715666415
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 5541220902715666415
                   }
                 },
                 "durability": "temporary",
@@ -340,7 +283,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "register_pet_owner"
               }
             ],
             "data": {
@@ -349,27 +292,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
-                },
-                {
-                  "string": "Golden Retriever"
+                  "string": "555-1234"
                 }
               ]
             }
@@ -390,11 +319,115 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "register_pet_owner"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_owner_profile"
               }
             ],
             "data": {
-              "u64": 1
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_owner_profile"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "created_at"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "email"
+                  },
+                  "val": {
+                    "string": "john@example.com"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "emergency_contact"
+                  },
+                  "val": {
+                    "string": "555-1234"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "is_pet_owner"
+                  },
+                  "val": {
+                    "bool": true
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "name"
+                  },
+                  "val": {
+                    "string": "John Doe"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "owner_address"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "updated_at"
+                  },
+                  "val": {
+                    "u64": 0
+                  }
+                }
+              ]
             }
           }
         }
@@ -416,11 +449,24 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_pet"
+                "symbol": "update_owner_profile"
               }
             ],
             "data": {
-              "u64": 1
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "string": "Jane Smith"
+                },
+                {
+                  "string": "jane@example.com"
+                },
+                {
+                  "string": "555-5678"
+                }
+              ]
             }
           }
         }
@@ -439,35 +485,60 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_pet"
+                "symbol": "update_owner_profile"
+              }
+            ],
+            "data": {
+              "bool": true
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_owner_profile"
+              }
+            ],
+            "data": {
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_owner_profile"
               }
             ],
             "data": {
               "map": [
-                {
-                  "key": {
-                    "symbol": "active"
-                  },
-                  "val": {
-                    "bool": false
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "birthday"
-                  },
-                  "val": {
-                    "string": "2020-01-01"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "breed"
-                  },
-                  "val": {
-                    "string": "Golden Retriever"
-                  }
-                },
                 {
                   "key": {
                     "symbol": "created_at"
@@ -478,38 +549,26 @@
                 },
                 {
                   "key": {
-                    "symbol": "emergency_contacts"
+                    "symbol": "email"
                   },
                   "val": {
-                    "vec": []
+                    "string": "jane@example.com"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "gender"
+                    "symbol": "emergency_contact"
                   },
                   "val": {
-                    "vec": [
-                      {
-                        "symbol": "Male"
-                      }
-                    ]
+                    "string": "555-5678"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "id"
+                    "symbol": "is_pet_owner"
                   },
                   "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "medical_alerts"
-                  },
-                  "val": {
-                    "string": "None"
+                    "bool": true
                   }
                 },
                 {
@@ -517,35 +576,15 @@
                     "symbol": "name"
                   },
                   "val": {
-                    "string": "Buddy"
+                    "string": "Jane Smith"
                   }
                 },
                 {
                   "key": {
-                    "symbol": "new_owner"
+                    "symbol": "owner_address"
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Dog"
-                      }
-                    ]
                   }
                 },
                 {
@@ -553,7 +592,7 @@
                     "symbol": "updated_at"
                   },
                   "val": {
-                    "u64": 0
+                    "u64": 1000
                   }
                 }
               ]
