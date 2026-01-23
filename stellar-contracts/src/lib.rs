@@ -386,7 +386,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(self, env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
+    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -398,7 +398,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_pet(self, env: Env, id: u64) -> Option<Pet> {
+    pub fn get_pet(env: Env, id: u64) -> Option<Pet> {
         env.storage()
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
@@ -585,7 +585,6 @@ impl PetChainContract {
 
     // Pet Owner Management Functions
     pub fn register_pet_owner(
-        self,
         env: Env,
         owner: Address,
         name: String,
