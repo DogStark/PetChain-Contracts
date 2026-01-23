@@ -290,7 +290,7 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
-        privacy_level: PrivacyLevel, // Added privacy_level parameter
+        privacy_level: PrivacyLevel,
     ) -> u64 {
         owner.require_auth();
 
@@ -302,10 +302,11 @@ impl PetChainContract {
         let pet_id = pet_count.checked_add(1).expect("Pet count overflow");
         let timestamp = env.ledger().timestamp();
 
-        let mut pet = Pet {
+        let empty_bytes = Bytes::new(&env);
+        let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
-            privacy_level, // Set privacy_level
+            privacy_level,
             name: name.clone(),
             birthday: birthday.clone(),
             active: false,
@@ -317,17 +318,13 @@ impl PetChainContract {
             breed: breed.clone(),
             emergency_contacts: Vec::new(&env),
             medical_alerts: String::from_str(&env, ""),
-            encrypted_name: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_birthday: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_breed: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_emergency_contacts: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_medical_alerts: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
+            encrypted_name: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_birthday: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_breed: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_emergency_contacts: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_medical_alerts: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
         };
-        
-        // Store pet without encryption for now (simplified approach)
-        // In production, you would implement proper encryption
-        let alerts_bytes = medical_alerts.as_bytes();
-        // Store pet 
+
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
         Self::add_pet_to_owner_index(&env, &owner, pet_id);
