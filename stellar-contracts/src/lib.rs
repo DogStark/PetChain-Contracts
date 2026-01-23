@@ -353,30 +353,13 @@ impl PetChainContract {
         {
             pet.owner.require_auth();
 
-            let key = self.get_encryption_key(&env);
-
-            // Encrypt name
-            let name_bytes = name.as_bytes();
-            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
-            pet.encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
-
-            // Encrypt birthday
-            let birthday_bytes = birthday.as_bytes();
-            let (birthday_nonce, birthday_ciphertext) = encrypt_sensitive_data(&env, birthday_bytes, &key);
-            pet.encrypted_birthday = EncryptedData { nonce: birthday_nonce, ciphertext: birthday_ciphertext };
-
-            // Update non-encrypted fields
+            // Update fields
+            pet.name = name;
+            pet.birthday = birthday;
             pet.gender = gender;
             pet.species = species;
-
-            // Encrypt breed
-            let breed_bytes = breed.as_bytes();
-            let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, breed_bytes, &key);
-            pet.encrypted_breed = EncryptedData { nonce: breed_nonce, ciphertext: breed_ciphertext };
-            
-            // Update privacy level
-            pet.privacy_level = privacy_level; // Set the new privacy level
-            
+            pet.breed = breed;
+            pet.privacy_level = privacy_level;
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -387,6 +370,7 @@ impl PetChainContract {
     }
 
     pub fn set_emergency_contacts(
+        &self,
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContactInfo>,
@@ -397,17 +381,18 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
-            //  Solo el dueño puede modificar la info
             pet.owner.require_auth();
 
-            let key = self.get_encryption_key(&env);
+            // Update emergency contacts and medical alerts
+            pet.emergency_contacts = contacts;
+            pet.medical_alerts = medical_notes;
+            pet.updated_at = env.ledger().timestamp();
 
-            // Encrypt emergency_contacts (Vec<EmergencyContactInfo>)
-            // Serialize the Vec to bytes first.
-            let val_contacts = env.to_val(contacts.clone()); // Clone is needed because to_val might consume.
-            let contacts_bytes: Vec<u8> = val_contacts.try_into(env.clone()).unwrap_or_else(|_| panic_with_error!(&env, "Failed to serialize emergency contacts"));
-            let (contacts_nonce, contacts_ciphertext) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
-            pet.encrypted_emergency_contacts = EncryptedData { nonce: contacts_nonce, ciphertext: contacts_ciphertext };
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        }
+    }
+
+    pub fn get_emergency_info(&self, env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
 
             // Encrypt medical_alerts
             let alerts_bytes = medical_notes.as_bytes();
