@@ -1759,8 +1759,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -1807,9 +1807,9 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let authorized_vet = Address::generate(&env);
-        let unauthorized_vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let authorized_vet = Address::random(&env);
+        let unauthorized_vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -1850,8 +1850,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -1897,8 +1897,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -1949,8 +1949,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -2020,9 +2020,9 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
-        let unauthorized_user = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+        let unauthorized_user = Address::random(&env);
 
         // Register pet with Private privacy level
         let pet_id = PetChainContract::register_pet(
@@ -2067,9 +2067,9 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet1 = Address::generate(&env);
-        let vet2 = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet1 = Address::random(&env);
+        let vet2 = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -2127,8 +2127,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Register pet
         let pet_id = PetChainContract::register_pet(
@@ -2183,8 +2183,8 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
