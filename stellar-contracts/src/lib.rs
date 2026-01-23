@@ -93,6 +93,18 @@ pub struct Vaccination {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct MedicalRecord {
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub vet_address: Address,
+    pub diagnosis: String,
+    pub treatment: String,
+    pub medications: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Pet(u64),
     PetCount,
@@ -108,6 +120,18 @@ pub enum DataKey {
     PetVaccinationIndex((Address, u64)),
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+
+    // Medical Record DataKey
+    MedicalRecord(u64),
+    MedicalRecordCount,
+    PetMedicalRecordCount(u64),
+    PetMedicalRecordIndex((u64, u64)),
+    VetMedicalRecords(Address),
+    VetMedicalRecordCount(Address),
+    VetMedicalRecordIndex((Address, u64)),
+    AuthorizedVets,
+    VetCount,
+    VetIndex(u64),
 
     // Access Control keys
 
@@ -1451,6 +1475,319 @@ impl PetChainContract {
         }
 
         accessible_pets
+    }
+
+    // ============== MEDICAL RECORD FUNCTIONS ==============
+
+    /// Authorizes a veterinarian to add medical records
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vet_address` - Address of the veterinarian to authorize
+    pub fn authorize_veterinarian(env: Env, vet_address: Address) {
+        // Only contract owner or authorized admin can authorize vets
+        // For now, any caller can authorize (this should be restricted to contract admin)
+        
+        let vet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0);
+        let new_vet_count = vet_count.checked_add(1).expect("Vet count overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VetCount, &new_vet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetIndex(new_vet_count), &vet_address);
+    }
+
+    /// Checks if a veterinarian is authorized
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vet_address` - Address of the veterinarian
+    /// 
+    /// # Returns
+    /// true if the veterinarian is authorized, false otherwise
+    pub fn is_veterinarian_authorized(env: Env, vet_address: Address) -> bool {
+        let vet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0);
+
+        for i in 1..=vet_count {
+            if let Some(authorized_vet) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::VetIndex(i))
+            {
+                if authorized_vet == vet_address {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Adds a medical record for a pet
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `pet_id` - The ID of the pet
+    /// * `diagnosis` - Diagnosis information
+    /// * `treatment` - Treatment information
+    /// * `medications` - Medications prescribed
+    /// 
+    /// # Returns
+    /// The ID of the created medical record
+    pub fn add_medical_record(
+        env: Env,
+        pet_id: u64,
+        diagnosis: String,
+        treatment: String,
+        medications: String,
+    ) -> u64 {
+        let vet_address = env.current_contract_address();
+        vet_address.require_auth();
+
+        // Verify that the veterinarian is authorized
+        if !Self::is_veterinarian_authorized(env.clone(), vet_address.clone()) {
+            panic!("Unauthorized: veterinarian is not registered");
+        }
+
+        // Verify that the pet exists
+        let pet_exists: Option<Pet> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id));
+
+        if pet_exists.is_none() {
+            panic!("Pet not found");
+        }
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MedicalRecordCount)
+            .unwrap_or(0);
+        let record_id = record_count.checked_add(1).expect("Record count overflow");
+        let timestamp = env.ledger().timestamp();
+
+        let medical_record = MedicalRecord {
+            record_id,
+            pet_id,
+            vet_address: vet_address.clone(),
+            diagnosis,
+            treatment,
+            medications,
+            timestamp,
+        };
+
+        // Store the medical record
+        env.storage()
+            .instance()
+            .set(&DataKey::MedicalRecord(record_id), &medical_record);
+        env.storage()
+            .instance()
+            .set(&DataKey::MedicalRecordCount, &record_id);
+
+        // Update pet medical record indexes
+        let pet_record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_record_count = pet_record_count.checked_add(1).expect("Pet record count overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetMedicalRecordCount(pet_id), &new_pet_record_count);
+        env.storage().instance().set(
+            &DataKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)),
+            &record_id,
+        );
+
+        // Update vet medical record indexes
+        let vet_record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetMedicalRecordCount(vet_address.clone()))
+            .unwrap_or(0);
+        let new_vet_record_count = vet_record_count.checked_add(1).expect("Vet record count overflow");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VetMedicalRecordCount(vet_address.clone()), &new_vet_record_count);
+        env.storage().instance().set(
+            &DataKey::VetMedicalRecordIndex((vet_address, new_vet_record_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    /// Retrieves all medical records for a pet
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `pet_id` - The ID of the pet
+    /// 
+    /// # Returns
+    /// A vector of medical records for the specified pet
+    pub fn get_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
+        // Check if pet exists
+        let pet_storage: Option<Pet> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id));
+
+        if pet_storage.is_none() {
+            return Vec::new(&env);
+        }
+
+        let pet = pet_storage.unwrap();
+        let caller = env.current_contract_address();
+
+        // Verify access control - only pet owner or authorized users can view
+        let is_owner = pet.owner == caller;
+        let has_access = if !is_owner {
+            let access_level = Self::check_access(env.clone(), pet_id, caller.clone());
+            access_level != AccessLevel::None
+        } else {
+            true
+        };
+
+        // Check privacy level if not owner
+        let can_access = if !is_owner {
+            has_access || pet.privacy_level == PrivacyLevel::Public
+        } else {
+            true
+        };
+
+        if !can_access {
+            return Vec::new(&env);
+        }
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut records = Vec::new(&env);
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+                {
+                    records.push_back(record);
+                }
+            }
+        }
+
+        records
+    }
+
+    /// Retrieves a specific medical record by its ID
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `record_id` - The ID of the medical record
+    /// 
+    /// # Returns
+    /// The medical record if found and caller has access, None otherwise
+    pub fn get_record_by_id(env: Env, record_id: u64) -> Option<MedicalRecord> {
+        let record_storage: Option<MedicalRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MedicalRecord(record_id));
+
+        if record_storage.is_none() {
+            return None;
+        }
+
+        let record = record_storage.unwrap();
+        let pet_id = record.pet_id;
+
+        // Check if pet exists
+        let pet_storage: Option<Pet> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id));
+
+        if pet_storage.is_none() {
+            return None;
+        }
+
+        let pet = pet_storage.unwrap();
+        let caller = env.current_contract_address();
+
+        // Verify access control
+        let is_owner = pet.owner == caller;
+        let is_vet = record.vet_address == caller;
+
+        if is_owner || is_vet {
+            return Some(record);
+        }
+
+        // Check for granted access
+        let access_level = Self::check_access(env.clone(), pet_id, caller.clone());
+        if access_level != AccessLevel::None {
+            return Some(record);
+        }
+
+        // Check privacy level
+        if pet.privacy_level == PrivacyLevel::Public {
+            return Some(record);
+        }
+
+        None
+    }
+
+    /// Retrieves all medical records added by a specific veterinarian
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vet_address` - The address of the veterinarian
+    /// 
+    /// # Returns
+    /// A vector of medical records created by the veterinarian
+    pub fn get_records_by_veterinarian(env: Env, vet_address: Address) -> Vec<MedicalRecord> {
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetMedicalRecordCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        let mut records = Vec::new(&env);
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::VetMedicalRecordIndex((vet_address.clone(), i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+                {
+                    records.push_back(record);
+                }
+            }
+        }
+
+        records
     }
 }
 mod test;
