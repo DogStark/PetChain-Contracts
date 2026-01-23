@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +152,45 @@ pub struct AccessGrant {
     pub is_active: bool,
 }
 
+// --- EVENTS ---
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetRegisteredEvent {
+    pub pet_id: u64,
+    pub owner: Address,
+    pub species: Species,
+    pub privacy_level: PrivacyLevel,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAddedEvent {
+    pub pet_id: u64,
+    pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationAddedEvent {
+    pub pet_id: u64,
+    pub vaccine_type: VaccineType,
+    pub veterinarian: Address,
+    pub administered_at: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetTransferredEvent {
+    pub pet_id: u64,
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub timestamp: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessGrantedEvent {
@@ -179,39 +218,6 @@ pub struct AccessExpiredEvent {
     pub grantee: Address,
     pub expired_at: u64,
 }
-
-// --- NEW EVENTS ADDED BELOW ---
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PetRegisteredEvent {
-    pub pet_id: u64,
-    pub owner: Address,
-    pub species: Species,
-    pub privacy_level: PrivacyLevel,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VaccinationAddedEvent {
-    pub pet_id: u64,
-    pub vaccine_type: VaccineType,
-    pub veterinarian: Address,
-    pub administered_at: u64,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PetTransferredEvent {
-    pub pet_id: u64,
-    pub old_owner: Address,
-    pub new_owner: Address,
-    pub timestamp: u64,
-}
-
-// ------------------------------
 
 #[contract]
 pub struct PetChainContract;
@@ -442,6 +448,16 @@ impl PetChainContract {
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            // EMIT EVENT: MedicalRecordAdded
+            env.events().publish(
+                (String::from_str(&env, "MEDICAL_RECORD_ADDED"),),
+                MedicalRecordAddedEvent {
+                    pet_id,
+                    updated_by: pet.owner.clone(),
+                    timestamp: pet.updated_at,
+                },
+            );
         } else {
             panic!("Pet not found");
         }
