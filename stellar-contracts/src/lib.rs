@@ -593,12 +593,13 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
+        let empty_bytes = Bytes::new(&env);
         let pet_owner = PetOwner {
             owner_address: owner.clone(),
             privacy_level: PrivacyLevel::Private,
-            encrypted_name: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_email: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
-            encrypted_emergency_contact: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
+            encrypted_name: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_email: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_emergency_contact: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
             created_at: env.ledger().timestamp(),
             updated_at: env.ledger().timestamp(),
             is_pet_owner: true,
