@@ -916,6 +916,94 @@ impl PetChainContract {
             .get(&DataKey::Vaccination(vaccine_id))
     }
 
+    /// Retrieves the complete vaccination history for a specific pet
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `pet_id` - The ID of the pet
+    /// 
+    /// # Returns
+    /// A Span of vaccination records for the pet, or empty span if pet has no vaccinations
+    pub fn get_pet_vaccinations(env: Env, pet_id: u64) -> soroban_sdk::Vec<Vaccination> {
+        // Check if pet exists
+        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+        
+        if pet_storage.is_none() {
+            // Pet does not exist, return empty span
+            return soroban_sdk::Vec::new(&env);
+        }
+
+        // Get total vaccination count for this pet
+        let pet_vax_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+
+        // If no vaccinations, return empty span
+        if pet_vax_count == 0 {
+            return soroban_sdk::Vec::new(&env);
+        }
+
+        let mut vaccinations = soroban_sdk::Vec::new(&env);
+        let key = self.get_encryption_key(&env);
+
+        // Iterate through all vaccinations for this pet
+        for i in 1..=pet_vax_count {
+            if let Some(vax_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                // Fetch complete vaccination details from storage
+                if let Some(vaccination_record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                {
+                    // Verify this vaccination belongs to the correct pet
+                    if vaccination_record.pet_id == pet_id {
+                        // Decrypt sensitive fields
+                        let vaccine_name = if let Some(ref encrypted_data) = vaccination_record.encrypted_vaccine_name {
+                            let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
+                                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt vaccine name for vaccination ID {}", vaccination_record.id));
+                            String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for vaccine name for vaccination ID {}", vaccination_record.id))
+                        } else {
+                            vaccination_record.vaccine_name.clone().unwrap_or_default()
+                        };
+
+                        let batch_number = if let Some(ref encrypted_data) = vaccination_record.encrypted_batch_number {
+                            let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
+                                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt batch number for vaccination ID {}", vaccination_record.id));
+                            String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for batch number for vaccination ID {}", vaccination_record.id))
+                        } else {
+                            vaccination_record.batch_number.clone().unwrap_or_default()
+                        };
+
+                        // Build properly structured vaccination record with decrypted data
+                        let decrypted_vaccination = Vaccination {
+                            id: vaccination_record.id,
+                            pet_id: vaccination_record.pet_id,
+                            veterinarian: vaccination_record.veterinarian,
+                            vaccine_type: vaccination_record.vaccine_type,
+                            vaccine_name: Some(vaccine_name), // Decrypted value
+                            encrypted_vaccine_name: None, // Encrypted field set to None after decryption
+                            administered_at: vaccination_record.administered_at,
+                            next_due_date: vaccination_record.next_due_date,
+                            batch_number: Some(batch_number), // Decrypted value
+                            encrypted_batch_number: None, // Encrypted field set to None after decryption
+                            created_at: vaccination_record.created_at,
+                        };
+
+                        vaccinations.push_back(decrypted_vaccination);
+                    }
+                }
+            }
+        }
+
+        vaccinations
+    }
+
             // Get complete vaccination history for a pet
             pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
                 // Fetch pet data and check authorization first
