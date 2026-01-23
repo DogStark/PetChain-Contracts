@@ -282,7 +282,7 @@ impl PetChainContract {
     }
 
     pub fn register_pet(
-        &self,
+        self,
         env: Env,
         owner: Address,
         name: String,
