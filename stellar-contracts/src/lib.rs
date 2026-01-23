@@ -214,7 +214,7 @@ impl PetChainContract {
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
-            name: name.clone(),
+            name,
             birthday,
             active: false,
             created_at: timestamp,
@@ -468,8 +468,8 @@ impl PetChainContract {
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
-            veterinarian: veterinarian.clone(),
-            vaccine_type: vaccine_type.clone(),
+            veterinarian,
+            vaccine_type,
             vaccine_name,
             administered_at,
             next_due_date,
@@ -895,5 +895,7 @@ impl PetChainContract {
         accessible_pets
     }
 }
+
+mod test;
 
 mod test;
