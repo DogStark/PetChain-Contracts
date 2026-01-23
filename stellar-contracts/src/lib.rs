@@ -655,6 +655,7 @@ impl PetChainContract {
 
     // Pet Owner Management Functions
     pub fn register_pet_owner(
+        &self,
         env: Env,
         owner: Address,
         name: String,
@@ -663,21 +664,25 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
-        let key = self.get_encryption_key(&env);
+        let pet_owner = PetOwner {
+            owner_address: owner.clone(),
+            privacy_level: PrivacyLevel::Private,
+            encrypted_name: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
+            encrypted_email: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
+            encrypted_emergency_contact: EncryptedData { nonce: Vec::new(&env), ciphertext: Vec::new(&env) },
+            created_at: env.ledger().timestamp(),
+            updated_at: env.ledger().timestamp(),
+            is_pet_owner: true,
+        };
 
-        // Encrypt name
-        let name_bytes = name.as_bytes();
-        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
-        let encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+        env.storage()
+            .instance()
+            .set(&DataKey::PetOwner(owner.clone()), &pet_owner);
+    }
 
-        // Encrypt email
-        let email_bytes = email.as_bytes();
-        let (email_nonce, email_ciphertext) = encrypt_sensitive_data(&env, email_bytes, &key);
-        let encrypted_email = EncryptedData { nonce: email_nonce, ciphertext: email_ciphertext };
-
-        // Encrypt emergency_contact
-        let emergency_contact_bytes = emergency_contact.as_bytes();
-        let (emergency_contact_nonce, emergency_contact_ciphertext) = encrypt_sensitive_data(&env, emergency_contact_bytes, &key);
+    pub fn update_owner_profile(
+        &self,
+        env: Env,
         let encrypted_emergency_contact = EncryptedData { nonce: emergency_contact_nonce, ciphertext: emergency_contact_ciphertext };
 
         let timestamp = env.ledger().timestamp();
