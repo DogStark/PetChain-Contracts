@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 soroban-sdk = "21.0.0"
 aes-gcm = { version = "0.10.0", default-features = false, features = ["alloc"] }
 rand_core = { version = "0.6.0", default-features = false }
-hex = "0.4.3"
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.2", features = ["custom"] }
 
 [dev-dependencies]
