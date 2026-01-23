@@ -924,7 +924,7 @@ impl PetChainContract {
     /// 
     /// # Returns
     /// A Span of vaccination records for the pet, or empty span if pet has no vaccinations
-    pub fn get_pet_vaccinations(&self, env: Env, pet_id: u64) -> soroban_sdk::Vec<Vaccination> {
+    pub fn get_pet_vaccinations(env: Env, pet_id: u64) -> soroban_sdk::Vec<Vaccination> {
         // Check if pet exists
         let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
         
