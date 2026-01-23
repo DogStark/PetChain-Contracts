@@ -199,10 +199,9 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &new_count);
-        env.storage().instance().set(
-            &DataKey::OwnerPetIndex((owner.clone(), new_count)),
-            &pet_id,
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::OwnerPetIndex((owner.clone(), new_count)), &pet_id);
     }
 
     fn remove_pet_from_owner_index(env: &Env, owner: &Address, pet_id: u64) {
@@ -588,6 +587,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
+            pet.owner.require_auth();
             pet.active = true;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -620,12 +620,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn batch_transfer_pet_ownership(
-        env: Env,
-        owner: Address,
-        pet_ids: Vec<u64>,
-        to: Address,
-    ) {
+    pub fn batch_transfer_pet_ownership(env: Env, owner: Address, pet_ids: Vec<u64>, to: Address) {
         owner.require_auth();
         let timestamp = env.ledger().timestamp();
 
@@ -1311,9 +1306,7 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
             .expect("Pet not found");
 
-        if pet.owner != env.clone().current_contract_address() {
-            pet.owner.require_auth();
-        }
+        pet.owner.require_auth();
 
         env.storage()
             .instance()
