@@ -17,27 +17,27 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Max"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Female"
+                      "symbol": "Male"
                     }
                   ]
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Cat"
+                      "symbol": "Dog"
                     }
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Labrador"
                 }
               ]
             }
@@ -46,8 +46,88 @@
         }
       ]
     ],
-    [],
-    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "set_emergency_contacts",
+              "args": [
+                {
+                  "u64": 1
+                },
+                {
+                  "vec": [
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "John Doe"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-1234"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Owner"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Jane Smith"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-5678"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vet"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "string": "Allergic to penicillin"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
     []
   ],
   "ledger": {
@@ -131,7 +211,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2025-01-01"
+                                "string": "2020-01-01"
                               }
                             },
                             {
@@ -139,7 +219,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Tabby"
+                                "string": "Labrador"
                               }
                             },
                             {
@@ -155,7 +235,64 @@
                                 "symbol": "emergency_contacts"
                               },
                               "val": {
-                                "vec": []
+                                "vec": [
+                                  {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "name"
+                                        },
+                                        "val": {
+                                          "string": "John Doe"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "phone"
+                                        },
+                                        "val": {
+                                          "string": "555-1234"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "relationship"
+                                        },
+                                        "val": {
+                                          "string": "Owner"
+                                        }
+                                      }
+                                    ]
+                                  },
+                                  {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "name"
+                                        },
+                                        "val": {
+                                          "string": "Jane Smith"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "phone"
+                                        },
+                                        "val": {
+                                          "string": "555-5678"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "relationship"
+                                        },
+                                        "val": {
+                                          "string": "Vet"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                ]
                               }
                             },
                             {
@@ -165,7 +302,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Female"
+                                    "symbol": "Male"
                                   }
                                 ]
                               }
@@ -183,7 +320,7 @@
                                 "symbol": "medical_alerts"
                               },
                               "val": {
-                                "string": "None"
+                                "string": "Allergic to penicillin"
                               }
                             },
                             {
@@ -191,7 +328,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Newborn"
+                                "string": "Max"
                               }
                             },
                             {
@@ -217,7 +354,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Cat"
+                                    "symbol": "Dog"
                                   }
                                 ]
                               }
@@ -305,6 +442,39 @@
       ],
       [
         {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 5541220902715666415
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 5541220902715666415
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
           "contract_code": {
             "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           }
@@ -351,27 +521,27 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Max"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Female"
+                      "symbol": "Male"
                     }
                   ]
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Cat"
+                      "symbol": "Dog"
                     }
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Labrador"
                 }
               ]
             }
@@ -384,77 +554,6 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-<<<<<<< HEAD
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetRegistered"
-              },
-              {
-                "u64": 1
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "name"
-                  },
-                  "val": {
-                    "string": "Newborn"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Cat"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-=======
->>>>>>> origin/main
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -489,56 +588,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
+                "symbol": "set_emergency_contacts"
               }
             ],
             "data": {
@@ -547,7 +597,67 @@
                   "u64": 1
                 },
                 {
-                  "u64": 30
+                  "vec": [
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "John Doe"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-1234"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Owner"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Jane Smith"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-5678"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vet"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "string": "Allergic to penicillin"
                 }
               ]
             }
@@ -568,12 +678,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_upcoming_vaccinations"
+                "symbol": "set_emergency_contacts"
               }
             ],
-            "data": {
-              "vec": []
-            }
+            "data": "void"
           }
         }
       },
@@ -594,7 +702,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_overdue_vaccinations"
+                "symbol": "get_emergency_info"
               }
             ],
             "data": {
@@ -617,11 +725,75 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_overdue_vaccinations"
+                "symbol": "get_emergency_info"
               }
             ],
             "data": {
-              "vec": []
+              "vec": [
+                {
+                  "vec": [
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "John Doe"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-1234"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Owner"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "map": [
+                        {
+                          "key": {
+                            "symbol": "name"
+                          },
+                          "val": {
+                            "string": "Jane Smith"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "phone"
+                          },
+                          "val": {
+                            "string": "555-5678"
+                          }
+                        },
+                        {
+                          "key": {
+                            "symbol": "relationship"
+                          },
+                          "val": {
+                            "string": "Vet"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "string": "Allergic to penicillin"
+                }
+              ]
             }
           }
         }

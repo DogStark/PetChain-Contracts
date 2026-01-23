@@ -17,10 +17,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Luna"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Siamese"
                 }
               ]
             }
@@ -46,8 +46,6 @@
         }
       ]
     ],
-    [],
-    [],
     []
   ],
   "ledger": {
@@ -131,7 +129,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2025-01-01"
+                                "string": "2020-01-01"
                               }
                             },
                             {
@@ -139,7 +137,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Tabby"
+                                "string": "Siamese"
                               }
                             },
                             {
@@ -191,7 +189,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Newborn"
+                                "string": "Luna"
                               }
                             },
                             {
@@ -351,10 +349,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Luna"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -371,7 +369,7 @@
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Siamese"
                 }
               ]
             }
@@ -384,77 +382,6 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-<<<<<<< HEAD
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetRegistered"
-              },
-              {
-                "u64": 1
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "name"
-                  },
-                  "val": {
-                    "string": "Newborn"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Cat"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-=======
->>>>>>> origin/main
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -489,7 +416,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_vaccination_history"
+                "symbol": "get_pet_owner"
               }
             ],
             "data": {
@@ -512,116 +439,11 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_vaccination_history"
+                "symbol": "get_pet_owner"
               }
             ],
             "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "u64": 1
-                },
-                {
-                  "u64": 30
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }

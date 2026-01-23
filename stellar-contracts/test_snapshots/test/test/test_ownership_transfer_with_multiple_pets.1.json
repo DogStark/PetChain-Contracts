@@ -17,10 +17,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Echo"
+                  "string": "Pet 1"
                 },
                 {
-                  "string": "2015-08-08"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "Retriever"
+                  "string": "Breed 1"
                 }
               ]
             }
@@ -59,10 +59,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Zara"
+                  "string": "Pet 2"
                 },
                 {
-                  "string": "2014-09-09"
+                  "string": "2020-02-02"
                 },
                 {
                   "vec": [
@@ -79,7 +79,49 @@
                   ]
                 },
                 {
-                  "string": "Maine Coon"
+                  "string": "Breed 2"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "register_pet",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "string": "Pet 3"
+                },
+                {
+                  "string": "2020-03-03"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Male"
+                    }
+                  ]
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Bird"
+                    }
+                  ]
+                },
+                {
+                  "string": "Breed 3"
                 }
               ]
             }
@@ -112,25 +154,6 @@
     ],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "get_all_pets_by_owner",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
         {
           "function": {
@@ -148,6 +171,9 @@
                     },
                     {
                       "u64": 2
+                    },
+                    {
+                      "u64": 3
                     }
                   ]
                 }
@@ -278,6 +304,28 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "OwnerPetIndex"
+                            },
+                            {
+                              "vec": [
+                                {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                },
+                                {
+                                  "u64": 3
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 3
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Pet"
                             },
                             {
@@ -300,7 +348,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2015-08-08"
+                                "string": "2020-01-01"
                               }
                             },
                             {
@@ -308,7 +356,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Retriever"
+                                "string": "Breed 1"
                               }
                             },
                             {
@@ -360,7 +408,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Echo"
+                                "string": "Pet 1"
                               }
                             },
                             {
@@ -428,7 +476,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2014-09-09"
+                                "string": "2020-02-02"
                               }
                             },
                             {
@@ -436,7 +484,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Maine Coon"
+                                "string": "Breed 2"
                               }
                             },
                             {
@@ -488,7 +536,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Zara"
+                                "string": "Pet 2"
                               }
                             },
                             {
@@ -534,12 +582,140 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "Pet"
+                            },
+                            {
+                              "u64": 3
+                            }
+                          ]
+                        },
+                        "val": {
+                          "map": [
+                            {
+                              "key": {
+                                "symbol": "active"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "birthday"
+                              },
+                              "val": {
+                                "string": "2020-03-03"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "breed"
+                              },
+                              "val": {
+                                "string": "Breed 3"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "created_at"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "emergency_contacts"
+                              },
+                              "val": {
+                                "vec": []
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "gender"
+                              },
+                              "val": {
+                                "vec": [
+                                  {
+                                    "symbol": "Male"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "id"
+                              },
+                              "val": {
+                                "u64": 3
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "medical_alerts"
+                              },
+                              "val": {
+                                "string": "None"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "name"
+                              },
+                              "val": {
+                                "string": "Pet 3"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "new_owner"
+                              },
+                              "val": {
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "owner"
+                              },
+                              "val": {
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "species"
+                              },
+                              "val": {
+                                "vec": [
+                                  {
+                                    "symbol": "Bird"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "updated_at"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "PetCount"
                             }
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 3
                         }
                       },
                       {
@@ -569,7 +745,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 3
                         }
                       }
                     ]
@@ -861,10 +1037,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Echo"
+                  "string": "Pet 1"
                 },
                 {
-                  "string": "2015-08-08"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -881,7 +1057,7 @@
                   ]
                 },
                 {
-                  "string": "Retriever"
+                  "string": "Breed 1"
                 }
               ]
             }
@@ -894,77 +1070,6 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-<<<<<<< HEAD
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetRegistered"
-              },
-              {
-                "u64": 1
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "name"
-                  },
-                  "val": {
-                    "string": "Echo"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Dog"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-=======
->>>>>>> origin/main
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -1008,10 +1113,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Zara"
+                  "string": "Pet 2"
                 },
                 {
-                  "string": "2014-09-09"
+                  "string": "2020-02-02"
                 },
                 {
                   "vec": [
@@ -1028,7 +1133,7 @@
                   ]
                 },
                 {
-                  "string": "Maine Coon"
+                  "string": "Breed 2"
                 }
               ]
             }
@@ -1041,77 +1146,6 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-<<<<<<< HEAD
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetRegistered"
-              },
-              {
-                "u64": 2
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "name"
-                  },
-                  "val": {
-                    "string": "Zara"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 2
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "species"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Cat"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-=======
->>>>>>> origin/main
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -1125,6 +1159,82 @@
             ],
             "data": {
               "u64": 2
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "register_pet"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "string": "Pet 3"
+                },
+                {
+                  "string": "2020-03-03"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Male"
+                    }
+                  ]
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Bird"
+                    }
+                  ]
+                },
+                {
+                  "string": "Breed 3"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "register_pet"
+              }
+            ],
+            "data": {
+              "u64": 3
             }
           }
         }
@@ -1200,288 +1310,6 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_all_pets_by_owner"
-              }
-            ],
-            "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_all_pets_by_owner"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "active"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "birthday"
-                      },
-                      "val": {
-                        "string": "2015-08-08"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "breed"
-                      },
-                      "val": {
-                        "string": "Retriever"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "created_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "emergency_contacts"
-                      },
-                      "val": {
-                        "vec": []
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "gender"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Male"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "id"
-                      },
-                      "val": {
-                        "u64": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "medical_alerts"
-                      },
-                      "val": {
-                        "string": "None"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "name"
-                      },
-                      "val": {
-                        "string": "Echo"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "new_owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "species"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Dog"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "updated_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    }
-                  ]
-                },
-                {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "active"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "birthday"
-                      },
-                      "val": {
-                        "string": "2014-09-09"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "breed"
-                      },
-                      "val": {
-                        "string": "Maine Coon"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "created_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "emergency_contacts"
-                      },
-                      "val": {
-                        "vec": []
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "gender"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Female"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "id"
-                      },
-                      "val": {
-                        "u64": 2
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "medical_alerts"
-                      },
-                      "val": {
-                        "string": "None"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "name"
-                      },
-                      "val": {
-                        "string": "Zara"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "new_owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "species"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Cat"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "updated_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
                 "symbol": "batch_accept_pet_transfers"
               }
             ],
@@ -1497,6 +1325,9 @@
                     },
                     {
                       "u64": 2
+                    },
+                    {
+                      "u64": 3
                     }
                   ]
                 }
@@ -1511,121 +1342,6 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-<<<<<<< HEAD
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetOwnershipTransferred"
-              },
-              {
-                "u64": 1
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "new_owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "old_owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "string": "PetOwnershipTransferred"
-              },
-              {
-                "u64": 2
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "new_owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "old_owner"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 2
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "timestamp"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-=======
->>>>>>> origin/main
         "type_": "diagnostic",
         "body": {
           "v0": {
@@ -1750,7 +1466,7 @@
                         "symbol": "birthday"
                       },
                       "val": {
-                        "string": "2015-08-08"
+                        "string": "2020-01-01"
                       }
                     },
                     {
@@ -1758,7 +1474,7 @@
                         "symbol": "breed"
                       },
                       "val": {
-                        "string": "Retriever"
+                        "string": "Breed 1"
                       }
                     },
                     {
@@ -1810,7 +1526,7 @@
                         "symbol": "name"
                       },
                       "val": {
-                        "string": "Echo"
+                        "string": "Pet 1"
                       }
                     },
                     {
@@ -1866,7 +1582,7 @@
                         "symbol": "birthday"
                       },
                       "val": {
-                        "string": "2014-09-09"
+                        "string": "2020-02-02"
                       }
                     },
                     {
@@ -1874,7 +1590,7 @@
                         "symbol": "breed"
                       },
                       "val": {
-                        "string": "Maine Coon"
+                        "string": "Breed 2"
                       }
                     },
                     {
@@ -1926,7 +1642,7 @@
                         "symbol": "name"
                       },
                       "val": {
-                        "string": "Zara"
+                        "string": "Pet 2"
                       }
                     },
                     {
@@ -1953,6 +1669,122 @@
                         "vec": [
                           {
                             "symbol": "Cat"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "updated_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    }
+                  ]
+                },
+                {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "active"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "birthday"
+                      },
+                      "val": {
+                        "string": "2020-03-03"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "breed"
+                      },
+                      "val": {
+                        "string": "Breed 3"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "emergency_contacts"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "gender"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Male"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "id"
+                      },
+                      "val": {
+                        "u64": 3
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "medical_alerts"
+                      },
+                      "val": {
+                        "string": "None"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Pet 3"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "new_owner"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "owner"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "species"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Bird"
                           }
                         ]
                       }
