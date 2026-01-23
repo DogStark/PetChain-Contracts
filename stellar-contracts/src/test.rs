@@ -34,6 +34,14 @@ mod test {
     use crate::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
+    // Helper function to create test addresses
+    fn create_test_address(env: &Env, id: u32) -> Address {
+        Address::from_string(&String::from_str(
+            env,
+            &format!("GDZST3XVCDTUJ76ZAV2HA72KYQM4ZV2F5VRCXJ7WUZSJZN26PHFPE3T2"),
+        ))
+    }
+
     // ============ PET REGISTRATION TESTS ============
 
     /// Tests basic pet registration functionality.
@@ -292,7 +300,8 @@ mod test {
 
         // Test verifying with non-existent data_id
         let non_existent_id: u64 = 999;
-        let is_verified_nonexistent = client.verify_offchain_data_hash(&non_existent_id, &correct_hash);
+        let is_verified_nonexistent =
+            client.verify_offchain_data_hash(&non_existent_id, &correct_hash);
         assert_eq!(is_verified_nonexistent, false);
     }
 
@@ -1749,7 +1758,7 @@ mod test {
     fn test_medical_record_immutability() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -1797,7 +1806,7 @@ mod test {
     fn test_only_verified_vets_can_add_records() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let authorized_vet = Address::random(&env);
         let unauthorized_vet = Address::random(&env);
@@ -1840,7 +1849,7 @@ mod test {
     fn test_pet_owner_can_view_medical_records() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -1887,7 +1896,7 @@ mod test {
     fn test_get_record_by_id() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -1939,7 +1948,7 @@ mod test {
     fn test_get_all_medical_records_for_pet() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -2010,7 +2019,7 @@ mod test {
     fn test_medical_record_access_control() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
         let unauthorized_user = Address::random(&env);
@@ -2057,7 +2066,7 @@ mod test {
     fn test_records_by_veterinarian() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet1 = Address::random(&env);
         let vet2 = Address::random(&env);
@@ -2117,7 +2126,7 @@ mod test {
     fn test_medical_record_timestamps() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -2173,7 +2182,7 @@ mod test {
     fn test_medical_records_for_nonexistent_pet() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let owner = Address::random(&env);
         let vet = Address::random(&env);
 
@@ -2185,4 +2194,3 @@ mod test {
         assert_eq!(records.len(), 0);
     }
 }
-

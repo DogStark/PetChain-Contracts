@@ -13,9 +13,9 @@ pub enum Species {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PrivacyLevel {
-    Public, // Accessible to anyone
+    Public,     // Accessible to anyone
     Restricted, // Accessible to granted access (e.g., vets, owners)
-    Private, // Accessible only to the owner
+    Private,    // Accessible only to the owner
 }
 
 #[contracttype]
@@ -317,11 +317,26 @@ impl PetChainContract {
             breed: breed.clone(),
             emergency_contacts: Vec::new(&env),
             medical_alerts: String::from_str(&env, ""),
-            encrypted_name: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_birthday: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_breed: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_emergency_contacts: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_medical_alerts: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_name: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_birthday: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_breed: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_emergency_contacts: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_medical_alerts: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -386,7 +401,10 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
+    pub fn get_emergency_info(
+        env: Env,
+        pet_id: u64,
+    ) -> Option<(Vec<EmergencyContactInfo>, String)> {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -597,9 +615,18 @@ impl PetChainContract {
         let pet_owner = PetOwner {
             owner_address: owner.clone(),
             privacy_level: PrivacyLevel::Private,
-            encrypted_name: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_email: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
-            encrypted_emergency_contact: EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() },
+            encrypted_name: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_email: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
+            encrypted_emergency_contact: EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            },
             created_at: env.ledger().timestamp(),
             updated_at: env.ledger().timestamp(),
             is_pet_owner: true,
@@ -681,11 +708,17 @@ impl PetChainContract {
             veterinarian,
             vaccine_type,
             vaccine_name: Some(vaccine_name),
-            encrypted_vaccine_name: Some(EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() }),
+            encrypted_vaccine_name: Some(EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            }),
             administered_at,
             next_due_date,
             batch_number: Some(batch_number),
-            encrypted_batch_number: Some(EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() }),
+            encrypted_batch_number: Some(EncryptedData {
+                nonce: empty_bytes.clone(),
+                ciphertext: empty_bytes.clone(),
+            }),
             created_at: now,
         };
 
@@ -739,17 +772,20 @@ impl PetChainContract {
     }
 
     /// Retrieves the complete vaccination history for a specific pet
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `pet_id` - The ID of the pet
-    /// 
+    ///
     /// # Returns
     /// A Span of vaccination records for the pet, or empty span if pet has no vaccinations
     pub fn get_pet_vaccinations(env: Env, pet_id: u64) -> soroban_sdk::Vec<Vaccination> {
         // Check if pet exists
-        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
-        
+        let pet_storage = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+
         if pet_storage.is_none() {
             // Pet does not exist, return empty span
             return soroban_sdk::Vec::new(&env);
@@ -901,35 +937,25 @@ impl PetChainContract {
         }
     }
 
-        // Get all overdue vaccination types for a pet
+    // Get all overdue vaccination types for a pet
 
-        pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType> {
+    pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType> {
+        let current_time = env.ledger().timestamp();
 
-            let current_time = env.ledger().timestamp();
+        // get_vaccination_history returns Vec<Vaccination> with decrypted data
 
-            // get_vaccination_history returns Vec<Vaccination> with decrypted data
+        let history = Self::get_vaccination_history(env.clone(), pet_id);
 
-            let history = Self::get_vaccination_history(env.clone(), pet_id);
+        let mut overdue_types = Vec::new(&env);
 
-            let mut overdue_types = Vec::new(&env);
-
-    
-
-            for vaccination in history.iter() {
-
-                if vaccination.next_due_date < current_time {
-
-                    overdue_types.push_back(vaccination.vaccine_type.clone());
-
-                }
-
+        for vaccination in history.iter() {
+            if vaccination.next_due_date < current_time {
+                overdue_types.push_back(vaccination.vaccine_type.clone());
             }
-
-    
-
-            overdue_types
-
         }
+
+        overdue_types
+    }
 
     // ============== ACCESS CONTROL FUNCTIONS ==============
 
@@ -1240,14 +1266,14 @@ impl PetChainContract {
     // ============== MEDICAL RECORD FUNCTIONS ==============
 
     /// Authorizes a veterinarian to add medical records
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `vet_address` - Address of the veterinarian to authorize
     pub fn authorize_veterinarian(env: Env, vet_address: Address) {
         // Only contract owner or authorized admin can authorize vets
         // For now, any caller can authorize (this should be restricted to contract admin)
-        
+
         let vet_count: u64 = env
             .storage()
             .instance()
@@ -1264,11 +1290,11 @@ impl PetChainContract {
     }
 
     /// Checks if a veterinarian is authorized
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `vet_address` - Address of the veterinarian
-    /// 
+    ///
     /// # Returns
     /// true if the veterinarian is authorized, false otherwise
     pub fn is_veterinarian_authorized(env: Env, vet_address: Address) -> bool {
@@ -1293,14 +1319,14 @@ impl PetChainContract {
     }
 
     /// Adds a medical record for a pet
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `pet_id` - The ID of the pet
     /// * `diagnosis` - Diagnosis information
     /// * `treatment` - Treatment information
     /// * `medications` - Medications prescribed
-    /// 
+    ///
     /// # Returns
     /// The ID of the created medical record
     pub fn add_medical_record(
@@ -1319,10 +1345,7 @@ impl PetChainContract {
         }
 
         // Verify that the pet exists
-        let pet_exists: Option<Pet> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id));
+        let pet_exists: Option<Pet> = env.storage().instance().get(&DataKey::Pet(pet_id));
 
         if pet_exists.is_none() {
             panic!("Pet not found");
@@ -1360,11 +1383,14 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
-        let new_pet_record_count = pet_record_count.checked_add(1).expect("Pet record count overflow");
+        let new_pet_record_count = pet_record_count
+            .checked_add(1)
+            .expect("Pet record count overflow");
 
-        env.storage()
-            .instance()
-            .set(&DataKey::PetMedicalRecordCount(pet_id), &new_pet_record_count);
+        env.storage().instance().set(
+            &DataKey::PetMedicalRecordCount(pet_id),
+            &new_pet_record_count,
+        );
         env.storage().instance().set(
             &DataKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)),
             &record_id,
@@ -1376,11 +1402,14 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::VetMedicalRecordCount(vet_address.clone()))
             .unwrap_or(0);
-        let new_vet_record_count = vet_record_count.checked_add(1).expect("Vet record count overflow");
+        let new_vet_record_count = vet_record_count
+            .checked_add(1)
+            .expect("Vet record count overflow");
 
-        env.storage()
-            .instance()
-            .set(&DataKey::VetMedicalRecordCount(vet_address.clone()), &new_vet_record_count);
+        env.storage().instance().set(
+            &DataKey::VetMedicalRecordCount(vet_address.clone()),
+            &new_vet_record_count,
+        );
         env.storage().instance().set(
             &DataKey::VetMedicalRecordIndex((vet_address, new_vet_record_count)),
             &record_id,
@@ -1390,19 +1419,16 @@ impl PetChainContract {
     }
 
     /// Retrieves all medical records for a pet
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `pet_id` - The ID of the pet
-    /// 
+    ///
     /// # Returns
     /// A vector of medical records for the specified pet
     pub fn get_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
         // Check if pet exists
-        let pet_storage: Option<Pet> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id));
+        let pet_storage: Option<Pet> = env.storage().instance().get(&DataKey::Pet(pet_id));
 
         if pet_storage.is_none() {
             return Vec::new(&env);
@@ -1459,11 +1485,11 @@ impl PetChainContract {
     }
 
     /// Retrieves a specific medical record by its ID
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `record_id` - The ID of the medical record
-    /// 
+    ///
     /// # Returns
     /// The medical record if found and caller has access, None otherwise
     pub fn get_record_by_id(env: Env, record_id: u64) -> Option<MedicalRecord> {
@@ -1480,10 +1506,7 @@ impl PetChainContract {
         let pet_id = record.pet_id;
 
         // Check if pet exists
-        let pet_storage: Option<Pet> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id));
+        let pet_storage: Option<Pet> = env.storage().instance().get(&DataKey::Pet(pet_id));
 
         if pet_storage.is_none() {
             return None;
@@ -1515,11 +1538,11 @@ impl PetChainContract {
     }
 
     /// Retrieves all medical records added by a specific veterinarian
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `vet_address` - The address of the veterinarian
-    /// 
+    ///
     /// # Returns
     /// A vector of medical records created by the veterinarian
     pub fn get_records_by_veterinarian(env: Env, vet_address: Address) -> Vec<MedicalRecord> {
