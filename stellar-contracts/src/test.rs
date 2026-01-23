@@ -1821,7 +1821,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
@@ -1870,7 +1872,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize only one vet
         PetChainContract::authorize_veterinarian(env.clone(), authorized_vet.clone());
@@ -1912,7 +1916,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
@@ -1959,7 +1965,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
@@ -2011,7 +2019,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
@@ -2083,7 +2093,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Private,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
@@ -2130,7 +2142,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize both vets
         PetChainContract::authorize_veterinarian(env.clone(), vet1.clone());
@@ -2189,7 +2203,9 @@ mod test {
             Species::Dog,
             String::from_str(&env, "Golden Retriever"),
             PrivacyLevel::Restricted,
-        );
+,
+&PrivacyLevel::Private,
+);
 
         // Authorize vet
         PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
