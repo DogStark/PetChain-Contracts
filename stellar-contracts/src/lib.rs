@@ -591,7 +591,7 @@ impl PetChainContract {
 
     // Pet Owner Management Functions
     pub fn register_pet_owner(
-        &self,
+        self,
         env: Env,
         owner: Address,
         name: String,
@@ -617,7 +617,7 @@ impl PetChainContract {
     }
 
     pub fn update_owner_profile(
-        &self,
+        self,
         env: Env,
         owner: Address,
         name: String,
@@ -656,7 +656,7 @@ impl PetChainContract {
 
     // Pet Vaccination Record
     pub fn add_vaccination(
-        &self,
+        self,
         env: Env,
         pet_id: u64,
         veterinarian: Address,
