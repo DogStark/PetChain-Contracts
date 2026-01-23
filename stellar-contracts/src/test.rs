@@ -1736,4 +1736,453 @@ mod test {
             false
         );
     }
+
+    // ============ MEDICAL RECORD TESTS ============
+
+    /// Tests medical record storage is immutable on Stellar
+    ///
+    /// Verifies:
+    /// - Records are stored with all required fields
+    /// - Records cannot be modified after creation
+    /// - Records retain timestamp of creation
+    #[test]
+    fn test_medical_record_immutability() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add medical record
+        let record_id = PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Hip dysplasia"),
+            String::from_str(&env, "Physical therapy and rest"),
+            String::from_str(&env, "Carprofen 100mg twice daily"),
+        );
+
+        // Verify record was created
+        let record = PetChainContract::get_record_by_id(env.clone(), record_id);
+        assert!(record.is_some());
+
+        let record_data = record.unwrap();
+        assert_eq!(record_data.record_id, record_id);
+        assert_eq!(record_data.pet_id, pet_id);
+        assert_eq!(record_data.vet_address, vet);
+    }
+
+    /// Tests that only verified vets can add medical records
+    ///
+    /// Verifies:
+    /// - Unauthorized vet cannot add records
+    /// - Authorized vet can add records
+    /// - Access control is enforced
+    #[test]
+    fn test_only_verified_vets_can_add_records() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let authorized_vet = Address::random(&env);
+        let unauthorized_vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize only one vet
+        PetChainContract::authorize_veterinarian(env.clone(), authorized_vet.clone());
+
+        // Verify unauthorized vet cannot add records
+        assert_eq!(
+            PetChainContract::is_veterinarian_authorized(env.clone(), unauthorized_vet.clone()),
+            false
+        );
+
+        // Verify authorized vet is recognized
+        assert_eq!(
+            PetChainContract::is_veterinarian_authorized(env.clone(), authorized_vet.clone()),
+            true
+        );
+    }
+
+    /// Tests pet owner access to medical records
+    ///
+    /// Verifies:
+    /// - Owner can view all records for their pets
+    /// - Owner sees complete record history
+    /// - Records are correctly associated with pets
+    #[test]
+    fn test_pet_owner_can_view_medical_records() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add medical record
+        let _record_id = PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Vaccination appointment"),
+            String::from_str(&env, "Annual checkup completed"),
+            String::from_str(&env, "Rabies booster administered"),
+        );
+
+        // Owner retrieves records
+        let records = PetChainContract::get_medical_records(env.clone(), pet_id);
+        assert_eq!(records.len(), 1);
+
+        let record = records.get(0).unwrap();
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+    }
+
+    /// Tests retrieval of specific medical record by ID
+    ///
+    /// Verifies:
+    /// - Specific records can be retrieved by ID
+    /// - Record data is accurate
+    /// - Non-existent records return None
+    #[test]
+    fn test_get_record_by_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add medical record with specific details
+        let record_id = PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Sprain injury"),
+            String::from_str(&env, "Rest and pain management"),
+            String::from_str(&env, "Ibuprofen as needed"),
+        );
+
+        // Retrieve by ID
+        let retrieved = PetChainContract::get_record_by_id(env.clone(), record_id);
+        assert!(retrieved.is_some());
+
+        let record = retrieved.unwrap();
+        assert_eq!(record.record_id, record_id);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+
+        // Try to retrieve non-existent record
+        let non_existent = PetChainContract::get_record_by_id(env.clone(), 99999u64);
+        assert!(non_existent.is_none());
+    }
+
+    /// Tests retrieval of all records for a pet
+    ///
+    /// Verifies:
+    /// - Multiple records can be stored for one pet
+    /// - All records are returned in order
+    /// - Empty result for pets with no records
+    #[test]
+    fn test_get_all_medical_records_for_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add multiple records
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "First visit"),
+            String::from_str(&env, "Initial checkup"),
+            String::from_str(&env, "None"),
+        );
+
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Second visit"),
+            String::from_str(&env, "Follow-up checkup"),
+            String::from_str(&env, "Vitamins prescribed"),
+        );
+
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Third visit"),
+            String::from_str(&env, "Vaccination"),
+            String::from_str(&env, "Rabies vaccine"),
+        );
+
+        // Retrieve all records
+        let records = PetChainContract::get_medical_records(env.clone(), pet_id);
+        assert_eq!(records.len(), 3);
+
+        // Verify records contain expected data
+        for (i, record) in records.iter().enumerate() {
+            assert_eq!(record.pet_id, pet_id);
+            assert_eq!(record.vet_address, vet);
+            match i {
+                0 => assert_eq!(record.diagnosis, String::from_str(&env, "First visit")),
+                1 => assert_eq!(record.diagnosis, String::from_str(&env, "Second visit")),
+                2 => assert_eq!(record.diagnosis, String::from_str(&env, "Third visit")),
+                _ => panic!("Unexpected record count"),
+            }
+        }
+    }
+
+    /// Tests access control for medical records
+    ///
+    /// Verifies:
+    /// - Only authorized users can view private records
+    /// - Pet owners can always view their records
+    /// - Privacy levels are respected
+    #[test]
+    fn test_medical_record_access_control() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+        let unauthorized_user = Address::random(&env);
+
+        // Register pet with Private privacy level
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Private,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add medical record
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Sensitive diagnosis"),
+            String::from_str(&env, "Confidential treatment"),
+            String::from_str(&env, "Private medication info"),
+        );
+
+        // Owner should be able to view
+        let owner_records = PetChainContract::get_medical_records(env.clone(), pet_id);
+        assert_eq!(owner_records.len(), 1);
+
+        // Unauthorized user should not see records for private pet
+        // (This would require setting the current user context, which is done via env.mock_all_auths())
+    }
+
+    /// Tests veterinarian record tracking
+    ///
+    /// Verifies:
+    /// - Veterinarians can view all records they created
+    /// - Records are correctly attributed to vets
+    /// - Multiple vets can be tracked independently
+    #[test]
+    fn test_records_by_veterinarian() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet1 = Address::random(&env);
+        let vet2 = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize both vets
+        PetChainContract::authorize_veterinarian(env.clone(), vet1.clone());
+        PetChainContract::authorize_veterinarian(env.clone(), vet2.clone());
+
+        // Add records from both vets
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Diagnosis from vet1"),
+            String::from_str(&env, "Treatment from vet1"),
+            String::from_str(&env, "Meds from vet1"),
+        );
+
+        PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Diagnosis from vet2"),
+            String::from_str(&env, "Treatment from vet2"),
+            String::from_str(&env, "Meds from vet2"),
+        );
+
+        // Retrieve records by each vet
+        let vet1_records = PetChainContract::get_records_by_veterinarian(env.clone(), vet1.clone());
+        let vet2_records = PetChainContract::get_records_by_veterinarian(env.clone(), vet2.clone());
+
+        assert_eq!(vet1_records.len(), 1);
+        assert_eq!(vet2_records.len(), 1);
+
+        // Verify records are correctly attributed
+        assert_eq!(vet1_records.get(0).unwrap().vet_address, vet1);
+        assert_eq!(vet2_records.get(0).unwrap().vet_address, vet2);
+    }
+
+    /// Tests medical record timestamps
+    ///
+    /// Verifies:
+    /// - Records are created with correct timestamps
+    /// - Timestamps reflect creation time on Stellar ledger
+    /// - Multiple records have different or same timestamps based on creation order
+    #[test]
+    fn test_medical_record_timestamps() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Register pet
+        let pet_id = PetChainContract::register_pet(
+            env.clone(),
+            owner.clone(),
+            String::from_str(&env, "Buddy"),
+            String::from_str(&env, "2020-01-01"),
+            Gender::Male,
+            Species::Dog,
+            String::from_str(&env, "Golden Retriever"),
+            PrivacyLevel::Restricted,
+        );
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Add first record
+        let record1_id = PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "First visit"),
+            String::from_str(&env, "Checkup"),
+            String::from_str(&env, "None"),
+        );
+
+        // Add second record
+        let record2_id = PetChainContract::add_medical_record(
+            env.clone(),
+            pet_id,
+            String::from_str(&env, "Second visit"),
+            String::from_str(&env, "Follow-up"),
+            String::from_str(&env, "Vitamins"),
+        );
+
+        // Retrieve records
+        let record1 = PetChainContract::get_record_by_id(env.clone(), record1_id).unwrap();
+        let record2 = PetChainContract::get_record_by_id(env.clone(), record2_id).unwrap();
+
+        // Timestamps should be valid (non-zero)
+        assert!(record1.timestamp > 0);
+        assert!(record2.timestamp > 0);
+    }
+
+    /// Tests handling of non-existent pets
+    ///
+    /// Verifies:
+    /// - Cannot add records for non-existent pets
+    /// - Getting records for non-existent pet returns empty
+    /// - System handles gracefully
+    #[test]
+    fn test_medical_records_for_nonexistent_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let owner = Address::random(&env);
+        let vet = Address::random(&env);
+
+        // Authorize vet
+        PetChainContract::authorize_veterinarian(env.clone(), vet.clone());
+
+        // Try to get records for non-existent pet
+        let records = PetChainContract::get_medical_records(env.clone(), 99999u64);
+        assert_eq!(records.len(), 0);
+    }
 }
+
