@@ -800,7 +800,7 @@ impl PetChainContract {
     }
 
     // Get complete vaccination history for a pet
-    pub fn get_vaccination_history(&self, env: Env, pet_id: u64) -> Vec<Vaccination> {
+    pub fn get_vaccination_history(self, env: Env, pet_id: u64) -> Vec<Vaccination> {
         let vac_count: u64 = env
             .storage()
             .instance()
