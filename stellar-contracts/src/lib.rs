@@ -1,6 +1,10 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
+// ============================================================================
+// ==========================   DATA STRUCTURES   =============================
+// ============================================================================
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Species {
@@ -80,6 +84,81 @@ pub struct Vaccination {
     pub created_at: u64,
 }
 
+// ============================================================================
+// =============================   EVENTS   ===================================
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetRegisteredEvent {
+    pub pet_id: u64,
+    pub owner: Address,
+    pub name: String,
+    pub species: Species,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetOwnershipTransferredEvent {
+    pub pet_id: u64,
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationAddedEvent {
+    pub vaccine_id: u64,
+    pub pet_id: u64,
+    pub veterinarian: Address,
+    pub vaccine_type: VaccineType,
+    pub next_due_date: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAddedEvent {
+    pub pet_id: u64,
+    pub updated_by: Address,
+    pub timestamp: u64,
+    pub has_medical_alerts: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessGrantedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub access_level: AccessLevel,
+    pub expires_at: Option<u64>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessRevokedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessExpiredEvent {
+    pub pet_id: u64,
+    pub grantee: Address,
+    pub expired_at: u64,
+}
+
+// ============================================================================
+// ============================   STORAGE KEYS   ==============================
+// ============================================================================
+
 #[contracttype]
 pub enum DataKey {
     Pet(u64),
@@ -125,33 +204,9 @@ pub struct AccessGrant {
     pub is_active: bool,
 }
 
-#[contracttype]
-#[derive(Clone)]
-pub struct AccessGrantedEvent {
-    pub pet_id: u64,
-    pub granter: Address,
-    pub grantee: Address,
-    pub access_level: AccessLevel,
-    pub expires_at: Option<u64>,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct AccessRevokedEvent {
-    pub pet_id: u64,
-    pub granter: Address,
-    pub grantee: Address,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct AccessExpiredEvent {
-    pub pet_id: u64,
-    pub grantee: Address,
-    pub expired_at: u64,
-}
+// ============================================================================
+// ============================   CONTRACT   ==================================
+// ============================================================================
 
 #[contract]
 pub struct PetChainContract;
@@ -243,16 +298,15 @@ impl PetChainContract {
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
-            name,
+            name: name.clone(),
             birthday,
             active: false,
             created_at: timestamp,
             updated_at: timestamp,
             new_owner: owner.clone(),
-            species,
+            species: species.clone(),
             gender,
             breed,
-
             emergency_contacts: Vec::new(&env),
             medical_alerts: String::from_str(&env, "None"),
         };
@@ -260,6 +314,19 @@ impl PetChainContract {
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
         Self::add_pet_to_owner_index(&env, &owner, pet_id);
+
+        // Emit PetRegistered Event
+        let event = PetRegisteredEvent {
+            pet_id,
+            owner,
+            name,
+            species,
+            timestamp,
+        };
+        env.events().publish(
+            (String::from_str(&env, "PetRegistered"), pet_id),
+            event,
+        );
 
         pet_id
     }
@@ -305,7 +372,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
-            //  Solo el dueño puede modificar la info
+            // Only owner can modify info
             pet.owner.require_auth();
 
             pet.emergency_contacts = contacts;
@@ -313,6 +380,18 @@ impl PetChainContract {
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            // Emit MedicalRecordAdded Event (treating alerts/notes as medical record)
+            let event = MedicalRecordAddedEvent {
+                pet_id,
+                updated_by: pet.owner.clone(),
+                timestamp: pet.updated_at,
+                has_medical_alerts: true, // Assuming notes > 0 implies alerts, simply flagging true for this action
+            };
+            env.events().publish(
+                (String::from_str(&env, "MedicalRecordAdded"), pet_id),
+                event,
+            );
         } else {
             panic!("Pet not found");
         }
@@ -476,13 +555,26 @@ impl PetChainContract {
             let old_owner = pet.owner.clone();
             let new_owner = pet.new_owner.clone();
             pet.owner = new_owner.clone();
-            pet.updated_at = env.ledger().timestamp();
+            let timestamp = env.ledger().timestamp();
+            pet.updated_at = timestamp;
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
 
             if old_owner != new_owner {
                 Self::remove_pet_from_owner_index(&env, &old_owner, id);
                 Self::add_pet_to_owner_index(&env, &new_owner, id);
+
+                // Emit Transfer Event
+                let event = PetOwnershipTransferredEvent {
+                    pet_id: id,
+                    old_owner,
+                    new_owner,
+                    timestamp,
+                };
+                env.events().publish(
+                    (String::from_str(&env, "PetOwnershipTransferred"), id),
+                    event,
+                );
             }
         }
     }
@@ -510,6 +602,18 @@ impl PetChainContract {
             if old_owner != new_owner {
                 Self::remove_pet_from_owner_index(&env, &old_owner, pet_id);
                 Self::add_pet_to_owner_index(&env, &new_owner, pet_id);
+
+                // Emit Transfer Event for each pet
+                let event = PetOwnershipTransferredEvent {
+                    pet_id,
+                    old_owner,
+                    new_owner: new_owner.clone(),
+                    timestamp,
+                };
+                env.events().publish(
+                    (String::from_str(&env, "PetOwnershipTransferred"), pet_id),
+                    event,
+                );
             }
         }
     }
@@ -610,8 +714,8 @@ impl PetChainContract {
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
-            veterinarian,
-            vaccine_type,
+            veterinarian: veterinarian.clone(),
+            vaccine_type: vaccine_type.clone(),
             vaccine_name,
             administered_at,
             next_due_date,
@@ -657,6 +761,20 @@ impl PetChainContract {
         env.storage().instance().set(
             &DataKey::PetVaccinationIndex((pet.owner.clone(), pet_vaccine_count)),
             &vaccine_id,
+        );
+
+        // Emit VaccinationAdded Event
+        let event = VaccinationAddedEvent {
+            vaccine_id,
+            pet_id,
+            veterinarian,
+            vaccine_type,
+            next_due_date,
+            timestamp: now,
+        };
+        env.events().publish(
+            (String::from_str(&env, "VaccinationAdded"), pet_id),
+            event,
         );
 
         vaccine_id
@@ -846,7 +964,7 @@ impl PetChainContract {
             );
         }
 
-        // Emit event
+        // Emit AccessGranted Event
         let now = env.ledger().timestamp();
         let event = AccessGrantedEvent {
             pet_id,
@@ -857,8 +975,10 @@ impl PetChainContract {
             timestamp: now,
         };
 
-        env.events()
-            .publish((String::from_str(&env, "ACCESS_GRANTED"),), event);
+        env.events().publish(
+            (String::from_str(&env, "AccessGranted"), pet_id),
+            event,
+        );
 
         true
     }
@@ -885,7 +1005,7 @@ impl PetChainContract {
             grant.access_level = AccessLevel::None;
             env.storage().instance().set(&grant_key, &grant);
 
-            // Emit event
+            // Emit AccessRevoked Event
             let now = env.ledger().timestamp();
             let event = AccessRevokedEvent {
                 pet_id,
@@ -894,8 +1014,10 @@ impl PetChainContract {
                 timestamp: now,
             };
 
-            env.events()
-                .publish((String::from_str(&env, "ACCESS_REVOKED"),), event);
+            env.events().publish(
+                (String::from_str(&env, "AccessRevoked"), pet_id),
+                event,
+            );
 
             true
         } else {
@@ -935,8 +1057,10 @@ impl PetChainContract {
                         expired_at: exp_time,
                     };
 
-                    env.events()
-                        .publish((String::from_str(&env, "ACCESS_EXPIRED"),), event);
+                    env.events().publish(
+                        (String::from_str(&env, "AccessExpired"), pet_id),
+                        event,
+                    );
                     return AccessLevel::None;
                 }
             }
