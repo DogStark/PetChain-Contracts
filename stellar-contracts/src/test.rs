@@ -438,8 +438,7 @@ mod test {
 
         let overdue = client.get_overdue_vaccinations(&pet_id).len();
 
-        assert!(!overdue.is_empty() || overdue.is_empty()); // Vaccination list retrieved successfully
-        assert!(overdue == 0);
+        assert!(overdue == 0); // No vaccinations should be overdue when using a future date
     }
 
     #[test]

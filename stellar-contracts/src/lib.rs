@@ -1000,7 +1000,6 @@ impl PetChainContract {
     pub fn is_tag_active(env: Env, tag_id: String) -> bool {
         Self::get_tag(&env, tag_id, true).is_some()
     }
-}
 
     /// Get all pets a user has access to
     pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
