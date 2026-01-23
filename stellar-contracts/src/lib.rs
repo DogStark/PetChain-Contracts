@@ -1,6 +1,10 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
+
+mod vet_registry;
+
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Species {
