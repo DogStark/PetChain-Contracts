@@ -967,17 +967,17 @@ impl PetChainContract {
                         let vaccine_name = if let Some(ref encrypted_data) = vaccination_record.encrypted_vaccine_name {
                             let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
                                 .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt vaccine name for vaccination ID {}", vaccination_record.id));
-                            String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for vaccine name for vaccination ID {}", vaccination_record.id))
+                            String::from_bytes(&env, &decrypted_bytes)
                         } else {
-                            vaccination_record.vaccine_name.clone().unwrap_or_default()
+                            vaccination_record.vaccine_name.clone().unwrap_or_else(|| String::from_str(&env, ""))
                         };
 
                         let batch_number = if let Some(ref encrypted_data) = vaccination_record.encrypted_batch_number {
                             let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
                                 .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt batch number for vaccination ID {}", vaccination_record.id));
-                            String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for batch number for vaccination ID {}", vaccination_record.id))
+                            String::from_bytes(&env, &decrypted_bytes)
                         } else {
-                            vaccination_record.batch_number.clone().unwrap_or_default()
+                            vaccination_record.batch_number.clone().unwrap_or_else(|| String::from_str(&env, ""))
                         };
 
                         // Build properly structured vaccination record with decrypted data
