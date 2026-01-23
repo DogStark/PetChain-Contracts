@@ -683,22 +683,27 @@ impl PetChainContract {
     pub fn update_owner_profile(
         &self,
         env: Env,
-        let encrypted_emergency_contact = EncryptedData { nonce: emergency_contact_nonce, ciphertext: emergency_contact_ciphertext };
+        owner: Address,
+        name: String,
+        email: String,
+        emergency_contact: String,
+    ) -> bool {
+        owner.require_auth();
 
-        let timestamp = env.ledger().timestamp();
-        let pet_owner = PetOwner {
-            owner_address: owner.clone(),
-            encrypted_name,
-            encrypted_email,
-            encrypted_emergency_contact,
-            created_at: timestamp,
-            updated_at: timestamp,
-            is_pet_owner: true,
-        };
-
-        env.storage()
+        if let Some(mut pet_owner) = env
+            .storage()
             .instance()
-            .set(&DataKey::PetOwner(owner), &pet_owner);
+            .get::<DataKey, PetOwner>(&DataKey::PetOwner(owner.clone()))
+        {
+            pet_owner.updated_at = env.ledger().timestamp();
+
+            env.storage()
+                .instance()
+                .set(&DataKey::PetOwner(owner), &pet_owner);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn is_owner_registered(env: Env, owner: Address) -> bool {
@@ -712,42 +717,6 @@ impl PetChainContract {
             false
         }
     }
-
-    pub fn update_owner_profile(
-        env: Env,
-        owner: Address,
-        name: String,
-        email: String,
-        emergency_contact: String,
-    ) -> bool {
-        owner.require_auth();
-
-        if let Some(mut pet_owner) = env
-            .storage()
-            .instance()
-            .get::<DataKey, PetOwner>(&DataKey::PetOwner(owner.clone()))
-        {
-            let key = self.get_encryption_key(&env);
-
-            // Encrypt name
-            let name_bytes = name.as_bytes();
-            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
-            pet_owner.encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
-
-            // Encrypt email
-            let email_bytes = email.as_bytes();
-            let (email_nonce, email_ciphertext) = encrypt_sensitive_data(&env, email_bytes, &key);
-            pet_owner.encrypted_email = EncryptedData { nonce: email_nonce, ciphertext: email_ciphertext };
-
-            // Encrypt emergency_contact
-            let emergency_contact_bytes = emergency_contact.as_bytes();
-            let (emergency_contact_nonce, emergency_contact_ciphertext) = encrypt_sensitive_data(&env, emergency_contact_bytes, &key);
-            pet_owner.encrypted_emergency_contact = EncryptedData { nonce: emergency_contact_nonce, ciphertext: emergency_contact_ciphertext };
-            
-            pet_owner.updated_at = env.ledger().timestamp();
-
-            env.storage()
-                .instance()
                 .set(&DataKey::PetOwner(owner), &pet_owner);
             true
         } else {
