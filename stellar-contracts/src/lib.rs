@@ -29,8 +29,8 @@ pub enum Gender {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedData {
-    pub nonce: Bytes,
-    pub ciphertext: Bytes,
+    pub nonce: Vec<u8>,
+    pub ciphertext: Vec<u8>,
 }
 
 #[contracttype]
