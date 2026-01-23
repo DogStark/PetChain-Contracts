@@ -933,7 +933,7 @@ impl PetChainContract {
             return soroban_sdk::Vec::new(&env);
         }
 
-        // Get total vaccination count for this pet
+        // Get total vaccination count for this pet using pet_vaccination_count
         let pet_vax_count: u64 = env
             .storage()
             .instance()
@@ -946,16 +946,15 @@ impl PetChainContract {
         }
 
         let mut vaccinations = soroban_sdk::Vec::new(&env);
-        let key = self.get_encryption_key(&env);
 
-        // Iterate through all vaccinations for this pet
+        // Iterate through pet_vaccinations mapping efficiently
         for i in 1..=pet_vax_count {
             if let Some(vax_id) = env
                 .storage()
                 .instance()
                 .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
             {
-                // Fetch complete vaccination details from storage
+                // Fetch complete vaccination details from vaccinations storage
                 if let Some(vaccination_record) = env
                     .storage()
                     .instance()
@@ -963,39 +962,8 @@ impl PetChainContract {
                 {
                     // Verify this vaccination belongs to the correct pet
                     if vaccination_record.pet_id == pet_id {
-                        // Decrypt sensitive fields
-                        let vaccine_name = if let Some(ref encrypted_data) = vaccination_record.encrypted_vaccine_name {
-                            let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
-                                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt vaccine name for vaccination ID {}", vaccination_record.id));
-                            String::from_bytes(&env, &decrypted_bytes)
-                        } else {
-                            vaccination_record.vaccine_name.clone().unwrap_or_else(|| String::from_str(&env, ""))
-                        };
-
-                        let batch_number = if let Some(ref encrypted_data) = vaccination_record.encrypted_batch_number {
-                            let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
-                                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt batch number for vaccination ID {}", vaccination_record.id));
-                            String::from_bytes(&env, &decrypted_bytes)
-                        } else {
-                            vaccination_record.batch_number.clone().unwrap_or_else(|| String::from_str(&env, ""))
-                        };
-
-                        // Build properly structured vaccination record with decrypted data
-                        let decrypted_vaccination = Vaccination {
-                            id: vaccination_record.id,
-                            pet_id: vaccination_record.pet_id,
-                            veterinarian: vaccination_record.veterinarian,
-                            vaccine_type: vaccination_record.vaccine_type,
-                            vaccine_name: Some(vaccine_name), // Decrypted value
-                            encrypted_vaccine_name: None, // Encrypted field set to None after decryption
-                            administered_at: vaccination_record.administered_at,
-                            next_due_date: vaccination_record.next_due_date,
-                            batch_number: Some(batch_number), // Decrypted value
-                            encrypted_batch_number: None, // Encrypted field set to None after decryption
-                            created_at: vaccination_record.created_at,
-                        };
-
-                        vaccinations.push_back(decrypted_vaccination);
+                        // Build and return properly structured vaccination record
+                        vaccinations.push_back(vaccination_record);
                     }
                 }
             }
