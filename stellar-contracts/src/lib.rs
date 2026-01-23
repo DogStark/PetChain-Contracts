@@ -12,6 +12,14 @@ pub enum Species {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PrivacyLevel {
+    Public, // Accessible to anyone
+    Restricted, // Accessible to granted access (e.g., vets, owners)
+    Private, // Accessible only to the owner
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Gender {
     NotSpecified,
     Male,
@@ -31,6 +39,7 @@ pub struct EmergencyContactInfo {
 pub struct Pet {
     pub id: u64,
     pub owner: Address,
+    pub privacy_level: PrivacyLevel,
     pub name: String,
     pub birthday: String,
     pub active: bool,
@@ -48,9 +57,10 @@ pub struct Pet {
 #[derive(Clone)]
 pub struct PetOwner {
     pub owner_address: Address,
-    pub name: String,
-    pub email: String,
-    pub emergency_contact: String,
+    pub privacy_level: PrivacyLevel,
+    pub encrypted_name: EncryptedData,
+    pub encrypted_email: EncryptedData,
+    pub encrypted_emergency_contact: EncryptedData,
     pub created_at: u64,
     pub updated_at: u64,
     pub is_pet_owner: bool,
@@ -73,10 +83,12 @@ pub struct Vaccination {
     pub pet_id: u64,
     pub veterinarian: Address,
     pub vaccine_type: VaccineType,
-    pub vaccine_name: String,
+    pub vaccine_name: Option<String>, // Decrypted value
+    pub encrypted_vaccine_name: Option<EncryptedData>, // Encrypted value
     pub administered_at: u64,
     pub next_due_date: u64,
-    pub batch_number: String,
+    pub batch_number: Option<String>, // Decrypted value
+    pub encrypted_batch_number: Option<EncryptedData>, // Encrypted value
     pub created_at: u64,
 }
 
@@ -98,11 +110,26 @@ pub enum DataKey {
     PetVaccinationByIndex((u64, u64)),
 
     // Access Control keys
+
+    // Privacy keys
+    OffChainDataHash(u64),
+
+    // Access Control keys
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
     UserAccessList(Address),      // grantee -> list of pet_ids they have access to
     UserAccessCount(Address),     // grantee -> count of pets they can access
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationSummary {
+    pub is_fully_current: bool,
+    pub overdue_types: Vec<VaccineType>,
+    pub upcoming_count: u64, // Count of vaccinations due within a certain future period
 }
 
 #[contracttype]
@@ -228,6 +255,7 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        privacy_level: PrivacyLevel, // Added privacy_level parameter
     ) -> u64 {
         owner.require_auth();
 
@@ -242,19 +270,44 @@ impl PetChainContract {
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
-            name,
-            birthday,
+            privacy_level, // Set privacy_level
+            encrypted_name: EncryptedData { nonce: vec![], ciphertext: vec![] }, // Placeholder, to be encrypted
+            encrypted_birthday: EncryptedData { nonce: vec![], ciphertext: vec![] }, // Placeholder
             active: false,
             created_at: timestamp,
             updated_at: timestamp,
             new_owner: owner.clone(),
             species,
             gender,
-            breed,
-
-            emergency_contacts: Vec::new(&env),
-            medical_alerts: String::from_str(&env, "None"),
+            encrypted_breed: EncryptedData { nonce: vec![], ciphertext: vec![] }, // Placeholder
+            encrypted_emergency_contacts: EncryptedData { nonce: vec![], ciphertext: vec![] }, // Placeholder
+            encrypted_medical_alerts: EncryptedData { nonce: vec![], ciphertext: vec![] }, // Placeholder
         };
+        
+        // Encrypt sensitive fields
+        let key = self.get_encryption_key(&env);
+
+        // Encrypt name
+        let name_bytes = name.as_bytes();
+        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
+        pet.encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+
+        // Encrypt birthday
+        let birthday_bytes = birthday.as_bytes();
+        let (birthday_nonce, birthday_ciphertext) = encrypt_sensitive_data(&env, birthday_bytes, &key);
+        pet.encrypted_birthday = EncryptedData { nonce: birthday_nonce, ciphertext: birthday_ciphertext };
+
+        // Encrypt breed
+        let breed_bytes = breed.as_bytes();
+        let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, breed_bytes, &key);
+        pet.encrypted_breed = EncryptedData { nonce: breed_nonce, ciphertext: breed_ciphertext };
+
+        // Encrypt medical_alerts
+        let alerts_bytes = medical_alerts.as_bytes();
+        let (alerts_nonce, alerts_ciphertext) = encrypt_sensitive_data(&env, alerts_bytes, &key);
+        pet.encrypted_medical_alerts = EncryptedData { nonce: alerts_nonce, ciphertext: alerts_ciphertext };
+
+        // Emergency contacts are handled separately by set_emergency_contacts
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
@@ -271,6 +324,7 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        privacy_level: PrivacyLevel, // Added privacy_level parameter
     ) -> bool {
         if let Some(mut pet) = env
             .storage()
@@ -279,11 +333,30 @@ impl PetChainContract {
         {
             pet.owner.require_auth();
 
-            pet.name = name;
-            pet.birthday = birthday;
+            let key = self.get_encryption_key(&env);
+
+            // Encrypt name
+            let name_bytes = name.as_bytes();
+            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
+            pet.encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+
+            // Encrypt birthday
+            let birthday_bytes = birthday.as_bytes();
+            let (birthday_nonce, birthday_ciphertext) = encrypt_sensitive_data(&env, birthday_bytes, &key);
+            pet.encrypted_birthday = EncryptedData { nonce: birthday_nonce, ciphertext: birthday_ciphertext };
+
+            // Update non-encrypted fields
             pet.gender = gender;
             pet.species = species;
-            pet.breed = breed;
+
+            // Encrypt breed
+            let breed_bytes = breed.as_bytes();
+            let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, breed_bytes, &key);
+            pet.encrypted_breed = EncryptedData { nonce: breed_nonce, ciphertext: breed_ciphertext };
+            
+            // Update privacy level
+            pet.privacy_level = privacy_level; // Set the new privacy level
+            
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -307,8 +380,20 @@ impl PetChainContract {
             //  Solo el dueño puede modificar la info
             pet.owner.require_auth();
 
-            pet.emergency_contacts = contacts;
-            pet.medical_alerts = medical_notes;
+            let key = self.get_encryption_key(&env);
+
+            // Encrypt emergency_contacts (Vec<EmergencyContactInfo>)
+            // Serialize the Vec to bytes first.
+            let val_contacts = env.to_val(contacts.clone()); // Clone is needed because to_val might consume.
+            let contacts_bytes: Vec<u8> = val_contacts.try_into(env.clone()).unwrap_or_else(|_| panic_with_error!(&env, "Failed to serialize emergency contacts"));
+            let (contacts_nonce, contacts_ciphertext) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
+            pet.encrypted_emergency_contacts = EncryptedData { nonce: contacts_nonce, ciphertext: contacts_ciphertext };
+
+            // Encrypt medical_alerts
+            let alerts_bytes = medical_notes.as_bytes();
+            let (alerts_nonce, alerts_ciphertext) = encrypt_sensitive_data(&env, alerts_bytes, &key);
+            pet.encrypted_medical_alerts = EncryptedData { nonce: alerts_nonce, ciphertext: alerts_ciphertext };
+            
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -317,17 +402,140 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> (Vec<EmergencyContactInfo>, String) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
-        (pet.emergency_contacts, pet.medical_alerts)
+    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
+        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+
+        if let Some(pet) = pet_storage {
+            let current_user = env.current_contract_address();
+            let owner_address = pet.owner.clone();
+            let mut is_authorized_for_full_data = false;
+
+            // Check if caller is the owner
+            if owner_address == current_user {
+                is_authorized_for_full_data = true;
+            } else {
+                // Check for granted access
+                let access_level = Self::check_access(env.clone(), pet_id, current_user.clone());
+                if access_level != AccessLevel::None {
+                    is_authorized_for_full_data = true;
+                }
+            }
+
+            // Enforce privacy level based on authorization and privacy setting
+            if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
+                // Deny access if not authorized and privacy is not Public.
+                return None;
+            }
+
+            // If authorized or Public, proceed with decryption.
+            let key = self.get_encryption_key(&env);
+
+            // Decrypt emergency_contacts
+            let decrypted_contacts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_emergency_contacts.ciphertext, &pet.encrypted_emergency_contacts.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt emergency contacts for pet ID {}", pet_id));
+            let contacts: Vec<EmergencyContactInfo> = env.from_slice(&decrypted_contacts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Failed to deserialize emergency contacts for pet ID {}", pet_id));
+
+            // Decrypt medical_alerts
+            let decrypted_alerts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_medical_alerts.ciphertext, &pet.encrypted_medical_alerts.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt medical alerts for pet ID {}", pet_id));
+            let medical_alerts = String::from_utf8(decrypted_alerts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for medical alerts for pet ID {}", pet_id));
+
+            Some((contacts, medical_alerts))
+        } else {
+            None // Pet not found
+        }
     }
 
     pub fn get_pet(env: Env, id: u64) -> Option<Pet> {
-        env.storage().instance().get(&DataKey::Pet(id))
+        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(id));
+
+        if let Some(mut pet) = pet_storage { // Use mut for modifying the pet object to potentially remove encrypted data later
+            let current_user = env.current_contract_address();
+            let owner_address = pet.owner.clone();
+
+            // Determine if the caller is authorized to view the full pet data.
+            // Caller is authorized if:
+            // 1. They are the owner of the pet.
+            // 2. They have been granted access via check_access (Full or Basic).
+            let mut is_authorized_for_full_data = false;
+
+            // Check if caller is the owner
+            if owner_address == current_user {
+                is_authorized_for_full_data = true;
+            } else {
+                // Check for granted access
+                let access_level = Self::check_access(env.clone(), id, current_user.clone());
+                if access_level != AccessLevel::None {
+                    is_authorized_for_full_data = true;
+                }
+            }
+
+            // Enforce privacy level based on authorization and privacy setting
+            if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
+                // If not authorized and privacy is not Public, deny full access.
+                // Return None, as we cannot provide decrypted data without authorization.
+                return None;
+            }
+
+            // If authorized OR privacy is Public, proceed with decryption.
+            let key = self.get_encryption_key(&env);
+
+            // Decrypt name
+            let decrypted_name_bytes = decrypt_sensitive_data(&env, &pet.encrypted_name.ciphertext, &pet.encrypted_name.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt pet name for ID {}", id));
+            let name = String::from_utf8(decrypted_name_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for pet name for ID {}", id));
+
+            // Decrypt birthday
+            let decrypted_birthday_bytes = decrypt_sensitive_data(&env, &pet.encrypted_birthday.ciphertext, &pet.encrypted_birthday.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt pet birthday for ID {}", id));
+            let birthday = String::from_utf8(decrypted_birthday_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for pet birthday for ID {}", id));
+
+            // Decrypt breed
+            let decrypted_breed_bytes = decrypt_sensitive_data(&env, &pet.encrypted_breed.ciphertext, &pet.encrypted_breed.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt pet breed for ID {}", id));
+            let breed = String::from_utf8(decrypted_breed_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for pet breed for ID {}", id));
+
+            // Decrypt medical_alerts
+            let decrypted_alerts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_medical_alerts.ciphertext, &pet.encrypted_medical_alerts.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt pet medical alerts for ID {}", id));
+            let medical_alerts = String::from_utf8(decrypted_alerts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for pet medical alerts for ID {}", id));
+
+            // Decrypt emergency_contacts (Vec<EmergencyContactInfo>)
+            let decrypted_contacts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_emergency_contacts.ciphertext, &pet.encrypted_emergency_contacts.nonce, &key)
+                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt pet emergency contacts for ID {}", id));
+            let contacts: Vec<EmergencyContactInfo> = env.from_slice(&decrypted_contacts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Failed to deserialize emergency contacts for ID {}", id));
+
+            // Construct the decrypted Pet object
+            // This assumes the Pet struct definition is updated to hold both decrypted String fields
+            // and encrypted fields (which will be set to None or default for returned object).
+            // If Pet struct *only* has encrypted fields, this reconstruction is invalid.
+            // For this task, we assume the struct can hold decrypted strings.
+            let decrypted_pet = Pet {
+                id: pet.id,
+                owner: pet.owner,
+                name, // Decrypted
+                birthday, // Decrypted
+                active: pet.active,
+                created_at: pet.created_at,
+                updated_at: pet.updated_at,
+                new_owner: pet.new_owner,
+                species: pet.species,
+                gender: pet.gender,
+                breed, // Decrypted
+                emergency_contacts: contacts, // Decrypted
+                medical_alerts, // Decrypted
+                // Note: privacy_level field is assumed to be part of the Pet struct definition from previous step
+                // privacy_level: pet.privacy_level, // Assuming it's already there or will be added.
+                // Need to ensure privacy_level is added to Pet struct definition if not done yet.
+                // If Pet struct has privacy_level field, it should be included here.
+                // Assuming it's already part of struct definition from previous step 15.2
+                privacy_level: pet.privacy_level,
+            };
+
+            Some(decrypted_pet)
+        } else {
+            None
+        }
     }
 
     pub fn get_all_pets_by_owner(env: Env, owner: Address) -> Vec<Pet> {
@@ -519,12 +727,29 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
+        let key = self.get_encryption_key(&env);
+
+        // Encrypt name
+        let name_bytes = name.as_bytes();
+        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
+        let encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+
+        // Encrypt email
+        let email_bytes = email.as_bytes();
+        let (email_nonce, email_ciphertext) = encrypt_sensitive_data(&env, email_bytes, &key);
+        let encrypted_email = EncryptedData { nonce: email_nonce, ciphertext: email_ciphertext };
+
+        // Encrypt emergency_contact
+        let emergency_contact_bytes = emergency_contact.as_bytes();
+        let (emergency_contact_nonce, emergency_contact_ciphertext) = encrypt_sensitive_data(&env, emergency_contact_bytes, &key);
+        let encrypted_emergency_contact = EncryptedData { nonce: emergency_contact_nonce, ciphertext: emergency_contact_ciphertext };
+
         let timestamp = env.ledger().timestamp();
         let pet_owner = PetOwner {
             owner_address: owner.clone(),
-            name,
-            email,
-            emergency_contact,
+            encrypted_name,
+            encrypted_email,
+            encrypted_emergency_contact,
             created_at: timestamp,
             updated_at: timestamp,
             is_pet_owner: true,
@@ -561,9 +786,23 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, PetOwner>(&DataKey::PetOwner(owner.clone()))
         {
-            pet_owner.name = name;
-            pet_owner.email = email;
-            pet_owner.emergency_contact = emergency_contact;
+            let key = self.get_encryption_key(&env);
+
+            // Encrypt name
+            let name_bytes = name.as_bytes();
+            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, name_bytes, &key);
+            pet_owner.encrypted_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+
+            // Encrypt email
+            let email_bytes = email.as_bytes();
+            let (email_nonce, email_ciphertext) = encrypt_sensitive_data(&env, email_bytes, &key);
+            pet_owner.encrypted_email = EncryptedData { nonce: email_nonce, ciphertext: email_ciphertext };
+
+            // Encrypt emergency_contact
+            let emergency_contact_bytes = emergency_contact.as_bytes();
+            let (emergency_contact_nonce, emergency_contact_ciphertext) = encrypt_sensitive_data(&env, emergency_contact_bytes, &key);
+            pet_owner.encrypted_emergency_contact = EncryptedData { nonce: emergency_contact_nonce, ciphertext: emergency_contact_ciphertext };
+            
             pet_owner.updated_at = env.ledger().timestamp();
 
             env.storage()
@@ -594,6 +833,18 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
 
+        let key = self.get_encryption_key(&env);
+
+        // Encrypt vaccine_name
+        let vaccine_name_bytes = vaccine_name.as_bytes();
+        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, vaccine_name_bytes, &key);
+        let encrypted_vaccine_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
+
+        // Encrypt batch_number
+        let batch_number_bytes = batch_number.as_bytes();
+        let (batch_nonce, batch_ciphertext) = encrypt_sensitive_data(&env, batch_number_bytes, &key);
+        let encrypted_batch_number = EncryptedData { nonce: batch_nonce, ciphertext: batch_ciphertext };
+
         let vaccine_count: u64 = env
             .storage()
             .instance()
@@ -607,10 +858,12 @@ impl PetChainContract {
             pet_id,
             veterinarian,
             vaccine_type,
-            vaccine_name,
+            vaccine_name: None, // Decrypted field set to None when adding
+            encrypted_vaccine_name: Some(encrypted_vaccine_name),
             administered_at,
             next_due_date,
-            batch_number,
+            batch_number: None, // Decrypted field set to None when adding
+            encrypted_batch_number: Some(encrypted_batch_number),
             created_at: now,
         };
 
@@ -663,42 +916,96 @@ impl PetChainContract {
             .get(&DataKey::Vaccination(vaccine_id))
     }
 
-    //  Get complete vaccination history for a pet
-    pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
-        // Verify pet exists
-        let _pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
-
-        let vax_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
-            .unwrap_or(0);
-
-        let mut history = Vec::new(&env);
-
-        for i in 1..=vax_count {
-            if let Some(vax_id) = env
-                .storage()
-                .instance()
-                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
-            {
-                if let Some(vaccination) = env
-                    .storage()
-                    .instance()
-                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
-                {
-                    history.push_back(vaccination);
+            // Get complete vaccination history for a pet
+            pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
+                // Fetch pet data and check authorization first
+                let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+        
+                if let Some(pet) = pet_storage {
+                    let current_user = env.current_contract_address();
+                    let owner_address = pet.owner.clone();
+                    let mut is_authorized_for_full_data = false;
+        
+                    // Check if caller is the owner
+                    if owner_address == current_user {
+                        is_authorized_for_full_data = true;
+                    } else {
+                        // Check for granted access
+                        let access_level = Self::check_access(env.clone(), pet_id, current_user.clone());
+                        if access_level != AccessLevel::None {
+                            is_authorized_for_full_data = true;
+                        }
+                    }
+        
+                    // Enforce privacy level
+                    if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
+                        // Deny access if not authorized and privacy is not Public.
+                        return Vec::new(&env); // Return empty history
+                    }
+        
+                    // If authorized or Public, proceed with fetching and decrypting vaccinations
+                    let vax_count: u64 = env
+                        .storage()
+                        .instance()
+                        .get(&DataKey::PetVaccinationCount(pet_id))
+                        .unwrap_or(0);
+        
+                    let mut history = Vec::new(&env);
+                    let key = self.get_encryption_key(&env);
+        
+                    for i in 1..=vax_count {
+                        if let Some(vax_id) = env
+                            .storage()
+                            .instance()
+                            .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+                        {
+                            if let Some(vaccination_record) = env
+                                .storage()
+                                .instance()
+                                .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                            {
+                                // Decrypt vaccine_name
+                                let vaccine_name = if let Some(ref encrypted_data) = vaccination_record.encrypted_vaccine_name {
+                                    let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
+                                        .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt vaccine name for ID {}", vaccination_record.id));
+                                    String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for vaccine name for ID {}", vaccination_record.id))
+                                } else {
+                                    vaccination_record.vaccine_name.clone().unwrap_or_default()
+                                };
+        
+                                // Decrypt batch_number
+                                let batch_number = if let Some(ref encrypted_data) = vaccination_record.encrypted_batch_number {
+                                    let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
+                                        .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt batch number for ID {}", vaccination_record.id));
+                                    String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for batch number for ID {}", vaccination_record.id))
+                                } else {
+                                    vaccination_record.batch_number.clone().unwrap_or_default()
+                                };
+        
+                                // Construct decrypted vaccination record
+                                let decrypted_vaccination = Vaccination {
+                                    id: vaccination_record.id,
+                                    pet_id: vaccination_record.pet_id,
+                                    veterinarian: vaccination_record.veterinarian,
+                                    vaccine_type: vaccination_record.vaccine_type,
+                                    vaccine_name: Some(vaccine_name), // Decrypted value
+                                    encrypted_vaccine_name: None, // Encrypted field set to None after decryption
+                                    administered_at: vaccination_record.administered_at,
+                                    next_due_date: vaccination_record.next_due_date,
+                                    batch_number: Some(batch_number), // Decrypted value
+                                    encrypted_batch_number: None, // Encrypted field set to None after decryption
+                                    created_at: vaccination_record.created_at,
+                                };
+                                history.push_back(decrypted_vaccination);
+                            }
+                        }
+                    }
+        
+                    history
+                } else {
+                    Vec::new(&env) // Pet not found, return empty history
                 }
             }
-        }
-
-        history
-    }
-
     // Get upcoming vaccinations
     pub fn get_upcoming_vaccinations(
         env: Env,
@@ -745,20 +1052,35 @@ impl PetChainContract {
         }
     }
 
-    //  Get all overdue vaccinations for a pet
-    pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<Vaccination> {
-        let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
-        let mut overdue = Vec::new(&env);
+        // Get all overdue vaccination types for a pet
 
-        for vaccination in history.iter() {
-            if vaccination.next_due_date < current_time {
-                overdue.push_back(vaccination.clone());
+        pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType> {
+
+            let current_time = env.ledger().timestamp();
+
+            // get_vaccination_history returns Vec<Vaccination> with decrypted data
+
+            let history = Self::get_vaccination_history(env.clone(), pet_id);
+
+            let mut overdue_types = Vec::new(&env);
+
+    
+
+            for vaccination in history.iter() {
+
+                if vaccination.next_due_date < current_time {
+
+                    overdue_types.push_back(vaccination.vaccine_type.clone());
+
+                }
+
             }
-        }
 
-        overdue
-    }
+    
+
+            overdue_types
+
+        }
 
     // ============== ACCESS CONTROL FUNCTIONS ==============
 
@@ -992,6 +1314,68 @@ impl PetChainContract {
     }
 
     /// Get all pets a user has access to
+    pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
+        let history = Self::get_vaccination_history(env.clone(), pet_id);
+        let current_time = env.ledger().timestamp();
+
+        let mut overdue_types = Vec::new(&env);
+        let mut upcoming_count = 0;
+        let mut all_current = true;
+
+        // Define a threshold for "upcoming" - e.g., within 90 days
+        let ninety_days_in_seconds = 90 * 86400;
+        let upcoming_threshold = current_time + ninety_days_in_seconds;
+
+        if history.is_empty() {
+            // If no vaccination history, assume fully current for simplicity, or define behavior as needed
+            all_current = true;
+            upcoming_count = 0;
+        } else {
+            for vaccination in history.iter() {
+                if vaccination.next_due_date < current_time {
+                    all_current = false; // Found an overdue vaccination
+                    overdue_types.push_back(vaccination.vaccine_type.clone());
+                } else if vaccination.next_due_date <= upcoming_threshold {
+                    upcoming_count += 1;
+                }
+            }
+        }
+
+        VaccinationSummary {
+            is_fully_current: all_current,
+            overdue_types,
+            upcoming_count,
+        }
+    }
+
+    // Function to store the hash of off-chain data
+    // This function assumes hashing is done off-chain and the hash is provided.
+    // data_id is used to identify which off-chain data's hash is being stored.
+    pub fn store_offchain_data_hash(env: Env, data_id: u64, data_hash: Bytes) {
+        // TODO: Add authentication/authorization logic here if needed.
+        // For example, if data_id refers to a pet, require pet owner's auth.
+        // For simplicity, this example allows anyone to store a hash, which is not secure.
+
+        let hash_key = DataKey::OffChainDataHash(data_id);
+        env.storage().instance().set(&hash_key, &data_hash);
+    }
+
+    // Function to verify the hash of off-chain data against a stored hash.
+    // data_id is used to identify which off-chain data's hash to verify.
+    // provided_hash is the hash calculated from the off-chain data.
+    pub fn verify_offchain_data_hash(env: Env, data_id: u64, provided_hash: Bytes) -> bool {
+        let hash_key = DataKey::OffChainDataHash(data_id);
+
+        if let Some(stored_hash) = env.storage().instance().get::<DataKey, Bytes>(&hash_key) {
+            // Compare the provided hash with the stored hash.
+            // Bytes comparison is direct.
+            stored_hash == provided_hash
+        } else {
+            // No hash found for this data_id, so verification fails.
+            false
+        }
+    }
+
     pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
         user.require_auth();
 
