@@ -71,6 +71,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Private,
         );
         assert_eq!(pet_id, 1);
 
