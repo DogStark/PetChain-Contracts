@@ -393,91 +393,22 @@ impl PetChainContract {
     }
 
     pub fn get_emergency_info(&self, env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
-
-            // Encrypt medical_alerts
-            let alerts_bytes = medical_notes.as_bytes();
-            let (alerts_nonce, alerts_ciphertext) = encrypt_sensitive_data(&env, alerts_bytes, &key);
-            pet.encrypted_medical_alerts = EncryptedData { nonce: alerts_nonce, ciphertext: alerts_ciphertext };
-            
-            pet.updated_at = env.ledger().timestamp();
-
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            Some((pet.emergency_contacts, pet.medical_alerts))
         } else {
-            panic!("Pet not found");
+            None
         }
     }
 
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
-        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
-
-        if let Some(pet) = pet_storage {
-            let current_user = env.current_contract_address();
-            let owner_address = pet.owner.clone();
-            let mut is_authorized_for_full_data = false;
-
-            // Check if caller is the owner
-            if owner_address == current_user {
-                is_authorized_for_full_data = true;
-            } else {
-                // Check for granted access
-                let access_level = Self::check_access(env.clone(), pet_id, current_user.clone());
-                if access_level != AccessLevel::None {
-                    is_authorized_for_full_data = true;
-                }
-            }
-
-            // Enforce privacy level based on authorization and privacy setting
-            if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
-                // Deny access if not authorized and privacy is not Public.
-                return None;
-            }
-
-            // If authorized or Public, proceed with decryption.
-            let key = self.get_encryption_key(&env);
-
-            // Decrypt emergency_contacts
-            let decrypted_contacts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_emergency_contacts.ciphertext, &pet.encrypted_emergency_contacts.nonce, &key)
-                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt emergency contacts for pet ID {}", pet_id));
-            let contacts: Vec<EmergencyContactInfo> = env.from_slice(&decrypted_contacts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Failed to deserialize emergency contacts for pet ID {}", pet_id));
-
-            // Decrypt medical_alerts
-            let decrypted_alerts_bytes = decrypt_sensitive_data(&env, &pet.encrypted_medical_alerts.ciphertext, &pet.encrypted_medical_alerts.nonce, &key)
-                .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt medical alerts for pet ID {}", pet_id));
-            let medical_alerts = String::from_utf8(decrypted_alerts_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for medical alerts for pet ID {}", pet_id));
-
-            Some((contacts, medical_alerts))
-        } else {
-            None // Pet not found
-        }
+    pub fn get_pet(&self, env: Env, id: u64) -> Option<Pet> {
+        env.storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(id))
     }
-
-    pub fn get_pet(env: Env, id: u64) -> Option<Pet> {
-        let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(id));
-
-        if let Some(mut pet) = pet_storage { // Use mut for modifying the pet object to potentially remove encrypted data later
-            let current_user = env.current_contract_address();
-            let owner_address = pet.owner.clone();
-
-            // Determine if the caller is authorized to view the full pet data.
-            // Caller is authorized if:
-            // 1. They are the owner of the pet.
-            // 2. They have been granted access via check_access (Full or Basic).
-            let mut is_authorized_for_full_data = false;
-
-            // Check if caller is the owner
-            if owner_address == current_user {
-                is_authorized_for_full_data = true;
-            } else {
-                // Check for granted access
-                let access_level = Self::check_access(env.clone(), id, current_user.clone());
-                if access_level != AccessLevel::None {
-                    is_authorized_for_full_data = true;
-                }
-            }
-
-            // Enforce privacy level based on authorization and privacy setting
-            if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
-                // If not authorized and privacy is not Public, deny full access.
                 // Return None, as we cannot provide decrypted data without authorization.
                 return None;
             }
