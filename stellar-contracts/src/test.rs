@@ -24,7 +24,6 @@ mod test {
             &Species::Dog,
             &breed,
             &PrivacyLevel::Private,
-            &PrivacyLevel::Private,
         );
         assert_eq!(pet_id, 1);
 
@@ -75,7 +74,6 @@ mod test {
             &Species::Dog,
             &breed,
             &PrivacyLevel::Private,
-            &PrivacyLevel::Private,
         );
 
         let administered_time = 1735689600;
@@ -104,10 +102,10 @@ mod test {
         assert_eq!(record.next_due_date, next_due_date);
         assert!(record.created_at == now);
         // NEW: Check batch number and vaccine name
-        assert_eq!(record.batch_number, String::from_str(&env, "BATCH-001"));
+        assert_eq!(record.batch_number, Some(String::from_str(&env, "BATCH-001")));
         assert_eq!(
             record.vaccine_name,
-            String::from_str(&env, "Rabies Vaccine")
+            Some(String::from_str(&env, "Rabies Vaccine"))
         );
     }
 
@@ -134,7 +132,6 @@ mod test {
             &Species::Dog,
             &breed,
             &PrivacyLevel::Private,
-            &PrivacyLevel::Private,
         );
 
         let pet_id_2 = client.register_pet(
@@ -144,6 +141,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Private,
         );
 
         let administered_time = 1735689600;
@@ -206,6 +204,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Private,
         );
 
         // Add multiple vaccinations
@@ -273,6 +272,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Persian"),
+            &PrivacyLevel::Private,
         );
 
         let current_time = env.ledger().timestamp();
@@ -346,6 +346,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Beagle"),
+            &PrivacyLevel::Private,
         );
 
         // Use absolute timestamps to avoid underflow
@@ -404,6 +405,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Bulldog"),
+            &PrivacyLevel::Private,
         );
 
         let base_time = 1700000000u64;
@@ -464,6 +466,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Private,
         );
 
         let current_time = env.ledger().timestamp();
@@ -485,10 +488,10 @@ mod test {
         assert_eq!(original.veterinarian, vet);
         assert_eq!(original.pet_id, pet_id);
         assert_eq!(original.vaccine_type, VaccineType::Leukemia);
-        assert_eq!(original.batch_number, String::from_str(&env, "BATCH-008"));
+        assert_eq!(original.batch_number, Some(String::from_str(&env, "BATCH-008")));
         assert_eq!(
             original.vaccine_name,
-            String::from_str(&env, "Leukemia Vaccine")
+            Some(String::from_str(&env, "Leukemia Vaccine"))
         );
 
         // Retrieve again - should be identical
@@ -515,6 +518,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "German Shepherd"),
+            &PrivacyLevel::Private,
         );
 
         // Use absolute timestamps
@@ -582,6 +586,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Private,
         );
 
         // Pet with no vaccinations
