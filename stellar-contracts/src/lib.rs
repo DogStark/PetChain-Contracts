@@ -898,84 +898,7 @@ impl PetChainContract {
 
         vaccinations
     }
-                        is_authorized_for_full_data = true;
-                    } else {
-                        // Check for granted access
-                        let access_level = Self::check_access(env.clone(), pet_id, current_user.clone());
-                        if access_level != AccessLevel::None {
-                            is_authorized_for_full_data = true;
-                        }
-                    }
-        
-                    // Enforce privacy level
-                    if !is_authorized_for_full_data && pet.privacy_level != PrivacyLevel::Public {
-                        // Deny access if not authorized and privacy is not Public.
-                        return Vec::new(&env); // Return empty history
-                    }
-        
-                    // If authorized or Public, proceed with fetching and decrypting vaccinations
-                    let vax_count: u64 = env
-                        .storage()
-                        .instance()
-                        .get(&DataKey::PetVaccinationCount(pet_id))
-                        .unwrap_or(0);
-        
-                    let mut history = Vec::new(&env);
-                    let key = self.get_encryption_key(&env);
-        
-                    for i in 1..=vax_count {
-                        if let Some(vax_id) = env
-                            .storage()
-                            .instance()
-                            .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
-                        {
-                            if let Some(vaccination_record) = env
-                                .storage()
-                                .instance()
-                                .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
-                            {
-                                // Decrypt vaccine_name
-                                let vaccine_name = if let Some(ref encrypted_data) = vaccination_record.encrypted_vaccine_name {
-                                    let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
-                                        .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt vaccine name for ID {}", vaccination_record.id));
-                                    String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for vaccine name for ID {}", vaccination_record.id))
-                                } else {
-                                    vaccination_record.vaccine_name.clone().unwrap_or_default()
-                                };
-        
-                                // Decrypt batch_number
-                                let batch_number = if let Some(ref encrypted_data) = vaccination_record.encrypted_batch_number {
-                                    let decrypted_bytes = decrypt_sensitive_data(&env, &encrypted_data.ciphertext, &encrypted_data.nonce, &key)
-                                        .unwrap_or_else(|_| panic_with_error!(&env, "Failed to decrypt batch number for ID {}", vaccination_record.id));
-                                    String::from_utf8(decrypted_bytes).unwrap_or_else(|_| panic_with_error!(&env, "Invalid UTF-8 sequence for batch number for ID {}", vaccination_record.id))
-                                } else {
-                                    vaccination_record.batch_number.clone().unwrap_or_default()
-                                };
-        
-                                // Construct decrypted vaccination record
-                                let decrypted_vaccination = Vaccination {
-                                    id: vaccination_record.id,
-                                    pet_id: vaccination_record.pet_id,
-                                    veterinarian: vaccination_record.veterinarian,
-                                    vaccine_type: vaccination_record.vaccine_type,
-                                    vaccine_name: Some(vaccine_name), // Decrypted value
-                                    encrypted_vaccine_name: None, // Encrypted field set to None after decryption
-                                    administered_at: vaccination_record.administered_at,
-                                    next_due_date: vaccination_record.next_due_date,
-                                    batch_number: Some(batch_number), // Decrypted value
-                                    encrypted_batch_number: None, // Encrypted field set to None after decryption
-                                    created_at: vaccination_record.created_at,
-                                };
-                                history.push_back(decrypted_vaccination);
-                            }
-                        }
-                    }
-        
-                    history
-                } else {
-                    Vec::new(&env) // Pet not found, return empty history
-                }
-            }
+
     // Get upcoming vaccinations
     pub fn get_upcoming_vaccinations(
         env: Env,
@@ -985,12 +908,28 @@ impl PetChainContract {
         let current_time = env.ledger().timestamp();
         let threshold_time = current_time + (days_threshold * 86400); // Convert days to seconds
 
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
         let mut upcoming = Vec::new(&env);
+        let vac_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
 
-        for vaccination in history.iter() {
-            if vaccination.next_due_date <= threshold_time {
-                upcoming.push_back(vaccination.clone());
+        for i in 1..=vac_count {
+            if let Some(vaccine_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vaccine_id))
+                {
+                    if vaccination.next_due_date <= threshold_time {
+                        upcoming.push_back(vaccination);
+                    }
+                }
             }
         }
 
@@ -999,18 +938,35 @@ impl PetChainContract {
 
     pub fn is_vaccination_current(env: Env, pet_id: u64, vaccine_type: VaccineType) -> bool {
         let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env, pet_id);
+
+        let vac_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
 
         let mut most_recent: Option<Vaccination> = None;
 
-        for vaccination in history.iter() {
-            if vaccination.vaccine_type == vaccine_type {
-                if let Some(ref current) = most_recent {
-                    if vaccination.administered_at > current.administered_at {
-                        most_recent = Some(vaccination.clone());
+        for i in 1..=vac_count {
+            if let Some(vaccine_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vaccine_id))
+                {
+                    if vaccination.vaccine_type == vaccine_type {
+                        if let Some(ref current) = most_recent {
+                            if vaccination.administered_at > current.administered_at {
+                                most_recent = Some(vaccination.clone());
+                            }
+                        } else {
+                            most_recent = Some(vaccination.clone());
+                        }
                     }
-                } else {
-                    most_recent = Some(vaccination.clone());
                 }
             }
         }
@@ -1321,11 +1277,7 @@ impl PetChainContract {
     // Function to store the hash of off-chain data
     // This function assumes hashing is done off-chain and the hash is provided.
     // data_id is used to identify which off-chain data's hash is being stored.
-    pub fn store_offchain_data_hash(env: Env, data_id: u64, data_hash: Bytes) {
-        // TODO: Add authentication/authorization logic here if needed.
-        // For example, if data_id refers to a pet, require pet owner's auth.
-        // For simplicity, this example allows anyone to store a hash, which is not secure.
-
+    pub fn store_offchain_data_hash(&self, env: Env, data_id: u64, data_hash: Bytes) {
         let hash_key = DataKey::OffChainDataHash(data_id);
         env.storage().instance().set(&hash_key, &data_hash);
     }
@@ -1333,12 +1285,11 @@ impl PetChainContract {
     // Function to verify the hash of off-chain data against a stored hash.
     // data_id is used to identify which off-chain data's hash to verify.
     // provided_hash is the hash calculated from the off-chain data.
-    pub fn verify_offchain_data_hash(env: Env, data_id: u64, provided_hash: Bytes) -> bool {
+    pub fn verify_offchain_data_hash(&self, env: Env, data_id: u64, provided_hash: Bytes) -> bool {
         let hash_key = DataKey::OffChainDataHash(data_id);
 
         if let Some(stored_hash) = env.storage().instance().get::<DataKey, Bytes>(&hash_key) {
             // Compare the provided hash with the stored hash.
-            // Bytes comparison is direct.
             stored_hash == provided_hash
         } else {
             // No hash found for this data_id, so verification fails.
