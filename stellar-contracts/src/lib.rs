@@ -1197,13 +1197,13 @@ impl PetChainContract {
     }
 
     // Function to store the hash of off-chain data
-    pub fn store_offchain_data_hash(self, env: Env, data_id: u64, data_hash: Bytes) {
+    pub fn store_offchain_data_hash(env: Env, data_id: u64, data_hash: Bytes) {
         let hash_key = DataKey::OffChainDataHash(data_id);
         env.storage().instance().set(&hash_key, &data_hash);
     }
 
     // Function to verify the hash of off-chain data against a stored hash.
-    pub fn verify_offchain_data_hash(self, env: Env, data_id: u64, provided_hash: Bytes) -> bool {
+    pub fn verify_offchain_data_hash(env: Env, data_id: u64, provided_hash: Bytes) -> bool {
         let hash_key = DataKey::OffChainDataHash(data_id);
 
         if let Some(stored_hash) = env.storage().instance().get::<DataKey, Bytes>(&hash_key) {
