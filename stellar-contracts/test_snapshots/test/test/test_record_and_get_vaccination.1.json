@@ -191,14 +191,6 @@
                             },
                             {
                               "key": {
-                                "symbol": "emergency_contacts"
-                              },
-                              "val": {
-                                "vec": []
-                              }
-                            },
-                            {
-                              "key": {
                                 "symbol": "gender"
                               },
                               "val": {
@@ -215,14 +207,6 @@
                               },
                               "val": {
                                 "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "medical_alerts"
-                              },
-                              "val": {
-                                "string": "None"
                               }
                             },
                             {
