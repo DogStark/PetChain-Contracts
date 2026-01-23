@@ -871,18 +871,33 @@ impl PetChainContract {
         vaccinations
     }
 
-            // Get complete vaccination history for a pet
-            pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
-                // Fetch pet data and check authorization first
-                let pet_storage = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id));
-        
-                if let Some(pet) = pet_storage {
-                    let current_user = env.current_contract_address();
-                    let owner_address = pet.owner.clone();
-                    let mut is_authorized_for_full_data = false;
-        
-                    // Check if caller is the owner
-                    if owner_address == current_user {
+    // Get complete vaccination history for a pet
+    pub fn get_vaccination_history(&self, env: Env, pet_id: u64) -> Vec<Vaccination> {
+        let vac_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+
+        let mut vaccinations = Vec::new(&env);
+        for i in 1..=vac_count {
+            if let Some(vaccine_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vaccine_id))
+                {
+                    vaccinations.push_back(vaccination);
+                }
+            }
+        }
+
+        vaccinations
+    }
                         is_authorized_for_full_data = true;
                     } else {
                         // Check for granted access
