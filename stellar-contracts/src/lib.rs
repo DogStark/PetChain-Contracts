@@ -336,7 +336,7 @@ impl PetChainContract {
     }
 
     pub fn update_pet_profile(
-        &self,
+        self,
         env: Env,
         id: u64,
         name: String,
@@ -370,7 +370,7 @@ impl PetChainContract {
     }
 
     pub fn set_emergency_contacts(
-        &self,
+        self,
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContactInfo>,
