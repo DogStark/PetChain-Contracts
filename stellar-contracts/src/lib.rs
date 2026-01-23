@@ -679,17 +679,18 @@ impl PetChainContract {
         let vaccine_id = vaccine_count + 1;
         let now = env.ledger().timestamp();
 
+        let empty_bytes = Bytes::new(&env);
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
             veterinarian,
             vaccine_type,
-            vaccine_name: None, // Decrypted field set to None when adding
-            encrypted_vaccine_name: Some(encrypted_vaccine_name),
+            vaccine_name: Some(vaccine_name),
+            encrypted_vaccine_name: Some(EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() }),
             administered_at,
             next_due_date,
-            batch_number: None, // Decrypted field set to None when adding
-            encrypted_batch_number: Some(encrypted_batch_number),
+            batch_number: Some(batch_number),
+            encrypted_batch_number: Some(EncryptedData { nonce: empty_bytes.clone(), ciphertext: empty_bytes.clone() }),
             created_at: now,
         };
 
@@ -1202,17 +1203,13 @@ impl PetChainContract {
     }
 
     // Function to store the hash of off-chain data
-    // This function assumes hashing is done off-chain and the hash is provided.
-    // data_id is used to identify which off-chain data's hash is being stored.
-    pub fn store_offchain_data_hash(&self, env: Env, data_id: u64, data_hash: Bytes) {
+    pub fn store_offchain_data_hash(self, env: Env, data_id: u64, data_hash: Bytes) {
         let hash_key = DataKey::OffChainDataHash(data_id);
         env.storage().instance().set(&hash_key, &data_hash);
     }
 
     // Function to verify the hash of off-chain data against a stored hash.
-    // data_id is used to identify which off-chain data's hash to verify.
-    // provided_hash is the hash calculated from the off-chain data.
-    pub fn verify_offchain_data_hash(&self, env: Env, data_id: u64, provided_hash: Bytes) -> bool {
+    pub fn verify_offchain_data_hash(self, env: Env, data_id: u64, provided_hash: Bytes) -> bool {
         let hash_key = DataKey::OffChainDataHash(data_id);
 
         if let Some(stored_hash) = env.storage().instance().get::<DataKey, Bytes>(&hash_key) {
