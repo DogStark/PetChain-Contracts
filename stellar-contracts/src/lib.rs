@@ -653,12 +653,6 @@ impl PetChainContract {
             false
         }
     }
-                .set(&DataKey::PetOwner(owner), &pet_owner);
-            true
-        } else {
-            false
-        }
-    }
 
     // Pet Vaccination Record
     pub fn add_vaccination(
