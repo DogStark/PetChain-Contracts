@@ -138,6 +138,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let administered_time = 1735689600;
@@ -195,6 +196,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet_id_2 = client.register_pet(
@@ -204,6 +206,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let administered_time = 1735689600;
@@ -359,6 +362,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "German Shepherd"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Use absolute timestamps
@@ -426,6 +430,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Pet with no vaccinations
@@ -457,6 +462,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -465,6 +471,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         let pet_three = client.register_pet(
             &owner_two,
@@ -473,6 +480,7 @@ mod test {
             &Gender::Female,
             &Species::Bird,
             &String::from_str(&env, "Parakeet"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let owner_one_pets = client.get_all_pets_by_owner(&owner_one);
@@ -516,6 +524,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Shepherd"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -524,6 +533,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.transfer_pet_ownership(&pet_one, &owner_two);
@@ -556,6 +566,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -564,6 +575,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Collie"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let mut pet_ids = Vec::new(&env);
@@ -607,6 +619,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -615,6 +628,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Maine Coon"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.transfer_all_pets(&owner_one, &owner_two);
@@ -672,6 +686,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Old Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let result = client.update_pet_profile(
@@ -742,6 +757,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let mut contacts = Vec::new(&env);
@@ -828,6 +844,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         assert_eq!(client.is_pet_active(&pet_id), false);
@@ -866,6 +883,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let retrieved_owner = client.get_pet_owner(&pet_id);
@@ -909,6 +927,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "German Shepherd"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet = client.get_pet(&pet_id).unwrap();
@@ -939,6 +958,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.activate_pet(&pet_id);
@@ -965,6 +985,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         assert_eq!(client.is_pet_active(&pet_id), false);
@@ -999,6 +1020,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Beagle"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.transfer_pet_ownership(&pet_id, &new_owner);
@@ -1026,6 +1048,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Maine Coon"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.transfer_pet_ownership(&pet_id, &new_owner);
@@ -1116,6 +1139,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Grant access
@@ -1149,6 +1173,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Persian"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let current_time = env.ledger().timestamp();
@@ -1178,6 +1203,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Bengal"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
@@ -1208,6 +1234,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Orange Tabby"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let result = client.revoke_access(&pet_id, &grantee);
@@ -1232,6 +1259,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Chihuahua"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let access_level = client.check_access(&pet_id, &user);
@@ -1257,6 +1285,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Great Dane"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.grant_access(&pet_id, &vet1, &AccessLevel::Full, &None);
@@ -1285,6 +1314,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Rottweiler"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.grant_access(&pet_id, &vet1, &AccessLevel::Full, &None);
@@ -1313,6 +1343,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Calico"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
@@ -1345,6 +1376,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Jack Russell"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let grant = client.get_access_grant(&pet_id, &grantee);
@@ -1368,6 +1400,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Border Collie"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet_id2 = client.register_pet(
@@ -1377,6 +1410,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Russian Blue"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let accessible = client.get_accessible_pets(&owner);
@@ -1424,6 +1458,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Dog,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id1).unwrap().species, Species::Dog);
 
@@ -1434,6 +1469,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Cat,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id2).unwrap().species, Species::Cat);
 
@@ -1444,6 +1480,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Bird,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id3).unwrap().species, Species::Bird);
 
@@ -1454,6 +1491,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id4).unwrap().species, Species::Other);
     }
@@ -1476,6 +1514,7 @@ mod test {
             &Gender::Male,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id1).unwrap().gender, Gender::Male);
 
@@ -1486,6 +1525,7 @@ mod test {
             &Gender::Female,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(client.get_pet(&pet_id2).unwrap().gender, Gender::Female);
 
@@ -1496,6 +1536,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
         assert_eq!(
             client.get_pet(&pet_id3).unwrap().gender,
@@ -1532,6 +1573,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed1"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet_id2 = client.register_pet(
@@ -1541,6 +1583,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Breed2"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         assert_eq!(pet_id1, 1);
@@ -1585,6 +1628,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Persian"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Activate pet
@@ -1651,6 +1695,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed 1"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet2 = client.register_pet(
@@ -1660,6 +1705,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Breed 2"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         let pet3 = client.register_pet(
@@ -1669,6 +1715,7 @@ mod test {
             &Gender::Male,
             &Species::Bird,
             &String::from_str(&env, "Breed 3"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Transfer all pets
@@ -1707,6 +1754,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Private,);PrivacyLevel::Private,
         );
 
         // Add multiple vaccinations
