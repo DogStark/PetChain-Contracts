@@ -282,7 +282,6 @@ impl PetChainContract {
     }
 
     pub fn register_pet(
-        self,
         env: Env,
         owner: Address,
         name: String,
@@ -333,7 +332,6 @@ impl PetChainContract {
     }
 
     pub fn update_pet_profile(
-        self,
         env: Env,
         id: u64,
         name: String,
@@ -367,7 +365,6 @@ impl PetChainContract {
     }
 
     pub fn set_emergency_contacts(
-        self,
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContactInfo>,
@@ -389,7 +386,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(&self, env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
+    pub fn get_emergency_info(self, env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -401,7 +398,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_pet(&self, env: Env, id: u64) -> Option<Pet> {
+    pub fn get_pet(self, env: Env, id: u64) -> Option<Pet> {
         env.storage()
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
