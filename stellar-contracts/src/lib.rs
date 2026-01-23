@@ -726,6 +726,7 @@ impl PetChainContract {
 
     // Pet Vaccination Record
     pub fn add_vaccination(
+        &self,
         env: Env,
         pet_id: u64,
         veterinarian: Address,
@@ -742,18 +743,6 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
-
-        let key = self.get_encryption_key(&env);
-
-        // Encrypt vaccine_name
-        let vaccine_name_bytes = vaccine_name.as_bytes();
-        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, vaccine_name_bytes, &key);
-        let encrypted_vaccine_name = EncryptedData { nonce: name_nonce, ciphertext: name_ciphertext };
-
-        // Encrypt batch_number
-        let batch_number_bytes = batch_number.as_bytes();
-        let (batch_nonce, batch_ciphertext) = encrypt_sensitive_data(&env, batch_number_bytes, &key);
-        let encrypted_batch_number = EncryptedData { nonce: batch_nonce, ciphertext: batch_ciphertext };
 
         let vaccine_count: u64 = env
             .storage()
