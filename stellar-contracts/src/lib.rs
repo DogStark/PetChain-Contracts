@@ -115,6 +115,8 @@ pub struct AccessGrant {
     pub is_active: bool,
 }
 
+// --- EVENTS START ---
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessGrantedEvent {
@@ -142,6 +144,47 @@ pub struct AccessExpiredEvent {
     pub grantee: Address,
     pub expired_at: u64,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetRegisteredEvent {
+    pub pet_id: u64,
+    pub owner: Address,
+    pub name: String,
+    pub species: Species,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationAddedEvent {
+    pub vaccine_id: u64,
+    pub pet_id: u64,
+    pub veterinarian: Address,
+    pub vaccine_type: VaccineType,
+    pub next_due_date: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetOwnershipTransferredEvent {
+    pub pet_id: u64,
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub timestamp: u64,
+}
+
+// Defined to meet requirements, though no function currently exists in this lib.rs to emit it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAddedEvent {
+    pub pet_id: u64,
+    pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+// --- EVENTS END ---
 
 #[contract]
 pub struct PetChainContract;
@@ -171,13 +214,13 @@ impl PetChainContract {
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
-            name,
+            name: name.clone(),
             birthday,
             active: false,
             created_at: timestamp,
             updated_at: timestamp,
             new_owner: owner.clone(),
-            species,
+            species: species.clone(),
             gender,
             breed,
         };
@@ -197,6 +240,18 @@ impl PetChainContract {
         env.storage().instance().set(
             &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
             &pet_id,
+        );
+
+        // EMIT EVENT: PetRegistered
+        env.events().publish(
+            (String::from_str(&env, "PetRegistered"), pet_id),
+            PetRegisteredEvent {
+                pet_id,
+                owner,
+                name,
+                species,
+                timestamp,
+            },
         );
 
         pet_id
@@ -298,11 +353,22 @@ impl PetChainContract {
         {
             pet.new_owner.require_auth();
 
-            let _old_owner = pet.owner.clone();
+            let old_owner = pet.owner.clone();
             pet.owner = pet.new_owner.clone();
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+
+            // EMIT EVENT: PetOwnershipTransferred
+            env.events().publish(
+                (String::from_str(&env, "PetOwnershipTransferred"), id),
+                PetOwnershipTransferredEvent {
+                    pet_id: id,
+                    old_owner,
+                    new_owner: pet.owner.clone(),
+                    timestamp: pet.updated_at,
+                },
+            );
         }
     }
 
@@ -402,8 +468,8 @@ impl PetChainContract {
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
-            veterinarian,
-            vaccine_type,
+            veterinarian: veterinarian.clone(),
+            vaccine_type: vaccine_type.clone(),
             vaccine_name,
             administered_at,
             next_due_date,
@@ -449,6 +515,19 @@ impl PetChainContract {
         env.storage().instance().set(
             &DataKey::PetVaccinationIndex((pet.owner.clone(), pet_vaccine_count)),
             &vaccine_id,
+        );
+
+        // EMIT EVENT: VaccinationAdded
+        env.events().publish(
+            (String::from_str(&env, "VaccinationAdded"), pet_id),
+            VaccinationAddedEvent {
+                vaccine_id,
+                pet_id,
+                veterinarian,
+                vaccine_type,
+                next_due_date,
+                timestamp: now,
+            },
         );
 
         vaccine_id
@@ -638,19 +717,18 @@ impl PetChainContract {
             );
         }
 
-        // Emit event
-        let now = env.ledger().timestamp();
-        let event = AccessGrantedEvent {
-            pet_id,
-            granter: pet.owner.clone(),
-            grantee: grantee.clone(),
-            access_level: access_level.clone(),
-            expires_at,
-            timestamp: now,
-        };
-
-        env.events()
-            .publish((String::from_str(&env, "ACCESS_GRANTED"),), event);
+        // EMIT EVENT: AccessGranted
+        env.events().publish(
+            (String::from_str(&env, "AccessGranted"), pet_id),
+            AccessGrantedEvent {
+                pet_id,
+                granter: pet.owner.clone(),
+                grantee: grantee.clone(),
+                access_level: access_level.clone(),
+                expires_at,
+                timestamp: now,
+            },
+        );
 
         true
     }
@@ -677,17 +755,17 @@ impl PetChainContract {
             grant.access_level = AccessLevel::None;
             env.storage().instance().set(&grant_key, &grant);
 
-            // Emit event
+            // EMIT EVENT: AccessRevoked
             let now = env.ledger().timestamp();
-            let event = AccessRevokedEvent {
-                pet_id,
-                granter: pet.owner.clone(),
-                grantee: grantee.clone(),
-                timestamp: now,
-            };
-
-            env.events()
-                .publish((String::from_str(&env, "ACCESS_REVOKED"),), event);
+            env.events().publish(
+                (String::from_str(&env, "AccessRevoked"), pet_id),
+                AccessRevokedEvent {
+                    pet_id,
+                    granter: pet.owner.clone(),
+                    grantee: grantee.clone(),
+                    timestamp: now,
+                },
+            );
 
             true
         } else {
@@ -721,14 +799,15 @@ impl PetChainContract {
             if let Some(exp_time) = grant.expires_at {
                 let now = env.ledger().timestamp();
                 if now >= exp_time {
-                    let event = AccessExpiredEvent {
-                        pet_id,
-                        grantee: user.clone(),
-                        expired_at: exp_time,
-                    };
-
-                    env.events()
-                        .publish((String::from_str(&env, "ACCESS_EXPIRED"),), event);
+                    // EMIT EVENT: AccessExpired
+                    env.events().publish(
+                        (String::from_str(&env, "AccessExpired"), pet_id),
+                        AccessExpiredEvent {
+                            pet_id,
+                            grantee: user.clone(),
+                            expired_at: exp_time,
+                        },
+                    );
                     return AccessLevel::None;
                 }
             }
