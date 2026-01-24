@@ -342,4 +342,107 @@ mod test {
         let list = client.get_pet_lab_results(&pet_id);
         assert_eq!(list.len(), 1);
     }
+
+    #[test]
+    fn test_update_medical_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner, &String::from_str(&env, "Pet"), &String::from_str(&env, "2020"), 
+            &Gender::Male, &Species::Dog, &String::from_str(&env, "Breed"), &PrivacyLevel::Public
+        );
+
+        let mut medications = Vec::new(&env);
+        medications.push_back(Medication {
+            name: String::from_str(&env, "Med1"),
+            dosage: String::from_str(&env, "10mg"),
+            frequency: String::from_str(&env, "Daily"),
+            start_date: 100,
+            end_date: 200,
+        });
+
+        let start_time = 1000;
+        env.ledger().with_mut(|l| l.timestamp = start_time);
+
+        let record_id = client.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Checkup"),
+            &String::from_str(&env, "Healthy"),
+            &String::from_str(&env, "Monitor"),
+            &medications,
+        );
+
+        let created_record = client.get_medical_record(&record_id).unwrap();
+        assert_eq!(created_record.created_at, start_time);
+        assert_eq!(created_record.updated_at, start_time);
+
+        // Advance time
+        let update_time = 2000;
+        env.ledger().with_mut(|l| l.timestamp = update_time);
+
+        let mut new_meds = Vec::new(&env);
+        new_meds.push_back(Medication {
+            name: String::from_str(&env, "Med1"),
+            dosage: String::from_str(&env, "20mg"), // Modified dosage
+            frequency: String::from_str(&env, "Daily"),
+            start_date: 100,
+            end_date: 200,
+        });
+        new_meds.push_back(Medication {
+            name: String::from_str(&env, "NewMed"), // New med
+            dosage: String::from_str(&env, "5mg"),
+            frequency: String::from_str(&env, "Once"),
+            start_date: update_time,
+            end_date: update_time + 100,
+        });
+
+        let success = client.update_medical_record(
+            &record_id,
+            &String::from_str(&env, "Sick"),
+            &String::from_str(&env, "Intensive Care"),
+            &new_meds,
+        );
+        assert!(success);
+
+        let updated = client.get_medical_record(&record_id).unwrap();
+        
+        // Verify updates
+        assert_eq!(updated.diagnosis, String::from_str(&env, "Sick"));
+        assert_eq!(updated.treatment, String::from_str(&env, "Intensive Care"));
+        assert_eq!(updated.medications.len(), 2);
+        assert_eq!(updated.medications.get(0).unwrap().dosage, String::from_str(&env, "20mg"));
+        assert_eq!(updated.medications.get(1).unwrap().name, String::from_str(&env, "NewMed"));
+        assert_eq!(updated.updated_at, update_time);
+
+        // Verify preserved fields
+        assert_eq!(updated.id, record_id);
+        assert_eq!(updated.pet_id, pet_id);
+        assert_eq!(updated.veterinarian, vet);
+        assert_eq!(updated.record_type, String::from_str(&env, "Checkup"));
+        assert_eq!(updated.created_at, start_time);
+    }
+
+    #[test]
+    fn test_update_medical_record_nonexistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let meds = Vec::new(&env);
+        let success = client.update_medical_record(
+            &999,
+            &String::from_str(&env, "Diag"),
+            &String::from_str(&env, "Treat"),
+            &meds,
+        );
+        assert_eq!(success, false);
+    }
 }
