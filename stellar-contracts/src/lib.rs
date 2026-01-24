@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,47 +70,19 @@ pub struct Vaccination {
     pub created_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct MedicalRecord {
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub vet_address: Address,
+    pub diagnosis: String,
+    pub treatment: String,
+    pub medications: String,
+    pub timestamp: u64,
+}
+
 // ============== PET TAG LINKING SYSTEM ==============
-
-#[contracttype]
-#[derive(Clone)]
-pub struct PetTag {
-    pub tag_id: BytesN<32>,
-    pub pet_id: u64,
-    pub owner: Address,
-    pub message: String,
-    pub is_active: bool,
-    pub linked_at: u64,
-    pub updated_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct TagLinkedEvent {
-    pub tag_id: BytesN<32>,
-    pub pet_id: u64,
-    pub owner: Address,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct TagDeactivatedEvent {
-    pub tag_id: BytesN<32>,
-    pub pet_id: u64,
-    pub deactivated_by: Address,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct TagReactivatedEvent {
-    pub tag_id: BytesN<32>,
-    pub pet_id: u64,
-    pub reactivated_by: Address,
-    pub timestamp: u64,
-}
-
 #[contracttype]
 #[derive(Clone)]
 pub struct PetTag {
@@ -152,10 +124,14 @@ pub enum DataKey {
     UserAccessList(Address),      // grantee -> list of pet_ids they have access to
     UserAccessCount(Address),     // grantee -> count of pets they can access
 
-    // Tag Linking System keys
-    Tag(BytesN<32>),              // tag_id -> PetTag (reverse lookup for QR scan)
-    PetTagId(u64),                // pet_id -> tag_id (forward lookup)
-    TagNonce,                     // Global nonce for deterministic tag ID generation
+    // Medical record storage keys
+    MedicalRecord(u64),
+    MedicalRecordCount,
+    PetMedicalRecordCount(u64),
+    PetMedicalRecordByIndex((u64, u64)),
+
+    // Veterinarian authorization
+    AuthorizedVet(Address),
 }
 
 #[contracttype]
@@ -604,12 +580,14 @@ impl PetChainContract {
 
     //  Get complete vaccination history for a pet
     pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
-        // Verify pet exists
-        let _pet: Pet = env
+        if env
             .storage()
             .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return Vec::new(&env);
+        }
 
         let vax_count: u64 = env
             .storage()
@@ -697,6 +675,155 @@ impl PetChainContract {
         }
 
         overdue
+    }
+
+    // ============== VETERINARIAN AUTHORIZATION ==============
+
+    pub fn authorize_veterinarian(env: Env, vet: Address) -> bool {
+        vet.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::AuthorizedVet(vet), &true);
+        true
+    }
+
+    pub fn is_veterinarian_authorized(env: Env, vet: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::AuthorizedVet(vet))
+            .unwrap_or(false)
+    }
+
+    // ============== MEDICAL RECORD STORAGE ==============
+
+    pub fn add_medical_record(
+        env: Env,
+        pet_id: u64,
+        vet: Address,
+        diagnosis: String,
+        treatment: String,
+        medications: String,
+    ) -> u64 {
+        vet.require_auth();
+
+        if !Self::is_veterinarian_authorized(env.clone(), vet.clone()) {
+            panic!("Veterinarian not authorized");
+        }
+
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MedicalRecordCount)
+            .unwrap_or(0);
+        let record_id = record_count + 1;
+        let timestamp = env.ledger().timestamp();
+
+        let record = MedicalRecord {
+            record_id,
+            pet_id,
+            vet_address: vet.clone(),
+            diagnosis,
+            treatment,
+            medications,
+            timestamp,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MedicalRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::MedicalRecordCount, &record_id);
+
+        let pet_record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_record_count = pet_record_count + 1;
+        env.storage().instance().set(
+            &DataKey::PetMedicalRecordCount(pet_id),
+            &new_pet_record_count,
+        );
+        env.storage().instance().set(
+            &DataKey::PetMedicalRecordByIndex((pet_id, new_pet_record_count)),
+            &record_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordAdded"), pet_id),
+            MedicalRecordAddedEvent {
+                pet_id,
+                updated_by: vet,
+                timestamp,
+            },
+        );
+
+        record_id
+    }
+
+    pub fn get_medical_records(env: Env, pet_id: u64, requester: Address) -> Vec<MedicalRecord> {
+        requester.require_auth();
+
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let access_level = Self::check_access(env.clone(), pet_id, requester);
+        if access_level != AccessLevel::Full {
+            panic!("Access denied");
+        }
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut records = Vec::new(&env);
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetMedicalRecordByIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+                {
+                    records.push_back(record);
+                }
+            }
+        }
+
+        records
+    }
+
+    pub fn get_record_by_id(env: Env, record_id: u64, requester: Address) -> Option<MedicalRecord> {
+        requester.require_auth();
+
+        let record = env
+            .storage()
+            .instance()
+            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id));
+
+        if let Some(ref record_data) = record {
+            let access_level = Self::check_access(env, record_data.pet_id, requester);
+            if access_level != AccessLevel::Full {
+                panic!("Access denied");
+            }
+        }
+
+        record
     }
 
     // ============== ACCESS CONTROL FUNCTIONS ==============
@@ -935,11 +1062,7 @@ impl PetChainContract {
     // Pet Tag/QR Code Management Functions
 
     /// Link a tag to a pet - generates unique tag_id and establishes bidirectional mapping
-    pub fn link_tag_to_pet(
-        env: Env,
-        pet_id: u64,
-        tag_message: String,
-    ) -> String {
+    pub fn link_tag_to_pet(env: Env, pet_id: u64, tag_message: String) -> String {
         let pet: Pet = env
             .storage()
             .instance()
@@ -977,7 +1100,8 @@ impl PetChainContract {
                 .storage()
                 .instance()
                 .get::<DataKey, u64>(&DataKey::PetTagCount)
-                .unwrap_or(0) + 1),
+                .unwrap_or(0)
+                + 1),
         );
 
         tag_id
@@ -1013,11 +1137,7 @@ impl PetChainContract {
     /// Get pet by tag ID - enables fast QR code scanning
     pub fn get_pet_by_tag(env: Env, tag_id: String) -> Option<Pet> {
         Self::get_tag(&env, tag_id.clone(), true)
-            .and_then(|tag| {
-                env.storage()
-                    .instance()
-                    .get(&DataKey::Pet(tag.pet_id))
-            })
+            .and_then(|tag| env.storage().instance().get(&DataKey::Pet(tag.pet_id)))
     }
 
     /// Get tag details by tag ID
@@ -1027,9 +1147,7 @@ impl PetChainContract {
 
     /// Get tag ID for a pet
     pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<String> {
-        env.storage()
-            .instance()
-            .get(&DataKey::TagByPetId(pet_id))
+        env.storage().instance().get(&DataKey::TagByPetId(pet_id))
     }
 
     /// Generic tag mutation function
@@ -1045,9 +1163,7 @@ impl PetChainContract {
             tag.owner.require_auth();
             tag.updated_at = env.ledger().timestamp();
             mutator(&mut tag);
-            env.storage()
-                .instance()
-                .set(&DataKey::PetTag(tag_id), &tag);
+            env.storage().instance().set(&DataKey::PetTag(tag_id), &tag);
             true
         } else {
             false
@@ -1107,341 +1223,6 @@ impl PetChainContract {
         accessible_pets
     }
 
-    // ============== TAG LINKING SYSTEM FUNCTIONS ==============
-
-    /// Generates a unique, unpredictable tag ID using SHA-256
-    /// Uses pet_id, owner, nonce, timestamp, and ledger sequence for entropy
-    fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
-        // Get and increment nonce for uniqueness
-        let nonce: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TagNonce)
-            .unwrap_or(0);
-        let new_nonce = nonce + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::TagNonce, &new_nonce);
-
-        // Build preimage with multiple entropy sources
-        let timestamp = env.ledger().timestamp();
-        let sequence = env.ledger().sequence();
-
-        // Construct preimage bytes: pet_id || nonce || timestamp || sequence
-        let mut preimage = Bytes::new(env);
-
-        // Append pet_id as 8 bytes (big-endian)
-        for byte in pet_id.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-
-        // Append nonce as 8 bytes (big-endian)
-        for byte in new_nonce.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-
-        // Append timestamp as 8 bytes (big-endian)
-        for byte in timestamp.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-
-        // Append sequence as 4 bytes (big-endian)
-        for byte in sequence.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-
-        // Generate SHA-256 hash and convert to BytesN<32>
-        env.crypto().sha256(&preimage).into()
-    }
-
-    /// Links a new physical tag to a pet
-    ///
-    /// # Arguments
-    /// * `pet_id` - The ID of the pet to link the tag to
-    ///
-    /// # Returns
-    /// * `BytesN<32>` - The generated unique tag ID (32 bytes, suitable for QR encoding)
-    ///
-    /// # Panics
-    /// * If pet does not exist
-    /// * If pet already has a linked tag
-    /// * If caller is not the pet owner
-    pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32> {
-        // Verify pet exists and get owner
-        let pet = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
-
-        // Require authentication from pet owner
-        pet.owner.require_auth();
-
-        // Check that pet doesn't already have a tag (1 Pet = 1 Tag)
-        let existing_tag: Option<BytesN<32>> = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetTagId(pet_id));
-
-        if existing_tag.is_some() {
-            panic!("Pet already has a linked tag");
-        }
-
-        // Generate unique tag ID
-        let tag_id = Self::generate_tag_id(&env, pet_id, &pet.owner);
-
-        let now = env.ledger().timestamp();
-
-        // Create PetTag record
-        let pet_tag = PetTag {
-            tag_id: tag_id.clone(),
-            pet_id,
-            owner: pet.owner.clone(),
-            message: String::from_str(&env, ""),
-            is_active: true,
-            linked_at: now,
-            updated_at: now,
-        };
-
-        // Store bidirectional mappings
-        // tag_id -> PetTag (for QR scan lookups)
-        env.storage()
-            .instance()
-            .set(&DataKey::Tag(tag_id.clone()), &pet_tag);
-
-        // pet_id -> tag_id (for forward lookups)
-        env.storage()
-            .instance()
-            .set(&DataKey::PetTagId(pet_id), &tag_id);
-
-        // Emit TagLinked event
-        let event = TagLinkedEvent {
-            tag_id: tag_id.clone(),
-            pet_id,
-            owner: pet.owner.clone(),
-            timestamp: now,
-        };
-        env.events()
-            .publish((String::from_str(&env, "TAG_LINKED"),), event);
-
-        tag_id
-    }
-
-    /// Retrieves pet information by scanning a tag (QR code lookup)
-    ///
-    /// # Arguments
-    /// * `tag_id` - The 32-byte tag identifier from the QR code
-    ///
-    /// # Returns
-    /// * `Option<Pet>` - The pet record if tag is valid and active, None otherwise
-    ///
-    /// # Note
-    /// This is a PUBLIC function - no authentication required.
-    /// Returns None if tag is deactivated (privacy feature for lost/stolen tags)
-    pub fn get_pet_by_tag(env: Env, tag_id: BytesN<32>) -> Option<Pet> {
-        // Lookup tag record
-        let pet_tag: Option<PetTag> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Tag(tag_id));
-
-        match pet_tag {
-            Some(tag) => {
-                // Check if tag is active (privacy feature)
-                if !tag.is_active {
-                    return None;
-                }
-
-                // Return the associated pet
-                env.storage()
-                    .instance()
-                    .get(&DataKey::Pet(tag.pet_id))
-            }
-            None => None,
-        }
-    }
-
-    /// Retrieves full tag information including the custom message
-    ///
-    /// # Arguments
-    /// * `tag_id` - The 32-byte tag identifier
-    ///
-    /// # Returns
-    /// * `Option<PetTag>` - The tag record if found, None otherwise
-    pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Tag(tag_id))
-    }
-
-    /// Gets the tag ID associated with a pet
-    ///
-    /// # Arguments
-    /// * `pet_id` - The pet's ID
-    ///
-    /// # Returns
-    /// * `Option<BytesN<32>>` - The tag ID if pet has a linked tag, None otherwise
-    pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<BytesN<32>> {
-        env.storage()
-            .instance()
-            .get(&DataKey::PetTagId(pet_id))
-    }
-
-    /// Updates the custom message on a tag
-    ///
-    /// # Arguments
-    /// * `tag_id` - The tag to update
-    /// * `message` - New message (e.g., "If found, please call: 555-1234")
-    ///
-    /// # Returns
-    /// * `bool` - True if update succeeded, false if tag not found
-    ///
-    /// # Panics
-    /// * If caller is not the current pet owner
-    pub fn update_tag_message(env: Env, tag_id: BytesN<32>, message: String) -> bool {
-        // Get tag record
-        let pet_tag: Option<PetTag> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Tag(tag_id.clone()));
-
-        match pet_tag {
-            Some(mut tag) => {
-                // Get current pet owner (not the owner stored in tag, in case pet was transferred)
-                let pet = env
-                    .storage()
-                    .instance()
-                    .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
-                    .expect("Pet not found");
-
-                // Require auth from current pet owner
-                pet.owner.require_auth();
-
-                // Update message and timestamp
-                tag.message = message;
-                tag.updated_at = env.ledger().timestamp();
-
-                // Store updated tag
-                env.storage()
-                    .instance()
-                    .set(&DataKey::Tag(tag_id), &tag);
-
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Deactivates a tag (for lost or stolen tags)
-    ///
-    /// # Arguments
-    /// * `tag_id` - The tag to deactivate
-    ///
-    /// # Returns
-    /// * `bool` - True if deactivation succeeded, false if tag not found
-    ///
-    /// # Panics
-    /// * If caller is not the current pet owner
-    ///
-    /// # Note
-    /// Deactivated tags will return None from get_pet_by_tag for privacy
-    pub fn deactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
-        // Get tag record
-        let pet_tag: Option<PetTag> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Tag(tag_id.clone()));
-
-        match pet_tag {
-            Some(mut tag) => {
-                // Get current pet owner
-                let pet = env
-                    .storage()
-                    .instance()
-                    .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
-                    .expect("Pet not found");
-
-                // Require auth from current pet owner
-                pet.owner.require_auth();
-
-                // Deactivate tag
-                tag.is_active = false;
-                tag.updated_at = env.ledger().timestamp();
-
-                // Store updated tag
-                env.storage()
-                    .instance()
-                    .set(&DataKey::Tag(tag_id.clone()), &tag);
-
-                // Emit TagDeactivated event
-                let event = TagDeactivatedEvent {
-                    tag_id,
-                    pet_id: tag.pet_id,
-                    deactivated_by: pet.owner.clone(),
-                    timestamp: env.ledger().timestamp(),
-                };
-                env.events()
-                    .publish((String::from_str(&env, "TAG_DEACTIVATED"),), event);
-
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Reactivates a previously deactivated tag
-    ///
-    /// # Arguments
-    /// * `tag_id` - The tag to reactivate
-    ///
-    /// # Returns
-    /// * `bool` - True if reactivation succeeded, false if tag not found
-    ///
-    /// # Panics
-    /// * If caller is not the current pet owner
-    pub fn reactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
-        // Get tag record
-        let pet_tag: Option<PetTag> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Tag(tag_id.clone()));
-
-        match pet_tag {
-            Some(mut tag) => {
-                // Get current pet owner
-                let pet = env
-                    .storage()
-                    .instance()
-                    .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))
-                    .expect("Pet not found");
-
-                // Require auth from current pet owner
-                pet.owner.require_auth();
-
-                // Reactivate tag
-                tag.is_active = true;
-                tag.updated_at = env.ledger().timestamp();
-
-                // Store updated tag
-                env.storage()
-                    .instance()
-                    .set(&DataKey::Tag(tag_id.clone()), &tag);
-
-                // Emit TagReactivated event
-                let event = TagReactivatedEvent {
-                    tag_id,
-                    pet_id: tag.pet_id,
-                    reactivated_by: pet.owner.clone(),
-                    timestamp: env.ledger().timestamp(),
-                };
-                env.events()
-                    .publish((String::from_str(&env, "TAG_REACTIVATED"),), event);
-
-                true
-            }
-            None => false,
-        }
-    }
 }
 
 mod test;
