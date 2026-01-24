@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,12 +315,52 @@ impl PetChainContract {
     pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
         env.storage().instance().get(&DataKey::Vaccination(vaccine_id))
     }
+
+    pub fn get_upcoming_vaccinations(env: Env, pet_id: u64) -> Option<Vec<Vaccination>> {
+        let pet: Pet = match env.storage().instance().get(&DataKey::Pet(pet_id)) {
+            Some(p) => p,
+            None => return None,
+        };
+
+        let owner = pet.owner;
+        let current_time = env.ledger().timestamp();
+        let thirty_days_later = current_time + 30 * 24 * 60 * 60; 
+
+        let count_key = DataKey::PetVaccinations(owner.clone());
+        let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0);
+
+        let mut upcoming = Vec::new(&env);
+
+        for i in 1..=count {
+            let index_key = DataKey::PetVaccinationIndex((owner.clone(), i));
+            let vaccine_id: u64 = match env.storage().instance().get(&index_key) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let vaccine: Vaccination = match env.storage().instance().get(&DataKey::Vaccination(vaccine_id)) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            if vaccine.pet_id != pet_id {
+                continue;
+            }
+
+            let due = vaccine.next_due_date;
+            if due > current_time && due <= thirty_days_later && due != 0 {
+                upcoming.push_back(vaccine);
+            }
+        }
+
+        Some(upcoming)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
     use crate::{PetChainContract, PetChainContractClient};
 
     #[test]
@@ -464,6 +504,61 @@ mod test {
         assert_eq!(record_2.administered_at, administered_time);
         assert_eq!(record_2.next_due_date, next_due_date);
         assert!(record_2.created_at == now);
+    }
+
+    #[test]
+    fn test_get_upcoming_vaccinations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner.clone(),
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2024-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        let now = 1730000000; // arbitrary timestamp
+        env.ledger().set_timestamp(now);
+
+        // // Record 3 vaccinations
+        client.record_vaccination(
+            &pet_id,
+            &vet.clone(),
+            &VaccineType::Rabies,
+            &(now - 86400 * 10),
+            &(now + 86400 * 10), // 10 days from now
+        );
+
+        // // Record 3 vaccinations
+        client.record_vaccination(
+            &pet_id,
+            &vet.clone(),
+            &VaccineType::Other,
+            &(now - 86400 * 10),
+            &(now + 86400 * 20), // 20 days from now
+        );
+
+        client.record_vaccination(
+            &pet_id,
+            &vet.clone(),
+            &VaccineType::Bordetella,
+            &(now - 86400 * 5),
+            &(now - 86400), // already overdue 
+        );
+
+        let upcoming = client.get_upcoming_vaccinations(&pet_id).unwrap();
+
+        assert_eq!(upcoming.len(), 2);
+        assert_eq!(upcoming.get(0).unwrap().vaccine_type, VaccineType::Rabies);
+        assert_eq!(upcoming.get(1).unwrap().vaccine_type, VaccineType::Other);
     }
 
 }
