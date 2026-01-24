@@ -206,6 +206,12 @@ pub enum DataKey {
     LabResultCount,
     PetLabResultIndex((u64, u64)), // (pet_id, index) -> lab_result_id
     PetLabResultCount(u64),
+
+    // Medical Record DataKey
+    MedicalRecord(u64),
+    MedicalRecordCount,
+    PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
+    PetMedicalRecordCount(u64),
 }
 
 #[contracttype]
@@ -246,6 +252,30 @@ pub struct AccessGrant {
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
     pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Medication {
+    pub name: String,
+    pub dosage: String,
+    pub frequency: String,
+    pub start_date: u64,
+    pub end_date: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub veterinarian: Address,
+    pub record_type: String, // e.g., "Checkup", "Surgery"
+    pub diagnosis: String,
+    pub treatment: String,
+    pub medications: Vec<Medication>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 // --- EVENTS ---
@@ -1190,10 +1220,105 @@ impl PetChainContract {
                 pet_id, granter: pet.owner, grantee, timestamp: env.ledger().timestamp()
             });
             true
+
+    } else {
+            false
+        }
+    }
+
+    // --- MEDICAL RECORDS ---
+
+    pub fn add_medical_record(
+        env: Env,
+        pet_id: u64,
+        veterinarian: Address,
+        record_type: String,
+        diagnosis: String,
+        treatment: String,
+        medications: Vec<Medication>,
+    ) -> u64 {
+        veterinarian.require_auth();
+        let _pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+
+        let count = env.storage().instance().get::<DataKey, u64>(&DataKey::MedicalRecordCount).unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&DataKey::MedicalRecordCount, &id);
+
+        let now = env.ledger().timestamp();
+        let record = MedicalRecord {
+            id,
+            pet_id,
+            veterinarian: veterinarian.clone(),
+            record_type,
+            diagnosis,
+            treatment,
+            medications,
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&DataKey::MedicalRecord(id), &record);
+
+        // Update pet index
+        let pet_record_count = env.storage().instance().get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id)).unwrap_or(0);
+        let new_pet_record_count = pet_record_count + 1;
+        env.storage().instance().set(&DataKey::PetMedicalRecordCount(pet_id), &new_pet_record_count);
+        env.storage().instance().set(&DataKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)), &id);
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordAdded"), pet_id),
+            MedicalRecordAddedEvent {
+                pet_id,
+                updated_by: veterinarian,
+                timestamp: now,
+            },
+        );
+
+        id
+    }
+
+    pub fn update_medical_record(
+        env: Env,
+        record_id: u64,
+        diagnosis: String,
+        treatment: String,
+        medications: Vec<Medication>,
+    ) -> bool {
+        if let Some(mut record) = env.storage().instance().get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id)) {
+            // "authorized veterinarians to modify existing medical records"
+            // We assume the veterinarian who created it is the one authorized, or potentially strict AC.
+            // For now, require auth from the listed veterinarian.
+            record.veterinarian.require_auth();
+
+            record.diagnosis = diagnosis;
+            record.treatment = treatment;
+            record.medications = medications;
+            record.updated_at = env.ledger().timestamp();
+
+            env.storage().instance().set(&DataKey::MedicalRecord(record_id), &record);
+            true
         } else {
             false
         }
     }
+
+    pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
+        env.storage().instance().get(&DataKey::MedicalRecord(record_id))
+    }
+
+    pub fn get_pet_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
+        let count = env.storage().instance().get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id)).unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(rid) = env.storage().instance().get::<DataKey, u64>(&DataKey::PetMedicalRecordIndex((pet_id, i))) {
+                if let Some(record) = Self::get_medical_record(env.clone(), rid) {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
     
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
          if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
