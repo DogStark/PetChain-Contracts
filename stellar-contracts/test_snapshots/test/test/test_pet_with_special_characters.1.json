@@ -17,15 +17,15 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Sir Fluff-ington III"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2021-01-15"
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Female"
+                      "symbol": "Male"
                     }
                   ]
                 },
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Mix (Tabby/Orange)"
                 }
               ]
             }
@@ -45,10 +45,7 @@
           "sub_invocations": []
         }
       ]
-    ],
-    [],
-    [],
-    []
+    ]
   ],
   "ledger": {
     "protocol_version": 21,
@@ -131,7 +128,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2025-01-01"
+                                "string": "2021-01-15"
                               }
                             },
                             {
@@ -139,7 +136,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Tabby"
+                                "string": "Mix (Tabby/Orange)"
                               }
                             },
                             {
@@ -157,7 +154,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Female"
+                                    "symbol": "Male"
                                   }
                                 ]
                               }
@@ -175,7 +172,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Newborn"
+                                "string": "Sir Fluff-ington III"
                               }
                             },
                             {
@@ -335,15 +332,15 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "Sir Fluff-ington III"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "2021-01-15"
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Female"
+                      "symbol": "Male"
                     }
                   ]
                 },
@@ -355,7 +352,7 @@
                   ]
                 },
                 {
-                  "string": "Tabby"
+                  "string": "Mix (Tabby/Orange)"
                 }
               ]
             }
@@ -381,160 +378,6 @@
             ],
             "data": {
               "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "u64": 1
-                },
-                {
-                  "u64": 30
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
             }
           }
         }
