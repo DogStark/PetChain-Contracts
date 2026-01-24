@@ -445,4 +445,122 @@ mod test {
         );
         assert_eq!(success, false);
     }
+
+    #[test]
+    fn test_authorize_vet_and_add_medical_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract =
+            PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Cody"),
+            &String::from_str(&env, "2021-08-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Shepherd Mix"),
+        );
+
+        contract.authorize_veterinarian(&vet);
+
+        let record_id = contract.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Ear infection"),
+            &String::from_str(&env, "Antibiotics for 7 days"),
+            &String::from_str(&env, "Amoxicillin"),
+        );
+
+        let record = contract.get_record_by_id(&record_id, &owner).unwrap();
+        assert_eq!(record.record_id, record_id);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+    }
+
+    #[test]
+    #[should_panic(expected = "Veterinarian not authorized")]
+    fn test_only_authorized_vet_can_add_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract =
+            PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Milo"),
+            &String::from_str(&env, "2020-03-12"),
+            &Gender::Male,
+            &Species::Cat,
+            &String::from_str(&env, "Tabby"),
+        );
+
+        contract.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Routine checkup"),
+            &String::from_str(&env, "No treatment required"),
+            &String::from_str(&env, "None"),
+        );
+    }
+
+    #[test]
+    fn test_get_medical_records_for_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract =
+            PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Hazel"),
+            &String::from_str(&env, "2019-05-20"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+        );
+
+        contract.authorize_veterinarian(&vet);
+
+        contract.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Dental cleaning"),
+            &String::from_str(&env, "Performed cleaning"),
+            &String::from_str(&env, "Post-care rinse"),
+        );
+
+        contract.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Skin allergy"),
+            &String::from_str(&env, "Diet adjustment"),
+            &String::from_str(&env, "Omega-3 supplements"),
+        );
+
+        let records = contract.get_medical_records(&pet_id, &owner);
+        assert_eq!(records.len(), 2);
+    }
+
+    #[test]
+    fn test_get_record_by_id_missing_returns_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract =
+            PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        let missing = contract.get_record_by_id(&9999u64, &owner);
+        assert!(missing.is_none());
+    }
 }
