@@ -6,7 +6,7 @@
   "auth": [
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
         {
           "function": {
             "contract_fn": {
@@ -14,7 +14,7 @@
               "function_name": "register_pet",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
                   "string": "Buddy"
@@ -53,55 +53,13 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "register_pet",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "string": "Max"
-                },
-                {
-                  "string": "2021-05-15"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
-                },
-                {
-                  "string": "Labrador"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "record_vaccination",
+              "function_name": "add_vaccination",
               "args": [
                 {
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "vec": [
@@ -111,45 +69,16 @@
                   ]
                 },
                 {
-                  "u64": 1735689600
+                  "string": "Rabies Vaccine"
                 },
                 {
-                  "u64": 1767225600
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "record_vaccination",
-              "args": [
-                {
-                  "u64": 2
+                  "u64": 0
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "u64": 31536000
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Other"
-                    }
-                  ]
-                },
-                {
-                  "u64": 2735689600
-                },
-                {
-                  "u64": 2767225600
+                  "string": "BATCH-2024"
                 }
               ]
             }
@@ -202,7 +131,7 @@
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                                 },
                                 {
                                   "u64": 1
@@ -213,28 +142,6 @@
                         },
                         "val": {
                           "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "OwnerPetIndex"
-                            },
-                            {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                                },
-                                {
-                                  "u64": 2
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 2
                         }
                       },
                       {
@@ -315,7 +222,7 @@
                                 "symbol": "new_owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -323,119 +230,7 @@
                                 "symbol": "owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "species"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Dog"
-                                  }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "updated_at"
-                              },
-                              "val": {
-                                "u64": 0
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Pet"
-                            },
-                            {
-                              "u64": 2
-                            }
-                          ]
-                        },
-                        "val": {
-                          "map": [
-                            {
-                              "key": {
-                                "symbol": "active"
-                              },
-                              "val": {
-                                "bool": false
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "birthday"
-                              },
-                              "val": {
-                                "string": "2021-05-15"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "breed"
-                              },
-                              "val": {
-                                "string": "Labrador"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "created_at"
-                              },
-                              "val": {
-                                "u64": 0
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "gender"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Male"
-                                  }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "id"
-                              },
-                              "val": {
-                                "u64": 2
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "name"
-                              },
-                              "val": {
-                                "string": "Max"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "new_owner"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "owner"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -470,7 +265,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
@@ -480,24 +275,24 @@
                               "symbol": "PetCountByOwner"
                             },
                             {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PetVaccinationIndex"
+                              "symbol": "PetVaccinationByIndex"
                             },
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "u64": 1
                                 },
                                 {
                                   "u64": 1
@@ -514,22 +309,37 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "PetVaccinationCount"
+                            },
+                            {
+                              "u64": 1
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "PetVaccinationIndex"
                             },
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                                 },
                                 {
-                                  "u64": 2
+                                  "u64": 1
                                 }
                               ]
                             }
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
@@ -539,12 +349,12 @@
                               "symbol": "PetVaccinations"
                             },
                             {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
@@ -565,7 +375,15 @@
                                 "symbol": "administered_at"
                               },
                               "val": {
-                                "u64": 1735689600
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "batch_number"
+                              },
+                              "val": {
+                                "string": "BATCH-2024"
                               }
                             },
                             {
@@ -589,7 +407,7 @@
                                 "symbol": "next_due_date"
                               },
                               "val": {
-                                "u64": 1767225600
+                                "u64": 31536000
                               }
                             },
                             {
@@ -598,6 +416,14 @@
                               },
                               "val": {
                                 "u64": 1
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "vaccine_name"
+                              },
+                              "val": {
+                                "string": "Rabies Vaccine"
                               }
                             },
                             {
@@ -617,83 +443,7 @@
                                 "symbol": "veterinarian"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Vaccination"
-                            },
-                            {
-                              "u64": 2
-                            }
-                          ]
-                        },
-                        "val": {
-                          "map": [
-                            {
-                              "key": {
-                                "symbol": "administered_at"
-                              },
-                              "val": {
-                                "u64": 2735689600
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "created_at"
-                              },
-                              "val": {
-                                "u64": 0
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "id"
-                              },
-                              "val": {
-                                "u64": 2
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "next_due_date"
-                              },
-                              "val": {
-                                "u64": 2767225600
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "pet_id"
-                              },
-                              "val": {
-                                "u64": 2
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "vaccine_type"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Other"
-                                  }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "veterinarian"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                               }
                             }
                           ]
@@ -708,7 +458,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       }
                     ]
@@ -727,72 +477,6 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1033654523790656264
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 1033654523790656264
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 4837995959683129791
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 4837995959683129791
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "ledger_key_nonce": {
                 "nonce": 801925984706572462
               }
             },
@@ -805,7 +489,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
@@ -898,7 +582,7 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
                   "string": "Buddy"
@@ -968,83 +652,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "register_pet"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "string": "Max"
-                },
-                {
-                  "string": "2021-05-15"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Male"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Dog"
-                    }
-                  ]
-                },
-                {
-                  "string": "Labrador"
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "register_pet"
-              }
-            ],
-            "data": {
-              "u64": 2
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "record_vaccination"
+                "symbol": "add_vaccination"
               }
             ],
             "data": {
@@ -1053,7 +661,7 @@
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "vec": [
@@ -1063,10 +671,16 @@
                   ]
                 },
                 {
-                  "u64": 1735689600
+                  "string": "Rabies Vaccine"
                 },
                 {
-                  "u64": 1767225600
+                  "u64": 0
+                },
+                {
+                  "u64": 31536000
+                },
+                {
+                  "string": "BATCH-2024"
                 }
               ]
             }
@@ -1087,7 +701,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "add_vaccination"
               }
             ],
             "data": {
@@ -1113,29 +727,20 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "is_vaccination_current"
               }
             ],
             "data": {
               "vec": [
                 {
-                  "u64": 2
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "u64": 1
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Other"
+                      "symbol": "Rabies"
                     }
                   ]
-                },
-                {
-                  "u64": 2735689600
-                },
-                {
-                  "u64": 2767225600
                 }
               ]
             }
@@ -1156,121 +761,11 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "is_vaccination_current"
               }
             ],
             "data": {
-              "u64": 2
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_vaccinations"
-              }
-            ],
-            "data": {
-              "u64": 2
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_vaccinations"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "administered_at"
-                  },
-                  "val": {
-                    "u64": 2735689600
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "created_at"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "id"
-                  },
-                  "val": {
-                    "u64": 2
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "next_due_date"
-                  },
-                  "val": {
-                    "u64": 2767225600
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 2
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "vaccine_type"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Other"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "veterinarian"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                }
-              ]
+              "bool": true
             }
           }
         }

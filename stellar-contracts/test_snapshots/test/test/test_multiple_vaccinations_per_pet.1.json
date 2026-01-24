@@ -6,7 +6,7 @@
   "auth": [
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
         {
           "function": {
             "contract_fn": {
@@ -14,13 +14,13 @@
               "function_name": "register_pet",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "Charlie"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "2021-07-20"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "Golden Retriever"
+                  "string": "Beagle"
                 }
               ]
             }
@@ -48,18 +48,18 @@
     ],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "record_vaccination",
+              "function_name": "add_vaccination",
               "args": [
                 {
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "vec": [
@@ -69,10 +69,57 @@
                   ]
                 },
                 {
-                  "u64": 1735689600
+                  "string": "Rabies"
                 },
                 {
-                  "u64": 1767225600
+                  "u64": 0
+                },
+                {
+                  "u64": 31536000
+                },
+                {
+                  "string": "BATCH-001"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "function_name": "add_vaccination",
+              "args": [
+                {
+                  "u64": 1
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Parvovirus"
+                    }
+                  ]
+                },
+                {
+                  "string": "Parvovirus"
+                },
+                {
+                  "u64": 0
+                },
+                {
+                  "u64": 31536000
+                },
+                {
+                  "string": "BATCH-002"
                 }
               ]
             }
@@ -125,7 +172,7 @@
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                                 },
                                 {
                                   "u64": 1
@@ -164,7 +211,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2020-01-01"
+                                "string": "2021-07-20"
                               }
                             },
                             {
@@ -172,7 +219,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "Golden Retriever"
+                                "string": "Beagle"
                               }
                             },
                             {
@@ -208,7 +255,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Buddy"
+                                "string": "Charlie"
                               }
                             },
                             {
@@ -216,7 +263,7 @@
                                 "symbol": "new_owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -224,7 +271,7 @@
                                 "symbol": "owner"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
                             },
                             {
@@ -269,7 +316,7 @@
                               "symbol": "PetCountByOwner"
                             },
                             {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
@@ -281,12 +328,12 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PetVaccinationIndex"
+                              "symbol": "PetVaccinationByIndex"
                             },
                             {
                               "vec": [
                                 {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                  "u64": 1
                                 },
                                 {
                                   "u64": 1
@@ -303,15 +350,96 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PetVaccinations"
+                              "symbol": "PetVaccinationByIndex"
                             },
                             {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              "vec": [
+                                {
+                                  "u64": 1
+                                },
+                                {
+                                  "u64": 2
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 2
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "PetVaccinationCount"
+                            },
+                            {
+                              "u64": 1
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 2
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "PetVaccinationIndex"
+                            },
+                            {
+                              "vec": [
+                                {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                },
+                                {
+                                  "u64": 1
+                                }
+                              ]
                             }
                           ]
                         },
                         "val": {
                           "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "PetVaccinationIndex"
+                            },
+                            {
+                              "vec": [
+                                {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                },
+                                {
+                                  "u64": 2
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 2
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "PetVaccinations"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 2
                         }
                       },
                       {
@@ -332,7 +460,15 @@
                                 "symbol": "administered_at"
                               },
                               "val": {
-                                "u64": 1735689600
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "batch_number"
+                              },
+                              "val": {
+                                "string": "BATCH-001"
                               }
                             },
                             {
@@ -356,7 +492,7 @@
                                 "symbol": "next_due_date"
                               },
                               "val": {
-                                "u64": 1767225600
+                                "u64": 31536000
                               }
                             },
                             {
@@ -365,6 +501,14 @@
                               },
                               "val": {
                                 "u64": 1
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "vaccine_name"
+                              },
+                              "val": {
+                                "string": "Rabies"
                               }
                             },
                             {
@@ -384,7 +528,99 @@
                                 "symbol": "veterinarian"
                               },
                               "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Vaccination"
+                            },
+                            {
+                              "u64": 2
+                            }
+                          ]
+                        },
+                        "val": {
+                          "map": [
+                            {
+                              "key": {
+                                "symbol": "administered_at"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "batch_number"
+                              },
+                              "val": {
+                                "string": "BATCH-002"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "created_at"
+                              },
+                              "val": {
+                                "u64": 0
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "id"
+                              },
+                              "val": {
+                                "u64": 2
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "next_due_date"
+                              },
+                              "val": {
+                                "u64": 31536000
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "pet_id"
+                              },
+                              "val": {
+                                "u64": 1
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "vaccine_name"
+                              },
+                              "val": {
+                                "string": "Parvovirus"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "vaccine_type"
+                              },
+                              "val": {
+                                "vec": [
+                                  {
+                                    "symbol": "Parvovirus"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "veterinarian"
+                              },
+                              "val": {
+                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                               }
                             }
                           ]
@@ -399,7 +635,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 1
+                          "u64": 2
                         }
                       }
                     ]
@@ -418,7 +654,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 5541220902715666415
+                "nonce": 801925984706572462
               }
             },
             "durability": "temporary"
@@ -433,7 +669,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 5541220902715666415
+                    "nonce": 801925984706572462
                   }
                 },
                 "durability": "temporary",
@@ -451,7 +687,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 801925984706572462
+                "nonce": 1033654523790656264
               }
             },
             "durability": "temporary"
@@ -466,7 +702,40 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 801925984706572462
+                    "nonce": 1033654523790656264
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 5541220902715666415
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 5541220902715666415
                   }
                 },
                 "durability": "temporary",
@@ -523,13 +792,13 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Buddy"
+                  "string": "Charlie"
                 },
                 {
-                  "string": "2020-01-01"
+                  "string": "2021-07-20"
                 },
                 {
                   "vec": [
@@ -546,7 +815,7 @@
                   ]
                 },
                 {
-                  "string": "Golden Retriever"
+                  "string": "Beagle"
                 }
               ]
             }
@@ -593,7 +862,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "add_vaccination"
               }
             ],
             "data": {
@@ -602,7 +871,7 @@
                   "u64": 1
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "vec": [
@@ -612,10 +881,16 @@
                   ]
                 },
                 {
-                  "u64": 1735689600
+                  "string": "Rabies"
                 },
                 {
-                  "u64": 1767225600
+                  "u64": 0
+                },
+                {
+                  "u64": 31536000
+                },
+                {
+                  "string": "BATCH-001"
                 }
               ]
             }
@@ -636,7 +911,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "record_vaccination"
+                "symbol": "add_vaccination"
               }
             ],
             "data": {
@@ -662,7 +937,82 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_vaccinations"
+                "symbol": "add_vaccination"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "u64": 1
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "Parvovirus"
+                    }
+                  ]
+                },
+                {
+                  "string": "Parvovirus"
+                },
+                {
+                  "u64": 0
+                },
+                {
+                  "u64": 31536000
+                },
+                {
+                  "string": "BATCH-002"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "add_vaccination"
+              }
+            ],
+            "data": {
+              "u64": 2
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_vaccination_history"
               }
             ],
             "data": {
@@ -685,70 +1035,170 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_vaccinations"
+                "symbol": "get_vaccination_history"
               }
             ],
             "data": {
-              "map": [
+              "vec": [
                 {
-                  "key": {
-                    "symbol": "administered_at"
-                  },
-                  "val": {
-                    "u64": 1735689600
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "created_at"
-                  },
-                  "val": {
-                    "u64": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "next_due_date"
-                  },
-                  "val": {
-                    "u64": 1767225600
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "pet_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "vaccine_type"
-                  },
-                  "val": {
-                    "vec": [
-                      {
-                        "symbol": "Rabies"
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "administered_at"
+                      },
+                      "val": {
+                        "u64": 0
                       }
-                    ]
-                  }
+                    },
+                    {
+                      "key": {
+                        "symbol": "batch_number"
+                      },
+                      "val": {
+                        "string": "BATCH-001"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "id"
+                      },
+                      "val": {
+                        "u64": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "next_due_date"
+                      },
+                      "val": {
+                        "u64": 31536000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "pet_id"
+                      },
+                      "val": {
+                        "u64": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "vaccine_name"
+                      },
+                      "val": {
+                        "string": "Rabies"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "vaccine_type"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Rabies"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "veterinarian"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    }
+                  ]
                 },
                 {
-                  "key": {
-                    "symbol": "veterinarian"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "administered_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "batch_number"
+                      },
+                      "val": {
+                        "string": "BATCH-002"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "id"
+                      },
+                      "val": {
+                        "u64": 2
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "next_due_date"
+                      },
+                      "val": {
+                        "u64": 31536000
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "pet_id"
+                      },
+                      "val": {
+                        "u64": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "vaccine_name"
+                      },
+                      "val": {
+                        "string": "Parvovirus"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "vaccine_type"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Parvovirus"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "veterinarian"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                      }
+                    }
+                  ]
                 }
               ]
             }
