@@ -588,4 +588,965 @@ mod test {
         let overdue = client.get_overdue_vaccinations(&pet_id);
         assert_eq!(overdue.len(), 0);
     }
+
+    // ============ TAG LINKING SYSTEM TESTS ============
+
+    #[test]
+    fn test_link_tag_to_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+        );
+
+        // Link tag to pet
+        let tag_id = client.link_tag_to_pet(&pet_id);
+
+        // Verify tag was created
+        let tag = client.get_tag(&tag_id).unwrap();
+        assert_eq!(tag.pet_id, pet_id);
+        assert_eq!(tag.owner, owner);
+        assert!(tag.is_active);
+
+        // Verify bidirectional lookup works
+        let retrieved_tag_id = client.get_tag_by_pet(&pet_id).unwrap();
+        assert_eq!(retrieved_tag_id, tag_id);
+    }
+
+    #[test]
+    fn test_get_pet_by_tag() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2021-05-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        let tag_id = client.link_tag_to_pet(&pet_id);
+
+        // Lookup pet by tag (simulates QR scan)
+        let pet = client.get_pet_by_tag(&tag_id).unwrap();
+        assert_eq!(pet.id, pet_id);
+        assert_eq!(pet.owner, owner);
+    }
+
+    #[test]
+    fn test_update_tag_message() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2022-03-20"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+        );
+
+        let tag_id = client.link_tag_to_pet(&pet_id);
+
+        // Update the tag message
+        let message = String::from_str(&env, "If found, call 555-1234");
+        let result = client.update_tag_message(&tag_id, &message);
+        assert!(result);
+
+        // Verify message was updated
+        let tag = client.get_tag(&tag_id).unwrap();
+        assert_eq!(tag.message, message);
+    }
+
+    #[test]
+    fn test_deactivate_tag() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Rocky"),
+            &String::from_str(&env, "2019-11-10"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Bulldog"),
+        );
+
+        let tag_id = client.link_tag_to_pet(&pet_id);
+
+        // Deactivate the tag (lost/stolen scenario)
+        let result = client.deactivate_tag(&tag_id);
+        assert!(result);
+
+        // Verify tag is deactivated
+        let tag = client.get_tag(&tag_id).unwrap();
+        assert!(!tag.is_active);
+
+        // get_pet_by_tag should return None for deactivated tags (privacy)
+        let pet = client.get_pet_by_tag(&tag_id);
+        assert!(pet.is_none());
+    }
+
+    #[test]
+    fn test_reactivate_tag() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Bella"),
+            &String::from_str(&env, "2020-07-04"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Poodle"),
+        );
+
+        let tag_id = client.link_tag_to_pet(&pet_id);
+
+        // Deactivate then reactivate
+        client.deactivate_tag(&tag_id);
+        let result = client.reactivate_tag(&tag_id);
+        assert!(result);
+
+        // Verify tag is active again
+        let tag = client.get_tag(&tag_id).unwrap();
+        assert!(tag.is_active);
+
+        // get_pet_by_tag should work again
+        let pet = client.get_pet_by_tag(&tag_id);
+        assert!(pet.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "Pet already has a linked tag")]
+    fn test_link_tag_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Charlie"),
+            &String::from_str(&env, "2021-01-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+        );
+
+        // First link succeeds
+        client.link_tag_to_pet(&pet_id);
+
+        // Second link should panic
+        client.link_tag_to_pet(&pet_id);
+    }
+
+    #[test]
+    fn test_tag_id_uniqueness() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+
+        // Create multiple pets
+        let pet1 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Dog1"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed1"),
+        );
+        let pet2 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Dog2"),
+            &String::from_str(&env, "2020-01-02"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Breed2"),
+        );
+
+        // Link tags
+        let tag1 = client.link_tag_to_pet(&pet1);
+        let tag2 = client.link_tag_to_pet(&pet2);
+
+        // Verify tags are unique
+        assert_ne!(tag1, tag2);
+    }
+
+    #[test]
+    fn test_nonexistent_tag_returns_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        // Create a fake tag ID (32 zero bytes)
+        let fake_tag_id = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+        // get_pet_by_tag should return None
+        let result = client.get_pet_by_tag(&fake_tag_id);
+        assert!(result.is_none());
+
+        // get_tag should return None
+        let tag = client.get_tag(&fake_tag_id);
+        assert!(tag.is_none());
+    }
+
+    // ============ COMPREHENSIVE EDGE CASE TESTS ============
+
+    // Pet Tag/QR Code Tests
+
+    #[test]
+    fn test_link_tag_to_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "Buddy");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        let tag_message = String::from_str(&env, "If found, please contact: 555-1234");
+        let tag_id = client.link_tag_to_pet(&pet_id, &tag_message);
+
+        // Verify tag was created
+        assert!(!tag_id.is_empty());
+
+        // Verify tag details
+        let tag = client.get_tag_details(&tag_id).unwrap();
+        assert_eq!(tag.tag_id, tag_id);
+        assert_eq!(tag.pet_id, pet_id);
+        assert_eq!(tag.owner, owner);
+        assert_eq!(tag.tag_message, tag_message);
+        assert_eq!(tag.is_active, true);
+    }
+
+    #[test]
+    fn test_get_pet_by_tag() {
+    fn test_pet_activation_deactivation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+        );
+
+        assert!(!contract.is_pet_active(&pet_id));
+        contract.activate_pet(&pet_id);
+        assert!(contract.is_pet_active(&pet_id));
+        contract.deactivate_pet(&pet_id);
+        assert!(!contract.is_pet_active(&pet_id));
+    }
+
+    #[test]
+    fn test_pet_ownership_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner1,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2019-05-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+        );
+
+        contract.transfer_pet_ownership(&pet_id, &owner2);
+        assert_eq!(contract.get_pet_owner(&pet_id), Some(owner1.clone()));
+
+        contract.accept_pet_transfer(&pet_id);
+        assert_eq!(contract.get_pet_owner(&pet_id), Some(owner2));
+    }
+
+    #[test]
+    fn test_owner_registration() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Bella"),
+            &String::from_str(&env, "2022-03-20"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Persian"),
+        );
+
+        let tag_message = String::from_str(&env, "Original message");
+        let tag_id = client.link_tag_to_pet(&pet_id, &tag_message);
+
+        // Update the tag message
+        let new_message = String::from_str(&env, "Updated message: Please return to 123 Main St");
+        let updated = client.update_tag_message(&tag_id, &new_message);
+        assert_eq!(updated, true);
+
+        // Verify message was updated
+        let tag = client.get_tag_details(&tag_id).unwrap();
+        assert_eq!(tag.tag_message, new_message);
+    }
+
+    #[test]
+    fn test_deactivate_and_reactivate_tag() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Charlie"),
+            &String::from_str(&env, "2019-11-10"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+        );
+
+        let tag_message = String::from_str(&env, "Lost dog - please contact");
+        let tag_id = client.link_tag_to_pet(&pet_id, &tag_message);
+
+        // Tag should be active initially
+        assert_eq!(client.is_tag_active(&tag_id), true);
+
+        // Deactivate the tag (e.g., tag was lost)
+        let deactivated = client.deactivate_tag(&tag_id);
+        assert_eq!(deactivated, true);
+        assert_eq!(client.is_tag_active(&tag_id), false);
+
+        // Try to get pet by inactive tag - should return None
+        let pet_result = client.get_pet_by_tag(&tag_id);
+        assert_eq!(pet_result.is_none(), true);
+
+        // Reactivate the tag
+        let reactivated = client.reactivate_tag(&tag_id);
+        assert_eq!(reactivated, true);
+        assert_eq!(client.is_tag_active(&tag_id), true);
+
+        // Now get_pet_by_tag should work again
+        let pet = client.get_pet_by_tag(&tag_id).unwrap();
+        assert_eq!(pet.id, pet_id);
+    }
+
+    #[test]
+    fn test_get_tag_by_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Daisy"),
+            &String::from_str(&env, "2023-02-14"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+        );
+
+        let tag_message = String::from_str(&env, "Daisy's Tag");
+        let tag_id = client.link_tag_to_pet(&pet_id, &tag_message);
+
+        // Get tag ID by pet ID
+        let retrieved_tag_id = client.get_tag_by_pet(&pet_id).unwrap();
+        assert_eq!(retrieved_tag_id, tag_id);
+    }
+
+    #[test]
+    fn test_pet_tag_unique_identifiers() {
+        assert!(!contract.is_owner_registered(&owner));
+
+        contract.register_pet_owner(
+            &owner,
+            &String::from_str(&env, "John Doe"),
+            &String::from_str(&env, "john@example.com"),
+            &String::from_str(&env, "555-1234"),
+        );
+
+        assert!(contract.is_owner_registered(&owner));
+    }
+
+    #[test]
+    fn test_owner_profile_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        contract.register_pet_owner(
+            &owner,
+            &String::from_str(&env, "Jane Doe"),
+            &String::from_str(&env, "jane@example.com"),
+            &String::from_str(&env, "555-5678"),
+        );
+
+        let updated = contract.update_owner_profile(
+            &owner,
+            &String::from_str(&env, "Jane Smith"),
+            &String::from_str(&env, "jane.smith@example.com"),
+            &String::from_str(&env, "555-9999"),
+        );
+
+        assert!(updated);
+    }
+
+    #[test]
+    fn test_vaccination_status_current() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+        );
+
+        let now = env.ledger().timestamp();
+        let next_due = now + (365 * 86400);
+
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies Vaccine"),
+            &now,
+            &next_due,
+            &String::from_str(&env, "BATCH-2024"),
+        );
+
+        assert!(contract.is_vaccination_current(&pet_id, &VaccineType::Rabies));
+    }
+
+    #[test]
+    fn test_vaccination_status_overdue() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2018-03-10"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Persian"),
+        );
+
+        let now = env.ledger().timestamp();
+        let past_due = now - (30 * 86400); // 30 days ago
+
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvovirus Vaccine"),
+            &past_due,
+            &(now - 86400), // Due yesterday
+            &String::from_str(&env, "BATCH-2023"),
+        );
+
+        assert!(!contract.is_vaccination_current(&pet_id, &VaccineType::Parvovirus));
+    }
+
+    #[test]
+    fn test_multiple_vaccinations_per_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        // Create multiple pets
+        let pet_id_1 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Pet1"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed1"),
+        );
+
+        let pet_id_2 = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Pet2"),
+            &String::from_str(&env, "2021-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Breed2"),
+        );
+
+        let tag_message = String::from_str(&env, "Message");
+
+        // Link tags to both pets
+        let tag_id_1 = client.link_tag_to_pet(&pet_id_1, &tag_message);
+        let tag_id_2 = client.link_tag_to_pet(&pet_id_2, &tag_message);
+
+        // Tags should be unique
+        assert_ne!(tag_id_1, tag_id_2);
+
+        // Each tag should resolve to correct pet
+        assert_eq!(
+            client.get_pet_by_tag(&tag_id_1).unwrap().id,
+            pet_id_1
+        );
+        assert_eq!(
+            client.get_pet_by_tag(&tag_id_2).unwrap().id,
+            pet_id_2
+        );
+    }
+
+    #[test]
+    fn test_tag_lookup_performance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "FastLookup"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed"),
+        );
+
+        let tag_message = String::from_str(&env, "Quick lookup test");
+        let tag_id = client.link_tag_to_pet(&pet_id, &tag_message);
+
+        // Test direct tag lookup (O(1) operation)
+        let pet = client.get_pet_by_tag(&tag_id).unwrap();
+        assert_eq!(pet.id, pet_id);
+
+        // Test tag details retrieval
+        let tag_details = client.get_tag_details(&tag_id).unwrap();
+        assert_eq!(tag_details.tag_id, tag_id);
+
+        // Test reverse lookup (pet to tag)
+        let retrieved_tag = client.get_tag_by_pet(&pet_id).unwrap();
+        assert_eq!(retrieved_tag, tag_id);
+    }
+
+    #[test]
+    fn test_tag_message_customization() {
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Charlie"),
+            &String::from_str(&env, "2021-07-20"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+        );
+
+        let now = env.ledger().timestamp();
+
+        // Add multiple vaccinations
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies"),
+            &now,
+            &(now + 365 * 86400),
+            &String::from_str(&env, "BATCH-001"),
+        );
+
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Parvovirus,
+            &String::from_str(&env, "Parvovirus"),
+            &now,
+            &(now + 365 * 86400),
+            &String::from_str(&env, "BATCH-002"),
+        );
+
+        let history = contract.get_vaccination_history(&pet_id);
+        assert!(history.len() >= 2);
+    }
+
+    #[test]
+    fn test_access_control_grant_and_check() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "TagMessage"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed"),
+        );
+
+        // Create tag with initial message
+        let initial_message = String::from_str(&env, "Found me? Call 555-0000");
+        let tag_id = client.link_tag_to_pet(&pet_id, &initial_message);
+
+        let tag = client.get_tag_details(&tag_id).unwrap();
+        assert_eq!(tag.tag_message, initial_message);
+
+        // Update message multiple times
+        let message_1 = String::from_str(&env, "New number: 555-1111");
+        client.update_tag_message(&tag_id, &message_1);
+
+        let message_2 = String::from_str(&env, "Email: owner@example.com");
+        client.update_tag_message(&tag_id, &message_2);
+
+        // Verify final message
+        let final_tag = client.get_tag_details(&tag_id).unwrap();
+        assert_eq!(final_tag.tag_message, message_2);
+    }
+}
+        let authorized_user = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Daisy"),
+            &String::from_str(&env, "2022-11-30"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Bengal"),
+        );
+
+        // Initially no access
+        assert_eq!(contract.check_access(&pet_id, &authorized_user), AccessLevel::None);
+
+        // Grant access
+        contract.grant_access(
+            &pet_id,
+            &authorized_user,
+            &AccessLevel::Full,
+            &None,
+        );
+
+        // Now should have access
+        assert_eq!(contract.check_access(&pet_id, &authorized_user), AccessLevel::Full);
+    }
+
+    #[test]
+    fn test_access_control_revoke() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let authorized_user = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Bella"),
+            &String::from_str(&env, "2020-04-12"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Poodle"),
+        );
+
+        contract.grant_access(
+            &pet_id,
+            &authorized_user,
+            &AccessLevel::Basic,
+            &None,
+        );
+
+        assert_ne!(contract.check_access(&pet_id, &authorized_user), AccessLevel::None);
+
+        contract.revoke_access(&pet_id, &authorized_user);
+
+        assert_eq!(contract.check_access(&pet_id, &authorized_user), AccessLevel::None);
+    }
+
+    #[test]
+    fn test_nonexistent_pet_queries() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+
+        assert!(contract.get_pet(&999).is_none());
+        assert!(contract.get_pet_owner(&999).is_none());
+        assert!(!contract.is_pet_active(&999));
+    }
+
+    #[test]
+    fn test_vaccination_for_nonexistent_pet_returns_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+
+        let history = contract.get_vaccination_history(&999);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_upcoming_vaccinations_within_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Rocky"),
+            &String::from_str(&env, "2019-06-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "German Shepherd"),
+        );
+
+        let now = env.ledger().timestamp();
+        let thirty_days_later = now + (30 * 86400);
+
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Bordetella,
+            &String::from_str(&env, "Bordetella"),
+            &now,
+            &thirty_days_later,
+            &String::from_str(&env, "BATCH-X99"),
+        );
+
+        let upcoming = contract.get_upcoming_vaccinations(&pet_id, &60); // 60 day threshold
+        assert!(!upcoming.is_empty());
+    }
+
+    #[test]
+    fn test_get_overdue_vaccinations_comprehensive() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2017-09-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Maine Coon"),
+        );
+
+        let now = env.ledger().timestamp();
+        let past_due_date = now - (1 * 86400);
+
+        contract.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Leukemia,
+            &String::from_str(&env, "Leukemia Vaccine"),
+            &(now - 365 * 86400),
+            &past_due_date,
+            &String::from_str(&env, "BATCH-OLD"),
+        );
+
+        let overdue = contract.get_overdue_vaccinations(&pet_id);
+        assert!(overdue.len() > 0);
+    }
+
+    #[test]
+    fn test_get_authorized_users_for_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Nemo"),
+            &String::from_str(&env, "2023-01-01"),
+            &Gender::Male,
+            &Species::Bird,
+            &String::from_str(&env, "Parrot"),
+        );
+
+        contract.grant_access(&pet_id, &user1, &AccessLevel::Full, &None);
+        contract.grant_access(&pet_id, &user2, &AccessLevel::Basic, &None);
+
+        let authorized = contract.get_authorized_users(&pet_id);
+        assert!(authorized.len() >= 2);
+    }
+
+    #[test]
+    fn test_get_access_grant_details() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Dory"),
+            &String::from_str(&env, "2022-12-25"),
+            &Gender::Female,
+            &Species::Bird,
+            &String::from_str(&env, "Canary"),
+        );
+
+        contract.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+
+        if let Some(grant) = contract.get_access_grant(&pet_id, &grantee) {
+            assert_eq!(grant.pet_id, pet_id);
+            assert_eq!(grant.grantee, grantee);
+            assert_eq!(grant.access_level, AccessLevel::Full);
+            assert!(grant.is_active);
+        }
+    }
+
+    // NOTE: test_offchain_data_hash_storage_and_verification and test_offchain_data_hash_nonexistent
+    // were removed because they test non-existent methods (store_offchain_data_hash, verify_offchain_data_hash)
+
+    #[test]
+    fn test_pet_with_special_characters() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        let pet_id = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Sir Fluff-ington III"),
+            &String::from_str(&env, "2021-01-15"),
+            &Gender::Male,
+            &Species::Cat,
+            &String::from_str(&env, "Mix (Tabby/Orange)"),
+        );
+
+        assert!(pet_id > 0);
+    }
+
+    #[test]
+    fn test_multiple_pets_per_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract = PetChainContractClient::new(&env, &env.register_contract(None, PetChainContract));
+        let owner = Address::generate(&env);
+
+        let pet1 = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Pet1"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed1"),
+        );
+
+        let pet2 = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Pet2"),
+            &String::from_str(&env, "2021-02-02"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Breed2"),
+        );
+
+        let pet3 = contract.register_pet(
+            &owner,
+            &String::from_str(&env, "Pet3"),
+            &String::from_str(&env, "2022-03-03"),
+            &Gender::Male,
+            &Species::Bird,
+            &String::from_str(&env, "Breed3"),
+        );
+
+        assert_ne!(pet1, pet2);
+        assert_ne!(pet2, pet3);
+        assert_ne!(pet1, pet3);
+    }
 }
