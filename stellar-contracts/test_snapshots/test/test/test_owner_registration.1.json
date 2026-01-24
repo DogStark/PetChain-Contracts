@@ -4,6 +4,7 @@
     "nonce": 0
   },
   "auth": [
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
@@ -11,33 +12,19 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "register_pet",
+              "function_name": "register_pet_owner",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Female"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Cat"
-                    }
-                  ]
-                },
-                {
-                  "string": "Tabby"
+                  "string": "555-1234"
                 }
               ]
             }
@@ -46,8 +33,6 @@
         }
       ]
     ],
-    [],
-    [],
     []
   ],
   "ledger": {
@@ -87,61 +72,15 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "OwnerPetIndex"
+                              "symbol": "PetOwner"
                             },
                             {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                                },
-                                {
-                                  "u64": 1
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Pet"
-                            },
-                            {
-                              "u64": 1
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                             }
                           ]
                         },
                         "val": {
                           "map": [
-                            {
-                              "key": {
-                                "symbol": "active"
-                              },
-                              "val": {
-                                "bool": false
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "birthday"
-                              },
-                              "val": {
-                                "string": "2025-01-01"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "breed"
-                              },
-                              "val": {
-                                "string": "Tabby"
-                              }
-                            },
                             {
                               "key": {
                                 "symbol": "created_at"
@@ -152,22 +91,26 @@
                             },
                             {
                               "key": {
-                                "symbol": "gender"
+                                "symbol": "email"
                               },
                               "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Female"
-                                  }
-                                ]
+                                "string": "john@example.com"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "id"
+                                "symbol": "emergency_contact"
                               },
                               "val": {
-                                "u64": 1
+                                "string": "555-1234"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "is_pet_owner"
+                              },
+                              "val": {
+                                "bool": true
                               }
                             },
                             {
@@ -175,35 +118,15 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Newborn"
+                                "string": "John Doe"
                               }
                             },
                             {
                               "key": {
-                                "symbol": "new_owner"
+                                "symbol": "owner_address"
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "owner"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "species"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Cat"
-                                  }
-                                ]
                               }
                             },
                             {
@@ -215,33 +138,6 @@
                               }
                             }
                           ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCount"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PetCountByOwner"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
                         }
                       }
                     ]
@@ -326,7 +222,56 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "is_owner_registered"
+              }
+            ],
+            "data": {
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "is_owner_registered"
+              }
+            ],
+            "data": {
+              "bool": false
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "register_pet_owner"
               }
             ],
             "data": {
@@ -335,27 +280,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Newborn"
+                  "string": "John Doe"
                 },
                 {
-                  "string": "2025-01-01"
+                  "string": "john@example.com"
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Female"
-                    }
-                  ]
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Cat"
-                    }
-                  ]
-                },
-                {
-                  "string": "Tabby"
+                  "string": "555-1234"
                 }
               ]
             }
@@ -376,12 +307,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "register_pet"
+                "symbol": "register_pet_owner"
               }
             ],
-            "data": {
-              "u64": 1
-            }
+            "data": "void"
           }
         }
       },
@@ -402,11 +331,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_vaccination_history"
+                "symbol": "is_owner_registered"
               }
             ],
             "data": {
-              "u64": 1
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }
@@ -425,116 +354,11 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_vaccination_history"
+                "symbol": "is_owner_registered"
               }
             ],
             "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "u64": 1
-                },
-                {
-                  "u64": 30
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_upcoming_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_overdue_vaccinations"
-              }
-            ],
-            "data": {
-              "vec": []
+              "bool": true
             }
           }
         }

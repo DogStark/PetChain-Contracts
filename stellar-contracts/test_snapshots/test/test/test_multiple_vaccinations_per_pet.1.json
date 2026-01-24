@@ -17,10 +17,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Duke"
+                  "string": "Charlie"
                 },
                 {
-                  "string": "2018-01-01"
+                  "string": "2021-07-20"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "German Shepherd"
+                  "string": "Beagle"
                 }
               ]
             }
@@ -69,16 +69,16 @@
                   ]
                 },
                 {
-                  "string": "Rabies Shot 1"
+                  "string": "Rabies"
                 },
                 {
-                  "u64": 1636928000
+                  "u64": 0
                 },
                 {
-                  "u64": 1699913600
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-OLD"
+                  "string": "BATCH-001"
                 }
               ]
             }
@@ -105,21 +105,21 @@
                 {
                   "vec": [
                     {
-                      "symbol": "Rabies"
+                      "symbol": "Parvovirus"
                     }
                   ]
                 },
                 {
-                  "string": "Rabies Shot 2"
+                  "string": "Parvovirus"
                 },
                 {
-                  "u64": 1700000000
+                  "u64": 0
                 },
                 {
-                  "u64": 1731536000
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-NEW"
+                  "string": "BATCH-002"
                 }
               ]
             }
@@ -128,7 +128,6 @@
         }
       ]
     ],
-    [],
     []
   ],
   "ledger": {
@@ -212,7 +211,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2018-01-01"
+                                "string": "2021-07-20"
                               }
                             },
                             {
@@ -220,7 +219,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "German Shepherd"
+                                "string": "Beagle"
                               }
                             },
                             {
@@ -256,7 +255,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Duke"
+                                "string": "Charlie"
                               }
                             },
                             {
@@ -461,7 +460,7 @@
                                 "symbol": "administered_at"
                               },
                               "val": {
-                                "u64": 1636928000
+                                "u64": 0
                               }
                             },
                             {
@@ -469,7 +468,7 @@
                                 "symbol": "batch_number"
                               },
                               "val": {
-                                "string": "BATCH-OLD"
+                                "string": "BATCH-001"
                               }
                             },
                             {
@@ -493,7 +492,7 @@
                                 "symbol": "next_due_date"
                               },
                               "val": {
-                                "u64": 1699913600
+                                "u64": 31536000
                               }
                             },
                             {
@@ -509,7 +508,7 @@
                                 "symbol": "vaccine_name"
                               },
                               "val": {
-                                "string": "Rabies Shot 1"
+                                "string": "Rabies"
                               }
                             },
                             {
@@ -553,7 +552,7 @@
                                 "symbol": "administered_at"
                               },
                               "val": {
-                                "u64": 1700000000
+                                "u64": 0
                               }
                             },
                             {
@@ -561,7 +560,7 @@
                                 "symbol": "batch_number"
                               },
                               "val": {
-                                "string": "BATCH-NEW"
+                                "string": "BATCH-002"
                               }
                             },
                             {
@@ -585,7 +584,7 @@
                                 "symbol": "next_due_date"
                               },
                               "val": {
-                                "u64": 1731536000
+                                "u64": 31536000
                               }
                             },
                             {
@@ -601,7 +600,7 @@
                                 "symbol": "vaccine_name"
                               },
                               "val": {
-                                "string": "Rabies Shot 2"
+                                "string": "Parvovirus"
                               }
                             },
                             {
@@ -611,7 +610,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Rabies"
+                                    "symbol": "Parvovirus"
                                   }
                                 ]
                               }
@@ -796,10 +795,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Duke"
+                  "string": "Charlie"
                 },
                 {
-                  "string": "2018-01-01"
+                  "string": "2021-07-20"
                 },
                 {
                   "vec": [
@@ -816,7 +815,7 @@
                   ]
                 },
                 {
-                  "string": "German Shepherd"
+                  "string": "Beagle"
                 }
               ]
             }
@@ -882,16 +881,16 @@
                   ]
                 },
                 {
-                  "string": "Rabies Shot 1"
+                  "string": "Rabies"
                 },
                 {
-                  "u64": 1636928000
+                  "u64": 0
                 },
                 {
-                  "u64": 1699913600
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-OLD"
+                  "string": "BATCH-001"
                 }
               ]
             }
@@ -952,21 +951,21 @@
                 {
                   "vec": [
                     {
-                      "symbol": "Rabies"
+                      "symbol": "Parvovirus"
                     }
                   ]
                 },
                 {
-                  "string": "Rabies Shot 2"
+                  "string": "Parvovirus"
                 },
                 {
-                  "u64": 1700000000
+                  "u64": 0
                 },
                 {
-                  "u64": 1731536000
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-NEW"
+                  "string": "BATCH-002"
                 }
               ]
             }
@@ -992,66 +991,6 @@
             ],
             "data": {
               "u64": 2
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "is_vaccination_current"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "u64": 1
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Rabies"
-                    }
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "is_vaccination_current"
-              }
-            ],
-            "data": {
-              "bool": true
             }
           }
         }
@@ -1108,7 +1047,7 @@
                         "symbol": "administered_at"
                       },
                       "val": {
-                        "u64": 1636928000
+                        "u64": 0
                       }
                     },
                     {
@@ -1116,7 +1055,7 @@
                         "symbol": "batch_number"
                       },
                       "val": {
-                        "string": "BATCH-OLD"
+                        "string": "BATCH-001"
                       }
                     },
                     {
@@ -1140,7 +1079,7 @@
                         "symbol": "next_due_date"
                       },
                       "val": {
-                        "u64": 1699913600
+                        "u64": 31536000
                       }
                     },
                     {
@@ -1156,7 +1095,7 @@
                         "symbol": "vaccine_name"
                       },
                       "val": {
-                        "string": "Rabies Shot 1"
+                        "string": "Rabies"
                       }
                     },
                     {
@@ -1188,7 +1127,7 @@
                         "symbol": "administered_at"
                       },
                       "val": {
-                        "u64": 1700000000
+                        "u64": 0
                       }
                     },
                     {
@@ -1196,7 +1135,7 @@
                         "symbol": "batch_number"
                       },
                       "val": {
-                        "string": "BATCH-NEW"
+                        "string": "BATCH-002"
                       }
                     },
                     {
@@ -1220,7 +1159,7 @@
                         "symbol": "next_due_date"
                       },
                       "val": {
-                        "u64": 1731536000
+                        "u64": 31536000
                       }
                     },
                     {
@@ -1236,7 +1175,7 @@
                         "symbol": "vaccine_name"
                       },
                       "val": {
-                        "string": "Rabies Shot 2"
+                        "string": "Parvovirus"
                       }
                     },
                     {
@@ -1246,7 +1185,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "Rabies"
+                            "symbol": "Parvovirus"
                           }
                         ]
                       }

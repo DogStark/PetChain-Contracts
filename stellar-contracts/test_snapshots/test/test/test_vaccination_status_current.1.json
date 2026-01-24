@@ -17,10 +17,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Duke"
+                  "string": "Buddy"
                 },
                 {
-                  "string": "2018-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -37,7 +37,7 @@
                   ]
                 },
                 {
-                  "string": "German Shepherd"
+                  "string": "Golden Retriever"
                 }
               ]
             }
@@ -69,16 +69,16 @@
                   ]
                 },
                 {
-                  "string": "Rabies Shot 1"
+                  "string": "Rabies Vaccine"
                 },
                 {
-                  "u64": 1636928000
+                  "u64": 0
                 },
                 {
-                  "u64": 1699913600
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-OLD"
+                  "string": "BATCH-2024"
                 }
               ]
             }
@@ -87,48 +87,6 @@
         }
       ]
     ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "add_vaccination",
-              "args": [
-                {
-                  "u64": 1
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Rabies"
-                    }
-                  ]
-                },
-                {
-                  "string": "Rabies Shot 2"
-                },
-                {
-                  "u64": 1700000000
-                },
-                {
-                  "u64": 1731536000
-                },
-                {
-                  "string": "BATCH-NEW"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [],
     []
   ],
   "ledger": {
@@ -212,7 +170,7 @@
                                 "symbol": "birthday"
                               },
                               "val": {
-                                "string": "2018-01-01"
+                                "string": "2020-01-01"
                               }
                             },
                             {
@@ -220,7 +178,7 @@
                                 "symbol": "breed"
                               },
                               "val": {
-                                "string": "German Shepherd"
+                                "string": "Golden Retriever"
                               }
                             },
                             {
@@ -256,7 +214,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Duke"
+                                "string": "Buddy"
                               }
                             },
                             {
@@ -351,28 +309,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PetVaccinationByIndex"
-                            },
-                            {
-                              "vec": [
-                                {
-                                  "u64": 1
-                                },
-                                {
-                                  "u64": 2
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 2
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "PetVaccinationCount"
                             },
                             {
@@ -381,7 +317,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
@@ -410,28 +346,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PetVaccinationIndex"
-                            },
-                            {
-                              "vec": [
-                                {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                                },
-                                {
-                                  "u64": 2
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 2
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "PetVaccinations"
                             },
                             {
@@ -440,7 +354,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       },
                       {
@@ -461,7 +375,7 @@
                                 "symbol": "administered_at"
                               },
                               "val": {
-                                "u64": 1636928000
+                                "u64": 0
                               }
                             },
                             {
@@ -469,7 +383,7 @@
                                 "symbol": "batch_number"
                               },
                               "val": {
-                                "string": "BATCH-OLD"
+                                "string": "BATCH-2024"
                               }
                             },
                             {
@@ -493,7 +407,7 @@
                                 "symbol": "next_due_date"
                               },
                               "val": {
-                                "u64": 1699913600
+                                "u64": 31536000
                               }
                             },
                             {
@@ -509,99 +423,7 @@
                                 "symbol": "vaccine_name"
                               },
                               "val": {
-                                "string": "Rabies Shot 1"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "vaccine_type"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "Rabies"
-                                  }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "veterinarian"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Vaccination"
-                            },
-                            {
-                              "u64": 2
-                            }
-                          ]
-                        },
-                        "val": {
-                          "map": [
-                            {
-                              "key": {
-                                "symbol": "administered_at"
-                              },
-                              "val": {
-                                "u64": 1700000000
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "batch_number"
-                              },
-                              "val": {
-                                "string": "BATCH-NEW"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "created_at"
-                              },
-                              "val": {
-                                "u64": 0
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "id"
-                              },
-                              "val": {
-                                "u64": 2
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "next_due_date"
-                              },
-                              "val": {
-                                "u64": 1731536000
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "pet_id"
-                              },
-                              "val": {
-                                "u64": 1
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "vaccine_name"
-                              },
-                              "val": {
-                                "string": "Rabies Shot 2"
+                                "string": "Rabies Vaccine"
                               }
                             },
                             {
@@ -636,7 +458,7 @@
                           ]
                         },
                         "val": {
-                          "u64": 2
+                          "u64": 1
                         }
                       }
                     ]
@@ -671,39 +493,6 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 1033654523790656264
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 1033654523790656264
                   }
                 },
                 "durability": "temporary",
@@ -796,10 +585,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "Duke"
+                  "string": "Buddy"
                 },
                 {
-                  "string": "2018-01-01"
+                  "string": "2020-01-01"
                 },
                 {
                   "vec": [
@@ -816,7 +605,7 @@
                   ]
                 },
                 {
-                  "string": "German Shepherd"
+                  "string": "Golden Retriever"
                 }
               ]
             }
@@ -882,16 +671,16 @@
                   ]
                 },
                 {
-                  "string": "Rabies Shot 1"
+                  "string": "Rabies Vaccine"
                 },
                 {
-                  "u64": 1636928000
+                  "u64": 0
                 },
                 {
-                  "u64": 1699913600
+                  "u64": 31536000
                 },
                 {
-                  "string": "BATCH-OLD"
+                  "string": "BATCH-2024"
                 }
               ]
             }
@@ -917,81 +706,6 @@
             ],
             "data": {
               "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "add_vaccination"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "u64": 1
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Rabies"
-                    }
-                  ]
-                },
-                {
-                  "string": "Rabies Shot 2"
-                },
-                {
-                  "u64": 1700000000
-                },
-                {
-                  "u64": 1731536000
-                },
-                {
-                  "string": "BATCH-NEW"
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "add_vaccination"
-              }
-            ],
-            "data": {
-              "u64": 2
             }
           }
         }
@@ -1052,216 +766,6 @@
             ],
             "data": {
               "bool": true
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "u64": 1
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_vaccination_history"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "administered_at"
-                      },
-                      "val": {
-                        "u64": 1636928000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "batch_number"
-                      },
-                      "val": {
-                        "string": "BATCH-OLD"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "created_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "id"
-                      },
-                      "val": {
-                        "u64": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "next_due_date"
-                      },
-                      "val": {
-                        "u64": 1699913600
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "pet_id"
-                      },
-                      "val": {
-                        "u64": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "vaccine_name"
-                      },
-                      "val": {
-                        "string": "Rabies Shot 1"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "vaccine_type"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Rabies"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "veterinarian"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "administered_at"
-                      },
-                      "val": {
-                        "u64": 1700000000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "batch_number"
-                      },
-                      "val": {
-                        "string": "BATCH-NEW"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "created_at"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "id"
-                      },
-                      "val": {
-                        "u64": 2
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "next_due_date"
-                      },
-                      "val": {
-                        "u64": 1731536000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "pet_id"
-                      },
-                      "val": {
-                        "u64": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "vaccine_name"
-                      },
-                      "val": {
-                        "string": "Rabies Shot 2"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "vaccine_type"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Rabies"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "veterinarian"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    }
-                  ]
-                }
-              ]
             }
           }
         }
