@@ -1549,4 +1549,117 @@ mod test {
         assert_ne!(pet2, pet3);
         assert_ne!(pet1, pet3);
     }
+
+    #[test]
+    fn test_add_and_get_medical_records() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Milo"),
+            &String::from_str(&env, "2021-04-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Corgi"),
+        );
+
+        client.grant_access(&pet_id, &vet, &AccessLevel::Full, &None);
+
+        let diagnosis = String::from_str(&env, "Ear infection");
+        let treatment = String::from_str(&env, "Antibiotic drops");
+        let medications = String::from_str(&env, "Otic drops");
+
+        let record_id = client.add_medical_record(
+            &pet_id,
+            &vet,
+            &diagnosis,
+            &treatment,
+            &medications,
+        );
+        assert_eq!(record_id, 1u64);
+
+        let record = client
+            .get_record_by_id(&record_id, &owner)
+            .expect("record not found");
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.diagnosis, diagnosis);
+        assert_eq!(record.treatment, treatment);
+        assert_eq!(record.medications, medications);
+
+        let records = client.get_medical_records(&pet_id, &owner);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.get(0).unwrap().record_id, record_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Vet not authorized")]
+    fn test_add_medical_record_requires_authorized_vet() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Loki"),
+            &String::from_str(&env, "2020-10-10"),
+            &Gender::Male,
+            &Species::Cat,
+            &String::from_str(&env, "Sphynx"),
+        );
+
+        client.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Checkup"),
+            &String::from_str(&env, "Routine exam"),
+            &String::from_str(&env, "None"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Access denied")]
+    fn test_get_medical_records_requires_access() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Penny"),
+            &String::from_str(&env, "2019-02-14"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Husky"),
+        );
+
+        client.grant_access(&pet_id, &vet, &AccessLevel::Full, &None);
+        client.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Allergy"),
+            &String::from_str(&env, "Diet change"),
+            &String::from_str(&env, "Hypoallergenic food"),
+        );
+
+        client.get_medical_records(&pet_id, &outsider);
+    }
 }
