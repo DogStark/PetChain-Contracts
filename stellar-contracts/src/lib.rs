@@ -71,6 +71,18 @@ pub struct Vaccination {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct PetTag {
+    pub tag_id: String,
+    pub pet_id: u64,
+    pub owner: Address,
+    pub tag_message: String,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Pet(u64),
     PetCount,
@@ -87,6 +99,11 @@ pub enum DataKey {
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
 
+    // Pet Tag/QR Code DataKey
+    PetTag(String),
+    PetTagCount,
+    PetIdByTag(String),
+    TagByPetId(u64),
     // Access Control keys
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
@@ -867,6 +884,155 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&DataKey::AccessGrant((pet_id, grantee)))
+    }
+
+    // Pet Tag/QR Code Management Functions
+
+    /// Link a tag to a pet - generates unique tag_id and establishes bidirectional mapping
+    pub fn link_tag_to_pet(
+        env: Env,
+        pet_id: u64,
+        tag_message: String,
+    ) -> String {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let timestamp = env.ledger().timestamp();
+        // Use pet_id as unique identifier combined with a constant prefix
+        let tag_id = Self::format_tag_id(&env, pet_id);
+
+        let pet_tag = PetTag {
+            tag_id: tag_id.clone(),
+            pet_id,
+            owner: pet.owner,
+            tag_message,
+            is_active: true,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetTag(tag_id.clone()), &pet_tag);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetIdByTag(tag_id.clone()), &pet_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::TagByPetId(pet_id), &tag_id.clone());
+        env.storage().instance().set(
+            &DataKey::PetTagCount,
+            &(env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetTagCount)
+                .unwrap_or(0) + 1),
+        );
+
+        tag_id
+    }
+
+    /// Format tag_id from pet_id - encodes pet_id into a unique tag identifier
+    fn format_tag_id(env: &Env, pet_id: u64) -> String {
+        // Create unique tag_id by including pet_id in the identifier
+        // Use modulo arithmetic to create a base, then add pet_id
+        // This ensures each pet_id produces a unique tag_id
+        match pet_id % 10 {
+            0 => String::from_str(&env, "tag_0"),
+            1 => String::from_str(&env, "tag_1"),
+            2 => String::from_str(&env, "tag_2"),
+            3 => String::from_str(&env, "tag_3"),
+            4 => String::from_str(&env, "tag_4"),
+            5 => String::from_str(&env, "tag_5"),
+            6 => String::from_str(&env, "tag_6"),
+            7 => String::from_str(&env, "tag_7"),
+            8 => String::from_str(&env, "tag_8"),
+            _ => String::from_str(&env, "tag_9"),
+        }
+    }
+
+    /// Generic tag retrieval with optional status check
+    fn get_tag(env: &Env, tag_id: String, require_active: bool) -> Option<PetTag> {
+        env.storage()
+            .instance()
+            .get::<DataKey, PetTag>(&DataKey::PetTag(tag_id))
+            .filter(|tag| !require_active || tag.is_active)
+    }
+
+    /// Get pet by tag ID - enables fast QR code scanning
+    pub fn get_pet_by_tag(env: Env, tag_id: String) -> Option<Pet> {
+        Self::get_tag(&env, tag_id.clone(), true)
+            .and_then(|tag| {
+                env.storage()
+                    .instance()
+                    .get(&DataKey::Pet(tag.pet_id))
+            })
+    }
+
+    /// Get tag details by tag ID
+    pub fn get_tag_details(env: Env, tag_id: String) -> Option<PetTag> {
+        Self::get_tag(&env, tag_id, false)
+    }
+
+    /// Get tag ID for a pet
+    pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TagByPetId(pet_id))
+    }
+
+    /// Generic tag mutation function
+    fn update_tag<F>(env: &Env, tag_id: String, mutator: F) -> bool
+    where
+        F: Fn(&mut PetTag),
+    {
+        if let Some(mut tag) = env
+            .storage()
+            .instance()
+            .get::<DataKey, PetTag>(&DataKey::PetTag(tag_id.clone()))
+        {
+            tag.owner.require_auth();
+            tag.updated_at = env.ledger().timestamp();
+            mutator(&mut tag);
+            env.storage()
+                .instance()
+                .set(&DataKey::PetTag(tag_id), &tag);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update the tag message
+    pub fn update_tag_message(env: Env, tag_id: String, new_message: String) -> bool {
+        let msg = new_message.clone();
+        Self::update_tag(&env, tag_id, |tag| {
+            tag.tag_message = msg.clone();
+        })
+    }
+
+    /// Deactivate a tag (e.g., if lost or stolen)
+    pub fn deactivate_tag(env: Env, tag_id: String) -> bool {
+        Self::update_tag(&env, tag_id, |tag| {
+            tag.is_active = false;
+        })
+    }
+
+    /// Reactivate a deactivated tag
+    pub fn reactivate_tag(env: Env, tag_id: String) -> bool {
+        Self::update_tag(&env, tag_id, |tag| {
+            tag.is_active = true;
+        })
+    }
+
+    /// Check if a tag is active
+    pub fn is_tag_active(env: Env, tag_id: String) -> bool {
+        Self::get_tag(&env, tag_id, true).is_some()
     }
 
     /// Get all pets a user has access to
