@@ -47,6 +47,7 @@ mod test {
     fn test_register_pet() {
         let env = Env::default();
         env.mock_all_auths();
+        env.budget().reset_unlimited();
 
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
@@ -63,6 +64,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
 
@@ -129,6 +131,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Public,
         );
 
         let administered_time = 1735689600;
@@ -157,10 +160,13 @@ mod test {
         assert_eq!(record.next_due_date, next_due_date);
         assert!(record.created_at == now);
         // NEW: Check batch number and vaccine name
-        assert_eq!(record.batch_number, String::from_str(&env, "BATCH-001"));
+        assert_eq!(
+            record.batch_number,
+            Some(String::from_str(&env, "BATCH-001"))
+        );
         assert_eq!(
             record.vaccine_name,
-            String::from_str(&env, "Rabies Vaccine")
+            Some(String::from_str(&env, "Rabies Vaccine"))
         );
     }
 
@@ -186,6 +192,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &PrivacyLevel::Public,
         );
 
         let pet_id_2 = client.register_pet(
@@ -195,6 +202,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Public,
         );
 
         let administered_time = 1735689600;
@@ -249,7 +257,7 @@ mod test {
 
         let data_id: u64 = 123;
         // Sample hash (e.g., 32 bytes for SHA-256)
-        let correct_hash_bytes: Vec<u8> = vec![0u8; 32];
+        let correct_hash_bytes = [0u8; 32];
         let correct_hash = Bytes::from_array(&env, &correct_hash_bytes);
 
         // Test storing and verifying correct hash
@@ -266,10 +274,10 @@ mod test {
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let data_id: u64 = 456;
-        let correct_hash_bytes: Vec<u8> = vec![0u8; 32];
+        let correct_hash_bytes = [0u8; 32];
         let correct_hash = Bytes::from_array(&env, &correct_hash_bytes);
 
-        let wrong_hash_bytes: Vec<u8> = vec![1u8; 32];
+        let wrong_hash_bytes = [1u8; 32];
         let wrong_hash = Bytes::from_array(&env, &wrong_hash_bytes);
 
         // Store correct hash
@@ -287,12 +295,13 @@ mod test {
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
-        let correct_hash_bytes: Vec<u8> = vec![0u8; 32];
+        let correct_hash_bytes = [0u8; 32];
         let correct_hash = Bytes::from_array(&env, &correct_hash_bytes);
 
         // Test verifying with non-existent data_id
         let non_existent_id: u64 = 999;
-        let is_verified_nonexistent = client.verify_offchain_data_hash(&non_existent_id, &correct_hash);
+        let is_verified_nonexistent =
+            client.verify_offchain_data_hash(&non_existent_id, &correct_hash);
         assert_eq!(is_verified_nonexistent, false);
     }
 
@@ -304,11 +313,11 @@ mod test {
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let data_id_1: u64 = 101;
-        let hash_bytes_1: Vec<u8> = vec![10u8; 32];
+        let hash_bytes_1 = [10u8; 32];
         let hash_1 = Bytes::from_array(&env, &hash_bytes_1);
 
         let data_id_2: u64 = 102;
-        let hash_bytes_2: Vec<u8> = vec![20u8; 32];
+        let hash_bytes_2 = [20u8; 32];
         let hash_2 = Bytes::from_array(&env, &hash_bytes_2);
 
         // Store multiple hashes
@@ -323,7 +332,7 @@ mod test {
         assert_eq!(is_verified_2, true);
 
         // Verify with incorrect hash for one ID
-        let wrong_hash_bytes: Vec<u8> = vec![30u8; 32];
+        let wrong_hash_bytes = [30u8; 32];
         let wrong_hash = Bytes::from_array(&env, &wrong_hash_bytes);
         let is_verified_wrong = client.verify_offchain_data_hash(&data_id_1, &wrong_hash);
         assert_eq!(is_verified_wrong, false);
@@ -349,6 +358,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "German Shepherd"),
+            &PrivacyLevel::Public,
         );
 
         // Use absolute timestamps
@@ -416,6 +426,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Public,
         );
 
         // Pet with no vaccinations
@@ -447,6 +458,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -455,6 +467,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Public,
         );
         let pet_three = client.register_pet(
             &owner_two,
@@ -463,6 +476,7 @@ mod test {
             &Gender::Female,
             &Species::Bird,
             &String::from_str(&env, "Parakeet"),
+            &PrivacyLevel::Public,
         );
 
         let owner_one_pets = client.get_all_pets_by_owner(&owner_one);
@@ -506,6 +520,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Shepherd"),
+            &PrivacyLevel::Public,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -514,6 +529,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Public,
         );
 
         client.transfer_pet_ownership(&pet_one, &owner_two);
@@ -546,6 +562,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &PrivacyLevel::Public,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -554,6 +571,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Collie"),
+            &PrivacyLevel::Public,
         );
 
         let mut pet_ids = Vec::new(&env);
@@ -597,6 +615,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
         );
         let pet_two = client.register_pet(
             &owner_one,
@@ -605,6 +624,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Maine Coon"),
+            &PrivacyLevel::Public,
         );
 
         client.transfer_all_pets(&owner_one, &owner_two);
@@ -662,6 +682,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Old Breed"),
+            &PrivacyLevel::Public,
         );
 
         let result = client.update_pet_profile(
@@ -671,6 +692,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "New Breed"),
+            &PrivacyLevel::Public,
         );
 
         assert_eq!(result, true);
@@ -703,6 +725,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed"),
+            &PrivacyLevel::Public,
         );
 
         assert_eq!(result, false);
@@ -732,6 +755,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Public,
         );
 
         let mut contacts = Vec::new(&env);
@@ -752,7 +776,9 @@ mod test {
             &String::from_str(&env, "Allergic to penicillin"),
         );
 
-        let (retrieved_contacts, medical_notes) = client.get_emergency_info(&pet_id);
+        let Some((retrieved_contacts, medical_notes)) = client.get_emergency_info(&pet_id) else {
+            panic!("Failed to get emergency info")
+        };
 
         assert_eq!(retrieved_contacts.len(), 2);
         assert_eq!(
@@ -783,7 +809,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "Pet not found")]
     fn test_get_emergency_info_nonexistent_pet() {
         let env = Env::default();
         env.mock_all_auths();
@@ -791,7 +816,7 @@ mod test {
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
-        client.get_emergency_info(&999);
+        assert_eq!(client.get_emergency_info(&999), None);
     }
 
     // ============ PET STATUS TESTS ============
@@ -818,6 +843,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
         );
 
         assert_eq!(client.is_pet_active(&pet_id), false);
@@ -856,6 +882,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Public,
         );
 
         let retrieved_owner = client.get_pet_owner(&pet_id);
@@ -899,6 +926,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "German Shepherd"),
+            &PrivacyLevel::Public,
         );
 
         let pet = client.get_pet(&pet_id).unwrap();
@@ -916,6 +944,7 @@ mod test {
     #[test]
     fn test_activate_pet_idempotent() {
         let env = Env::default();
+        env.budget().reset_unlimited();
         env.mock_all_auths();
 
         let contract_id = env.register_contract(None, PetChainContract);
@@ -929,6 +958,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Tabby"),
+            &PrivacyLevel::Public,
         );
 
         client.activate_pet(&pet_id);
@@ -955,6 +985,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &PrivacyLevel::Public,
         );
 
         assert_eq!(client.is_pet_active(&pet_id), false);
@@ -989,6 +1020,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Beagle"),
+            &PrivacyLevel::Public,
         );
 
         client.transfer_pet_ownership(&pet_id, &new_owner);
@@ -1016,6 +1048,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Maine Coon"),
+            &PrivacyLevel::Public,
         );
 
         client.transfer_pet_ownership(&pet_id, &new_owner);
@@ -1106,6 +1139,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &PrivacyLevel::Public,
         );
 
         // Grant access
@@ -1139,6 +1173,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Persian"),
+            &PrivacyLevel::Public,
         );
 
         let current_time = env.ledger().timestamp();
@@ -1168,6 +1203,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Bengal"),
+            &PrivacyLevel::Public,
         );
 
         client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
@@ -1198,6 +1234,7 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "Orange Tabby"),
+            &PrivacyLevel::Public,
         );
 
         let result = client.revoke_access(&pet_id, &grantee);
@@ -1222,6 +1259,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Chihuahua"),
+            &PrivacyLevel::Public,
         );
 
         let access_level = client.check_access(&pet_id, &user);
@@ -1247,6 +1285,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Great Dane"),
+            &PrivacyLevel::Public,
         );
 
         client.grant_access(&pet_id, &vet1, &AccessLevel::Full, &None);
@@ -1275,6 +1314,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Rottweiler"),
+            &PrivacyLevel::Public,
         );
 
         client.grant_access(&pet_id, &vet1, &AccessLevel::Full, &None);
@@ -1303,6 +1343,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Calico"),
+            &PrivacyLevel::Public,
         );
 
         client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
@@ -1335,6 +1376,7 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Jack Russell"),
+            &PrivacyLevel::Public,
         );
 
         let grant = client.get_access_grant(&pet_id, &grantee);
@@ -1358,6 +1400,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Border Collie"),
+            &PrivacyLevel::Public,
         );
 
         let pet_id2 = client.register_pet(
@@ -1367,6 +1410,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Russian Blue"),
+            &PrivacyLevel::Public,
         );
 
         let accessible = client.get_accessible_pets(&owner);
@@ -1414,6 +1458,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Dog,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id1).unwrap().species, Species::Dog);
 
@@ -1424,6 +1469,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Cat,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id2).unwrap().species, Species::Cat);
 
@@ -1434,6 +1480,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Bird,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id3).unwrap().species, Species::Bird);
 
@@ -1444,6 +1491,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id4).unwrap().species, Species::Other);
     }
@@ -1466,6 +1514,7 @@ mod test {
             &Gender::Male,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id1).unwrap().gender, Gender::Male);
 
@@ -1476,6 +1525,7 @@ mod test {
             &Gender::Female,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(client.get_pet(&pet_id2).unwrap().gender, Gender::Female);
 
@@ -1486,6 +1536,7 @@ mod test {
             &Gender::NotSpecified,
             &Species::Other,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
         assert_eq!(
             client.get_pet(&pet_id3).unwrap().gender,
@@ -1522,6 +1573,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed1"),
+            &PrivacyLevel::Public,
         );
 
         let pet_id2 = client.register_pet(
@@ -1531,6 +1583,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Breed2"),
+            &PrivacyLevel::Public,
         );
 
         assert_eq!(pet_id1, 1);
@@ -1575,6 +1628,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Persian"),
+            &PrivacyLevel::Public,
         );
 
         // Activate pet
@@ -1641,6 +1695,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed 1"),
+            &PrivacyLevel::Public,
         );
 
         let pet2 = client.register_pet(
@@ -1650,6 +1705,7 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Breed 2"),
+            &PrivacyLevel::Public,
         );
 
         let pet3 = client.register_pet(
@@ -1659,6 +1715,7 @@ mod test {
             &Gender::Male,
             &Species::Bird,
             &String::from_str(&env, "Breed 3"),
+            &PrivacyLevel::Public,
         );
 
         // Transfer all pets
@@ -1697,6 +1754,7 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Test Breed"),
+            &PrivacyLevel::Public,
         );
 
         // Add multiple vaccinations
@@ -1734,6 +1792,107 @@ mod test {
         assert_eq!(
             client.is_vaccination_current(&pet_id, &VaccineType::Leukemia),
             false
+        );
+    }
+
+    // ============ LAB RESULT TESTS ============
+
+    #[test]
+    fn test_add_and_get_lab_result() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        // Register pet
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let test_type = String::from_str(&env, "Blood Work");
+        let result_summary = String::from_str(&env, "Normal");
+
+        let lab_id = client.add_lab_result(&pet_id, &vet, &test_type, &result_summary, &None);
+
+        assert_eq!(lab_id, 1);
+
+        // Get lab result
+        let result = client.get_lab_result(&lab_id).unwrap();
+        assert_eq!(result.id, 1);
+        assert_eq!(result.pet_id, pet_id);
+        assert_eq!(result.veterinarian, vet);
+        assert_eq!(result.test_type, test_type);
+        assert_eq!(result.result_summary, result_summary);
+    }
+
+    #[test]
+    fn test_get_pet_lab_results() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        // Register pet
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        // Add two results
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Test 1"),
+            &String::from_str(&env, "Result 1"),
+            &None,
+        );
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Test 2"),
+            &String::from_str(&env, "Result 2"),
+            &None,
+        );
+
+        let results = client.get_pet_lab_results(&pet_id);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Pet not found")]
+    fn test_add_lab_result_nonexistent_pet() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+
+        client.add_lab_result(
+            &999,
+            &vet,
+            &String::from_str(&env, "Test"),
+            &String::from_str(&env, "Result"),
+            &None,
         );
     }
 }
