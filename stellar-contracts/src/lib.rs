@@ -103,6 +103,16 @@ pub struct PetOwner {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct Vet {
+    pub address: Address,
+    pub name: String,
+    pub license_number: String,
+    pub specialization: String,
+    pub verified: bool,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaccineType {
     Rabies,
@@ -179,6 +189,11 @@ pub enum DataKey {
     PetOwner(Address),
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
+
+    // Vet verification keys
+    Vet(Address),
+    VetLicense(String),
+    Admin,
 
     // Vaccination DataKey
     Vaccination(u64),
@@ -351,26 +366,25 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
-    // --- HELPER FUNCTIONS ---
-    fn get_owner_pet_count(env: &Env, owner: &Address) -> u64 {
-        env.storage()
+    fn require_admin(env: &Env) -> Address {
+        let admin: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
+        admin.require_auth();
+        admin
     }
 
-    fn get_encryption_key(env: &Env) -> Bytes {
-        // In a real application, this should be retrieved from a secure source.
-        // For this example/test, we return a fixed 32-byte key.
-        let mut key_bytes = [0u8; 32];
-        for i in 0..32 {
-            key_bytes[i] = i as u8;
+    pub fn init_admin(env: Env, admin: Address) {
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("Admin already set");
         }
-        Bytes::from_array(env, &key_bytes)
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
-    // --- PET MANAGEMENT ---
-
+    // Pet Management Functions
     pub fn register_pet(
         env: Env,
         owner: Address,
@@ -794,8 +808,107 @@ impl PetChainContract {
         }
     }
 
-    // --- VACCINATIONS ---
+    // Vet Verification & Registration
+    pub fn register_vet(
+        env: Env,
+        vet_address: Address,
+        name: String,
+        license_number: String,
+        specialization: String,
+    ) -> bool {
+        vet_address.require_auth();
 
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::VetLicense(license_number.clone()))
+        {
+            panic!("License already registered");
+        }
+
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Vet(vet_address.clone()))
+        {
+            panic!("Vet already registered");
+        }
+
+        let vet = Vet {
+            address: vet_address.clone(),
+            name,
+            license_number: license_number.clone(),
+            specialization,
+            verified: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Vet(vet_address.clone()), &vet);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetLicense(license_number), &vet_address);
+
+        true
+    }
+
+    pub fn verify_vet(env: Env, vet_address: Address) -> bool {
+        Self::require_admin(&env);
+
+        if let Some(mut vet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+        {
+            vet.verified = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::Vet(vet.address.clone()), &vet);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn revoke_vet_license(env: Env, vet_address: Address) -> bool {
+        Self::require_admin(&env);
+
+        if let Some(mut vet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+        {
+            vet.verified = false;
+            env.storage()
+                .instance()
+                .set(&DataKey::Vet(vet.address.clone()), &vet);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .map(|vet| vet.verified)
+            .unwrap_or(false)
+    }
+
+    pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet> {
+        env.storage().instance().get(&DataKey::Vet(vet_address))
+    }
+
+    pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
+        let vet_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetLicense(license_number));
+        vet_address.and_then(|address| Self::get_vet(env, address))
+    }
+
+    // Pet Vaccination Record
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -807,6 +920,9 @@ impl PetChainContract {
         batch_number: String,
     ) -> u64 {
         veterinarian.require_auth();
+        if !Self::is_verified_vet(env.clone(), veterinarian.clone()) {
+            panic!("Veterinarian not verified");
+        }
 
         let _pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
         
