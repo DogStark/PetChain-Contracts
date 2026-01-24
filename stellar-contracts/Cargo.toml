@@ -12,7 +12,6 @@ aes-gcm = { version = "0.10.0", default-features = false, features = ["alloc"] }
 rand_core = { version = "0.6.0", default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.2", features = ["custom"] }
-getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
