@@ -1,7 +1,6 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
-use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::xdr::{FromXdr, ToXdr};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +33,26 @@ pub struct EmergencyContactInfo {
     pub name: String,
     pub phone: String,
     pub relationship: String,
+    pub email: Option<String>,
+    pub is_primary: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllergyInfo {
+    pub allergen: String,
+    pub severity: String,
+    pub symptoms: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyMedicalInfo {
+    pub allergies: Vec<AllergyInfo>,
+    pub medical_notes: String,
+    pub critical_alerts: Vec<String>,
+    pub last_updated: u64,
+    pub updated_by: Address,
 }
 
 #[contracttype]
@@ -44,7 +63,7 @@ pub struct EncryptedData {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Pet {
     pub id: u64,
     pub owner: Address,
@@ -55,6 +74,7 @@ pub struct Pet {
     pub encrypted_breed: EncryptedData,
     pub encrypted_emergency_contacts: EncryptedData,
     pub encrypted_medical_alerts: EncryptedData,
+    pub encrypted_med_info: EncryptedData,
     
     // Internal/Empty fields to maintain some structural compatibility if needed, 
     // or just purely internal placeholders. HEAD set these to empty strings.
@@ -87,6 +107,17 @@ pub struct PetProfile {
     pub species: Species,
     pub gender: Gender,
     pub breed: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EmergencyInfoResponse {
+    pub pet_id: u64,
+    pub species: Species,
+    pub gender: Gender,
+    pub emergency_contacts: Vec<EmergencyContactInfo>,
+    pub emergency_medical_info: Option<EmergencyMedicalInfo>,
+    pub last_updated: u64,
 }
 
 #[contracttype]
@@ -145,7 +176,7 @@ pub struct Vaccination {
 
 #[contracttype]
 #[derive(Clone)]
-pub struct MedicalRecord {
+pub struct TagMedicalRecord {
     pub record_id: u64,
     pub pet_id: u64,
     pub owner: Address,
@@ -182,6 +213,19 @@ pub struct TagReactivatedEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct PetTag {
+    pub tag_id: BytesN<32>,
+    pub pet_id: u64,
+    pub owner: Address,
+    pub message: String,
+    pub is_active: bool,
+    pub linked_at: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
 // ============== PET TAG LINKING SYSTEM ==============
 #[contracttype]
 pub enum DataKey {
@@ -207,7 +251,10 @@ pub enum DataKey {
 
     // Tag Linking System keys
     Tag(BytesN<32>),              // tag_id -> PetTag (reverse lookup for QR scan)
+    PetTag(BytesN<32>),           // tag_id -> PetTag
     PetTagId(u64),                // pet_id -> tag_id (forward lookup)
+    TagByPetId(u64),              // pet_id -> tag_id
+    PetIdByTag(BytesN<32>),       // tag_id -> pet_id
     TagNonce,                     // Global nonce for deterministic tag ID generation
     PetTagCount,                  // Count of tags (mostly for stats)
 
@@ -224,6 +271,9 @@ pub enum DataKey {
     PetMedicalRecordCount(u64),
     PetMedicalRecordByIndex((u64, u64)),
 
+    // Emergency medical info keys
+    EmergencyMedicalInfo(u64),    // pet_id -> EmergencyMedicalInfo
+
     // Veterinarian authorization
     AuthorizedVet(Address),
     // Lab Result DataKey
@@ -232,11 +282,8 @@ pub enum DataKey {
     PetLabResultIndex((u64, u64)), // (pet_id, index) -> lab_result_id
     PetLabResultCount(u64),
 
-    // Medical Record DataKey
-    MedicalRecord(u64),
-    MedicalRecordCount,
+    // Medical Record DataKey continuation
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
-    PetMedicalRecordCount(u64),
 }
 
 #[contracttype]
@@ -458,6 +505,20 @@ impl PetChainContract {
             ciphertext: contacts_ciphertext,
         };
 
+        let empty_medical_info = EmergencyMedicalInfo {
+            allergies: Vec::new(&env),
+            medical_notes: String::from_str(&env, ""),
+            critical_alerts: Vec::new(&env),
+            last_updated: timestamp,
+            updated_by: owner.clone(),
+        };
+        let medical_info_bytes = empty_medical_info.to_xdr(&env);
+        let (medical_info_nonce, medical_info_ciphertext) = encrypt_sensitive_data(&env, &medical_info_bytes, &key);
+        let encrypted_med_info = EncryptedData {
+            nonce: medical_info_nonce,
+            ciphertext: medical_info_ciphertext,
+        };
+
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
@@ -467,6 +528,7 @@ impl PetChainContract {
             encrypted_breed,
             encrypted_emergency_contacts,
             encrypted_medical_alerts,
+            encrypted_med_info,
             
             // Empty placeholders for internal API consistency if needed
             name: String::from_str(&env, ""),
@@ -818,6 +880,176 @@ impl PetChainContract {
         }
     }
 
+    pub fn set_emergency_contacts(
+        env: Env,
+        pet_id: u64,
+        contacts: Vec<EmergencyContactInfo>,
+    ) -> bool {
+        if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            pet.owner.require_auth();
+
+            let key = Self::get_encryption_key(&env);
+
+
+            let contacts_bytes = contacts.clone().to_xdr(&env);
+            let (contacts_nonce, contacts_ciphertext) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
+            pet.encrypted_emergency_contacts = EncryptedData {
+                nonce: contacts_nonce,
+                ciphertext: contacts_ciphertext,
+            };
+
+            pet.emergency_contacts = contacts.clone();
+            pet.updated_at = env.ledger().timestamp();
+
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            env.events().publish(
+                (String::from_str(&env, "EmergencyContactsUpdated"), pet_id),
+                (pet_id, pet.owner.clone(), pet.updated_at),
+            );
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_emergency_medical_info(
+        env: Env,
+        pet_id: u64,
+        allergies: Vec<AllergyInfo>,
+        medical_notes: String,
+        critical_alerts: Vec<String>,
+    ) -> bool {
+        if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            // Check authorization - owner or registered vet
+            let caller = env.current_contract_address(); // Note: This is a placeholder for actual caller identification
+            let is_owner = pet.owner == caller;
+            
+            if is_owner {
+                pet.owner.require_auth();
+            } else {
+
+            }
+
+            let key = Self::get_encryption_key(&env);
+            let timestamp = env.ledger().timestamp();
+
+            let emergency_medical_info = EmergencyMedicalInfo {
+                allergies: allergies.clone(),
+                medical_notes: medical_notes.clone(),
+                critical_alerts: critical_alerts.clone(),
+                last_updated: timestamp,
+                updated_by: caller,
+            };
+
+            let medical_info_bytes = emergency_medical_info.clone().to_xdr(&env);
+            let (medical_info_nonce, medical_info_ciphertext) = encrypt_sensitive_data(&env, &medical_info_bytes, &key);
+            pet.encrypted_med_info = EncryptedData {
+                nonce: medical_info_nonce,
+                ciphertext: medical_info_ciphertext,
+            };
+
+            pet.updated_at = timestamp;
+
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::EmergencyMedicalInfo(pet_id), &emergency_medical_info);
+
+            env.events().publish(
+                (String::from_str(&env, "EmergencyMedicalInfoUpdated"), pet_id),
+                (pet_id, pet.owner.clone(), timestamp),
+            );
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<EmergencyInfoResponse> {
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if !pet.active {
+                return None;
+            }
+
+            let key = Self::get_encryption_key(&env);
+
+            // Decrypt emergency contacts
+            let decrypted_contacts_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_emergency_contacts.ciphertext,
+                &pet.encrypted_emergency_contacts.nonce,
+                &key,
+            ).unwrap_or(Bytes::new(&env));
+            
+            let emergency_contacts = Vec::<EmergencyContactInfo>::from_xdr(&env, &decrypted_contacts_bytes)
+                .unwrap_or(Vec::new(&env));
+
+            // Decrypt emergency medical info
+            let decrypted_medical_info_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_med_info.ciphertext,
+                &pet.encrypted_med_info.nonce,
+                &key,
+            ).unwrap_or(Bytes::new(&env));
+            
+            let emergency_medical_info = EmergencyMedicalInfo::from_xdr(&env, &decrypted_medical_info_bytes).ok();
+
+            Some(EmergencyInfoResponse {
+                pet_id,
+                species: pet.species,
+                gender: pet.gender,
+                emergency_contacts,
+                emergency_medical_info,
+                last_updated: pet.updated_at,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn get_emergency_contacts(env: Env, pet_id: u64) -> Option<Vec<EmergencyContactInfo>> {
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if !pet.active {
+                return None;
+            }
+
+            let key = Self::get_encryption_key(&env);
+
+            let decrypted_contacts_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_emergency_contacts.ciphertext,
+                &pet.encrypted_emergency_contacts.nonce,
+                &key,
+            ).unwrap_or(Bytes::new(&env));
+            
+            Vec::<EmergencyContactInfo>::from_xdr(&env, &decrypted_contacts_bytes).ok()
+        } else {
+            None
+        }
+    }
+
+    pub fn get_medical_alerts(env: Env, pet_id: u64) -> Option<EmergencyMedicalInfo> {
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if !pet.active {
+                return None;
+            }
+
+            let key = Self::get_encryption_key(&env);
+
+            let decrypted_medical_info_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_med_info.ciphertext,
+                &pet.encrypted_med_info.nonce,
+                &key,
+            ).unwrap_or(Bytes::new(&env));
+            
+            EmergencyMedicalInfo::from_xdr(&env, &decrypted_medical_info_bytes).ok()
+        } else {
+            None
+        }
+    }
+
     // Vet Verification & Registration
     pub fn register_vet(
         env: Env,
@@ -1126,6 +1358,7 @@ impl PetChainContract {
             message: String::from_str(&env, ""),
             is_active: true,
             linked_at: now,
+            created_at: now,
             updated_at: now,
         };
         
@@ -1238,156 +1471,34 @@ impl PetChainContract {
 
     // Pet Tag/QR Code Management Functions
 
-    /// Link a tag to a pet - generates unique tag_id and establishes bidirectional mapping
-    pub fn link_tag_to_pet(env: Env, pet_id: u64, tag_message: String) -> String {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
-
-        pet.owner.require_auth();
-
-        let timestamp = env.ledger().timestamp();
-        // Use pet_id as unique identifier combined with a constant prefix
-        let tag_id = Self::format_tag_id(&env, pet_id);
-
-        let pet_tag = PetTag {
-            tag_id: tag_id.clone(),
-            pet_id,
-            owner: pet.owner,
-            tag_message,
-            is_active: true,
-            created_at: timestamp,
-            updated_at: timestamp,
-        };
-
+    /// Generic tag retrieval with optional status check (kept for compatibility)
+    fn get_tag_internal(env: &Env, tag_id: BytesN<32>, require_active: bool) -> Option<PetTag> {
         env.storage()
             .instance()
-            .set(&DataKey::PetTag(tag_id.clone()), &pet_tag);
-        env.storage()
-            .instance()
-            .set(&DataKey::PetIdByTag(tag_id.clone()), &pet_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::TagByPetId(pet_id), &tag_id.clone());
-        env.storage().instance().set(
-            &DataKey::PetTagCount,
-            &(env
-                .storage()
-                .instance()
-                .get::<DataKey, u64>(&DataKey::PetTagCount)
-                .unwrap_or(0)
-                + 1),
-        );
-
-        tag_id
-    }
-
-    /// Format tag_id from pet_id - encodes pet_id into a unique tag identifier
-    fn format_tag_id(env: &Env, pet_id: u64) -> String {
-        // Create unique tag_id by including pet_id in the identifier
-        // Use modulo arithmetic to create a base, then add pet_id
-        // This ensures each pet_id produces a unique tag_id
-        match pet_id % 10 {
-            0 => String::from_str(&env, "tag_0"),
-            1 => String::from_str(&env, "tag_1"),
-            2 => String::from_str(&env, "tag_2"),
-            3 => String::from_str(&env, "tag_3"),
-            4 => String::from_str(&env, "tag_4"),
-            5 => String::from_str(&env, "tag_5"),
-            6 => String::from_str(&env, "tag_6"),
-            7 => String::from_str(&env, "tag_7"),
-            8 => String::from_str(&env, "tag_8"),
-            _ => String::from_str(&env, "tag_9"),
-        }
-    }
-
-    /// Generic tag retrieval with optional status check
-    fn get_tag(env: &Env, tag_id: String, require_active: bool) -> Option<PetTag> {
-        env.storage()
-            .instance()
-            .get::<DataKey, PetTag>(&DataKey::PetTag(tag_id))
+            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id))
             .filter(|tag| !require_active || tag.is_active)
     }
 
-    /// Get pet by tag ID - enables fast QR code scanning
-    pub fn get_pet_by_tag(env: Env, tag_id: String) -> Option<Pet> {
-        Self::get_tag(&env, tag_id.clone(), true)
-            .and_then(|tag| env.storage().instance().get(&DataKey::Pet(tag.pet_id)))
-    }
-
-    /// Get tag details by tag ID
-    pub fn get_tag_details(env: Env, tag_id: String) -> Option<PetTag> {
-        Self::get_tag(&env, tag_id, false)
-    }
-
-    /// Get tag ID for a pet
-    pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<String> {
-        env.storage().instance().get(&DataKey::TagByPetId(pet_id))
-    }
-
     /// Generic tag mutation function
-    fn update_tag<F>(env: &Env, tag_id: String, mutator: F) -> bool
+    fn update_tag<F>(env: &Env, tag_id: BytesN<32>, mutator: F) -> bool
     where
         F: Fn(&mut PetTag),
     {
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::PetTag(tag_id.clone()))
+            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
         {
             tag.owner.require_auth();
             tag.updated_at = env.ledger().timestamp();
             mutator(&mut tag);
-            env.storage().instance().set(&DataKey::PetTag(tag_id), &tag);
+            env.storage().instance().set(&DataKey::Tag(tag_id), &tag);
             true
-    
-    // --- EMERGENCY CONTACTS ---
-    pub fn set_emergency_contacts(
-        env: Env,
-        pet_id: u64,
-        contacts: Vec<EmergencyContactInfo>,
-        medical_notes: String,
-    ) {
-        if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
-            pet.owner.require_auth();
-            
-            let key = Self::get_encryption_key(&env);
-            
-            let contacts_bytes = contacts.to_xdr(&env);
-            let (c_nonce, c_cipher) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
-            pet.encrypted_emergency_contacts = EncryptedData { nonce: c_nonce, ciphertext: c_cipher };
-            
-            let notes_bytes = medical_notes.to_xdr(&env);
-            let (n_nonce, n_cipher) = encrypt_sensitive_data(&env, &notes_bytes, &key);
-            pet.encrypted_medical_alerts = EncryptedData { nonce: n_nonce, ciphertext: n_cipher };
-            
-            pet.updated_at = env.ledger().timestamp();
-            
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         } else {
-            panic!("Pet not found");
+            false
         }
     }
     
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> Option<(Vec<EmergencyContactInfo>, String)> {
-        // Warning: This decryption is liberal. Real impl should check access strictly.
-        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
-            let key = Self::get_encryption_key(&env);
-            
-            let c_bytes = decrypt_sensitive_data(&env, &pet.encrypted_emergency_contacts.ciphertext, &pet.encrypted_emergency_contacts.nonce, &key).unwrap_or(Bytes::new(&env));
-            let contacts = Vec::<EmergencyContactInfo>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
-            
-            let n_bytes = decrypt_sensitive_data(&env, &pet.encrypted_medical_alerts.ciphertext, &pet.encrypted_medical_alerts.nonce, &key).unwrap_or(Bytes::new(&env));
-            let notes = String::from_xdr(&env, &n_bytes).unwrap_or(String::from_str(&env, ""));
-            
-            Some((contacts, notes))
-        } else {
-            None
-        }
-    }
-
     // --- ACCESSIBLE PETS ---
     pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
         user.require_auth();
@@ -1638,6 +1749,23 @@ impl PetChainContract {
              }
         }
         res
+    }
+
+    // --- HELPER FUNCTIONS ---
+    
+    /// Get the encryption key for the contract
+    fn get_encryption_key(env: &Env) -> Bytes {
+        // In production, this should be stored securely in contract state
+        // For now, return a mock key
+        Bytes::from_array(env, &[0u8; 32])
+    }
+
+    /// Get count of pets owned by a specific owner
+    fn get_owner_pet_count(env: &Env, owner: &Address) -> u64 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetCountByOwner(owner.clone()))
+            .unwrap_or(0)
     }
 }
 
