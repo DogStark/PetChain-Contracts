@@ -638,8 +638,8 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
-            let current_user = env.current_contract_address(); // Use consistent current user check
-            let mut is_authorized_for_full_data = false;
+            let _current_user = env.current_contract_address(); // Use consistent current user check
+            let _is_authorized_for_full_data = false;
 
             // Simple check: if caller is owner
             // Note: Since we don't have the caller in read-only scope easily without require_auth,
@@ -1248,7 +1248,7 @@ impl PetChainContract {
             return Vec::new(&env);
         }
 
-        let vax_count: u64 = env
+        let _vax_count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::PetVaccinationCount(pet_id))
@@ -1472,6 +1472,7 @@ impl PetChainContract {
     // Pet Tag/QR Code Management Functions
 
     /// Generic tag retrieval with optional status check (kept for compatibility)
+    #[allow(dead_code)]
     fn get_tag_internal(env: &Env, tag_id: BytesN<32>, require_active: bool) -> Option<PetTag> {
         env.storage()
             .instance()
@@ -1480,6 +1481,7 @@ impl PetChainContract {
     }
 
     /// Generic tag mutation function
+    #[allow(dead_code)]
     fn update_tag<F>(env: &Env, tag_id: BytesN<32>, mutator: F) -> bool
     where
         F: Fn(&mut PetTag),
