@@ -3,7 +3,7 @@ mod test {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
-        Bytes, BytesN, Env,
+        Env,
     };
 
     #[test]
