@@ -1,0 +1,571 @@
+    Checking petchain-stellar v0.1.0 (C:\Users\nwaug\OneDrive\Desktop\Blockchain\DripsWave\PetChain-Contracts-1\stellar-contracts)
+error[E0252]: the name `contract` is defined multiple times
+ --> src\lib.rs:4:19
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                   -------- previous import of the macro `contract` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                   ^^^^^^^^--
+  |                   |
+  |                   `contract` reimported here
+  |                   help: remove unnecessary import
+  |
+  = note: `contract` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `contractimpl` is defined multiple times
+ --> src\lib.rs:4:29
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                             ------------ previous import of the macro `contractimpl` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                             ^^^^^^^^^^^^--
+  |                             |
+  |                             `contractimpl` reimported here
+  |                             help: remove unnecessary import
+  |
+  = note: `contractimpl` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `contracttype` is defined multiple times
+ --> src\lib.rs:4:43
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                                           ------------ previous import of the macro `contracttype` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                                           ^^^^^^^^^^^^--
+  |                                           |
+  |                                           `contracttype` reimported here
+  |                                           help: remove unnecessary import
+  |
+  = note: `contracttype` must be defined only once in the macro namespace of this module
+
+error[E0252]: the name `Address` is defined multiple times
+ --> src\lib.rs:4:57
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                                                         ------- previous import of the type `Address` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                                                         ^^^^^^^--
+  |                                                         |
+  |                                                         `Address` reimported here
+  |                                                         help: remove unnecessary import
+  |
+  = note: `Address` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Env` is defined multiple times
+ --> src\lib.rs:4:66
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                                                                                 --- previous import of the type `Env` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                                                                  ^^^--
+  |                                                                  |
+  |                                                                  `Env` reimported here
+  |                                                                  help: remove unnecessary import
+  |
+  = note: `Env` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `String` is defined multiple times
+ --> src\lib.rs:4:71
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                                                                                      ------ previous import of the type `String` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                                                                       ^^^^^^--
+  |                                                                       |
+  |                                                                       `String` reimported here
+  |                                                                       help: remove unnecessary import
+  |
+  = note: `String` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Vec` is defined multiple times
+ --> src\lib.rs:4:79
+  |
+3 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+  |                                                                                              --- previous import of the type `Vec` here
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                                                                               ^^^ `Vec` reimported here
+  |
+  = note: `Vec` must be defined only once in the type namespace of this module
+
+error[E0428]: the name `__link_tag_to_pet` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__link_tag_to_pet` redefined here
+    |
+    = note: `__link_tag_to_pet` must be defined only once in the type namespace of this module
+    = note: this error originates in the attribute macro `contractimpl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__get_pet_by_tag` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__get_pet_by_tag` redefined here
+    |
+    = note: `__get_pet_by_tag` must be defined only once in the type namespace of this module
+    = note: this error originates in the attribute macro `contractimpl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__get_tag_by_pet` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__get_tag_by_pet` redefined here
+    |
+    = note: `__get_tag_by_pet` must be defined only once in the type namespace of this module
+    = note: this error originates in the attribute macro `contractimpl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__SPEC_XDR_FN_LINK_TAG_TO_PET` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__SPEC_XDR_FN_LINK_TAG_TO_PET` redefined here
+    |
+    = note: `__SPEC_XDR_FN_LINK_TAG_TO_PET` must be defined only once in the value namespace of this module
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__SPEC_XDR_FN_GET_PET_BY_TAG` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__SPEC_XDR_FN_GET_PET_BY_TAG` redefined here
+    |
+    = note: `__SPEC_XDR_FN_GET_PET_BY_TAG` must be defined only once in the value namespace of this module
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__SPEC_XDR_FN_GET_TAG_BY_PET` is defined multiple times
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ `__SPEC_XDR_FN_GET_TAG_BY_PET` redefined here
+    |
+    = note: `__SPEC_XDR_FN_GET_TAG_BY_PET` must be defined only once in the value namespace of this module
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused imports: `Address`, `Env`, `String`, `Vec`, `contract`, `contractimpl`, and `contracttype`
+ --> src\lib.rs:4:19
+  |
+4 | use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+  |                   ^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^  ^^^  ^^^^^^  ^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0592]: duplicate definitions with name `link_tag_to_pet`
+    --> src\lib.rs:1478:5
+     |
+1290 |     pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32> {
+     |     ----------------------------------------------------------- other definition for `link_tag_to_pet`
+...
+1478 |     pub fn link_tag_to_pet(env: Env, pet_id: u64, tag_message: String) -> String {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `link_tag_to_pet`
+
+error[E0592]: duplicate definitions with name `get_tag`
+    --> src\lib.rs:1543:5
+     |
+1364 |     pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
+     |     -------------------------------------------------------------- other definition for `get_tag`
+...
+1543 |     fn get_tag(env: &Env, tag_id: String, require_active: bool) -> Option<PetTag> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `get_tag`
+
+error[E0592]: duplicate definitions with name `get_pet_by_tag`
+    --> src\lib.rs:1551:5
+     |
+1349 |     pub fn get_pet_by_tag(env: Env, tag_id: BytesN<32>) -> Option<PetProfile> {
+     |     ------------------------------------------------------------------------- other definition for `get_pet_by_tag`
+...
+1551 |     pub fn get_pet_by_tag(env: Env, tag_id: String) -> Option<Pet> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `get_pet_by_tag`
+
+error[E0592]: duplicate definitions with name `get_tag_by_pet`
+    --> src\lib.rs:1562:5
+     |
+1368 |     pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<BytesN<32>> {
+     |     ------------------------------------------------------------------ other definition for `get_tag_by_pet`
+...
+1562 |     pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<String> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `get_tag_by_pet`
+
+error[E0592]: duplicate definitions with name `spec_xdr_link_tag_to_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `spec_xdr_link_tag_to_pet`
+    | other definition for `spec_xdr_link_tag_to_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `spec_xdr_get_pet_by_tag`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `spec_xdr_get_pet_by_tag`
+    | other definition for `spec_xdr_get_pet_by_tag`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `spec_xdr_get_tag_by_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `spec_xdr_get_tag_by_pet`
+    | other definition for `spec_xdr_get_tag_by_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `link_tag_to_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `link_tag_to_pet`
+    | other definition for `link_tag_to_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `try_link_tag_to_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `try_link_tag_to_pet`
+    | other definition for `try_link_tag_to_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `get_pet_by_tag`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `get_pet_by_tag`
+    | other definition for `get_pet_by_tag`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `try_get_pet_by_tag`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `try_get_pet_by_tag`
+    | other definition for `try_get_pet_by_tag`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `get_tag_by_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `get_tag_by_pet`
+    | other definition for `get_tag_by_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `try_get_tag_by_pet`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    | |
+    | duplicate definitions for `try_get_tag_by_pet`
+    | other definition for `try_get_tag_by_pet`
+    |
+    = note: this error originates in the attribute macro `soroban_sdk::contractclient` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:444:25
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+444 |         let key = Self::get_encryption_key(&env);
+    |                         ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:565:29
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+565 |             let key = Self::get_encryption_key(&env);
+    |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:623:29
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+623 |             let key = Self::get_encryption_key(&env);
+    |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_owner_pet_count` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:768:27
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_owner_pet_count` not found for this struct
+...
+768 |         let count = Self::get_owner_pet_count(env, owner);
+    |                           ^^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_owner_pet_count` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:808:27
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_owner_pet_count` not found for this struct
+...
+808 |         let count = Self::get_owner_pet_count(env, owner);
+    |                           ^^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:829:25
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+829 |         let key = Self::get_encryption_key(&env);
+    |                         ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+   --> src\lib.rs:896:29
+    |
+401 | pub struct PetChainContract;
+    | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+896 |             let key = Self::get_encryption_key(&env);
+    |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1060:25
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+1060 |         let key = Self::get_encryption_key(&env);
+     |                         ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1133:29
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+1133 |             let key = Self::get_encryption_key(&env);
+     |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0063]: missing fields `created_at` and `tag_message` in initializer of `PetTag`
+    --> src\lib.rs:1310:23
+     |
+1310 |         let pet_tag = PetTag {
+     |                       ^^^^^^ missing `created_at` and `tag_message`
+
+error[E0308]: mismatched types
+    --> src\lib.rs:1492:21
+     |
+1492 |             tag_id: tag_id.clone(),
+     |                     ^^^^^^^^^^^^^^ expected `BytesN<32>`, found `String`
+     |
+     = note: expected struct `soroban_sdk::BytesN<32>`
+                found struct `soroban_sdk::String`
+
+error[E0063]: missing fields `linked_at` and `message` in initializer of `PetTag`
+    --> src\lib.rs:1491:23
+     |
+1491 |         let pet_tag = PetTag {
+     |                       ^^^^^^ missing `linked_at` and `message`
+
+error[E0061]: this function takes 2 arguments but 3 arguments were supplied
+    --> src\lib.rs:1552:9
+     |
+1552 |         Self::get_tag(&env, tag_id.clone(), true)
+     |         ^^^^^^^^^^^^^ ----                  ---- unexpected argument #3 of type `bool`
+     |                       |
+     |                       expected `Env`, found `&Env`
+     |
+note: expected `BytesN<32>`, found `String`
+    --> src\lib.rs:1552:29
+     |
+1552 |         Self::get_tag(&env, tag_id.clone(), true)
+     |                             ^^^^^^^^^^^^^^
+     = note: expected struct `soroban_sdk::BytesN<32>`
+                found struct `soroban_sdk::String`
+note: associated function defined here
+    --> src\lib.rs:1364:12
+     |
+1364 |     pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
+     |            ^^^^^^^ --------  ------------------
+help: consider removing the borrow
+     |
+1552 -         Self::get_tag(&env, tag_id.clone(), true)
+1552 +         Self::get_tag(env, tag_id.clone(), true)
+     |
+help: remove the extra argument
+     |
+1552 -         Self::get_tag(&env, tag_id.clone(), true)
+1552 +         Self::get_tag(/* Env */, /* soroban_sdk::BytesN<32> */)
+     |
+
+error[E0061]: this function takes 2 arguments but 3 arguments were supplied
+    --> src\lib.rs:1558:9
+     |
+1558 |         Self::get_tag(&env, tag_id, false)
+     |         ^^^^^^^^^^^^^ ----          ----- unexpected argument #3 of type `bool`
+     |                       |
+     |                       expected `Env`, found `&Env`
+     |
+note: expected `BytesN<32>`, found `String`
+    --> src\lib.rs:1558:29
+     |
+1558 |         Self::get_tag(&env, tag_id, false)
+     |                             ^^^^^^
+     = note: expected struct `soroban_sdk::BytesN<32>`
+                found struct `soroban_sdk::String`
+note: associated function defined here
+    --> src\lib.rs:1364:12
+     |
+1364 |     pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
+     |            ^^^^^^^ --------  ------------------
+help: consider removing the borrow
+     |
+1558 -         Self::get_tag(&env, tag_id, false)
+1558 +         Self::get_tag(env, tag_id, false)
+     |
+help: remove the extra argument
+     |
+1558 -         Self::get_tag(&env, tag_id, false)
+1558 +         Self::get_tag(/* Env */, /* soroban_sdk::BytesN<32> */)
+     |
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1600:29
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+1600 |             let key = Self::get_encryption_key(&env);
+     |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_encryption_key` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1634:29
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_encryption_key` not found for this struct
+...
+1634 |             let key = Self::get_encryption_key(&env);
+     |                             ^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_owner_pet_count` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1665:27
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_owner_pet_count` not found for this struct
+...
+1665 |         let count = Self::get_owner_pet_count(&env, &user);
+     |                           ^^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0599]: no function or associated item named `get_owner_pet_count` found for struct `PetChainContract` in the current scope
+    --> src\lib.rs:1680:27
+     |
+ 401 | pub struct PetChainContract;
+     | --------------------------- function or associated item `get_owner_pet_count` not found for this struct
+...
+1680 |         let count = Self::get_owner_pet_count(&env, &owner);
+     |                           ^^^^^^^^^^^^^^^^^^^ function or associated item not found in `PetChainContract`
+
+error[E0034]: multiple applicable items in scope
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ multiple `spec_xdr_link_tag_to_pet` found
+    |
+note: candidate #1 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+note: candidate #2 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0034]: multiple applicable items in scope
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ multiple `spec_xdr_get_pet_by_tag` found
+    |
+note: candidate #1 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+note: candidate #2 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0034]: multiple applicable items in scope
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^ multiple `spec_xdr_get_tag_by_pet` found
+    |
+note: candidate #1 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+note: candidate #2 is defined in an impl for the type `PetChainContract`
+   --> src\lib.rs:403:1
+    |
+403 | #[contractimpl]
+    | ^^^^^^^^^^^^^^^
+    = note: this error originates in the attribute macro `soroban_sdk::contractspecfn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0061]: this function takes 2 arguments but 3 arguments were supplied
+    --> src\lib.rs:403:1
+     |
+ 403 | #[contractimpl]
+     | ^^^^^^^^^^^^^^^ unexpected argument #3
+     |
+note: associated function defined here
+    --> src\lib.rs:1290:12
+     |
+1290 |     pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32> {
+     |            ^^^^^^^^^^^^^^^
+     = note: this error originates in the attribute macro `contractimpl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `vax_count`
+    --> src\lib.rs:1174:13
+     |
+1174 |         let vax_count: u64 = env
+     |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vax_count`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pet`
+    --> src\lib.rs:2099:17
+     |
+2099 |             let pet = env
+     |                 ^^^ help: if this is intentional, prefix it with an underscore: `_pet`
+
+Some errors have detailed explanations: E0034, E0061, E0063, E0252, E0308, E0428, E0592, E0599.
+For more information about an error, try `rustc --explain E0034`.
+warning: `petchain-stellar` (lib) generated 3 warnings
+error: could not compile `petchain-stellar` (lib) due to 51 previous errors; 3 warnings emitted
