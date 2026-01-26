@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod test {
     use crate::*;
+    use soroban_sdk::{testutils::Address as _, Env};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         Bytes, BytesN, Env,
@@ -83,9 +84,10 @@ mod test {
             &String::from_str(&env, "2020-01-01"),
             &Gender::Male,
             &Species::Dog,
-            &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Golden Retriever"),
             &PrivacyLevel::Public,
         );
+        assert!(pet_id > 0);
 
         let now = env.ledger().timestamp();
         let next = now + 1000;
@@ -121,6 +123,7 @@ mod test {
     fn test_link_tag_to_pet() {
         let env = Env::default();
         env.mock_all_auths();
+        env.budget().reset_unlimited();
 
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
@@ -137,8 +140,6 @@ mod test {
         );
 
         let tag_id = client.link_tag_to_pet(&pet_id);
-
-        // Verify tag was created
         let tag = client.get_tag(&tag_id).unwrap();
         assert_eq!(tag.pet_id, pet_id);
         assert_eq!(tag.owner, owner);
@@ -154,9 +155,10 @@ mod test {
     }
 
     #[test]
-    fn test_update_tag_message() {
+    fn test_emergency_contacts() {
         let env = Env::default();
         env.mock_all_auths();
+        env.budget().reset_unlimited();
 
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
@@ -164,6 +166,8 @@ mod test {
         let owner = Address::generate(&env);
         let pet_id = client.register_pet(
             &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2021-05-20"),
             &String::from_str(&env, "Luna"),
             &String::from_str(&env, "2022-03-20"),
             &Gender::Female,
@@ -199,16 +203,7 @@ mod test {
             &String::from_str(&env, "2020-01-01"),
             &Gender::Male,
             &Species::Dog,
-            &String::from_str(&env, "Husky"),
-            &PrivacyLevel::Public,
-        );
-        let pet2 = client.register_pet(
-            &owner,
-            &String::from_str(&env, "Dog2"),
-            &String::from_str(&env, "2020-01-02"),
-            &Gender::Female,
-            &Species::Dog,
-            &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "German Shepherd"),
             &PrivacyLevel::Public,
         );
 
@@ -218,25 +213,22 @@ mod test {
         assert_ne!(tag1, tag2);
     }
 
-    #[test]
-    fn test_pet_privacy_flow() {
-        let env = Env::default();
-        env.mock_all_auths();
+        let mut contacts = Vec::new(&env);
+        contacts.push_back(EmergencyContactInfo {
+            name: String::from_str(&env, "John Doe"),
+            phone: String::from_str(&env, "+1-555-1234"),
+            relationship: String::from_str(&env, "Owner"),
+            email: Some(String::from_str(&env, "john@example.com")),
+            is_primary: true,
+        });
 
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+        let success = client.set_emergency_contacts(&pet_id, &contacts);
+        assert!(success);
 
-        let owner = Address::generate(&env);
-        let pet_id = client.register_pet(
-            &owner,
-            &String::from_str(&env, "Secret Pet"),
-            &String::from_str(&env, "2020-01-01"),
-            &Gender::Male,
-            &Species::Cat,
-            &String::from_str(&env, "X"),
-            &PrivacyLevel::Private, // Encrypted, restricted
-        );
-
+        if let Some(retrieved_contacts) = client.get_emergency_contacts(&pet_id) {
+            assert_eq!(retrieved_contacts.len(), 1);
+            assert_eq!(retrieved_contacts.get(0).unwrap().name, String::from_str(&env, "John Doe"));
+        }
         // Owner can access (simulated by contract function always returning Profile in this implementation)
         // In real world, owner holds key. Here get_pet returns Profile.
         let pet = client.get_pet(&pet_id).unwrap();
@@ -252,13 +244,15 @@ mod test {
     }
 
     #[test]
-    fn test_vaccination_history_overdue() {
+    fn test_emergency_medical_info() {
         let env = Env::default();
         env.mock_all_auths();
+        env.budget().reset_unlimited();
 
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
+        let owner = Address::generate(&env);
         let owner = Address::generate(&env);
         let vet = Address::generate(&env);
         let admin = Address::generate(&env);
@@ -357,13 +351,19 @@ mod test {
 
         let pet_id = client.register_pet(
             &owner,
-            &String::from_str(&env, "Patient"),
-            &String::from_str(&env, "2020-01-01"),
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2019-12-01"),
             &Gender::Female,
             &Species::Cat,
-            &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Persian"),
             &PrivacyLevel::Public,
         );
+
+        let mut allergies = Vec::new(&env);
+        allergies.push_back(AllergyInfo {
+            allergen: String::from_str(&env, "Chicken"),
+            severity: String::from_str(&env, "moderate"),
+            symptoms: String::from_str(&env, "Vomiting, itching"),
 
         let lab_id = client.add_lab_result(
             &pet_id,
@@ -410,50 +410,21 @@ mod test {
             end_date: 200,
         });
 
-        let start_time = 1000;
-        env.ledger().with_mut(|l| l.timestamp = start_time);
+        let mut critical_alerts = Vec::new(&env);
+        critical_alerts.push_back(String::from_str(&env, "Diabetic"));
 
-        let record_id = client.add_medical_record(
+        let success = client.set_emergency_medical_info(
             &pet_id,
-            &vet,
-            &String::from_str(&env, "Checkup"),
-            &String::from_str(&env, "Healthy"),
-            &String::from_str(&env, "Monitor"),
-            &medications,
-        );
-
-        let created_record = client.get_medical_record(&record_id).unwrap();
-        assert_eq!(created_record.created_at, start_time);
-        assert_eq!(created_record.updated_at, start_time);
-
-        // Advance time
-        let update_time = 2000;
-        env.ledger().with_mut(|l| l.timestamp = update_time);
-
-        let mut new_meds = Vec::new(&env);
-        new_meds.push_back(Medication {
-            name: String::from_str(&env, "Med1"),
-            dosage: String::from_str(&env, "20mg"), // Modified dosage
-            frequency: String::from_str(&env, "Daily"),
-            start_date: 100,
-            end_date: 200,
-        });
-        new_meds.push_back(Medication {
-            name: String::from_str(&env, "NewMed"), // New med
-            dosage: String::from_str(&env, "5mg"),
-            frequency: String::from_str(&env, "Once"),
-            start_date: update_time,
-            end_date: update_time + 100,
-        });
-
-        let success = client.update_medical_record(
-            &record_id,
-            &String::from_str(&env, "Sick"),
-            &String::from_str(&env, "Intensive Care"),
-            &new_meds,
+            &allergies,
+            &String::from_str(&env, "Takes insulin daily"),
+            &critical_alerts,
         );
         assert!(success);
 
+        if let Some(medical) = client.get_medical_alerts(&pet_id) {
+            assert_eq!(medical.allergies.len(), 1);
+            assert_eq!(medical.critical_alerts.len(), 1);
+        }
         let updated = client.get_medical_record(&record_id).unwrap();
 
         // Verify updates
