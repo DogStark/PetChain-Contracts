@@ -175,6 +175,8 @@ pub struct Vaccination {
     pub encrypted_batch_number: EncryptedData, // Encrypted value
 
     pub created_at: u64,
+
+    pub side_effects: Option<String>, // Decrypted value (None in storage)
 }
 
 #[contracttype]
@@ -1395,6 +1397,40 @@ impl PetChainContract {
             false
         }
     }
+
+    // Update-Vaccination-Record Function.
+    
+    pub fn update_vaccination_record(
+    env: Env,
+    vaccination_id: u64,
+    new_side_effects: Option<String>,
+    new_next_due_date: Option<u64>,
+) {
+    // Fetch record or fail
+    let mut record: Vaccination = env
+        .storage()
+        .instance()
+        .get(&DataKey::Vaccination(vaccination_id))
+        .expect("Vaccination record not found");
+
+    // Authorization: only the original veterinarian
+    record.veterinarian.require_auth();
+
+    // Update only allowed fields
+    if let Some(side_effects) = new_side_effects {
+        record.side_effects = Some(side_effects);
+    }
+
+    if let Some(next_due) = new_next_due_date {
+        record.next_due_date = next_due;
+    }
+
+    // Persist updated record
+    env.storage()
+        .instance()
+        .set(&DataKey::Vaccination(vaccination_id), &record);
+}
+
 
     //  Get all overdue vaccinations for a pet
     // GAS OPTIMIZATION: Combine logic to avoid double iteration and redundant storage reads
