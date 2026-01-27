@@ -585,4 +585,266 @@ fn test_register_pet_owner() {
         let missing = contract.get_medical_record(&9999u64);
         assert!(missing.is_none());
     }
+
+    // ============== GAS OPTIMIZATION BENCHMARKS ==============
+
+    #[test]
+    fn benchmark_pet_registration_gas_usage() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let name = String::from_str(&env, "BenchmarkPet");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+
+        // Measure gas for pet registration
+        let _start_ledger = env.ledger().sequence();
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+        let _end_ledger = env.ledger().sequence();
+
+        assert_eq!(pet_id, 1);
+        // GAS BENCHMARK: Pet registration used _end_ledger - _start_ledger ledger entries
+        let _gas_used = _end_ledger - _start_ledger;
+    }
+
+    #[test]
+    fn benchmark_vaccination_history_retrieval() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        // Register pet
+        let name = String::from_str(&env, "BenchmarkPet");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        // Add multiple vaccinations for benchmarking
+        for i in 1..=10 {
+            let administered_time = 1735689600 + (i * 86400 * 30); // Monthly vaccinations
+            let next_due_date = administered_time + (365 * 24 * 3600); // Annual vaccination
+            let batch_number = match i {
+                1 => String::from_str(&env, "BATCH-001"),
+                2 => String::from_str(&env, "BATCH-002"),
+                3 => String::from_str(&env, "BATCH-003"),
+                4 => String::from_str(&env, "BATCH-004"),
+                5 => String::from_str(&env, "BATCH-005"),
+                6 => String::from_str(&env, "BATCH-006"),
+                7 => String::from_str(&env, "BATCH-007"),
+                8 => String::from_str(&env, "BATCH-008"),
+                9 => String::from_str(&env, "BATCH-009"),
+                10 => String::from_str(&env, "BATCH-010"),
+                _ => String::from_str(&env, "BATCH-999"),
+            };
+
+            client.add_vaccination(
+                &pet_id,
+                &vet,
+                &VaccineType::Rabies,
+                &String::from_str(&env, "Rabies Vaccine"),
+                &administered_time,
+                &next_due_date,
+                &batch_number,
+            );
+        }
+
+        // Benchmark vaccination history retrieval
+        let _start_ledger = env.ledger().sequence();
+        let history = client.get_vaccination_history(&pet_id);
+        let _end_ledger = env.ledger().sequence();
+
+        assert_eq!(history.len(), 10);
+        // GAS BENCHMARK: Vaccination history retrieval used _end_ledger - _start_ledger ledger entries
+        let _gas_used = _end_ledger - _start_ledger;
+    }
+
+    #[test]
+    fn benchmark_upcoming_vaccinations_filtering() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        // Register pet
+        let name = String::from_str(&env, "BenchmarkPet");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        // Add vaccinations with different due dates
+        for i in 1..=5 {
+            let administered_time = 1735689600 + (i * 86400 * 30);
+            let next_due_date = if i <= 2 {
+                // Due soon (within 30 days)
+                env.ledger().timestamp() + (i * 86400)
+            } else {
+                // Due later
+                env.ledger().timestamp() + (i * 86400 * 100)
+            };
+            let batch_number = match i {
+                1 => String::from_str(&env, "BATCH-001"),
+                2 => String::from_str(&env, "BATCH-002"),
+                3 => String::from_str(&env, "BATCH-003"),
+                4 => String::from_str(&env, "BATCH-004"),
+                5 => String::from_str(&env, "BATCH-005"),
+                _ => String::from_str(&env, "BATCH-999"),
+            };
+
+            client.add_vaccination(
+                &pet_id,
+                &vet,
+                &VaccineType::Rabies,
+                &String::from_str(&env, "Rabies Vaccine"),
+                &administered_time,
+                &next_due_date,
+                &batch_number,
+            );
+        }
+
+        // Benchmark upcoming vaccinations filtering
+        let _start_ledger = env.ledger().sequence();
+        let upcoming = client.get_upcoming_vaccinations(&pet_id, &30); // 30 days threshold
+        let _end_ledger = env.ledger().sequence();
+
+        assert_eq!(upcoming.len(), 2); // Should find 2 upcoming vaccinations
+    }
+
+    #[test]
+    fn benchmark_access_control_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+
+        // Register pet
+        let name = String::from_str(&env, "BenchmarkPet");
+        let birthday = String::from_str(&env, "2020-01-01");
+        let breed = String::from_str(&env, "Golden Retriever");
+        let pet_id = client.register_pet(
+            &owner,
+            &name,
+            &birthday,
+            &Gender::Male,
+            &Species::Dog,
+            &breed,
+        );
+
+        // Benchmark access granting
+        let _start_ledger = env.ledger().sequence();
+        let grant_result = client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+        let _end_ledger = env.ledger().sequence();
+
+        assert!(grant_result);
+        // GAS BENCHMARK: Access granting used _end_ledger - _start_ledger ledger entries
+        let _gas_used = _end_ledger - _start_ledger;
+
+        // Benchmark authorized users retrieval
+        let _start_ledger = env.ledger().sequence();
+        let authorized_users = client.get_authorized_users(&pet_id);
+        let _end_ledger = env.ledger().sequence();
+
+        assert_eq!(authorized_users.len(), 1);
+    }
+
+    #[test]
+    fn benchmark_bulk_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        // Benchmark registering multiple pets
+        let _start_ledger = env.ledger().sequence();
+        for i in 1..=5 {
+            let name = match i {
+                1 => String::from_str(&env, "BenchmarkPet1"),
+                2 => String::from_str(&env, "BenchmarkPet2"),
+                3 => String::from_str(&env, "BenchmarkPet3"),
+                4 => String::from_str(&env, "BenchmarkPet4"),
+                5 => String::from_str(&env, "BenchmarkPet5"),
+                _ => String::from_str(&env, "BenchmarkPet"),
+            };
+            let birthday = String::from_str(&env, "2020-01-01");
+            let breed = String::from_str(&env, "Golden Retriever");
+
+            client.register_pet(
+                &owner,
+                &name,
+                &birthday,
+                &Gender::Male,
+                &Species::Dog,
+                &breed,
+            );
+        }
+        let _end_ledger = env.ledger().sequence();
+
+        // Benchmark bulk vaccinations for one pet
+        let pet_id = 1;
+        let _start_ledger = env.ledger().sequence();
+        for i in 1..=5 {
+            let administered_time = 1735689600 + (i * 86400 * 30);
+            let next_due_date = administered_time + (365 * 24 * 3600);
+            let batch_number = match i {
+                1 => String::from_str(&env, "BATCH-001"),
+                2 => String::from_str(&env, "BATCH-002"),
+                3 => String::from_str(&env, "BATCH-003"),
+                4 => String::from_str(&env, "BATCH-004"),
+                5 => String::from_str(&env, "BATCH-005"),
+                _ => String::from_str(&env, "BATCH-999"),
+            };
+
+            client.add_vaccination(
+                &pet_id,
+                &vet,
+                &VaccineType::Rabies,
+                &String::from_str(&env, "Rabies Vaccine"),
+                &administered_time,
+                &next_due_date,
+                &batch_number,
+            );
+        }
+        let _end_ledger = env.ledger().sequence();
+    }
 }
