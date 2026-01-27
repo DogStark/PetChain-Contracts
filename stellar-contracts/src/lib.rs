@@ -422,11 +422,10 @@ impl PetChainContract {
     ) -> u64 {
         owner.require_auth();
 
-        let pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCount)
-            .unwrap_or(0);
+        // GAS OPTIMIZATION: Batch storage operations and minimize reads
+        let storage = env.storage().instance();
+
+        let pet_count: u64 = storage.get(&DataKey::PetCount).unwrap_or(0);
         let pet_id = pet_count + 1;
         let timestamp = env.ledger().timestamp();
 
@@ -516,19 +515,16 @@ impl PetChainContract {
             gender,
         };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-        env.storage().instance().set(&DataKey::PetCount, &pet_id);
+        // GAS OPTIMIZATION: Batch all storage writes
+        storage.set(&DataKey::Pet(pet_id), &pet);
+        storage.set(&DataKey::PetCount, &pet_id);
 
-        let owner_pet_count: u64 = env
-            .storage()
-            .instance()
+        let owner_pet_count: u64 = storage
             .get(&DataKey::PetCountByOwner(owner.clone()))
             .unwrap_or(0)
             + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
-        env.storage().instance().set(
+        storage.set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
+        storage.set(
             &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
             &pet_id,
         );
@@ -1272,6 +1268,8 @@ impl PetChainContract {
         }
     }
 
+    //  Get complete vaccination history for a pet
+    // GAS OPTIMIZATION: Use single storage instance and minimize redundant operations
     pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
         if env
             .storage()
@@ -1282,9 +1280,8 @@ impl PetChainContract {
             return Vec::new(&env);
         }
 
-        let _vax_count: u64 = env
-            .storage()
-            .instance()
+        let storage = env.storage().instance();
+        let vax_count: u64 = storage
             .get(&DataKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
 
@@ -1297,52 +1294,97 @@ impl PetChainContract {
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
-        for i in 1..=count {
-            if let Some(vid) = env
-                .storage()
-                .instance()
+        // GAS OPTIMIZATION: Use single storage instance for all operations
+        for i in 1..=vax_count {
+            if let Some(vax_id) = storage
                 .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
             {
-                if let Some(vax) = Self::get_vaccinations(env.clone(), vid) {
-                    history.push_back(vax);
+                if let Some(vaccination) = storage
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                {
+                    history.push_back(vaccination);
                 }
             }
         }
         history
     }
 
+    // Get upcoming vaccinations
+    // GAS OPTIMIZATION: Combine logic to avoid double iteration and redundant storage reads
     pub fn get_upcoming_vaccinations(
         env: Env,
         pet_id: u64,
         days_threshold: u64,
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
-        let threshold = current_time + (days_threshold * 86400);
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
+        let threshold_time = current_time + (days_threshold * 86400); // Convert days to seconds
+
+        // Verify pet exists
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let storage = env.storage().instance();
+        let vax_count: u64 = storage
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+
         let mut upcoming = Vec::new(&env);
 
-        for vax in history.iter() {
-            if vax.next_due_date <= threshold {
-                upcoming.push_back(vax);
+        // GAS OPTIMIZATION: Single pass through vaccination records, filter in-place
+        for i in 1..=vax_count {
+            if let Some(vax_id) = storage
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = storage
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                {
+                    if vaccination.next_due_date <= threshold_time {
+                        upcoming.push_back(vaccination);
+                    }
+                }
             }
         }
         upcoming
     }
 
+    // GAS OPTIMIZATION: Direct iteration through vaccination records to find most recent
     pub fn is_vaccination_current(env: Env, pet_id: u64, vaccine_type: VaccineType) -> bool {
         let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env, pet_id);
+
+        // Verify pet exists
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let storage = env.storage().instance();
+        let vax_count: u64 = storage
+            .get(&DataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+
         let mut most_recent: Option<Vaccination> = None;
 
-        for vax in history.iter() {
-            if vax.vaccine_type == vaccine_type {
-                match most_recent.clone() {
-                    Some(current) => {
-                        if vax.administered_at > current.administered_at {
-                            most_recent = Some(vax);
+        // GAS OPTIMIZATION: Single pass through records, no intermediate Vec allocation
+        for i in 1..=vax_count {
+            if let Some(vax_id) = storage
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = storage
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                {
+                    if vaccination.vaccine_type == vaccine_type {
+                        if let Some(ref current) = most_recent {
+                            if vaccination.administered_at > current.administered_at {
+                                most_recent = Some(vaccination);
+                            }
+                        } else {
+                            most_recent = Some(vaccination);
                         }
                     }
-                    None => most_recent = Some(vax),
                 }
             }
         }
@@ -1354,19 +1396,13 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType> {
+    //  Get all overdue vaccinations for a pet
+    // GAS OPTIMIZATION: Combine logic to avoid double iteration and redundant storage reads
+    pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
-        let mut overdue = Vec::new(&env);
 
-        for vax in history.iter() {
-            if vax.next_due_date < current_time {
-                overdue.push_back(vax.vaccine_type);
-            }
-        }
-        overdue
-    }
-
+        // Verify pet exists
+        let _pet: Pet = env
 
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
 
@@ -1374,32 +1410,50 @@ impl PetChainContract {
         let nonce: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::TagNonce)
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let storage = env.storage().instance();
+        let vax_count: u64 = storage
+            .get(&DataKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
-        let new_nonce = nonce + 1;
-        env.storage().instance().set(&DataKey::TagNonce, &new_nonce);
 
-        let timestamp = env.ledger().timestamp();
-        let sequence = env.ledger().sequence();
+        let mut overdue = Vec::new(&env);
 
-        let mut preimage = Bytes::new(env);
-        for byte in pet_id.to_be_bytes() {
-            preimage.push_back(byte);
+        // GAS OPTIMIZATION: Single pass through vaccination records, filter in-place
+        for i in 1..=vax_count {
+            if let Some(vax_id) = storage
+                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vaccination) = storage
+                    .get::<DataKey, Vaccination>(&DataKey::Vaccination(vax_id))
+                {
+                    if vaccination.next_due_date < current_time {
+                        overdue.push_back(vaccination);
+                    }
+                }
+            }
         }
-        for byte in new_nonce.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-        for byte in timestamp.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-        for byte in sequence.to_be_bytes() {
-            preimage.push_back(byte);
-        }
-
-        env.crypto().sha256(&preimage).into()
+        overdue
     }
 
-    pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32> {
+    // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
+
+    /// Grant access to a pet's records
+    ///
+    /// # Arguments
+    /// * `pet_id` - ID of the pet
+    /// * `grantee` - Address to grant access to
+    /// * `access_level` - Level of access (Basic or Full)
+    /// * `expires_at` - Optional expiration timestamp (None for permanent)
+    // GAS OPTIMIZATION: Use single storage instance and batch operations
+    pub fn grant_access(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        access_level: AccessLevel,
+        expires_at: Option<u64>,
+    ) -> bool {
         let pet = env
             .storage()
             .instance()
@@ -1430,6 +1484,29 @@ impl PetChainContract {
             updated_at: now,
         };
 
+        let mut storage = env.storage().instance();
+        let grant_key = DataKey::AccessGrant((pet_id, grantee.clone()));
+        let is_new_grant = storage
+            .get::<DataKey, AccessGrant>(&grant_key)
+            .is_none();
+
+        storage.set(&grant_key, &grant);
+
+        // GAS OPTIMIZATION: Batch index updates using single storage instance
+        if is_new_grant {
+            let grant_count: u64 = storage
+                .get(&DataKey::AccessGrantCount(pet_id))
+                .unwrap_or(0);
+            let new_count = grant_count + 1;
+            storage.set(&DataKey::AccessGrantCount(pet_id), &new_count);
+            storage.set(&DataKey::AccessGrantIndex((pet_id, new_count)), &grantee);
+
+            let user_access_count: u64 = storage
+                .get(&DataKey::UserAccessCount(grantee.clone()))
+                .unwrap_or(0);
+            storage.set(
+                &DataKey::UserAccessCount(grantee.clone()),
+                &(user_access_count + 1),
         env.storage()
             .instance()
             .set(&DataKey::Tag(tag_id.clone()), &pet_tag);
@@ -1750,8 +1827,8 @@ impl PetChainContract {
             .expect("Pet not found");
         pet.owner.require_auth();
 
-        let now = env.ledger().timestamp();
-        let grant = AccessGrant {
+        // Emit event
+        let event = AccessGrantedEvent {
             pet_id,
             granter: pet.owner,
             grantee: grantee.clone(),
@@ -1983,22 +2060,58 @@ impl PetChainContract {
         AccessLevel::None
     }
 
+    /// Get all users who have been granted access to a pet
+    // GAS OPTIMIZATION: Use single storage instance and batch operations
     pub fn get_authorized_users(env: Env, pet_id: u64) -> Vec<Address> {
-        // Logic to return list
-        let count = env
+        let pet = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let storage = env.storage().instance();
+        let grant_count: u64 = storage
+            .get(&DataKey::AccessGrantCount(pet_id))
             .unwrap_or(0);
-        let mut users = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(grantee) = env
-                .storage()
-                .instance()
+
+        let mut authorized_users = Vec::new(&env);
+
+        for i in 1..=grant_count {
+            if let Some(grantee) = storage
                 .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
             {
-                if Self::check_access(env.clone(), pet_id, grantee.clone()) != AccessLevel::None {
-                    users.push_back(grantee);
+                // GAS OPTIMIZATION: Inline access check to avoid function call overhead
+                let access_level = if pet.owner == grantee {
+                    AccessLevel::Full
+                } else {
+                    let grant_key = DataKey::AccessGrant((pet_id, grantee.clone()));
+                    if let Some(grant) = storage
+                        .get::<DataKey, AccessGrant>(&grant_key)
+                    {
+                        if !grant.is_active {
+                            AccessLevel::None
+                        } else {
+                            // Check if access has expired
+                            if let Some(exp_time) = grant.expires_at {
+                                let now = env.ledger().timestamp();
+                                if now >= exp_time {
+                                    AccessLevel::None
+                                } else {
+                                    grant.access_level
+                                }
+                            } else {
+                                grant.access_level
+                            }
+                        }
+                    } else {
+                        AccessLevel::None
+                    }
+                };
+
+                if access_level != AccessLevel::None {
+                    authorized_users.push_back(grantee);
                 }
             }
         }
