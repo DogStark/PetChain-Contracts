@@ -2,3 +2,4 @@ target
 .snfoundry_cache/
 stellar-contracts/target/
 stellar-contracts/Cargo.lock
+test_snapshots/test/test
