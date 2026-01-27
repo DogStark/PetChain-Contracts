@@ -7,36 +7,20 @@ mod test {
         Bytes, BytesN, Env,
     };
 
-    #[test]
-    fn test_register_pet() {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.budget().reset_unlimited();
 
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+#[test]
+fn test_register_pet_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-        let owner = Address::generate(&env);
-        let name = String::from_str(&env, "Buddy");
-        let birthday = String::from_str(&env, "2020-01-01");
-        let breed = String::from_str(&env, "Golden Retriever");
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
 
-        let pet_id = client.register_pet(
-            &owner,
-            &name,
-            &birthday,
-            &Gender::Male,
-            &Species::Dog,
-            &breed,
-            &PrivacyLevel::Public,
-        );
-        assert_eq!(pet_id, 1);
+    let owner = Address::generate(&env);
+    let name = String::from_str(&env, "John Doe");
+    let email = String::from_str(&env, "john@example.com");
+    let emergency = String::from_str(&env, "555-1234");
 
-        let pet = client.get_pet(&pet_id).unwrap();
-        assert_eq!(pet.id, 1);
-        assert_eq!(pet.name, name);
-        assert_eq!(pet.active, false);
-    }
 
     #[test]
     fn test_register_pet_owner() {

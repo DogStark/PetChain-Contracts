@@ -218,6 +218,7 @@ pub struct TagReactivatedEvent {
     pub timestamp: u64,
 }
 
+
 #[contracttype]
 #[derive(Clone)]
 pub struct PetTag {
@@ -241,12 +242,7 @@ pub enum DataKey {
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
 
-    // Vet verification keys
-    Vet(Address),
-    VetLicense(String),
-    Admin,
 
-    // Vaccination DataKey
     Vaccination(u64),
     VaccinationCount,
     PetVaccinations(Address),
@@ -296,71 +292,28 @@ pub enum DataKey {
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LabResult {
-    pub id: u64,
-    pub pet_id: u64,
-    pub veterinarian: Address,
-    pub test_type: String,              // e.g., "Blood Work", "X-Ray"
-    pub result_summary: String,         // e.g., "Normal", "Fracture detected"
-    pub medical_record_id: Option<u64>, // Link to optional medical record
-    pub created_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VaccinationSummary {
-    pub is_fully_current: bool,
-    pub overdue_types: Vec<VaccineType>,
-    pub upcoming_count: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessLevel {
     None,
-    Basic, // Can view basic pet info only
-    Full,  // Can view all records including medical history
+    Basic,
+    Full,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessGrant {
     pub pet_id: u64,
-    pub granter: Address, // Pet owner who granted access
-    pub grantee: Address, // User receiving access
+    pub granter: Address,
+    pub grantee: Address,
     pub access_level: AccessLevel,
     pub granted_at: u64,
-    pub expires_at: Option<u64>, // None means permanent access
+    pub expires_at: Option<u64>,
     pub is_active: bool,
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Medication {
-    pub name: String,
-    pub dosage: String,
-    pub frequency: String,
-    pub start_date: u64,
-    pub end_date: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MedicalRecord {
-    pub id: u64,
-    pub pet_id: u64,
-    pub veterinarian: Address,
-    pub record_type: String, // e.g., "Checkup", "Surgery"
-    pub diagnosis: String,
-    pub treatment: String,
-    pub medications: Vec<Medication>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-// --- EVENTS ---
 
 #[contracttype]
 #[derive(Clone)]
@@ -433,15 +386,6 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
-    fn require_admin(env: &Env) -> Address {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Admin not set");
-        admin.require_auth();
-        admin
-    }
 
     pub fn init_admin(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -589,6 +533,7 @@ impl PetChainContract {
             &pet_id,
         );
 
+
         // EMIT EVENT: PetRegistered (we emit the decrypted name for the event log as it's useful,
         // assuming standard privacy. If high strictness needed, this should be masked).
         // For now, we emit what was passed in.
@@ -623,35 +568,10 @@ impl PetChainContract {
         {
             pet.owner.require_auth();
 
-            let key = Self::get_encryption_key(&env);
-
-            let name_bytes = name.to_xdr(&env);
-            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, &name_bytes, &key);
-            pet.encrypted_name = EncryptedData {
-                nonce: name_nonce,
-                ciphertext: name_ciphertext,
-            };
-
-            let birthday_bytes = birthday.to_xdr(&env);
-            let (birthday_nonce, birthday_ciphertext) =
-                encrypt_sensitive_data(&env, &birthday_bytes, &key);
-            pet.encrypted_birthday = EncryptedData {
-                nonce: birthday_nonce,
-                ciphertext: birthday_ciphertext,
-            };
-
-            let breed_bytes = breed.to_xdr(&env);
-            let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, &breed_bytes, &key);
-            pet.encrypted_breed = EncryptedData {
-                nonce: breed_nonce,
-                ciphertext: breed_ciphertext,
-            };
-
             pet.gender = gender;
             pet.species = species;
             pet.privacy_level = privacy_level;
             pet.updated_at = env.ledger().timestamp();
-
             env.storage().instance().set(&DataKey::Pet(id), &pet);
             true
         } else {
@@ -801,14 +721,11 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
             pet.new_owner.require_auth();
-
             let old_owner = pet.owner.clone();
             Self::remove_pet_from_owner_index(&env, &old_owner, id);
 
             pet.owner = pet.new_owner.clone();
             pet.updated_at = env.ledger().timestamp();
-
-            Self::add_pet_to_owner_index(&env, &pet.owner, id);
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
 
@@ -887,7 +804,6 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
-        let key = Self::get_encryption_key(&env);
         let timestamp = env.ledger().timestamp();
 
         let name_bytes = name.to_xdr(&env);
@@ -1211,7 +1127,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
         {
-            vet.verified = true;
+
             env.storage()
                 .instance()
                 .set(&DataKey::Vet(vet.address.clone()), &vet);
@@ -1221,45 +1137,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn revoke_vet_license(env: Env, vet_address: Address) -> bool {
-        Self::require_admin(&env);
 
-        if let Some(mut vet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
-        {
-            vet.verified = false;
-            env.storage()
-                .instance()
-                .set(&DataKey::Vet(vet.address.clone()), &vet);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
-        env.storage()
-            .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
-            .map(|vet| vet.verified)
-            .unwrap_or(false)
-    }
-
-    pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet> {
-        env.storage().instance().get(&DataKey::Vet(vet_address))
-    }
-
-    pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
-        let vet_address: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::VetLicense(license_number));
-        vet_address.and_then(|address| Self::get_vet(env, address))
-    }
-
-    // Pet Vaccination Record
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -1325,6 +1203,7 @@ impl PetChainContract {
             .instance()
             .set(&DataKey::VaccinationCount, &vaccine_id);
 
+
         // Update indexes
         let pet_vax_count: u64 = env
             .storage()
@@ -1339,6 +1218,7 @@ impl PetChainContract {
             &DataKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
             &vaccine_id,
         );
+
 
         env.events().publish(
             (String::from_str(&env, "VaccinationAdded"), pet_id),
@@ -1487,6 +1367,7 @@ impl PetChainContract {
         overdue
     }
 
+
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
 
     fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
@@ -1622,6 +1503,7 @@ impl PetChainContract {
         } else {
             false
         }
+
     }
 
     pub fn deactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
@@ -1658,6 +1540,7 @@ impl PetChainContract {
         }
     }
 
+                }
     pub fn reactivate_tag(env: Env, tag_id: BytesN<32>) -> bool {
         if let Some(mut tag) = env
             .storage()
@@ -1690,6 +1573,15 @@ impl PetChainContract {
         } else {
             false
         }
+
+        }
+    }
+
+
+    pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
+        user.require_auth();
+        let mut accessible_pets = Vec::new(&env);
+
     }
 
     pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> bool {
@@ -1824,6 +1716,7 @@ impl PetChainContract {
         accessible_pets
     }
 
+
     pub fn get_all_pets_by_owner(env: Env, owner: Address) -> Vec<PetProfile> {
         // owner.require_auth(); // Optional depending on privacy requirements, but common pattern
         let count = Self::get_owner_pet_count(&env, &owner);
@@ -1928,6 +1821,7 @@ impl PetChainContract {
         } else {
             false
         }
+        pets
     }
 
     // --- MEDICAL RECORDS ---
@@ -1958,9 +1852,6 @@ impl PetChainContract {
             .instance()
             .set(&DataKey::MedicalRecordCount, &id);
 
-        let now = env.ledger().timestamp();
-        let record = MedicalRecord {
-            id,
             pet_id,
             veterinarian: veterinarian.clone(),
             record_type,
@@ -1970,6 +1861,7 @@ impl PetChainContract {
             created_at: now,
             updated_at: now,
         };
+
 
         env.storage()
             .instance()
@@ -2002,6 +1894,7 @@ impl PetChainContract {
 
         id
     }
+
 
     pub fn update_medical_record(
         env: Env,
@@ -2061,6 +1954,7 @@ impl PetChainContract {
         records
     }
 
+
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
         if let Some(pet) = env
             .storage()
@@ -2116,6 +2010,7 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::AccessGrant((pet_id, grantee)))
     }
+
 
     // --- LAB RESULTS ---
     pub fn add_lab_result(
