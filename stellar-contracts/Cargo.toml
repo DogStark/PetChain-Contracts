@@ -7,14 +7,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = "21.0.0"
-aes-gcm = { version = "0.10.0", default-features = false, features = ["alloc"] }
-rand_core = { version = "0.6.0", default-features = false }
-hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-getrandom = { version = "0.2", features = ["custom"] }
+soroban-sdk = "21.7.7"
 
 [dev-dependencies]
-soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+soroban-sdk = { version = "21.7.7", features = ["testutils"] }
 
 [profile.release]
 opt-level = "z"

@@ -34,3 +34,23 @@ jobs:
         run: |
           cd stellar-contracts
           cargo test
+      - name: Generate coverage
+        run: |
+          cd stellar-contracts
+          cargo install cargo-tarpaulin
+          cargo tarpaulin --out xml
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./stellar-contracts/cobertura.xml
+  
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Security audit
+        run: |
+          cargo install cargo-audit
+          cd stellar-contracts
+          cargo audit
