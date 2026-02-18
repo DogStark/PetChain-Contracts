@@ -5,7 +5,7 @@ use soroban_sdk::{
     panic_with_error, Address, Env, Symbol, Vec,
 };
 
-mod vet_reigistry;
+mod vet_registry;
 
 /// ======================================================
 /// CONTRACT
