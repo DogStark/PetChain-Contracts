@@ -720,6 +720,35 @@ impl PetChainContract {
         }
     }
 
+    pub fn add_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            Self::validate_ipfs_hash(&photo_hash);
+            pet.photo_hashes.push_back(photo_hash);
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_pet_photos(env: Env, pet_id: u64) -> Vec<String> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.photo_hashes
+        } else {
+            Vec::new(&env)
+        }
+    }
+
     pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
         if let Some(mut pet) = env
             .storage()
