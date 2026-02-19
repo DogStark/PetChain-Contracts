@@ -84,7 +84,7 @@ mod test {
             &String::from_str(&env, "LIC-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         let now = env.ledger().timestamp();
         let next = now + 1000;
@@ -279,7 +279,7 @@ mod test {
             &String::from_str(&env, "LIC-002"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         // Set time to future to allow subtraction for past
         let now = 1_000_000;
@@ -375,8 +375,13 @@ mod test {
         assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
         assert_eq!(res.result_summary, String::from_str(&env, "Normal"));
 
-        let list = client.get_pet_lab_results(&pet_id);
+        let list = list_pet_lab_results(&env, &contract_id, &pet_id);
         assert_eq!(list.len(), 1);
+    }
+
+    fn list_pet_lab_results(env: &Env, contract_id: &Address, pet_id: &u64) -> Vec<LabResult> {
+         let client = PetChainContractClient::new(&env, &contract_id);
+         client.get_pet_lab_results(pet_id)
     }
 
     #[test]
@@ -556,5 +561,97 @@ mod test {
         assert_eq!(record2.transfer_reason, String::from_str(&env, "Ownership Transfer"));
         
         assert!(history.get(0).unwrap().transfer_date < history.get(1).unwrap().transfer_date);
+    }
+
+    #[test]
+    fn test_multisig_workflow() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        // Initialize Multisig: 2 of 3
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin1.clone());
+        admins.push_back(admin2.clone());
+        admins.push_back(admin3.clone());
+        
+        client.init_multisig(&admin1, &admins, &2);
+
+        // 1. Propose action (VerifyVet)
+        let action = ProposalAction::VerifyVet(vet.clone());
+        let proposal_id = client.propose_action(&admin1, &action, &3600); // Expires in 1 hour
+        
+        let proposal = client.get_proposal(&proposal_id).unwrap();
+        assert_eq!(proposal.id, proposal_id);
+        assert_eq!(proposal.approvals.len(), 1); // Proposer counts as 1
+        assert_eq!(proposal.required_approvals, 2);
+        
+        // Register vet first (so it can be verified)
+        client.register_vet(&vet, &String::from_str(&env, "Dr. Multi"), &String::from_str(&env, "LIC-999"), &String::from_str(&env, "Expert"));
+        assert!(!client.is_verified_vet(&vet));
+
+        // 2. Approve by admin2
+        client.approve_proposal(&admin2, &proposal_id);
+        
+        // 3. Try execute by anyone (threshold met)
+        client.execute_proposal(&proposal_id);
+        
+        // Verify action was executed
+        assert!(client.is_verified_vet(&vet));
+        
+        let proposal_after = client.get_proposal(&proposal_id).unwrap();
+        assert!(proposal_after.executed);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_multisig_threshold_not_met() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin1.clone());
+        admins.push_back(admin2.clone());
+        
+        client.init_multisig(&admin1, &admins, &2);
+
+        let action = ProposalAction::VerifyVet(Address::generate(&env));
+        let proposal_id = client.propose_action(&admin1, &action, &3600);
+        
+        // Only 1 approval (proposer), execution should fail
+        client.execute_proposal(&proposal_id);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_multisig_expiry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin1.clone());
+        
+        client.init_multisig(&admin1, &admins, &1);
+
+        let action = ProposalAction::VerifyVet(Address::generate(&env));
+        let proposal_id = client.propose_action(&admin1, &action, &3600);
+        
+        // Advance time past expiry
+        env.ledger().with_mut(|l| l.timestamp = env.ledger().timestamp() + 3601);
+        
+        client.execute_proposal(&proposal_id);
     }
 }
