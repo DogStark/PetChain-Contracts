@@ -131,7 +131,7 @@ mod test {
             &String::from_str(&env, "2020-01-01"),
             &Gender::Male,
             &Species::Dog,
-            &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Retriever"),
             &PrivacyLevel::Public,
         );
 
@@ -497,5 +497,64 @@ mod test {
             &meds,
         );
         assert_eq!(success, false);
+    }
+
+    #[test]
+    fn test_ownership_history_tracking() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner1 = Address::generate(&env);
+        let owner2 = Address::generate(&env);
+        
+        let start_time = 1000;
+        env.ledger().with_mut(|l| l.timestamp = start_time);
+
+        let pet_id = client.register_pet(
+            &owner1,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        // Verify initial registration history
+        let history = client.get_ownership_history(&pet_id);
+        assert_eq!(history.len(), 1);
+        let reg_record = history.get(0).unwrap();
+        assert_eq!(reg_record.previous_owner, owner1);
+        assert_eq!(reg_record.new_owner, owner1);
+        assert_eq!(reg_record.transfer_date, start_time);
+        assert_eq!(reg_record.transfer_reason, String::from_str(&env, "Initial Registration"));
+
+        // Transfer ownership
+        let transfer_time = 2000;
+        env.ledger().with_mut(|l| l.timestamp = transfer_time);
+        
+        client.transfer_pet_ownership(&pet_id, &owner2);
+        // History shouldn't change yet as transfer is not accepted
+        assert_eq!(client.get_ownership_history(&pet_id).len(), 1);
+
+        // Accept transfer
+        let accept_time = 3000;
+        env.ledger().with_mut(|l| l.timestamp = accept_time);
+        client.accept_pet_transfer(&pet_id);
+
+        // Verify updated history
+        let history = client.get_ownership_history(&pet_id);
+        assert_eq!(history.len(), 2);
+        
+        // Test chronological order
+        let record2 = history.get(1).unwrap();
+        assert_eq!(record2.previous_owner, owner1);
+        assert_eq!(record2.new_owner, owner2);
+        assert_eq!(record2.transfer_date, accept_time);
+        assert_eq!(record2.transfer_reason, String::from_str(&env, "Ownership Transfer"));
+        
+        assert!(history.get(0).unwrap().transfer_date < history.get(1).unwrap().transfer_date);
     }
 }
