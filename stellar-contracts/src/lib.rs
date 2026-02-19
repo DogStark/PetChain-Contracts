@@ -664,6 +664,7 @@ impl PetChainContract {
                 species: pet.species,
                 gender: pet.gender,
                 breed,
+                photo_hashes: pet.photo_hashes,
             })
         } else {
             None
