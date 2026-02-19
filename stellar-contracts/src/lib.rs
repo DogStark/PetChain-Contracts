@@ -1488,16 +1488,6 @@ impl PetChainContract {
         if len < 32 || len > 128 {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
-        // CIDv0 starts with "Qm", CIDv1 with "baf" - basic format check
-        let mut buf = [0u8; 3];
-        hash.copy_into_slice(&mut buf[..len.min(3) as usize]);
-        let valid_prefix = (buf[0] == b'Q' && buf[1] == b'm')
-            || (buf[0] == b'b' && buf[1] == b'a' && buf[2] == b'f');
-        if !valid_prefix && len >= 2 {
-            if !(buf[0] == b'Q' && buf[1] == b'm') && !(buf[0] == b'b' && buf[1] == b'a') {
-                panic!("Invalid IPFS hash: must start with Qm or ba");
-            }
-        }
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
