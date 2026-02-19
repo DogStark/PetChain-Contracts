@@ -1523,7 +1523,7 @@ impl PetChainContract {
 
     fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
-        if !(32..=128).contains(&len) {
+        if !(32_u32..=128_u32).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
     }
