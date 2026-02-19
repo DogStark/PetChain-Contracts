@@ -555,9 +555,10 @@ impl PetChainContract {
             .get(&DataKey::SpeciesPetCount(species_key.clone()))
             .unwrap_or(0)
             + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::SpeciesPetCount(species_key.clone()), &species_count);
+        env.storage().instance().set(
+            &DataKey::SpeciesPetCount(species_key.clone()),
+            &species_count,
+        );
         env.storage().instance().set(
             &DataKey::SpeciesPetIndex((species_key, species_count)),
             &pet_id,
