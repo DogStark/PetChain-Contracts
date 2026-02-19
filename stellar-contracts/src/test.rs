@@ -177,6 +177,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Cream"),
+            &8u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
