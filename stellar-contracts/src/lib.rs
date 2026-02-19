@@ -203,6 +203,10 @@ pub enum DataKey {
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
 
+    // Species index for filtering
+    SpeciesPetCount(String),
+    SpeciesPetIndex((String, u64)), // (species_key, index) -> pet_id
+
     // Vet verification keys
     Vet(Address),
     VetLicense(String),
@@ -540,6 +544,22 @@ impl PetChainContract {
             .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
         env.storage().instance().set(
             &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
+            &pet_id,
+        );
+
+        // Add to species index
+        let species_key = Self::species_to_string(&env, &species);
+        let species_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SpeciesPetCount(species_key.clone()))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::SpeciesPetCount(species_key.clone()), &species_count);
+        env.storage().instance().set(
+            &DataKey::SpeciesPetIndex((species_key, species_count)),
             &pet_id,
         );
 
@@ -1507,6 +1527,15 @@ impl PetChainContract {
             .unwrap_or(0)
     }
 
+    fn species_to_string(env: &Env, species: &Species) -> String {
+        match species {
+            Species::Other => String::from_str(env, "Other"),
+            Species::Dog => String::from_str(env, "Dog"),
+            Species::Cat => String::from_str(env, "Cat"),
+            Species::Bird => String::from_str(env, "Bird"),
+        }
+    }
+
     fn get_encryption_key(env: &Env) -> Bytes {
         // Mock key
         Bytes::from_array(env, &[0u8; 32])
@@ -1613,6 +1642,54 @@ impl PetChainContract {
             {
                 if let Some(pet) = Self::get_pet(env.clone(), pid) {
                     pets.push_back(pet);
+                }
+            }
+        }
+        pets
+    }
+
+    pub fn get_pets_by_owner(env: Env, owner: Address) -> Vec<PetProfile> {
+        Self::get_all_pets_by_owner(env, owner)
+    }
+
+    pub fn get_pets_by_species(env: Env, species: String) -> Vec<PetProfile> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SpeciesPetCount(species.clone()))
+            .unwrap_or(0);
+        let mut pets = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(pid) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::SpeciesPetIndex((species.clone(), i)))
+            {
+                if let Some(pet) = Self::get_pet(env.clone(), pid) {
+                    pets.push_back(pet);
+                }
+            }
+        }
+        pets
+    }
+
+    pub fn get_active_pets(env: Env) -> Vec<PetProfile> {
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetCount)
+            .unwrap_or(0);
+        let mut pets = Vec::new(&env);
+        for id in 1..=pet_count {
+            if let Some(pet) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(id))
+            {
+                if pet.active {
+                    if let Some(profile) = Self::get_pet(env.clone(), id) {
+                        pets.push_back(profile);
+                    }
                 }
             }
         }
