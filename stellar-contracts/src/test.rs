@@ -211,6 +211,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &String::from_str(&env, "Gray"),
+            &30u32,
+            &None,
             &PrivacyLevel::Public,
         );
         let pet2 = client.register_pet(
@@ -220,6 +223,9 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "White"),
+            &12u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -245,6 +251,9 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "X"),
+            &String::from_str(&env, "Black"),
+            &6u32,
+            &None,
             &PrivacyLevel::Private, // Encrypted, restricted
         );
 
