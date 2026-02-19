@@ -27,6 +27,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &String::from_str(&env, "Golden"),
+            &15u32,
+            &None,
             &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
@@ -73,6 +76,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Golden"),
+            &20u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -132,6 +138,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Golden"),
+            &25u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
