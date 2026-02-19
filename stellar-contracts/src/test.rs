@@ -518,10 +518,7 @@ mod test {
         );
 
         // Valid IPFS CIDv0 hash (46 chars)
-        let photo_hash = String::from_str(
-            &env,
-            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
-        );
+        let photo_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
         let success = client.add_pet_photo(&pet_id, &photo_hash);
         assert!(success);
 
@@ -609,10 +606,7 @@ mod test {
             &PrivacyLevel::Public,
         );
 
-        let photo_hash = String::from_str(
-            &env,
-            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
-        );
+        let photo_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
         // Owner adds photo - succeeds (pet.owner.require_auth() passes with mock_all_auths)
         let success = client.add_pet_photo(&pet_id, &photo_hash);
