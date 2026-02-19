@@ -434,6 +434,7 @@ impl PetChainContract {
     }
 
     // Pet Management Functions
+    #[allow(clippy::too_many_arguments)]
     pub fn register_pet(
         env: Env,
         owner: Address,
@@ -581,6 +582,7 @@ impl PetChainContract {
         pet_id
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_pet_profile(
         env: Env,
         id: u64,
@@ -1074,6 +1076,7 @@ impl PetChainContract {
     }
 
     // Pet Vaccination Record
+    #[allow(clippy::too_many_arguments)]
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -2046,6 +2049,7 @@ impl PetChainContract {
     }
     // --- MEDICATION MANAGEMENT ---
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_medication(
         env: Env,
         record_id: u64,
