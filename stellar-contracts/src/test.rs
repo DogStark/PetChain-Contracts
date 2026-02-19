@@ -289,6 +289,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Boxer"),
+            &String::from_str(&env, "Brindle"),
+            &28u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -343,6 +346,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Yellow"),
+            &32u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
