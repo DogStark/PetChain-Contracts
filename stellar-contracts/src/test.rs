@@ -27,6 +27,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &String::from_str(&env, "Golden"),
+            &15u32,
+            &None,
             &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
@@ -73,6 +76,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Golden"),
+            &20u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -132,6 +138,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Golden"),
+            &25u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -168,6 +177,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Cream"),
+            &8u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -199,6 +211,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &String::from_str(&env, "Gray"),
+            &30u32,
+            &None,
             &PrivacyLevel::Public,
         );
         let pet2 = client.register_pet(
@@ -208,6 +223,9 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "White"),
+            &12u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -233,6 +251,9 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "X"),
+            &String::from_str(&env, "Black"),
+            &6u32,
+            &None,
             &PrivacyLevel::Private, // Encrypted, restricted
         );
 
@@ -268,6 +289,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Boxer"),
+            &String::from_str(&env, "Brindle"),
+            &28u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -322,6 +346,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Yellow"),
+            &32u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
