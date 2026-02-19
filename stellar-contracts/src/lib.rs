@@ -510,6 +510,7 @@ impl PetChainContract {
             new_owner: owner.clone(),
             species: species.clone(),
             gender,
+            photo_hashes: Vec::new(&env),
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
