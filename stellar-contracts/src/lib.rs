@@ -425,6 +425,7 @@ impl PetChainContract {
     }
 
     // Pet Management Functions
+    #[allow(clippy::too_many_arguments)]
     pub fn register_pet(
         env: Env,
         owner: Address,
@@ -550,6 +551,7 @@ impl PetChainContract {
         pet_id
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_pet_profile(
         env: Env,
         id: u64,
@@ -1064,6 +1066,7 @@ impl PetChainContract {
     }
 
     // Pet Vaccination Record
+    #[allow(clippy::too_many_arguments)]
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -1520,7 +1523,7 @@ impl PetChainContract {
 
     fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
-        if len < 32 || len > 128 {
+        if !(32..=128).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
     }
@@ -1986,6 +1989,7 @@ impl PetChainContract {
     }
     // --- MEDICATION MANAGEMENT ---
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_medication(
         env: Env,
         record_id: u64,
