@@ -238,6 +238,12 @@ pub enum DataKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+
+    // Ownership History DataKey
+    PetOwnershipRecord(u64),
+    OwnershipRecordCount,
+    PetOwnershipRecordCount(u64),
+    PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
 }
 
 #[contracttype]
@@ -326,6 +332,16 @@ pub struct MedicalRecordInput {
     pub diagnosis: String,
     pub treatment: String,
     pub medications: Vec<Medication>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct OwnershipRecord {
+    pub pet_id: u64,
+    pub previous_owner: Address,
+    pub new_owner: Address,
+    pub transfer_date: u64,
+    pub transfer_reason: String,
 }
 
 // --- EVENTS ---
@@ -512,6 +528,14 @@ impl PetChainContract {
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
+
+        Self::log_ownership_change(
+            &env,
+            pet_id,
+            owner.clone(),
+            owner.clone(),
+            String::from_str(&env, "Initial Registration"),
+        );
 
         let owner_pet_count: u64 = env
             .storage()
@@ -749,6 +773,14 @@ impl PetChainContract {
             Self::add_pet_to_owner_index(&env, &pet.owner, id);
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+
+            Self::log_ownership_change(
+                &env,
+                id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                String::from_str(&env, "Ownership Transfer"),
+            );
 
             env.events().publish(
                 (String::from_str(&env, "PetOwnershipTransferred"), id),
@@ -1486,6 +1518,76 @@ impl PetChainContract {
         // Mock key
         Bytes::from_array(env, &[0u8; 32])
     }
+
+    fn log_ownership_change(
+        env: &Env,
+        pet_id: u64,
+        previous_owner: Address,
+        new_owner: Address,
+        reason: String,
+    ) {
+        let global_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OwnershipRecordCount)
+            .unwrap_or(0);
+        let record_id = global_count + 1;
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetOwnershipRecordCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+
+        let record = OwnershipRecord {
+            pet_id,
+            previous_owner,
+            new_owner,
+            transfer_date: env.ledger().timestamp(),
+            transfer_reason: reason,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetOwnershipRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::OwnershipRecordCount, &record_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &DataKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+    }
+
+    pub fn get_ownership_history(env: Env, pet_id: u64) -> Vec<OwnershipRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetOwnershipRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetOwnershipRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, OwnershipRecord>(&DataKey::PetOwnershipRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
         env: Env,
@@ -2118,3 +2220,5 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
+#[cfg(test)]
+mod test;
