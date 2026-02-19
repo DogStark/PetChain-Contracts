@@ -69,6 +69,7 @@ pub struct Pet {
     pub new_owner: Address,
     pub species: Species,
     pub gender: Gender,
+    pub photo_hashes: Vec<String>,
 }
 
 #[contracttype]
@@ -86,6 +87,7 @@ pub struct PetProfile {
     pub species: Species,
     pub gender: Gender,
     pub breed: String,
+    pub photo_hashes: Vec<String>,
 }
 
 #[contracttype]
