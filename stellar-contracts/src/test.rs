@@ -363,19 +363,40 @@ mod test {
             &PrivacyLevel::Public,
         );
 
+        let test_type = String::from_str(&env, "Blood Test");
+        let results = String::from_str(&env, "Glucose: 100 mg/dL");
+        let reference_ranges = String::from_str(&env, "70-120 mg/dL");
+        let attachment_hash = Some(String::from_str(&env, "QmXoyp..."));
+
+        // Add a medical record to link to
+        let medical_record_id = client.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Checkup"),
+            &String::from_str(&env, "Healthy"),
+            &String::from_str(&env, "None"),
+            &Vec::new(&env),
+        );
+
         let lab_id = client.add_lab_result(
             &pet_id,
             &vet,
-            &String::from_str(&env, "Blood Test"),
-            &String::from_str(&env, "Normal"),
-            &None,
+            &test_type,
+            &results,
+            &reference_ranges,
+            &attachment_hash,
+            &Some(medical_record_id),
         );
 
         let res = client.get_lab_result(&lab_id).unwrap();
-        assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(res.result_summary, String::from_str(&env, "Normal"));
+        assert_eq!(res.test_type, test_type);
+        assert_eq!(res.results, results);
+        assert_eq!(res.reference_ranges, reference_ranges);
+        assert_eq!(res.attachment_hash, attachment_hash);
+        assert_eq!(res.medical_record_id, Some(medical_record_id));
+        assert_eq!(res.vet_address, vet);
 
-        let list = client.get_pet_lab_results(&pet_id);
+        let list = client.get_lab_results(&pet_id);
         assert_eq!(list.len(), 1);
     }
 
@@ -401,11 +422,13 @@ mod test {
 
         let mut medications = Vec::new(&env);
         medications.push_back(Medication {
+            id: 0,
+            pet_id,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "10mg"),
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -432,20 +455,24 @@ mod test {
 
         let mut new_meds = Vec::new(&env);
         new_meds.push_back(Medication {
+            id: 0,
+            pet_id,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "20mg"), // Modified dosage
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
         new_meds.push_back(Medication {
+            id: 0,
+            pet_id,
             name: String::from_str(&env, "NewMed"), // New med
             dosage: String::from_str(&env, "5mg"),
             frequency: String::from_str(&env, "Once"),
             start_date: update_time,
-            end_date: update_time + 100,
+            end_date: Some(update_time + 100),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -497,5 +524,158 @@ mod test {
             &meds,
         );
         assert_eq!(success, false);
+    }
+
+    #[test]
+    fn test_vet_reviews() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        // Add a review
+        let review_id = client.add_vet_review(
+            &owner,
+            &vet,
+            &5,
+            &String::from_str(&env, "Great vet!"),
+        );
+        assert_eq!(review_id, 1);
+
+        // Get reviews
+        let reviews = client.get_vet_reviews(&vet);
+        assert_eq!(reviews.len(), 1);
+        let review = reviews.get(0).unwrap();
+        assert_eq!(review.rating, 5);
+        assert_eq!(review.comment, String::from_str(&env, "Great vet!"));
+        assert_eq!(review.reviewer, owner);
+
+        // Check average
+        let avg = client.get_vet_average_rating(&vet);
+        assert_eq!(avg, 5);
+
+        // Add another review from different owner
+        let owner2 = Address::generate(&env);
+        client.add_vet_review(
+            &owner2,
+            &vet,
+            &3,
+            &String::from_str(&env, "Okay"),
+        );
+
+        let avg = client.get_vet_average_rating(&vet);
+        assert_eq!(avg, 4); // (5+3)/2 = 8/2 = 4
+    }
+
+    #[test]
+    #[should_panic(expected = "You have already reviewed this veterinarian")]
+    fn test_duplicate_vet_review() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Good"));
+        client.add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Bad"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Rating must be between 1 and 5")]
+    fn test_invalid_rating() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        client.add_vet_review(&owner, &vet, &6, &String::from_str(&env, "Fake"));
+    }
+
+    #[test]
+    fn test_standalone_medications() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden"),
+            &PrivacyLevel::Public,
+        );
+
+        let now = 1000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let med_id = client.add_medication(
+            &pet_id,
+            &String::from_str(&env, "Apoquel"),
+            &String::from_str(&env, "5.4mg"),
+            &String::from_str(&env, "1x daily"),
+            &now,
+            &None,
+            &vet,
+        );
+
+        let active = client.get_active_medications(&pet_id);
+        assert_eq!(active.len(), 1);
+        let med = active.get(0).unwrap();
+        assert_eq!(med.id, med_id);
+        assert_eq!(med.name, String::from_str(&env, "Apoquel"));
+        assert!(med.active);
+    }
+
+    #[test]
+    fn test_mark_medication_completed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden"),
+            &PrivacyLevel::Public,
+        );
+
+        let now = 1000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let med_id = client.add_medication(
+            &pet_id,
+            &String::from_str(&env, "TestMed"),
+            &String::from_str(&env, "10mg"),
+            &String::from_str(&env, "Daily"),
+            &now,
+            &None,
+            &vet,
+        );
+
+        client.mark_medication_completed(&med_id);
+
+        let active = client.get_active_medications(&pet_id);
+        assert_eq!(active.len(), 0);
     }
 }
