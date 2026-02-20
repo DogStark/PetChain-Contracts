@@ -776,4 +776,105 @@ mod test {
         let slots = client.get_available_slots(&vet, &date);
         assert_eq!(slots.len(), 0);
     }
+    #[test]
+fn test_grant_consent() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &PrivacyLevel::Public,
+    );
+
+    let insurance_company = Address::generate(&env);
+    let consent_id = client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Insurance,
+        &insurance_company,
+    );
+
+    assert_eq!(consent_id, 1);
+}
+
+#[test]
+fn test_revoke_consent() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &PrivacyLevel::Public,
+    );
+
+    let research_org = Address::generate(&env);
+    let consent_id = client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &research_org,
+    );
+
+    let revoked = client.revoke_consent(&consent_id, &owner);
+    assert_eq!(revoked, true);
+}
+
+#[test]
+fn test_consent_history() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &PrivacyLevel::Public,
+    );
+
+    let insurance_company = Address::generate(&env);
+    let research_org = Address::generate(&env);
+
+    // Grant two consents
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &insurance_company);
+    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &research_org);
+
+    // Revoke one
+    client.revoke_consent(&1u64, &owner);
+
+    let history = client.get_consent_history(&pet_id);
+    assert_eq!(history.len(), 2); // both still in history
+    assert_eq!(history.get(0).unwrap().is_active, false); // first was revoked
+    assert_eq!(history.get(1).unwrap().is_active, true);  // second still active
+}
 }
