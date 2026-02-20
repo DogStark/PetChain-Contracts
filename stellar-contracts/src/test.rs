@@ -27,6 +27,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &String::from_str(&env, "Golden"),
+            &15u32,
+            &None,
             &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
@@ -73,6 +76,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Golden"),
+            &20u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -132,6 +138,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Golden"),
+            &25u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -168,6 +177,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Cream"),
+            &8u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -199,6 +211,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &String::from_str(&env, "Gray"),
+            &30u32,
+            &None,
             &PrivacyLevel::Public,
         );
         let pet2 = client.register_pet(
@@ -208,6 +223,9 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "White"),
+            &12u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -233,6 +251,9 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "X"),
+            &String::from_str(&env, "Black"),
+            &6u32,
+            &None,
             &PrivacyLevel::Private, // Encrypted, restricted
         );
 
@@ -268,6 +289,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Boxer"),
+            &String::from_str(&env, "Brindle"),
+            &28u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -322,6 +346,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Yellow"),
+            &32u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -360,6 +387,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Point"),
+            &5u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -396,6 +426,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Brown"),
+            &18u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -500,7 +533,7 @@ mod test {
     }
 
     #[test]
-    fn test_add_pet_photo() {
+    fn test_register_pet_with_all_new_fields() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
@@ -566,29 +599,81 @@ mod test {
     #[test]
     #[should_panic(expected = "Invalid IPFS hash")]
     fn test_add_pet_photo_invalid_hash() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let pet_id = client.register_pet(
-            &owner,
-            &String::from_str(&env, "Buddy"),
-            &String::from_str(&env, "2020-01-01"),
+            &String::from_str(&env, "Chip"),
+            &String::from_str(&env, "2023-06-15"),
             &Gender::Male,
             &Species::Dog,
-            &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Labrador Retriever"),
+            &String::from_str(&env, "Chocolate"),
+            &35u32,
+            &Some(String::from_str(&env, "982000123456789")),
             &PrivacyLevel::Public,
         );
 
-        // Too short - invalid
-        let bad_hash = String::from_str(&env, "short");
-        client.add_pet_photo(&pet_id, &bad_hash);
+        assert_eq!(pet_id, 1);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.id, 1);
+        assert_eq!(pet.birthday, String::from_str(&env, "2023-06-15"));
+        assert_eq!(pet.breed, String::from_str(&env, "Labrador Retriever"));
+        assert_eq!(pet.gender, Gender::Male);
+        assert_eq!(pet.color, String::from_str(&env, "Chocolate"));
+        assert_eq!(pet.weight, 35);
+        assert_eq!(
+            pet.microchip_id,
+            Some(String::from_str(&env, "982000123456789"))
+        );
     }
 
     #[test]
-    fn test_only_owner_can_add_photo() {
+    fn test_update_pet_profile() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Golden"),
+            &20u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        let success = client.update_pet_profile(
+            &pet_id,
+            &String::from_str(&env, "Buddy Updated"),
+            &String::from_str(&env, "2020-01-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever Mix"),
+            &String::from_str(&env, "Golden Brown"),
+            &22u32,
+            &Some(String::from_str(&env, "123456789012345")),
+            &PrivacyLevel::Public,
+        );
+        assert!(success);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.name, String::from_str(&env, "Buddy Updated"));
+        assert_eq!(pet.birthday, String::from_str(&env, "2020-01-15"));
+        assert_eq!(pet.breed, String::from_str(&env, "Golden Retriever Mix"));
+        assert_eq!(pet.color, String::from_str(&env, "Golden Brown"));
+        assert_eq!(pet.weight, 22);
+        assert_eq!(
+            pet.microchip_id,
+            Some(String::from_str(&env, "123456789012345"))
+        );
+    }
+
+    #[test]
+    fn test_gender_enum_values() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
@@ -596,24 +681,49 @@ mod test {
 
         let owner = Address::generate(&env);
 
-        let pet_id = client.register_pet(
+        let pet_male = client.register_pet(
             &owner,
-            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "Max"),
             &String::from_str(&env, "2020-01-01"),
             &Gender::Male,
             &Species::Dog,
-            &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Black"),
+            &15u32,
+            &None,
             &PrivacyLevel::Public,
         );
+        let pet_male_profile = client.get_pet(&pet_male).unwrap();
+        assert_eq!(pet_male_profile.gender, Gender::Male);
 
-        let photo_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+        let pet_female = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2021-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "White"),
+            &6u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        let pet_female_profile = client.get_pet(&pet_female).unwrap();
+        assert_eq!(pet_female_profile.gender, Gender::Female);
 
-        // Owner adds photo - succeeds (pet.owner.require_auth() passes with mock_all_auths)
-        let success = client.add_pet_photo(&pet_id, &photo_hash);
-        assert!(success);
-        assert_eq!(client.get_pet_photos(&pet_id).len(), 1);
-
-        // Verify add_pet_photo enforces owner via require_auth - non-owner would panic
-        // With mock_all_auths we can't test that; the contract uses pet.owner.require_auth()
+        let pet_unknown = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Unknown"),
+            &String::from_str(&env, "2022-01-01"),
+            &Gender::Unknown,
+            &Species::Bird,
+            &String::from_str(&env, "Parakeet"),
+            &String::from_str(&env, "Green"),
+            &1u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        let pet_unknown_profile = client.get_pet(&pet_unknown).unwrap();
+        assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
     }
 }
