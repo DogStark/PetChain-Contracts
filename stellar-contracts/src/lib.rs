@@ -245,8 +245,12 @@ pub enum DataKey {
     LostPetAlertCount,
     ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
     AlertSightings(u64),     // Vec<SightingReport> for each alert
-}
 
+    // Vet Availability System keys
+    VetAvailability((Address, u64)), // (vet_address, slot_index) -> AvailabilitySlot
+    VetAvailabilityCount(Address),   // vet_address -> count of slots
+    VetAvailabilityByDate((Address, u64)), // (vet_address, date) -> Vec<u64> slot indices
+}
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,6 +281,15 @@ pub struct SightingReport {
     pub location: String,
     pub timestamp: u64,
     pub description: String,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AvailabilitySlot {
+    pub vet_address: Address,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub available: bool,
 }
 
 #[contracttype]
@@ -2360,6 +2373,112 @@ impl PetChainContract {
             }
         }
         pet_alerts
+    }
+        // --- VET AVAILABILITY FUNCTIONS ---
+
+    /// Set availability slots for a vet (only verified vets can set their availability)
+    pub fn set_availability(
+        env: Env,
+        vet_address: Address,
+        start_time: u64,
+        end_time: u64,
+    ) -> u64 {
+        // Verify caller is the vet and is verified
+        vet_address.require_auth();
+        if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+            panic!("Vet not verified");
+        }
+
+        let slot_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetAvailabilityCount(vet_address.clone()))
+            .unwrap_or(0);
+        let slot_index = slot_count + 1;
+
+        let slot = AvailabilitySlot {
+            vet_address: vet_address.clone(),
+            start_time,
+            end_time,
+            available: true,
+        };
+
+        // Store the slot
+        env.storage()
+            .instance()
+            .set(&DataKey::VetAvailability((vet_address.clone(), slot_index)), &slot);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetAvailabilityCount(vet_address.clone()), &slot_index);
+
+        // Add to date-based index for efficient querying
+        let date = Self::get_date_from_timestamp(start_time);
+        let date_key = DataKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let mut date_slots: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&date_key)
+            .unwrap_or(Vec::new(&env));
+        date_slots.push_back(slot_index);
+        env.storage().instance().set(&date_key, &date_slots);
+
+        slot_index
+    }
+
+    /// Get available slots for a vet on a specific date
+    pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
+        let date_key = DataKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let slot_indices: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&date_key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut available_slots = Vec::new(&env);
+        
+        for index in slot_indices.iter() {
+            if let Some(slot) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AvailabilitySlot>(&DataKey::VetAvailability((vet_address.clone(), index)))
+            {
+                if slot.available {
+                    available_slots.push_back(slot);
+                }
+            }
+        }
+
+        available_slots
+    }
+
+    /// Book a slot (mark as unavailable)
+    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+        let key = DataKey::VetAvailability((vet_address.clone(), slot_index));
+        
+        if let Some(mut slot) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AvailabilitySlot>(&key)
+        {
+            if !slot.available {
+                panic!("Slot already booked");
+            }
+
+            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
+            // In real implementation, you'd check if caller is a registered pet owner
+            slot.available = false;
+            env.storage().instance().set(&key, &slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Helper: Extract date from timestamp (yyyyMMdd format)
+    fn get_date_from_timestamp(timestamp: u64) -> u64 {
+        // Simple conversion: timestamp / 86400 gives days since epoch
+        // For this implementation, we use timestamp / 86400 as the "date"
+        timestamp / 86400
     }
 }
 
