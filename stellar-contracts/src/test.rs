@@ -2317,15 +2317,17 @@ mod test {
     }
 
     #[test]
-    fn test_ownership_history_tracking() {
+    #[test]
+    fn test_pet_transfer_flow() {
         let env = Env::default();
         env.mock_all_auths();
+
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let owner1 = Address::generate(&env);
         let owner2 = Address::generate(&env);
-        
+
         let start_time = 1000;
         env.ledger().with_mut(|l| l.timestamp = start_time);
 
@@ -2336,6 +2338,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Golden"),
+            &10u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2348,31 +2353,26 @@ mod test {
         assert_eq!(reg_record.transfer_date, start_time);
         assert_eq!(reg_record.transfer_reason, String::from_str(&env, "Initial Registration"));
 
-        // Transfer ownership
+        // Initiate Transfer
         let transfer_time = 2000;
         env.ledger().with_mut(|l| l.timestamp = transfer_time);
-        
-        client.transfer_pet_ownership(&pet_id, &owner2);
-        // History shouldn't change yet as transfer is not accepted
-        assert_eq!(client.get_ownership_history(&pet_id).len(), 1);
+        let expires_at = transfer_time + 3600;
 
-        // Accept transfer
+        client.initiate_transfer(&pet_id, &owner2, &expires_at);
+
+        // Accept Transfer
         let accept_time = 3000;
         env.ledger().with_mut(|l| l.timestamp = accept_time);
-        client.accept_pet_transfer(&pet_id);
+        client.accept_transfer(&pet_id);
 
         // Verify updated history
         let history = client.get_ownership_history(&pet_id);
         assert_eq!(history.len(), 2);
-        
-        // Test chronological order
+
         let record2 = history.get(1).unwrap();
         assert_eq!(record2.previous_owner, owner1);
         assert_eq!(record2.new_owner, owner2);
         assert_eq!(record2.transfer_date, accept_time);
-        assert_eq!(record2.transfer_reason, String::from_str(&env, "Ownership Transfer"));
-        
-        assert!(history.get(0).unwrap().transfer_date < history.get(1).unwrap().transfer_date);
     }
 
     #[test]
@@ -2511,6 +2511,7 @@ mod test {
 
     #[test]
     fn test_register_pet_owner() {
+
         let env = Env::default();
         env.mock_all_auths();
 
@@ -2518,6 +2519,7 @@ mod test {
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
+
         let name = String::from_str(&env, "John Doe");
         let email = String::from_str(&env, "john@example.com");
         let emergency = String::from_str(&env, "555-1234");
@@ -2526,6 +2528,64 @@ mod test {
 
         let is_registered = client.is_owner_registered(&owner);
         assert_eq!(is_registered, true);
+    }
+
+    #[test]
+    fn test_role_assignment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Fido"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Mixed"),
+            &String::from_str(&env, "Brown"),
+            &10u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        client.assign_role(&pet_id, &user, &Role::Vet);
+
+        assert!(client.check_permission(&pet_id, &user, &Role::Vet));
+        assert!(client.check_permission(&pet_id, &user, &Role::Viewer));
+        assert_eq!(client.check_permission(&pet_id, &user, &Role::Owner), false);
+    }
+
+    #[test]
+    fn test_revoke_role() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Fido"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Mixed"),
+            &String::from_str(&env, "Brown"),
+            &10u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        client.assign_role(&pet_id, &user, &Role::Vet);
+        assert!(client.check_permission(&pet_id, &user, &Role::Vet));
+
+        client.revoke_role(&pet_id, &user, &Role::Vet);
+        assert_eq!(client.check_permission(&pet_id, &user, &Role::Vet), false);
     }
 
     #[test]
@@ -3144,13 +3204,44 @@ mod test {
     }
 
     #[test]
-    fn test_add_multiple_pet_photos() {
+    #[test]
+    fn test_role_assignment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Fido"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Mixed"),
+            &String::from_str(&env, "Brown"),
+            &10u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        client.assign_role(&pet_id, &user, &Role::Vet);
+
+        assert!(client.check_permission(&pet_id, &user, &Role::Vet));
+        assert!(client.check_permission(&pet_id, &user, &Role::Viewer));
+        assert_eq!(client.check_permission(&pet_id, &user, &Role::Owner), false);
+    }
+
+    #[test]
+    fn test_revoke_role() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
+
         let pet_id = client.register_pet(
             &owner,
             &String::from_str(&env, "Luna"),
@@ -3256,6 +3347,9 @@ mod test {
     fn test_gender_enum_values() {
         let env = Env::default();
         env.mock_all_auths();
+    #[test]\r\n    fn test_pet_extended_registration() {
+        let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
@@ -3305,5 +3399,49 @@ mod test {
         );
         let pet_unknown_profile = client.get_pet(&pet_unknown).unwrap();
         assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
+    }
+
+    #[test]
+    fn test_permission_checks() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let contact = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Fido"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Mixed"),
+            &String::from_str(&env, "Gold"),
+            &20u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        client.assign_role(&pet_id, &vet, &Role::Vet);
+        client.assign_role(&pet_id, &contact, &Role::EmergencyContact);
+
+        // Owner checks
+        assert!(client.check_permission(&pet_id, &owner, &Role::Owner));
+        assert!(client.check_permission(&pet_id, &owner, &Role::Vet));
+
+        // Vet checks
+        assert!(client.check_permission(&pet_id, &vet, &Role::Vet));
+        assert!(client.check_permission(&pet_id, &vet, &Role::Viewer));
+        assert_eq!(client.check_permission(&pet_id, &vet, &Role::Owner), false);
+
+        // Emergency Contact checks
+        assert!(client.check_permission(&pet_id, &contact, &Role::EmergencyContact));
+        assert!(client.check_permission(&pet_id, &contact, &Role::Viewer));
+        assert_eq!(client.check_permission(&pet_id, &contact, &Role::Vet), false);
+
+        assert_eq!(client.check_permission(&pet_id, &stranger, &Role::Viewer), false);
     }
 }

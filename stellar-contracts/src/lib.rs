@@ -1,7 +1,6 @@
 #![no_std]
 #[cfg(test)]
 mod test;
-
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
 
@@ -214,6 +213,17 @@ pub struct PetTag {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct TransferRequest {
+    pub pet_id: u64,
+    pub from_owner: Address,
+    pub to_owner: Address,
+    pub initiated_at: u64,
+    pub expires_at: u64,
+    pub completed: bool,
+}
+
+#[contracttype]
 pub enum DataKey {
     Pet(u64),
     PetCount,
@@ -277,6 +287,7 @@ pub enum DataKey {
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
 
+<<<<<<< HEAD
     // Vet Review keys
     VetReview(u64),                      // review_id -> VetReview
     VetReviewCount,                      // Global count of reviews
@@ -380,6 +391,11 @@ pub struct Consent {
     pub granted_at: u64,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
+=======
+    TransferRequest(u64), // pet_id -> TransferRequest
+
+    RoleAssignment((u64, Address)), // (pet_id, user) -> RoleAssignment
+>>>>>>> 8a10639 (feat: Implement Two-Step Pet Transfer and Role-Based Access Control)
 }
 
 #[contracttype]
@@ -422,6 +438,25 @@ pub struct AccessGrant {
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
     pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Role {
+    Owner,           // Full control
+    Vet,             // Can add medical records
+    EmergencyContact, // Can view emergency info
+    Viewer,          // Read-only access
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct RoleAssignment {
+    pub pet_id: u64,
+    pub user: Address,
+    pub role: Role,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
 }
 
 #[contracttype]
@@ -1002,55 +1037,89 @@ impl PetChainContract {
         }
     }
 
-    pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
-        if let Some(mut pet) = env
+    pub fn initiate_transfer(env: Env, pet_id: u64, to_owner: Address, expires_at: u64) {
+        let pet: Pet = env
             .storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
-        {
-            pet.owner.require_auth();
-            pet.new_owner = to;
-            pet.updated_at = env.ledger().timestamp();
-            env.storage().instance().set(&DataKey::Pet(id), &pet);
-        }
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let request = TransferRequest {
+            pet_id,
+            from_owner: pet.owner,
+            to_owner,
+            initiated_at: env.ledger().timestamp(),
+            expires_at,
+            completed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TransferRequest(pet_id), &request);
     }
 
-    pub fn accept_pet_transfer(env: Env, id: u64) {
-        if let Some(mut pet) = env
+    pub fn accept_transfer(env: Env, pet_id: u64) {
+        let mut request: TransferRequest = env
             .storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
-        {
-            pet.new_owner.require_auth();
+            .get(&DataKey::TransferRequest(pet_id))
+            .expect("Transfer request not found");
 
-            let old_owner = pet.owner.clone();
-            Self::remove_pet_from_owner_index(&env, &old_owner, id);
-
-            pet.owner = pet.new_owner.clone();
-            pet.updated_at = env.ledger().timestamp();
-
-            Self::add_pet_to_owner_index(&env, &pet.owner, id);
-
-            env.storage().instance().set(&DataKey::Pet(id), &pet);
-
-            Self::log_ownership_change(
-                &env,
-                id,
-                old_owner.clone(),
-                pet.owner.clone(),
-                String::from_str(&env, "Ownership Transfer"),
-            );
-
-            env.events().publish(
-                (String::from_str(&env, "PetOwnershipTransferred"), id),
-                PetOwnershipTransferredEvent {
-                    pet_id: id,
-                    old_owner,
-                    new_owner: pet.owner.clone(),
-                    timestamp: pet.updated_at,
-                },
-            );
+        if request.completed {
+            panic!("Transfer already completed");
         }
+
+        if env.ledger().timestamp() > request.expires_at {
+            panic!("Transfer request expired");
+        }
+
+        request.to_owner.require_auth();
+
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let old_owner = pet.owner.clone();
+        Self::remove_pet_from_owner_index(&env, &old_owner, pet_id);
+
+        pet.owner = request.to_owner.clone();
+        pet.new_owner = request.to_owner.clone();
+        pet.updated_at = env.ledger().timestamp();
+
+        Self::add_pet_to_owner_index(&env, &pet.owner, pet_id);
+
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+        request.completed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::TransferRequest(pet_id), &request);
+
+        env.events().publish(
+            (String::from_str(&env, "PetOwnershipTransferred"), pet_id),
+            PetOwnershipTransferredEvent {
+                pet_id,
+                old_owner,
+                new_owner: pet.owner.clone(),
+                timestamp: pet.updated_at,
+            },
+        );
+    }
+
+    pub fn cancel_transfer(env: Env, pet_id: u64) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::TransferRequest(pet_id));
     }
 
     // --- HELPER FOR INDEX MAINTENANCE ---
@@ -1975,6 +2044,7 @@ impl PetChainContract {
         pets
     }
 
+
     pub fn get_pets_by_owner(env: Env, owner: Address) -> Vec<PetProfile> {
         Self::get_all_pets_by_owner(env, owner)
     }
@@ -2021,6 +2091,86 @@ impl PetChainContract {
             }
         }
         pets
+    // --- ROLE-BASED ACCESS CONTROL (RBAC) ---
+
+    pub fn assign_role(env: Env, pet_id: u64, user: Address, role: Role) {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if user == pet.owner {
+            panic!("Owner always has full access");
+        }
+
+        let assignment = RoleAssignment {
+            pet_id,
+            user: user.clone(),
+            role,
+            assigned_by: pet.owner,
+            assigned_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleAssignment((pet_id, user)), &assignment);
+    }
+
+    pub fn revoke_role(env: Env, pet_id: u64, user: Address) {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::RoleAssignment((pet_id, user.clone())))
+        {
+            env.storage()
+                .instance()
+                .remove(&DataKey::RoleAssignment((pet_id, user)));
+        }
+    }
+
+    pub fn check_permission(env: Env, pet_id: u64, user: Address, required_role: Role) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        // Owner has all permissions
+        if user == pet.owner {
+            return true;
+        }
+
+        if let Some(assignment) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RoleAssignment>(&DataKey::RoleAssignment((pet_id, user)))
+        {
+            match required_role {
+                Role::Owner => false, // Only the actual owner has Owner role implicitly
+                Role::Vet => {
+                    matches!(assignment.role, Role::Vet | Role::Owner)
+                }
+                Role::EmergencyContact => {
+                    matches!(
+                        assignment.role,
+                        Role::EmergencyContact | Role::Vet | Role::Owner
+                    )
+                }
+                Role::Viewer => true, // All roles can view
+            }
+        } else {
+            false
+        }
+
     }
 
     // --- ACCESS CONTROL ---
