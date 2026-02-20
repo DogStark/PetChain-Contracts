@@ -1,6 +1,8 @@
 #![no_std]
-// #[cfg(test)]
-// mod test;
+#[cfg(test)]
+mod test;
+#[cfg(test)]
+mod test_export;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
@@ -510,6 +512,18 @@ pub struct OwnershipRecord {
     pub new_owner: Address,
     pub transfer_date: u64,
     pub transfer_reason: String,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PetDataExport {
+    pub pet: PetProfile,
+    pub medical_records: Vec<MedicalRecord>,
+    pub vaccinations: Vec<Vaccination>,
+    pub medications: Vec<Medication>,
+    pub lab_results: Vec<LabResult>,
+    pub ownership_history: Vec<OwnershipRecord>,
+    pub export_date: u64,
 }
 
 #[contracttype]
@@ -2040,20 +2054,6 @@ impl PetChainContract {
             Species::Bird => String::from_str(env, "Bird"),
         }
     }
-
-    fn string_to_species(env: &Env, species_str: String) -> Species {
-        if species_str == String::from_str(env, "Dog") {
-            Species::Dog
-        } else if species_str == String::from_str(env, "Cat") {
-            Species::Cat
-        } else if species_str == String::from_str(env, "Bird") {
-            Species::Bird
-        } else {
-            Species::Other
-        }
-    }
-
-    fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
@@ -2646,109 +2646,60 @@ impl PetChainContract {
     #[allow(clippy::too_many_arguments)]
     pub fn add_medication_to_record(
         env: Env,
-        record_id: u64,
+        pet_id: u64,
         name: String,
         dosage: String,
         frequency: String,
         start_date: u64,
-        end_date: u64,
+        end_date: Option<u64>,
         prescribing_vet: Address,
-    ) -> bool {
-        // Find the medical record
-        if let Some(mut record) = env
+    ) -> u64 {
+        prescribing_vet.require_auth();
+
+        let _pet: Pet = env
             .storage()
             .instance()
-            .get::<_, MedicalRecord>(&DataKeyExt::MedicalRecord(record_id))
-        {
-            prescribing_vet.require_auth();
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
 
-            let med = Medication {
-                id: 0,
-                pet_id: record.pet_id,
-                name,
-                dosage,
-                frequency,
-                start_date,
-                end_date: Some(end_date),
-                prescribing_vet,
-                active: true,
-            };
-
-            record.medications.push_back(med);
-            record.updated_at = env.ledger().timestamp();
-
-            env.storage()
-                .instance()
-                .set(&DataKeyExt::MedicalRecord(record_id), &record);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn mark_record_med_completed(env: Env, record_id: u64, med_index: u32) -> bool {
-        if let Some(mut record) = env
+        let count: u64 = env
             .storage()
             .instance()
-            .get::<_, MedicalRecord>(&DataKeyExt::MedicalRecord(record_id))
-        {
-            let _pet = env
-                .storage()
-                .instance()
-                .get::<_, Pet>(&DataKey::Pet(record.pet_id))
-                .expect("Pet not found");
+            .get(&DataKey::MedicationCount)
+            .unwrap_or(0);
+        let id = count + 1;
 
-            // Allow owner (if they are the caller) or the original vet
-            // Since we can't easily check "if caller == owner" without passing caller,
-            // we rely on require_auth.
-            // But we don't know WHICH to require.
-            // Rule: Try vet first. If fails, try owner?
-            // Soroban require_auth panics if not authorized.
-            // We should ideally pass the "updater" address and require their auth.
-            // But for this signature, let's require the record's veterinarian for now as per "medical management" strictness.
-            record.veterinarian.require_auth();
+        let medication = Medication {
+            id,
+            pet_id,
+            name,
+            dosage,
+            frequency,
+            start_date,
+            end_date,
+            prescribing_vet: prescribing_vet.clone(),
+            active: true,
+        };
 
-            if let Some(mut med) = record.medications.get(med_index) {
-                med.active = false;
-                record.medications.set(med_index, med);
-                record.updated_at = env.ledger().timestamp();
-                env.storage()
-                    .instance()
-                    .set(&DataKeyExt::MedicalRecord(record_id), &record);
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
+        env.storage()
+            .instance()
+            .set(&DataKey::GlobalMedication(id), &medication);
+        env.storage().instance().set(&DataKey::MedicationCount, &id);
 
-    pub fn get_active_record_meds(env: Env, pet_id: u64) -> Vec<Medication> {
-        let records = Self::get_pet_medical_records(env.clone(), pet_id);
-        let mut active_meds = Vec::new(&env);
-        // let now = env.ledger().timestamp(); // usage disabled to just rely on active flag for now
+        let pet_med_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicationCount(pet_id))
+            .unwrap_or(0);
+        let new_count = pet_med_count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::PetMedicationCount(pet_id), &new_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetMedicationIndex((pet_id, new_count)), &id);
 
-        for record in records.iter() {
-            for med in record.medications.iter() {
-                if med.active {
-                    active_meds.push_back(med);
-                }
-            }
-        }
-        active_meds
-    }
-
-    pub fn get_record_med_history(env: Env, pet_id: u64) -> Vec<Medication> {
-        let records = Self::get_pet_medical_records(env.clone(), pet_id);
-        let mut history = Vec::new(&env);
-
-        for record in records.iter() {
-            for med in record.medications.iter() {
-                history.push_back(med);
-            }
-        }
-        history
+        id
     }
 
     // --- BATCH OPERATIONS ---
@@ -3459,7 +3410,6 @@ impl PetChainContract {
             panic!("Rating must be between 1 and 5");
         }
 
-        // Check duplicate
         if env
             .storage()
             .instance()
@@ -3487,7 +3437,6 @@ impl PetChainContract {
         env.storage().instance().set(&DataKeyExt::VetReview(id), &review);
         env.storage().instance().set(&DataKeyExt::VetReviewCount, &id);
 
-        // Index by Vet
         let vet_count: u64 = env
             .storage()
             .instance()
@@ -3501,7 +3450,6 @@ impl PetChainContract {
             .instance()
             .set(&DataKeyExt::VetReviewByVetIndex((vet.clone(), new_vet_count)), &id);
 
-        // Mark as reviewed by this owner
         env.storage()
             .instance()
             .set(&DataKeyExt::VetReviewByOwnerVet((reviewer, vet)), &id);
@@ -3544,6 +3492,14 @@ impl PetChainContract {
             total += review.rating;
         }
         total / reviews.len()
+    }
+
+    fn require_admin(env: &Env) {
+        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            admin.require_auth();
+        } else {
+            panic!("Admin not set");
+        }
     }
 
     // --- MEDICATION TRACKING ---
@@ -3653,6 +3609,22 @@ impl PetChainContract {
                 .set(&DataKeyExt::GlobalMedication(medication_id), &med);
         } else {
             panic!("Medication not found");
+        }
+    }
+
+    // --- DATA EXPORT ---
+    pub fn export_pet_data(env: Env, pet_id: u64) -> PetDataExport {
+        let pet = Self::get_pet(env.clone(), pet_id).expect("Pet not found");
+        pet.owner.require_auth();
+
+        PetDataExport {
+            pet,
+            medical_records: Self::get_pet_medical_records(env.clone(), pet_id),
+            vaccinations: Self::get_vaccination_history(env.clone(), pet_id),
+            medications: Self::get_active_medications(env.clone(), pet_id),
+            lab_results: Self::get_lab_results(env.clone(), pet_id),
+            ownership_history: Self::get_ownership_history(env.clone(), pet_id),
+            export_date: env.ledger().timestamp(),
         }
     }
 }
