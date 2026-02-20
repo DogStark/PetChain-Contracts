@@ -229,7 +229,6 @@ pub struct PetTag {
 pub enum DataKey {
     Pet(u64),
     PetCount,
-    OwnerPets(Address),
     PetOwner(Address),
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
@@ -253,8 +252,6 @@ pub enum DataKey {
     // Vaccination DataKey
     Vaccination(u64),
     VaccinationCount,
-    PetVaccinations(Address),
-    PetVaccinationIndex((Address, u64)),
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
 
@@ -265,19 +262,11 @@ pub enum DataKey {
     PetTagCount,     // Count of tags (mostly for stats)
 
     // Tag String keys (QR)
-    PetTag(String),
-    PetIdByTag(String),
-    TagByPetId(u64),
-
     // Access Control keys
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
-    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
-    UserAccessCount(Address),     // grantee -> count of pets they can access
-
-    // Veterinarian authorization
-    AuthorizedVet(Address),
+    TemporaryCustody(u64),        // pet_id -> temporary custody record
 
     PetConsentCount(u64),
 }
@@ -314,28 +303,43 @@ pub enum DataKeyExt {
     ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
   AlertSightings(u64),
 
-    // Vet Availability System keys
-    VetAvailability((Address, u64)),
-    VetAvailabilityCount(Address),
-    VetAvailabilityByDate((Address, u64)),
-
     // Consent System keys
     Consent(u64),
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 
+<<<<<<< add-temporary-custody-system
+}
+
+#[contracttype]
+pub enum SystemKey {
+    // Ownership History keys
+=======
     // Ownership History DataKey
+>>>>>>> main
     PetOwnershipRecord(u64),
     OwnershipRecordCount,
     PetOwnershipRecordCount(u64),
     PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
 
+<<<<<<< add-temporary-custody-system
+    // Multisig keys
+=======
     // Multisig DataKey
+>>>>>>> main
     Admins,
     AdminThreshold,
     Proposal(u64),
     ProposalCount,
+<<<<<<< add-temporary-custody-system
+
+    // Vet Availability keys
+    VetAvailability((Address, u64)),
+    VetAvailabilityCount(Address),
+    VetAvailabilityByDate((Address, u64)),
+=======
+>>>>>>> main
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -441,6 +445,18 @@ pub struct AccessGrant {
     pub access_level: AccessLevel,
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct TemporaryCustody {
+    pub pet_id: u64,
+    pub owner: Address,
+    pub custodian: Address,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub permissions: Vec<String>,
     pub is_active: bool,
 }
 
@@ -621,6 +637,26 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
+    fn require_admin(env: &Env) {
+        if let Some(legacy_admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            legacy_admin.require_auth();
+            return;
+        }
+
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .expect("Admins not set");
+
+        if admins.is_empty() {
+            panic!("No admins configured");
+        }
+
+        let admin = admins.get(0).expect("No admins configured");
+        admin.require_auth();
+    }
+
     fn require_admin_auth(env: &Env, admin: &Address) {
         if let Some(legacy_admin) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
             if &legacy_admin == admin {
@@ -632,7 +668,11 @@ impl PetChainContract {
         let admins: Vec<Address> = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::Admins)
+=======
             .get(&DataKeyExt::Admins)
+>>>>>>> main
             .expect("Admins not set");
         
         if !admins.contains(admin.clone()) {
@@ -659,7 +699,11 @@ impl PetChainContract {
     }
 
     pub fn init_admin(env: Env, admin: Address) {
+<<<<<<< add-temporary-custody-system
+        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&SystemKey::Admins) {
+=======
         if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKeyExt::Admins) {
+>>>>>>> main
             panic!("Admin already set");
         }
         admin.require_auth();
@@ -667,7 +711,11 @@ impl PetChainContract {
     }
 
     pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold: u32) {
+<<<<<<< add-temporary-custody-system
+        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&SystemKey::Admins) {
+=======
         if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKeyExt::Admins) {
+>>>>>>> main
             panic!("Admin already set");
         }
         if threshold == 0 || threshold > admins.len() {
@@ -679,8 +727,13 @@ impl PetChainContract {
             panic!("Invoker must be in the initial admin list");
         }
 
+<<<<<<< add-temporary-custody-system
+        env.storage().instance().set(&SystemKey::Admins, &admins);
+        env.storage().instance().set(&SystemKey::AdminThreshold, &threshold);
+=======
         env.storage().instance().set(&DataKeyExt::Admins, &admins);
         env.storage().instance().set(&DataKeyExt::AdminThreshold, &threshold);
+>>>>>>> main
     }
 
     // Pet Management Functions
@@ -2052,6 +2105,11 @@ impl PetChainContract {
             Species::Bird => String::from_str(env, "Bird"),
         }
     }
+<<<<<<< add-temporary-custody-system
+
+    fn validate_ipfs_hash(hash: &String) {
+=======
+>>>>>>> main
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
@@ -2073,14 +2131,22 @@ impl PetChainContract {
         let global_count: u64 = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::OwnershipRecordCount)
+=======
             .get(&DataKeyExt::OwnershipRecordCount)
+>>>>>>> main
             .unwrap_or(0);
         let record_id = global_count + 1;
 
         let pet_count: u64 = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+=======
             .get(&DataKeyExt::PetOwnershipRecordCount(pet_id))
+>>>>>>> main
             .unwrap_or(0);
         let new_pet_count = pet_count + 1;
 
@@ -2094,6 +2160,17 @@ impl PetChainContract {
 
         env.storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .set(&SystemKey::PetOwnershipRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&SystemKey::OwnershipRecordCount, &record_id);
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &SystemKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
+=======
             .set(&DataKeyExt::PetOwnershipRecord(record_id), &record);
         env.storage()
             .instance()
@@ -2103,6 +2180,7 @@ impl PetChainContract {
             .set(&DataKeyExt::PetOwnershipRecordCount(pet_id), &new_pet_count);
         env.storage().instance().set(
             &DataKeyExt::PetOwnershipRecordIndex((pet_id, new_pet_count)),
+>>>>>>> main
             &record_id,
         );
     }
@@ -2111,7 +2189,11 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+=======
             .get(&DataKeyExt::PetOwnershipRecordCount(pet_id))
+>>>>>>> main
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
@@ -2119,12 +2201,20 @@ impl PetChainContract {
             if let Some(record_id) = env
                 .storage()
                 .instance()
+<<<<<<< add-temporary-custody-system
+                .get::<SystemKey, u64>(&SystemKey::PetOwnershipRecordIndex((pet_id, i)))
+=======
                 .get::<_, u64>(&DataKeyExt::PetOwnershipRecordIndex((pet_id, i)))
+>>>>>>> main
             {
                 if let Some(record) = env
                     .storage()
                     .instance()
+<<<<<<< add-temporary-custody-system
+                    .get::<SystemKey, OwnershipRecord>(&SystemKey::PetOwnershipRecord(record_id))
+=======
                     .get::<_, OwnershipRecord>(&DataKeyExt::PetOwnershipRecord(record_id))
+>>>>>>> main
                 {
                     history.push_back(record);
                 }
@@ -2371,6 +2461,64 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn grant_temporary_custody(
+        env: Env,
+        pet_id: u64,
+        custodian: Address,
+        start_date: u64,
+        end_date: u64,
+        permissions: Vec<String>,
+    ) -> TemporaryCustody {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let custody = TemporaryCustody {
+            pet_id,
+            owner: pet.owner,
+            custodian,
+            start_date,
+            end_date,
+            permissions,
+            is_active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TemporaryCustody(pet_id), &custody);
+
+        custody
+    }
+
+    pub fn revoke_temporary_custody(env: Env, pet_id: u64) {
+        let mut custody: TemporaryCustody = env
+            .storage()
+            .instance()
+            .get(&DataKey::TemporaryCustody(pet_id))
+            .expect("Temporary custody not found");
+
+        custody.owner.require_auth();
+
+        custody.is_active = false;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TemporaryCustody(pet_id), &custody);
+    }
+
+    pub fn is_custody_valid(env: Env, pet_id: u64) -> bool {
+        let custody: TemporaryCustody = env
+            .storage()
+            .instance()
+            .get(&DataKey::TemporaryCustody(pet_id))
+            .expect("Temporary custody not found");
+        let current_time = env.ledger().timestamp();
+        custody.is_active && current_time <= custody.end_date
     }
 
     // --- MEDICAL RECORDS ---
@@ -2992,7 +3140,11 @@ impl PetChainContract {
         let slot_count: u64 = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+=======
             .get(&DataKeyExt::VetAvailabilityCount(vet_address.clone()))
+>>>>>>> main
             .unwrap_or(0);
         let slot_index = slot_count + 1;
 
@@ -3006,6 +3158,16 @@ impl PetChainContract {
         // Store the slot
         env.storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .set(&SystemKey::VetAvailability((vet_address.clone(), slot_index)), &slot);
+        env.storage()
+            .instance()
+            .set(&SystemKey::VetAvailabilityCount(vet_address.clone()), &slot_index);
+
+        // Add to date-based index for efficient querying
+        let date = Self::get_date_from_timestamp(start_time);
+        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
+=======
             .set(&DataKeyExt::VetAvailability((vet_address.clone(), slot_index)), &slot);
         env.storage()
             .instance()
@@ -3014,6 +3176,7 @@ impl PetChainContract {
         // Add to date-based index for efficient querying
         let date = Self::get_date_from_timestamp(start_time);
         let date_key = DataKeyExt::VetAvailabilityByDate((vet_address.clone(), date));
+>>>>>>> main
         let mut date_slots: Vec<u64> = env
             .storage()
             .instance()
@@ -3027,7 +3190,11 @@ impl PetChainContract {
 
     /// Get available slots for a vet on a specific date
     pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
+<<<<<<< add-temporary-custody-system
+        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
+=======
         let date_key = DataKeyExt::VetAvailabilityByDate((vet_address.clone(), date));
+>>>>>>> main
         let slot_indices: Vec<u64> = env
             .storage()
             .instance()
@@ -3040,7 +3207,11 @@ impl PetChainContract {
             if let Some(slot) = env
                 .storage()
                 .instance()
+<<<<<<< add-temporary-custody-system
+                .get::<SystemKey, AvailabilitySlot>(&SystemKey::VetAvailability((vet_address.clone(), index)))
+=======
                 .get::<_, AvailabilitySlot>(&DataKeyExt::VetAvailability((vet_address.clone(), index)))
+>>>>>>> main
             {
                 if slot.available {
                     available_slots.push_back(slot);
@@ -3170,12 +3341,20 @@ impl PetChainContract {
 
     /// Book a slot (mark as unavailable)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+<<<<<<< add-temporary-custody-system
+        let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
+=======
         let key = DataKeyExt::VetAvailability((vet_address.clone(), slot_index));
+>>>>>>> main
         
         if let Some(mut slot) = env
             .storage()
             .instance()
+<<<<<<< add-temporary-custody-system
+            .get::<SystemKey, AvailabilitySlot>(&key)
+=======
             .get::<_, AvailabilitySlot>(&key)
+>>>>>>> main
         {
             if !slot.available {
                 panic!("Slot already booked");
@@ -3295,10 +3474,21 @@ impl PetChainContract {
     pub fn propose_action(env: Env, proposer: Address, action: ProposalAction, expires_in: u64) -> u64 {
         Self::require_admin_auth(&env, &proposer);
         
+<<<<<<< add-temporary-custody-system
+        let count: u64 = env.storage().instance().get(&SystemKey::ProposalCount).unwrap_or(0);
+        let proposal_id = count + 1;
+        
+        let threshold = env
+            .storage()
+            .instance()
+            .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
+            .unwrap_or(1);
+=======
         let count: u64 = env.storage().instance().get(&DataKeyExt::ProposalCount).unwrap_or(0);
         let proposal_id = count + 1;
         
         let threshold = env.storage().instance().get::<_, u32>(&DataKeyExt::AdminThreshold).unwrap_or(1);
+>>>>>>> main
         
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
@@ -3315,8 +3505,17 @@ impl PetChainContract {
             executed: false,
         };
 
+<<<<<<< add-temporary-custody-system
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&SystemKey::ProposalCount, &proposal_id);
+=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
         env.storage().instance().set(&DataKeyExt::ProposalCount, &proposal_id);
+>>>>>>> main
         
         proposal_id
     }
@@ -3325,7 +3524,11 @@ impl PetChainContract {
         Self::require_admin_auth(&env, &admin);
         
         let mut proposal: MultiSigProposal = env.storage().instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::Proposal(proposal_id))
+=======
             .get(&DataKeyExt::Proposal(proposal_id))
+>>>>>>> main
             .expect("Proposal not found");
         
         if proposal.executed {
@@ -3341,12 +3544,22 @@ impl PetChainContract {
         }
         
         proposal.approvals.push_back(admin);
+<<<<<<< add-temporary-custody-system
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
+>>>>>>> main
     }
 
     pub fn execute_proposal(env: Env, proposal_id: u64) {
         let mut proposal: MultiSigProposal = env.storage().instance()
+<<<<<<< add-temporary-custody-system
+            .get(&SystemKey::Proposal(proposal_id))
+=======
             .get(&DataKeyExt::Proposal(proposal_id))
+>>>>>>> main
             .expect("Proposal not found");
         
         if proposal.executed {
@@ -3378,19 +3591,36 @@ impl PetChainContract {
                 if threshold == 0 || threshold > admins.len() {
                     panic!("Invalid threshold");
                 }
+<<<<<<< add-temporary-custody-system
+                env.storage().instance().set(&SystemKey::Admins, &admins);
+                env.storage()
+                    .instance()
+                    .set(&SystemKey::AdminThreshold, &threshold);
+=======
                 env.storage().instance().set(&DataKeyExt::Admins, &admins);
                 env.storage().instance().set(&DataKeyExt::AdminThreshold, &threshold);
+>>>>>>> main
                 // Also clean up legacy admin if needed
                 env.storage().instance().remove(&DataKey::Admin);
             }
         }
 
         proposal.executed = true;
+<<<<<<< add-temporary-custody-system
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
+        env.storage().instance().get(&SystemKey::Proposal(proposal_id))
+=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
     }
 
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
         env.storage().instance().get(&DataKeyExt::Proposal(proposal_id))
+>>>>>>> main
     }
 
     // --- VET REVIEWS ---
@@ -3643,6 +3873,8 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
+<<<<<<< add-temporary-custody-system
+=======
 
 #[cfg(test)]
 mod test_batch;
@@ -3650,3 +3882,4 @@ mod test_batch;
 // mod test;
 #[cfg(test)]
 mod test_access_control;
+>>>>>>> main
