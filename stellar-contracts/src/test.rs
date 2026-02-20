@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod test {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -3306,4 +3304,3 @@ mod test {
         let pet_unknown_profile = client.get_pet(&pet_unknown).unwrap();
         assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
     }
-}
