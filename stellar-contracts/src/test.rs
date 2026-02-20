@@ -542,6 +542,63 @@ mod test {
         let owner = Address::generate(&env);
         let pet_id = client.register_pet(
             &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        // Valid IPFS CIDv0 hash (46 chars)
+        let photo_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+        let success = client.add_pet_photo(&pet_id, &photo_hash);
+        assert!(success);
+
+        let photos = client.get_pet_photos(&pet_id);
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos.get(0).unwrap(), photo_hash);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.photo_hashes.len(), 1);
+    }
+
+    #[test]
+    fn test_add_multiple_pet_photos() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Luna"),
+            &String::from_str(&env, "2021-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+            &PrivacyLevel::Public,
+        );
+
+        let hash1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+        let hash2 = String::from_str(
+            &env,
+            "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+        );
+
+        client.add_pet_photo(&pet_id, &hash1);
+        client.add_pet_photo(&pet_id, &hash2);
+
+        let photos = client.get_pet_photos(&pet_id);
+        assert_eq!(photos.len(), 2);
+        assert_eq!(photos.get(0).unwrap(), hash1);
+        assert_eq!(photos.get(1).unwrap(), hash2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid IPFS hash")]
+    fn test_add_pet_photo_invalid_hash() {
             &String::from_str(&env, "Chip"),
             &String::from_str(&env, "2023-06-15"),
             &Gender::Male,
