@@ -3,7 +3,9 @@
 mod test;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +32,26 @@ pub enum PrivacyLevel {
     Public,     // Accessible to anyone
     Restricted, // Accessible to granted access (e.g., vets, owners)
     Private,    // Accessible only to the owner
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccessAction {
+    Read,
+    Write,
+    Grant,
+    Revoke,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessLog {
+    pub id: u64,
+    pub pet_id: u64,
+    pub user: Address,
+    pub action: AccessAction,
+    pub timestamp: u64,
+    pub details: String,
 }
 
 #[contracttype]
@@ -596,6 +618,34 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
+    fn log_access(
+        env: &Env,
+        pet_id: u64,
+        user: Address,
+        action: AccessAction,
+        details: String,
+    ) {
+        let key = (Symbol::new(env, "access_logs"), pet_id);
+        let mut logs: Vec<AccessLog> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        let id = logs.len() as u64;
+        let log = AccessLog {
+            id,
+            pet_id,
+            user,
+            action,
+            timestamp: env.ledger().timestamp(),
+            details,
+        };
+
+        logs.push_back(log);
+        env.storage().persistent().set(&key, &logs);
+    }
+
     fn require_admin(env: &Env) {
         if let Some(legacy_admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
             legacy_admin.require_auth();
@@ -873,6 +923,13 @@ impl PetChainContract {
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+            Self::log_access(
+                &env,
+                id,
+                pet.owner,
+                AccessAction::Write,
+                String::from_str(&env, "Pet profile updated"),
+            );
             true
         } else {
             false
@@ -933,7 +990,7 @@ impl PetChainContract {
             let breed =
                 String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
 
-            Some(PetProfile {
+            let profile = PetProfile {
                 id: pet.id,
                 owner: pet.owner,
                 privacy_level: pet.privacy_level,
@@ -949,7 +1006,15 @@ impl PetChainContract {
                 color: pet.color,
                 weight: pet.weight,
                 microchip_id: pet.microchip_id,
-            })
+            };
+            Self::log_access(
+                &env,
+                id,
+                env.current_contract_address(),
+                AccessAction::Read,
+                String::from_str(&env, "Pet profile accessed"),
+            );
+            Some(profile)
         } else {
             None
         }
@@ -2071,11 +2136,12 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
             .expect("Pet not found");
         pet.owner.require_auth();
+        let granter = pet.owner.clone();
 
         let now = env.ledger().timestamp();
         let grant = AccessGrant {
             pet_id,
-            granter: pet.owner,
+            granter: granter.clone(),
             grantee: grantee.clone(),
             access_level: access_level.clone(),
             granted_at: now,
@@ -2104,12 +2170,19 @@ impl PetChainContract {
             (String::from_str(&env, "AccessGranted"), pet_id),
             AccessGrantedEvent {
                 pet_id,
-                granter: grant.granter,
+                granter: granter.clone(),
                 grantee,
                 access_level,
                 expires_at,
                 timestamp: now,
             },
+        );
+        Self::log_access(
+            &env,
+            pet_id,
+            granter,
+            AccessAction::Grant,
+            String::from_str(&env, "Access granted"),
         );
         true
     }
@@ -2121,6 +2194,7 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
             .expect("Pet not found");
         pet.owner.require_auth();
+        let granter = pet.owner.clone();
 
         let key = DataKey::AccessGrant((pet_id, grantee.clone()));
         if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
@@ -2131,10 +2205,17 @@ impl PetChainContract {
                 (String::from_str(&env, "AccessRevoked"), pet_id),
                 AccessRevokedEvent {
                     pet_id,
-                    granter: pet.owner,
+                    granter: granter.clone(),
                     grantee,
                     timestamp: env.ledger().timestamp(),
                 },
+            );
+            Self::log_access(
+                &env,
+                pet_id,
+                granter,
+                AccessAction::Revoke,
+                String::from_str(&env, "Access revoked"),
             );
             true
         } else {
@@ -2265,9 +2346,16 @@ impl PetChainContract {
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
                 pet_id,
-                updated_by: veterinarian,
+                updated_by: veterinarian.clone(),
                 timestamp: now,
             },
+        );
+        Self::log_access(
+            &env,
+            pet_id,
+            veterinarian,
+            AccessAction::Write,
+            String::from_str(&env, "Medical record added"),
         );
 
         id
@@ -2295,6 +2383,13 @@ impl PetChainContract {
             env.storage()
                 .instance()
                 .set(&DataKey::MedicalRecord(record_id), &record);
+            Self::log_access(
+                &env,
+                record.pet_id,
+                record.veterinarian,
+                AccessAction::Write,
+                String::from_str(&env, "Medical record updated"),
+            );
             true
         } else {
             false
@@ -2302,9 +2397,20 @@ impl PetChainContract {
     }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
-        env.storage()
+        let record: Option<MedicalRecord> = env
+            .storage()
             .instance()
-            .get(&DataKey::MedicalRecord(record_id))
+            .get(&DataKey::MedicalRecord(record_id));
+        if let Some(ref r) = record {
+            Self::log_access(
+                &env,
+                r.pet_id,
+                env.current_contract_address(),
+                AccessAction::Read,
+                String::from_str(&env, "Medical record accessed"),
+            );
+        }
+        record
     }
 
     pub fn get_pet_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
@@ -2325,7 +2431,22 @@ impl PetChainContract {
                 }
             }
         }
+        Self::log_access(
+            &env,
+            pet_id,
+            env.current_contract_address(),
+            AccessAction::Read,
+            String::from_str(&env, "Pet medical records accessed"),
+        );
         records
+    }
+
+    pub fn get_access_logs(env: Env, pet_id: u64) -> Vec<AccessLog> {
+        let key = (Symbol::new(&env, "access_logs"), pet_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
