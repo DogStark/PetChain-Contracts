@@ -701,4 +701,79 @@ mod test {
         let pet_alerts = client.get_pet_alerts(&pet_id);
         assert_eq!(pet_alerts.len(), 2);
     }
+        #[test]
+    fn test_set_availability() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        let admin = Address::generate(&env);
+        
+        // Setup vet
+        client.init_admin(&admin);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "VET-001"),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&vet);
+
+        // Set availability
+        let start_time = 1_000_000; // Some timestamp
+        let end_time = 1_000_000 + 3600; // 1 hour slot
+        let slot_index = client.set_availability(&vet, &start_time, &end_time);
+        
+        assert_eq!(slot_index, 1);
+
+        // Get available slots for that date
+        let date = start_time / 86400;
+        let slots = client.get_available_slots(&vet, &date);
+        assert_eq!(slots.len(), 1);
+        
+        let slot = slots.get(0).unwrap();
+        assert_eq!(slot.vet_address, vet);
+        assert_eq!(slot.start_time, start_time);
+        assert_eq!(slot.end_time, end_time);
+        assert_eq!(slot.available, true);
+    }
+
+    #[test]
+    fn test_book_slot() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        let admin = Address::generate(&env);
+        
+        // Setup vet
+        client.init_admin(&admin);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "VET-001"),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&vet);
+
+        // Set availability
+        let start_time = 1_000_000;
+        let end_time = 1_000_000 + 3600;
+        let slot_index = client.set_availability(&vet, &start_time, &end_time);
+
+        // Book the slot
+        let result = client.book_slot(&vet, &slot_index);
+        assert!(result);
+
+        // Verify slot is no longer available
+        let date = start_time / 86400;
+        let slots = client.get_available_slots(&vet, &date);
+        assert_eq!(slots.len(), 0);
+    }
 }
