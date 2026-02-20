@@ -145,6 +145,88 @@ mod test {
     }
 
     #[test]
+    fn test_update_pet_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes.len(), 0);
+
+        let notes = String::from_str(&env, "Loves fetch. Allergic to chicken. Needs daily meds at 8am.");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
+    #[should_panic(expected = "Notes too long")]
+    fn test_pet_notes_character_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let long_notes = String::from_str(&env, &"x".repeat(1001));
+        client.update_pet_notes(&pet_id, &long_notes);
+    }
+
+    #[test]
+    fn test_only_owner_can_update_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let notes = String::from_str(&env, "Owner notes");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
     fn test_register_pet_owner() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1225,6 +1307,88 @@ mod test {
     }
 
     #[test]
+    fn test_update_pet_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes.len(), 0);
+
+        let notes = String::from_str(&env, "Loves fetch. Allergic to chicken. Needs daily meds at 8am.");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
+    #[should_panic(expected = "Notes too long")]
+    fn test_pet_notes_character_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let long_notes = String::from_str(&env, &"x".repeat(1001));
+        client.update_pet_notes(&pet_id, &long_notes);
+    }
+
+    #[test]
+    fn test_only_owner_can_update_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let notes = String::from_str(&env, "Owner notes");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
     fn test_register_pet_owner() {
         let env = Env::default();
         env.mock_all_auths();
@@ -2171,6 +2335,88 @@ mod test {
     }
 
     #[test]
+    fn test_update_pet_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes.len(), 0);
+
+        let notes = String::from_str(&env, "Loves fetch. Allergic to chicken. Needs daily meds at 8am.");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
+    #[should_panic(expected = "Notes too long")]
+    fn test_pet_notes_character_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let long_notes = String::from_str(&env, &"x".repeat(1001));
+        client.update_pet_notes(&pet_id, &long_notes);
+    }
+
+    #[test]
+    fn test_only_owner_can_update_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let notes = String::from_str(&env, "Owner notes");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
     fn test_register_pet_owner() {
         let env = Env::default();
         env.mock_all_auths();
@@ -2935,6 +3181,88 @@ mod test {
 
         let archived = client.get_archived_pets(&owner);
         assert_eq!(archived.len(), 0);
+    }
+
+    #[test]
+    fn test_update_pet_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes.len(), 0);
+
+        let notes = String::from_str(&env, "Loves fetch. Allergic to chicken. Needs daily meds at 8am.");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
+    }
+
+    #[test]
+    #[should_panic(expected = "Notes too long")]
+    fn test_pet_notes_character_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let long_notes = String::from_str(&env, &"x".repeat(1001));
+        client.update_pet_notes(&pet_id, &long_notes);
+    }
+
+    #[test]
+    fn test_only_owner_can_update_notes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Golden Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let notes = String::from_str(&env, "Owner notes");
+        client.update_pet_notes(&pet_id, &notes);
+
+        let pet = client.get_pet(&pet_id).unwrap();
+        assert_eq!(pet.notes, notes);
     }
 
     #[test]

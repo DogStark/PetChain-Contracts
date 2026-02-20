@@ -79,6 +79,7 @@ pub struct Pet {
     pub microchip_id: Option<String>,
     pub photo_hashes: Vec<String>,
     pub archived: bool,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -100,6 +101,7 @@ pub struct PetProfile {
     pub weight: u32,
     pub microchip_id: Option<String>,
     pub archived: bool,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -734,6 +736,7 @@ impl PetChainContract {
             microchip_id,
             photo_hashes: Vec::new(&env),
             archived: false,
+            notes: String::from_str(&env, ""),
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -920,6 +923,23 @@ impl PetChainContract {
             weight: pet.weight,
             microchip_id: pet.microchip_id.clone(),
             archived: pet.archived,
+            notes: pet.notes.clone(),
+        }
+    }
+
+    pub fn update_pet_notes(env: Env, pet_id: u64, notes: String) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            if notes.len() > 1000 {
+                panic!("Notes too long");
+            }
+            pet.notes = notes;
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         }
     }
 
