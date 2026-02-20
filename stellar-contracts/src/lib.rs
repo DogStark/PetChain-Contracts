@@ -77,6 +77,8 @@ pub struct Pet {
     pub color: String,
     pub weight: u32,
     pub microchip_id: Option<String>,
+    pub photo_hashes: Vec<String>,
+    pub archived: bool,
 }
 
 #[contracttype]
@@ -97,6 +99,7 @@ pub struct PetProfile {
     pub color: String,
     pub weight: u32,
     pub microchip_id: Option<String>,
+    pub archived: bool,
 }
 
 #[contracttype]
@@ -230,6 +233,8 @@ pub enum DataKey {
     Vet(Address),
     VetLicense(String),
     Admin,
+    Admins,
+    AdminThreshold,
 
     // Contract Upgrade keys
     ContractVersion,
@@ -305,6 +310,16 @@ pub enum DataKey {
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+
+    // Ownership History DataKey
+    PetOwnershipRecord(u64),
+    OwnershipRecordCount,
+    PetOwnershipRecordCount(u64),
+    PetOwnershipRecordIndex((u64, u64)),
+
+    // Multisig keys
+    Proposal(u64),
+    ProposalCount,
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -347,17 +362,6 @@ pub struct AvailabilitySlot {
     pub start_time: u64,
     pub end_time: u64,
     pub available: bool,
-    // Ownership History DataKey
-    PetOwnershipRecord(u64),
-    OwnershipRecordCount,
-    PetOwnershipRecordCount(u64),
-    PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
-
-    // Multisig DataKey
-    Admins,
-    AdminThreshold,
-    Proposal(u64),
-    ProposalCount,
 }
 
 #[contracttype]
@@ -482,6 +486,7 @@ pub struct VetReview {
     pub rating: u32, // 1-5 stars
     pub comment: String,
     pub date: u64,
+}
 #[derive(Clone)]
 pub struct OwnershipRecord {
     pub pet_id: u64,
@@ -727,6 +732,8 @@ impl PetChainContract {
             color,
             weight,
             microchip_id,
+            photo_hashes: Vec::new(&env),
+            archived: false,
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -854,74 +861,115 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
-            let _current_user = env.current_contract_address(); // Use consistent current user check
-            let _is_authorized_for_full_data = false;
-
-            // Simple check: if caller is owner
-            // Note: Since we don't have the caller in read-only scope easily without require_auth,
-            // this privacy model relies on the caller being verified in context or data being public.
-            // For true read-access control, we would need the caller's address passed in or
-            // use a viewing key pattern. Here we emulate based on contract state.
-            // Assuming this is called by a client who "is" user X.
-            // But soroban read functions don't authenticate "viewer".
-            // So we rely on PrivacyLevel::Public or return limited data?
-            // HEAD impl had logic checking `current_contract_address` or similar which might not work as intended for external calls.
-            // For now, we decrypt if Public, or we assume this function decrypts for the client to see.
-            // Real privacy requires off-chain key management.
-            // We will proceed with decryption to return the Profile.
-
-            let key = Self::get_encryption_key(&env);
-
-            let decrypted_name = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_name.ciphertext,
-                &pet.encrypted_name.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let name =
-                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_birthday = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_birthday.ciphertext,
-                &pet.encrypted_birthday.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let birthday = String::from_xdr(&env, &decrypted_birthday)
-                .unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_breed = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_breed.ciphertext,
-                &pet.encrypted_breed.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let breed =
-                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
-
-            Some(PetProfile {
-                id: pet.id,
-                owner: pet.owner,
-                privacy_level: pet.privacy_level,
-                name,
-                birthday,
-                active: pet.active,
-                created_at: pet.created_at,
-                updated_at: pet.updated_at,
-                new_owner: pet.new_owner,
-                species: pet.species,
-                gender: pet.gender,
-                breed,
-                color: pet.color,
-                weight: pet.weight,
-                microchip_id: pet.microchip_id,
-            })
+            if pet.archived {
+                return None;
+            }
+            Some(Self::build_pet_profile(&env, &pet))
         } else {
             None
         }
+    }
+
+    fn build_pet_profile(env: &Env, pet: &Pet) -> PetProfile {
+        let key = Self::get_encryption_key(env);
+
+        let decrypted_name = decrypt_sensitive_data(
+            env,
+            &pet.encrypted_name.ciphertext,
+            &pet.encrypted_name.nonce,
+            &key,
+        )
+        .unwrap_or(Bytes::new(env));
+        let name =
+            String::from_xdr(env, &decrypted_name).unwrap_or(String::from_str(env, "Error"));
+
+        let decrypted_birthday = decrypt_sensitive_data(
+            env,
+            &pet.encrypted_birthday.ciphertext,
+            &pet.encrypted_birthday.nonce,
+            &key,
+        )
+        .unwrap_or(Bytes::new(env));
+        let birthday = String::from_xdr(env, &decrypted_birthday)
+            .unwrap_or(String::from_str(env, "Error"));
+
+        let decrypted_breed = decrypt_sensitive_data(
+            env,
+            &pet.encrypted_breed.ciphertext,
+            &pet.encrypted_breed.nonce,
+            &key,
+        )
+        .unwrap_or(Bytes::new(env));
+        let breed =
+            String::from_xdr(env, &decrypted_breed).unwrap_or(String::from_str(env, "Error"));
+
+        PetProfile {
+            id: pet.id,
+            owner: pet.owner.clone(),
+            privacy_level: pet.privacy_level.clone(),
+            name,
+            birthday,
+            active: pet.active,
+            created_at: pet.created_at,
+            updated_at: pet.updated_at,
+            new_owner: pet.new_owner.clone(),
+            species: pet.species.clone(),
+            gender: pet.gender.clone(),
+            breed,
+            color: pet.color.clone(),
+            weight: pet.weight,
+            microchip_id: pet.microchip_id.clone(),
+            archived: pet.archived,
+        }
+    }
+
+    pub fn archive_pet(env: Env, pet_id: u64) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            pet.archived = true;
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        }
+    }
+
+    pub fn restore_pet(env: Env, pet_id: u64) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            pet.archived = false;
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        }
+    }
+
+    pub fn get_archived_pets(env: Env, owner: Address) -> Vec<PetProfile> {
+        let count = Self::get_owner_pet_count(&env, &owner);
+        let mut pets = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(pid) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
+            {
+                if let Some(pet) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Pet>(&DataKey::Pet(pid))
+                {
+                    if pet.archived {
+                        pets.push_back(Self::build_pet_profile(&env, &pet));
+                    }
+                }
+            }
+        }
+        pets
     }
 
     pub fn is_pet_active(env: Env, id: u64) -> bool {
@@ -1786,6 +1834,9 @@ impl PetChainContract {
             Species::Dog => String::from_str(env, "Dog"),
             Species::Cat => String::from_str(env, "Cat"),
             Species::Bird => String::from_str(env, "Bird"),
+        }
+    }
+
     fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
@@ -2376,9 +2427,8 @@ impl PetChainContract {
     }
     // --- MEDICATION MANAGEMENT ---
 
-    pub fn add_medication_to_record(
     #[allow(clippy::too_many_arguments)]
-    pub fn add_medication(
+    pub fn add_medication_to_record(
         env: Env,
         record_id: u64,
         name: String,
@@ -3073,6 +3123,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
 
     // --- MULTISIG OPERATIONS ---
 
@@ -3407,7 +3458,5 @@ fn decrypt_sensitive_data(
     Ok(ciphertext.clone())
 }
 
-#[cfg(test)]
-mod test;
 #[cfg(test)]
 mod test_access_control;
