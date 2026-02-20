@@ -148,8 +148,7 @@ fn test_limited_permissions() {
     let mut permissions = Vec::new(&env);
     permissions.push_back(String::from_str(&env, "medicate"));
 
-    let custody =
-        client.grant_temporary_custody(&pet_id, &custodian, &10u64, &20u64, &permissions);
+    let custody = client.grant_temporary_custody(&pet_id, &custodian, &10u64, &20u64, &permissions);
 
     assert_eq!(custody.permissions.len(), 1);
     assert_eq!(
@@ -234,7 +233,10 @@ fn test_log_immutability() {
     let logs_after = client.get_access_logs(&pet_id);
     assert!(logs_after.len() > initial_count);
 
-    assert_eq!(logs_before.get(0).unwrap().id, logs_after.get(0).unwrap().id);
+    assert_eq!(
+        logs_before.get(0).unwrap().id,
+        logs_after.get(0).unwrap().id
+    );
     assert_eq!(
         logs_before.get(0).unwrap().details,
         logs_after.get(0).unwrap().details
