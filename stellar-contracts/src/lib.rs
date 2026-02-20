@@ -1834,6 +1834,9 @@ impl PetChainContract {
             Species::Dog => String::from_str(env, "Dog"),
             Species::Cat => String::from_str(env, "Cat"),
             Species::Bird => String::from_str(env, "Bird"),
+        }
+    }
+
     fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
@@ -3121,6 +3124,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
 
     // --- MULTISIG OPERATIONS ---
 
@@ -3455,6 +3459,4 @@ fn decrypt_sensitive_data(
     Ok(ciphertext.clone())
 }
 
-#[cfg(test)]
-mod test;
-mod test;
+
