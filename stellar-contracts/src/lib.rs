@@ -77,6 +77,7 @@ pub struct Pet {
     pub color: String,
     pub weight: u32,
     pub microchip_id: Option<String>,
+    pub photo_hashes: Vec<String>,
 }
 
 #[contracttype]
@@ -327,6 +328,18 @@ pub enum DataKey {
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+
+    // Ownership History DataKey
+    PetOwnershipRecord(u64),
+    OwnershipRecordCount,
+    PetOwnershipRecordCount(u64),
+    PetOwnershipRecordIndex((u64, u64)),
+
+    // Multisig DataKey
+    Admins,
+    AdminThreshold,
+    Proposal(u64),
+    ProposalCount,
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -369,17 +382,6 @@ pub struct AvailabilitySlot {
     pub start_time: u64,
     pub end_time: u64,
     pub available: bool,
-    // Ownership History DataKey
-    PetOwnershipRecord(u64),
-    OwnershipRecordCount,
-    PetOwnershipRecordCount(u64),
-    PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
-
-    // Multisig DataKey
-    Admins,
-    AdminThreshold,
-    Proposal(u64),
-    ProposalCount,
 }
 
 #[contracttype]
@@ -504,6 +506,9 @@ pub struct VetReview {
     pub rating: u32, // 1-5 stars
     pub comment: String,
     pub date: u64,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct OwnershipRecord {
     pub pet_id: u64,
@@ -749,6 +754,7 @@ impl PetChainContract {
             color,
             weight,
             microchip_id,
+            photo_hashes: Vec::new(&env),
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
