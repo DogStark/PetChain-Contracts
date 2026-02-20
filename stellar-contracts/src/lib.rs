@@ -172,6 +172,24 @@ pub struct TagDeactivatedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct UpgradeProposal {
+    pub id: u64,
+    pub proposed_by: Address,
+    pub new_wasm_hash: BytesN<32>,
+    pub proposed_at: u64,
+    pub approved: bool,
+    pub executed: bool,
+}
+#[contracttype]
 #[derive(Clone)]
 pub struct TagReactivatedEvent {
     pub tag_id: BytesN<32>,
@@ -212,6 +230,11 @@ pub enum DataKey {
     Vet(Address),
     VetLicense(String),
     Admin,
+
+    // Contract Upgrade keys
+    ContractVersion,
+    UpgradeProposal(u64),
+    UpgradeProposalCount,
 
     // Vaccination DataKey
     Vaccination(u64),
@@ -2782,6 +2805,97 @@ impl PetChainContract {
         // For this implementation, we use timestamp / 86400 as the "date"
         timestamp / 86400
     }
+    // --- CONTRACT UPGRADE SYSTEM ---
+
+    pub fn get_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn upgrade_contract(env: Env, new_wasm_hash: BytesN<32>) {
+        // Only admin can upgrade
+        Self::require_admin(&env);
+
+        // Perform the upgrade
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    pub fn propose_upgrade(
+        env: Env,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> u64 {
+        // Only admin can propose
+        Self::require_admin(&env);
+        proposer.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let proposal_id = count + 1;
+
+        let proposal = UpgradeProposal {
+            id: proposal_id,
+            proposed_by: proposer,
+            new_wasm_hash,
+            proposed_at: env.ledger().timestamp(),
+            approved: false,
+            executed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposalCount, &proposal_id);
+
+        proposal_id
+    }
+
+    pub fn approve_upgrade(env: Env, proposal_id: u64) -> bool {
+        Self::require_admin(&env);
+
+        if let Some(mut proposal) = env
+            .storage()
+            .instance()
+            .get::<DataKey, UpgradeProposal>(&DataKey::UpgradeProposal(proposal_id))
+        {
+            if proposal.executed {
+                panic!("Proposal already executed");
+            }
+
+            proposal.approved = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeProposal(proposal_id))
+    }
+
+    pub fn migrate_version(env: Env, major: u32, minor: u32, patch: u32) {
+        Self::require_admin(&env);
+
+        let version = ContractVersion { major, minor, patch };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
 
     // --- MULTISIG OPERATIONS ---
 
