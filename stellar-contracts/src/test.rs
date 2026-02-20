@@ -2317,7 +2317,6 @@ mod test {
     }
 
     #[test]
-    #[test]
     fn test_pet_transfer_flow() {
         let env = Env::default();
         env.mock_all_auths();

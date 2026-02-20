@@ -287,7 +287,6 @@ pub enum DataKey {
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
 
-<<<<<<< HEAD
     // Vet Review keys
     VetReview(u64),                      // review_id -> VetReview
     VetReviewCount,                      // Global count of reviews
@@ -369,6 +368,12 @@ pub struct AvailabilitySlot {
     AdminThreshold,
     Proposal(u64),
     ProposalCount,
+
+    // Two-Step Transfer DataKey
+    TransferRequest(u64), // pet_id -> TransferRequest
+
+    // RBAC DataKey
+    RoleAssignment((u64, Address)), // (pet_id, user) -> RoleAssignment
 }
 
 #[contracttype]
@@ -391,11 +396,6 @@ pub struct Consent {
     pub granted_at: u64,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
-=======
-    TransferRequest(u64), // pet_id -> TransferRequest
-
-    RoleAssignment((u64, Address)), // (pet_id, user) -> RoleAssignment
->>>>>>> 8a10639 (feat: Implement Two-Step Pet Transfer and Role-Based Access Control)
 }
 
 #[contracttype]
