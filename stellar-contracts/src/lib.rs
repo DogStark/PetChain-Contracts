@@ -252,6 +252,18 @@ pub enum DataKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+
+    // Ownership History DataKey
+    PetOwnershipRecord(u64),
+    OwnershipRecordCount,
+    PetOwnershipRecordCount(u64),
+    PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
+
+    // Multisig DataKey
+    Admins,
+    AdminThreshold,
+    Proposal(u64),
+    ProposalCount,
 }
 
 #[contracttype]
@@ -342,6 +354,38 @@ pub struct MedicalRecordInput {
     pub medications: Vec<Medication>,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct OwnershipRecord {
+    pub pet_id: u64,
+    pub previous_owner: Address,
+    pub new_owner: Address,
+    pub transfer_date: u64,
+    pub transfer_reason: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalAction {
+    UpgradeContract(BytesN<32>),
+    VerifyVet(Address),
+    RevokeVet(Address),
+    ChangeAdmin((Vec<Address>, u32)),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiSigProposal {
+    pub id: u64,
+    pub action: ProposalAction,
+    pub proposed_by: Address,
+    pub approvals: Vec<Address>,
+    pub required_approvals: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub executed: bool,
+}
+
 // --- EVENTS ---
 
 #[contracttype]
@@ -415,22 +459,49 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
-    fn require_admin(env: &Env) -> Address {
-        let admin: Address = env
+    fn require_admin_auth(env: &Env, admin: &Address) {
+        if let Some(legacy_admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            if &legacy_admin == admin {
+                admin.require_auth();
+                return;
+            }
+        }
+
+        let admins: Vec<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .expect("Admin not set");
+            .get(&DataKey::Admins)
+            .expect("Admins not set");
+        
+        if !admins.contains(admin.clone()) {
+            panic!("Address is not an admin");
+        }
         admin.require_auth();
-        admin
     }
 
     pub fn init_admin(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKey::Admins) {
             panic!("Admin already set");
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold: u32) {
+        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKey::Admins) {
+            panic!("Admin already set");
+        }
+        if threshold == 0 || threshold > admins.len() {
+            panic!("Invalid threshold");
+        }
+        
+        invoker.require_auth();
+        if !admins.contains(invoker) {
+            panic!("Invoker must be in the initial admin list");
+        }
+
+        env.storage().instance().set(&DataKey::Admins, &admins);
+        env.storage().instance().set(&DataKey::AdminThreshold, &threshold);
     }
 
     // Pet Management Functions
@@ -533,6 +604,14 @@ impl PetChainContract {
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
+
+        Self::log_ownership_change(
+            &env,
+            pet_id,
+            owner.clone(),
+            owner.clone(),
+            String::from_str(&env, "Initial Registration"),
+        );
 
         let owner_pet_count: u64 = env
             .storage()
@@ -767,6 +846,35 @@ impl PetChainContract {
         }
     }
 
+    pub fn add_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            Self::validate_ipfs_hash(&photo_hash);
+            pet.photo_hashes.push_back(photo_hash);
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_pet_photos(env: Env, pet_id: u64) -> Vec<String> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.photo_hashes
+        } else {
+            Vec::new(&env)
+        }
+    }
+
     pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
         if let Some(mut pet) = env
             .storage()
@@ -797,6 +905,14 @@ impl PetChainContract {
             Self::add_pet_to_owner_index(&env, &pet.owner, id);
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+
+            Self::log_ownership_change(
+                &env,
+                id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                String::from_str(&env, "Ownership Transfer"),
+            );
 
             env.events().publish(
                 (String::from_str(&env, "PetOwnershipTransferred"), id),
@@ -1019,9 +1135,12 @@ impl PetChainContract {
         true
     }
 
-    pub fn verify_vet(env: Env, vet_address: Address) -> bool {
-        Self::require_admin(&env);
+    pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
+        Self::require_admin_auth(&env, &admin);
+        Self::_verify_vet_internal(&env, vet_address)
+    }
 
+    fn _verify_vet_internal(env: &Env, vet_address: Address) -> bool {
         if let Some(mut vet) = env
             .storage()
             .instance()
@@ -1037,9 +1156,12 @@ impl PetChainContract {
         }
     }
 
-    pub fn revoke_vet_license(env: Env, vet_address: Address) -> bool {
-        Self::require_admin(&env);
+    pub fn revoke_vet_license(env: Env, admin: Address, vet_address: Address) -> bool {
+        Self::require_admin_auth(&env, &admin);
+        Self::_revoke_vet_internal(&env, vet_address)
+    }
 
+    fn _revoke_vet_internal(env: &Env, vet_address: Address) -> bool {
         if let Some(mut vet) = env
             .storage()
             .instance()
@@ -1537,12 +1659,86 @@ impl PetChainContract {
             Species::Dog => String::from_str(env, "Dog"),
             Species::Cat => String::from_str(env, "Cat"),
             Species::Bird => String::from_str(env, "Bird"),
+    fn validate_ipfs_hash(hash: &String) {
+        let len = hash.len();
+        if !(32_u32..=128_u32).contains(&len) {
+            panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
         // Mock key
         Bytes::from_array(env, &[0u8; 32])
+    }
+
+    fn log_ownership_change(
+        env: &Env,
+        pet_id: u64,
+        previous_owner: Address,
+        new_owner: Address,
+        reason: String,
+    ) {
+        let global_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OwnershipRecordCount)
+            .unwrap_or(0);
+        let record_id = global_count + 1;
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetOwnershipRecordCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+
+        let record = OwnershipRecord {
+            pet_id,
+            previous_owner,
+            new_owner,
+            transfer_date: env.ledger().timestamp(),
+            transfer_reason: reason,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetOwnershipRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::OwnershipRecordCount, &record_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &DataKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+    }
+
+    pub fn get_ownership_history(env: Env, pet_id: u64) -> Vec<OwnershipRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetOwnershipRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetOwnershipRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, OwnershipRecord>(&DataKey::PetOwnershipRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
     }
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
@@ -2207,6 +2403,109 @@ impl PetChainContract {
         }
         ids
     }
+
+    // --- MULTISIG OPERATIONS ---
+
+    pub fn propose_action(env: Env, proposer: Address, action: ProposalAction, expires_in: u64) -> u64 {
+        Self::require_admin_auth(&env, &proposer);
+        
+        let count: u64 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
+        let proposal_id = count + 1;
+        
+        let threshold = env.storage().instance().get::<DataKey, u32>(&DataKey::AdminThreshold).unwrap_or(1);
+        
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(proposer.clone());
+
+        let now = env.ledger().timestamp();
+        let proposal = MultiSigProposal {
+            id: proposal_id,
+            action,
+            proposed_by: proposer,
+            approvals,
+            required_approvals: threshold,
+            created_at: now,
+            expires_at: now + expires_in,
+            executed: false,
+        };
+
+        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(&DataKey::ProposalCount, &proposal_id);
+        
+        proposal_id
+    }
+
+    pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64) {
+        Self::require_admin_auth(&env, &admin);
+        
+        let mut proposal: MultiSigProposal = env.storage().instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("Proposal not found");
+        
+        if proposal.executed {
+            panic!("Proposal already executed");
+        }
+        
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Proposal expired");
+        }
+        
+        if proposal.approvals.contains(admin.clone()) {
+            panic!("Admin already approved");
+        }
+        
+        proposal.approvals.push_back(admin);
+        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+    }
+
+    pub fn execute_proposal(env: Env, proposal_id: u64) {
+        let mut proposal: MultiSigProposal = env.storage().instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("Proposal not found");
+        
+        if proposal.executed {
+            panic!("Proposal already executed");
+        }
+        
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Proposal expired");
+        }
+        
+        if proposal.approvals.len() < proposal.required_approvals {
+            panic!("Threshold not met");
+        }
+
+        match proposal.action.clone() {
+            ProposalAction::VerifyVet(addr) => {
+                Self::_verify_vet_internal(&env, addr);
+            },
+            ProposalAction::RevokeVet(addr) => {
+                Self::_revoke_vet_internal(&env, addr);
+            },
+            ProposalAction::UpgradeContract(_code_hash) => {
+                // Mock upgrade or actual logic if available
+                // In Soroban, upgrades are handled via env.deployer()
+                // For this task, we can just log success or placeholder
+            },
+            ProposalAction::ChangeAdmin(params) => {
+                let (admins, threshold) = params;
+                if threshold == 0 || threshold > admins.len() {
+                    panic!("Invalid threshold");
+                }
+                env.storage().instance().set(&DataKey::Admins, &admins);
+                env.storage().instance().set(&DataKey::AdminThreshold, &threshold);
+                // Also clean up legacy admin if needed
+                env.storage().instance().remove(&DataKey::Admin);
+            }
+        }
+
+        proposal.executed = true;
+        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
+        env.storage().instance().get(&DataKey::Proposal(proposal_id))
+    }
 }
 
 // --- ENCRYPTION HELPERS ---
@@ -2225,3 +2524,5 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
+#[cfg(test)]
+mod test;
