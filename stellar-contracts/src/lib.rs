@@ -3408,6 +3408,5 @@ fn decrypt_sensitive_data(
 }
 
 #[cfg(test)]
-mod test;
 #[cfg(test)]
 mod test_access_control;
