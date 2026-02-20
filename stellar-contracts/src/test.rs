@@ -967,7 +967,6 @@ fn test_upgrade_requires_admin() {
 }
 }
 #[cfg(test)]
-mod test {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -1809,7 +1808,6 @@ mod test {
     }
 }
 #[cfg(test)]
-mod test {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -2466,7 +2464,6 @@ mod test {
     }
 }
 #[cfg(test)]
-mod test {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
