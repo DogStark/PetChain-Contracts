@@ -11,6 +11,7 @@ pub enum Species {
     Bird,
 }
 
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Gender {
@@ -238,6 +239,44 @@ pub enum DataKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+
+        // Lost Pet Alert System keys
+    LostPetAlert(u64),
+    LostPetAlertCount,
+    ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
+    AlertSightings(u64),     // Vec<SightingReport> for each alert
+}
+
+// --- LOST PET ALERT SYSTEM ---
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlertStatus {
+    Active,
+    Found,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LostPetAlert {
+    pub id: u64,
+    pub pet_id: u64,
+    pub reported_by: Address,
+    pub reported_date: u64,
+    pub last_seen_location: String,
+    pub reward_amount: Option<u64>,
+    pub status: AlertStatus,
+    pub found_date: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SightingReport {
+    pub alert_id: u64,
+    pub reporter: Address,
+    pub location: String,
+    pub timestamp: u64,
+    pub description: String,
 }
 
 #[contracttype]
@@ -2098,7 +2137,229 @@ impl PetChainContract {
             );
             ids.push_back(id);
         }
-        ids
+               ids
+    }
+
+    // --- LOST PET ALERT FUNCTIONS ---
+
+    /// Report a pet as lost
+    pub fn report_lost(
+        env: Env,
+        pet_id: u64,
+        last_seen_location: String,
+        reward_amount: Option<u64>,
+    ) -> u64 {
+        // Verify pet exists and caller is owner
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let alert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LostPetAlertCount)
+            .unwrap_or(0);
+        let alert_id = alert_count + 1;
+
+        let alert = LostPetAlert {
+            id: alert_id,
+            pet_id,
+            reported_by: pet.owner.clone(),
+            reported_date: env.ledger().timestamp(),
+            last_seen_location,
+            reward_amount,
+            status: AlertStatus::Active,
+            found_date: None,
+        };
+
+        // Store alert
+        env.storage()
+            .instance()
+            .set(&DataKey::LostPetAlert(alert_id), &alert);
+        env.storage()
+            .instance()
+            .set(&DataKey::LostPetAlertCount, &alert_id);
+
+        // Add to active alerts list
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        active_alerts.push_back(alert_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+
+        alert_id
+    }
+
+    /// Report a sighting of a lost pet
+    pub fn report_sighting(
+        env: Env,
+        alert_id: u64,
+        location: String,
+        description: String,
+    ) -> bool {
+        let reporter = env.current_contract_address();
+        
+        let sighting = SightingReport {
+            alert_id,
+            reporter,
+            location,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+
+        let key = DataKey::AlertSightings(alert_id);
+        let mut sightings: Vec<SightingReport> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        sightings.push_back(sighting);
+        env.storage().instance().set(&key, &sightings);
+
+        true
+    }
+
+    /// Mark a lost pet as found
+    pub fn report_found(env: Env, alert_id: u64) -> bool {
+        let key = DataKey::LostPetAlert(alert_id);
+        
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("Alert not found");
+
+        alert.reported_by.require_auth();
+
+        if alert.status != AlertStatus::Active {
+            panic!("Alert is not active");
+        }
+
+        alert.status = AlertStatus::Found;
+        alert.found_date = Some(env.ledger().timestamp());
+        env.storage().instance().set(&key, &alert);
+
+        // Remove from active alerts
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
+            active_alerts.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+        }
+
+        true
+    }
+
+    /// Cancel a lost pet alert
+    pub fn cancel_lost_alert(env: Env, alert_id: u64) -> bool {
+        let key = DataKey::LostPetAlert(alert_id);
+        
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("Alert not found");
+
+        alert.reported_by.require_auth();
+
+        if alert.status != AlertStatus::Active {
+            panic!("Alert is not active");
+        }
+
+        alert.status = AlertStatus::Cancelled;
+        env.storage().instance().set(&key, &alert);
+
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
+            active_alerts.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+        }
+
+        true
+    }
+
+    /// Get all active lost pet alerts
+    pub fn get_active_alerts(env: Env) -> Vec<LostPetAlert> {
+        let active_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        let mut active_alerts = Vec::new(&env);
+        
+        for id in active_ids.iter() {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(id))
+            {
+                if alert.status == AlertStatus::Active {
+                    active_alerts.push_back(alert);
+                }
+            }
+        }
+        
+        active_alerts
+    }
+
+    /// Get a specific alert by ID
+    pub fn get_alert(env: Env, alert_id: u64) -> Option<LostPetAlert> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LostPetAlert(alert_id))
+    }
+
+    /// Get sightings for a specific alert
+    pub fn get_alert_sightings(env: Env, alert_id: u64) -> Vec<SightingReport> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AlertSightings(alert_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Get alerts for a specific pet
+    pub fn get_pet_alerts(env: Env, pet_id: u64) -> Vec<LostPetAlert> {
+        let alert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LostPetAlertCount)
+            .unwrap_or(0);
+        
+        let mut pet_alerts = Vec::new(&env);
+        
+        for i in 1..=alert_count {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(i))
+            {
+                if alert.pet_id == pet_id {
+                    pet_alerts.push_back(alert);
+                }
+            }
+        }
+        pet_alerts
     }
 }
 
@@ -2118,3 +2379,6 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
+
+#[cfg(test)]
+mod test;
