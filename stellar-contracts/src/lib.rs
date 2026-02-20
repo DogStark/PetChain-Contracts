@@ -331,37 +331,22 @@ pub enum DataKeyExt {
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 
-<<<<<<< add-temporary-custody-system
-}
-
-#[contracttype]
-pub enum SystemKey {
-    // Ownership History keys
-=======
     // Ownership History DataKey
->>>>>>> main
     PetOwnershipRecord(u64),
     OwnershipRecordCount,
     PetOwnershipRecordCount(u64),
     PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
 
-<<<<<<< add-temporary-custody-system
-    // Multisig keys
-=======
-    // Multisig DataKey
->>>>>>> main
-    Admins,
-    AdminThreshold,
-    Proposal(u64),
-    ProposalCount,
-<<<<<<< add-temporary-custody-system
-
     // Vet Availability keys
     VetAvailability((Address, u64)),
     VetAvailabilityCount(Address),
     VetAvailabilityByDate((Address, u64)),
-=======
->>>>>>> main
+
+    // Multisig DataKey
+    Admins,
+    AdminThreshold,
+    Proposal(u64),
+    ProposalCount,
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -696,7 +681,7 @@ impl PetChainContract {
         let admins: Vec<Address> = env
             .storage()
             .instance()
-            .get(&SystemKey::Admins)
+            .get(&DataKeyExt::Admins)
             .expect("Admins not set");
 
         if admins.is_empty() {
@@ -718,542 +703,13 @@ impl PetChainContract {
         let admins: Vec<Address> = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::Admins)
-=======
             .get(&DataKeyExt::Admins)
->>>>>>> main
             .expect("Admins not set");
         
         if !admins.contains(admin.clone()) {
             panic!("Address is not an admin");
         }
         admin.require_auth();
-    }
-
-    fn require_admin(env: &Env) {
-        if let Some(admin) = env.storage().instance().get::<_, Address>(&DataKey::Admin) {
-            admin.require_auth();
-            return;
-        }
-        
-        if let Some(admins) = env.storage().instance().get::<_, Vec<Address>>(&DataKeyExt::Admins) {
-            if admins.len() > 0 {
-                 // For simplified repair, we require auth from the first admin.
-                 // Real multisig logic is handled in execute_proposal.
-                 admins.get(0).unwrap().require_auth();
-                 return;
-            }
-        }
-        panic!("Admin not set");
-    }
-
-    pub fn init_admin(env: Env, admin: Address) {
-<<<<<<< add-temporary-custody-system
-        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&SystemKey::Admins) {
-=======
-        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKeyExt::Admins) {
->>>>>>> main
-            panic!("Admin already set");
-        }
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-    }
-
-    pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold: u32) {
-<<<<<<< add-temporary-custody-system
-        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&SystemKey::Admins) {
-=======
-        if env.storage().instance().has(&DataKey::Admin) || env.storage().instance().has(&DataKeyExt::Admins) {
->>>>>>> main
-            panic!("Admin already set");
-        }
-        if threshold == 0 || threshold > admins.len() {
-            panic!("Invalid threshold");
-        }
-        
-        invoker.require_auth();
-        if !admins.contains(invoker) {
-            panic!("Invoker must be in the initial admin list");
-        }
-
-<<<<<<< add-temporary-custody-system
-        env.storage().instance().set(&SystemKey::Admins, &admins);
-        env.storage().instance().set(&SystemKey::AdminThreshold, &threshold);
-=======
-        env.storage().instance().set(&DataKeyExt::Admins, &admins);
-        env.storage().instance().set(&DataKeyExt::AdminThreshold, &threshold);
->>>>>>> main
-    }
-
-    // Pet Management Functions
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_pet(
-        env: Env,
-        owner: Address,
-        name: String,
-        birthday: String,
-        gender: Gender,
-        species: Species,
-        breed: String,
-        color: String,
-        weight: u32,
-        microchip_id: Option<String>,
-        privacy_level: PrivacyLevel,
-    ) -> u64 {
-        owner.require_auth();
-
-        let pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCount)
-            .unwrap_or(0);
-        let pet_id = pet_count + 1;
-        let timestamp = env.ledger().timestamp();
-
-        let key = Self::get_encryption_key(&env);
-
-        // Encrypt name
-        let name_bytes = name.to_xdr(&env);
-        let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, &name_bytes, &key);
-        let encrypted_name = EncryptedData {
-            nonce: name_nonce,
-            ciphertext: name_ciphertext,
-        };
-
-        // Encrypt birthday
-        let birthday_bytes = birthday.to_xdr(&env);
-        let (birthday_nonce, birthday_ciphertext) =
-            encrypt_sensitive_data(&env, &birthday_bytes, &key);
-        let encrypted_birthday = EncryptedData {
-            nonce: birthday_nonce,
-            ciphertext: birthday_ciphertext,
-        };
-
-        // Encrypt breed
-        let breed_bytes = breed.to_xdr(&env);
-        let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, &breed_bytes, &key);
-        let encrypted_breed = EncryptedData {
-            nonce: breed_nonce,
-            ciphertext: breed_ciphertext,
-        };
-
-        // Initialize empty medical alerts/contacts
-        let empty_alerts_bytes = Bytes::from_slice(&env, "".as_bytes());
-        let (alerts_nonce, alerts_ciphertext) =
-            encrypt_sensitive_data(&env, &empty_alerts_bytes, &key);
-        let encrypted_medical_alerts = EncryptedData {
-            nonce: alerts_nonce,
-            ciphertext: alerts_ciphertext,
-        };
-
-        let empty_contacts = Vec::<EmergencyContactInfo>::new(&env);
-        let contacts_bytes = empty_contacts.to_xdr(&env);
-        let (contacts_nonce, contacts_ciphertext) =
-            encrypt_sensitive_data(&env, &contacts_bytes, &key);
-        let encrypted_emergency_contacts = EncryptedData {
-            nonce: contacts_nonce,
-            ciphertext: contacts_ciphertext,
-        };
-
-        let pet = Pet {
-            id: pet_id,
-            owner: owner.clone(),
-            privacy_level,
-            encrypted_name,
-            encrypted_birthday,
-            encrypted_breed,
-            encrypted_emergency_contacts,
-            encrypted_medical_alerts,
-
-            // Empty placeholders for internal API consistency if needed
-            name: String::from_str(&env, ""),
-            birthday: String::from_str(&env, ""),
-            breed: String::from_str(&env, ""),
-            emergency_contacts: Vec::new(&env),
-            medical_alerts: String::from_str(&env, ""),
-
-            active: false,
-            created_at: timestamp,
-            updated_at: timestamp,
-            new_owner: owner.clone(),
-            species: species.clone(),
-            gender,
-            color,
-            weight,
-            microchip_id,
-            photo_hashes: Vec::new(&env),
-        };
-
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-        env.storage().instance().set(&DataKey::PetCount, &pet_id);
-
-        Self::log_ownership_change(
-            &env,
-            pet_id,
-            owner.clone(),
-            owner.clone(),
-            String::from_str(&env, "Initial Registration"),
-        );
-
-        let owner_pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
-        env.storage().instance().set(
-            &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
-            &pet_id,
-        );
-
-        // Add to species index
-        let species_key = Self::species_to_string(&env, &species);
-        let species_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SpeciesPetCount(species_key.clone()))
-            .unwrap_or(0)
-            + 1;
-        env.storage().instance().set(
-            &DataKey::SpeciesPetCount(species_key.clone()),
-            &species_count,
-        );
-        env.storage().instance().set(
-            &DataKey::SpeciesPetIndex((species_key, species_count)),
-            &pet_id,
-        );
-
-        // EMIT EVENT: PetRegistered (we emit the decrypted name for the event log as it's useful,
-        // assuming standard privacy. If high strictness needed, this should be masked).
-        // For now, we emit what was passed in.
-        env.events().publish(
-            (String::from_str(&env, "PetRegistered"), pet_id),
-            PetRegisteredEvent {
-                pet_id,
-                owner,
-                name: String::from_str(&env, "PROTECTED"), // Masking name in event for safety
-                species,
-                timestamp,
-            },
-        );
-
-        pet_id
-    }
-
-    pub fn register_pets_batch(
-        env: Env,
-        owner: Address,
-        pets_data: Vec<PetData>,
-    ) -> Vec<u64> {
-        owner.require_auth();
-
-        let mut pet_ids = Vec::new(&env);
-        let mut current_count: u64 = env
-            .storage()
-            .instance()
-            .get::<_, u64>(&DataKey::PetCount)
-            .unwrap_or(0);
-        
-        let timestamp = env.ledger().timestamp();
-        let key = Self::get_encryption_key(&env);
-
-        for pet_data in pets_data.iter() {
-            current_count += 1;
-            let pet_id = current_count;
-
-            // Encrypt name
-            let name_bytes = pet_data.name.to_xdr(&env);
-            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, &name_bytes, &key);
-            let encrypted_name = EncryptedData {
-                nonce: name_nonce,
-                ciphertext: name_ciphertext,
-            };
-
-            // Encrypt empty birthday (default for batch if not provided)
-            let empty_str = String::from_str(&env, "");
-            let birthday_bytes = empty_str.to_xdr(&env);
-            let (birthday_nonce, birthday_ciphertext) =
-                encrypt_sensitive_data(&env, &birthday_bytes, &key);
-            let encrypted_birthday = EncryptedData {
-                nonce: birthday_nonce,
-                ciphertext: birthday_ciphertext,
-            };
-
-            // Encrypt breed
-            let breed_bytes = pet_data.breed.to_xdr(&env);
-            let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, &breed_bytes, &key);
-            let encrypted_breed = EncryptedData {
-                nonce: breed_nonce,
-                ciphertext: breed_ciphertext,
-            };
-
-            // Initialize empty medical alerts/contacts
-            let empty_alerts_bytes = Bytes::from_slice(&env, "".as_bytes());
-            let (alerts_nonce, alerts_ciphertext) =
-                encrypt_sensitive_data(&env, &empty_alerts_bytes, &key);
-            let encrypted_medical_alerts = EncryptedData {
-                nonce: alerts_nonce,
-                ciphertext: alerts_ciphertext,
-            };
-
-            let empty_contacts = Vec::<EmergencyContactInfo>::new(&env);
-            let contacts_bytes = empty_contacts.to_xdr(&env);
-            let (contacts_nonce, contacts_ciphertext) =
-                encrypt_sensitive_data(&env, &contacts_bytes, &key);
-            let encrypted_emergency_contacts = EncryptedData {
-                nonce: contacts_nonce,
-                ciphertext: contacts_ciphertext,
-            };
-
-            let species = Self::string_to_species(&env, pet_data.species.clone());
-
-            let pet = Pet {
-                id: pet_id,
-                owner: owner.clone(),
-                privacy_level: PrivacyLevel::Public,
-                encrypted_name,
-                encrypted_birthday,
-                encrypted_breed,
-                encrypted_emergency_contacts,
-                encrypted_medical_alerts,
-
-                name: String::from_str(&env, ""),
-                birthday: String::from_str(&env, ""),
-                breed: String::from_str(&env, ""),
-                emergency_contacts: Vec::new(&env),
-                medical_alerts: String::from_str(&env, ""),
-
-                active: false,
-                created_at: timestamp,
-                updated_at: timestamp,
-                new_owner: owner.clone(),
-                species: species.clone(),
-                gender: Gender::Unknown,
-                color: String::from_str(&env, ""),
-                weight: 0,
-                microchip_id: None,
-                photo_hashes: Vec::new(&env),
-            };
-
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-            
-            Self::log_ownership_change(
-                &env,
-                pet_id,
-                owner.clone(),
-                owner.clone(),
-                String::from_str(&env, "Batch Registration"),
-            );
-
-            let owner_pet_count: u64 = env
-                .storage()
-                .instance()
-                .get::<_, u64>(&DataKey::PetCountByOwner(owner.clone()))
-                .unwrap_or(0)
-                + 1;
-            env.storage()
-                .instance()
-                .set::<_, u64>(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
-            env.storage().instance().set(
-                &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
-                &pet_id,
-            );
-
-            // Add to species index
-            let species_key = Self::species_to_string(&env, &species);
-            let species_count: u64 = env
-                .storage()
-                .instance()
-                .get::<_, u64>(&DataKey::SpeciesPetCount(species_key.clone()))
-                .unwrap_or(0)
-                + 1;
-            env.storage().instance().set(
-                &DataKey::SpeciesPetCount(species_key.clone()),
-                &species_count,
-            );
-            env.storage().instance().set(
-                &DataKey::SpeciesPetIndex((species_key, species_count)),
-                &pet_id,
-            );
-
-            env.events().publish(
-                (String::from_str(&env, "PetRegistered"), pet_id),
-                PetRegisteredEvent {
-                    pet_id,
-                    owner: owner.clone(),
-                    name: String::from_str(&env, "PROTECTED"),
-                    species,
-                    timestamp,
-                },
-            );
-
-            pet_ids.push_back(pet_id);
-        }
-
-        env.storage().instance().set(&DataKey::PetCount, &current_count);
-        pet_ids
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_pet_profile(
-        env: Env,
-        id: u64,
-        name: String,
-        birthday: String,
-        gender: Gender,
-        species: Species,
-        breed: String,
-        color: String,
-        weight: u32,
-        microchip_id: Option<String>,
-        privacy_level: PrivacyLevel,
-    ) -> bool {
-        if let Some(mut pet) = env
-            .storage()
-            .instance()
-            .get::<_, Pet>(&DataKey::Pet(id))
-        {
-            pet.owner.require_auth();
-
-            let key = Self::get_encryption_key(&env);
-
-            let name_bytes = name.to_xdr(&env);
-            let (name_nonce, name_ciphertext) = encrypt_sensitive_data(&env, &name_bytes, &key);
-            pet.encrypted_name = EncryptedData {
-                nonce: name_nonce,
-                ciphertext: name_ciphertext,
-            };
-
-            let birthday_bytes = birthday.to_xdr(&env);
-            let (birthday_nonce, birthday_ciphertext) =
-                encrypt_sensitive_data(&env, &birthday_bytes, &key);
-            pet.encrypted_birthday = EncryptedData {
-                nonce: birthday_nonce,
-                ciphertext: birthday_ciphertext,
-            };
-
-            let breed_bytes = breed.to_xdr(&env);
-            let (breed_nonce, breed_ciphertext) = encrypt_sensitive_data(&env, &breed_bytes, &key);
-            pet.encrypted_breed = EncryptedData {
-                nonce: breed_nonce,
-                ciphertext: breed_ciphertext,
-            };
-
-            pet.gender = gender;
-            pet.species = species;
-            pet.privacy_level = privacy_level;
-            pet.color = color;
-            pet.weight = weight;
-            pet.microchip_id = microchip_id;
-            pet.updated_at = env.ledger().timestamp();
-
-            env.storage().instance().set(&DataKey::Pet(id), &pet);
-            Self::log_access(
-                &env,
-                id,
-                pet.owner,
-                AccessAction::Write,
-                String::from_str(&env, "Pet profile updated"),
-            );
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn get_pet(env: Env, id: u64) -> Option<PetProfile> {
-        if let Some(pet) = env
-            .storage()
-            .instance()
-            .get::<_, Pet>(&DataKey::Pet(id))
-        {
-<<<<<<< HEAD
-            let _current_user = env.current_contract_address(); // Use consistent current user check
-            let _is_authorized_for_full_data = false;
-
-            // Simple check: if caller is owner
-            // Note: Since we don't have the caller in read-only scope easily without require_auth,
-            // this privacy model relies on the caller being verified in context or data being public.
-            // For true read-access control, we would need the caller's address passed in or
-            // use a viewing key pattern. Here we emulate based on contract state.
-            // Assuming this is called by a client who "is" user X.
-            // But soroban read functions don't authenticate "viewer".
-            // So we rely on PrivacyLevel::Public or return limited data?
-            // HEAD impl had logic checking `current_contract_address` or similar which might not work as intended for external calls.
-            // For now, we decrypt if Public, or we assume this function decrypts for the client to see.
-            // Real privacy requires off-chain key management.
-            // We will proceed with decryption to return the Profile.
-
-            let key = Self::get_encryption_key(&env);
-
-            let decrypted_name = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_name.ciphertext,
-                &pet.encrypted_name.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let name =
-                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_birthday = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_birthday.ciphertext,
-                &pet.encrypted_birthday.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let birthday = String::from_xdr(&env, &decrypted_birthday)
-                .unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_breed = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_breed.ciphertext,
-                &pet.encrypted_breed.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let breed =
-                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
-
-            let profile = PetProfile {
-                id: pet.id,
-                owner: pet.owner,
-                privacy_level: pet.privacy_level,
-                name,
-                birthday,
-                active: pet.active,
-                created_at: pet.created_at,
-                updated_at: pet.updated_at,
-                new_owner: pet.new_owner,
-                species: pet.species,
-                gender: pet.gender,
-                breed,
-                color: pet.color,
-                weight: pet.weight,
-                microchip_id: pet.microchip_id,
-            };
-            Self::log_access(
-                &env,
-                id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Pet profile accessed"),
-            );
-            Some(profile)
-=======
-            if pet.archived {
-                return None;
-            }
-            Some(Self::build_pet_profile(&env, &pet))
->>>>>>> upstream/main
-        } else {
-            None
-        }
     }
 
     fn build_pet_profile(env: &Env, pet: &Pet) -> PetProfile {
@@ -1305,72 +761,15 @@ impl PetChainContract {
             color: pet.color.clone(),
             weight: pet.weight,
             microchip_id: pet.microchip_id.clone(),
-            archived: pet.archived,
-            notes: pet.notes.clone(),
+            photo_hashes: pet.photo_hashes.clone(),
         }
     }
 
-    pub fn update_pet_notes(env: Env, pet_id: u64, notes: String) {
-        if let Some(mut pet) = env
-            .storage()
+    pub fn get_pet(env: Env, id: u64) -> Option<PetProfile> {
+        env.storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-        {
-            pet.owner.require_auth();
-            if notes.len() > 1000 {
-                panic!("Notes too long");
-            }
-            pet.notes = notes;
-            pet.updated_at = env.ledger().timestamp();
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-        }
-    }
-
-    pub fn archive_pet(env: Env, pet_id: u64) {
-        if let Some(mut pet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-        {
-            pet.owner.require_auth();
-            pet.archived = true;
-            pet.updated_at = env.ledger().timestamp();
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-        }
-    }
-
-    pub fn restore_pet(env: Env, pet_id: u64) {
-        if let Some(mut pet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-        {
-            pet.owner.require_auth();
-            pet.archived = false;
-            pet.updated_at = env.ledger().timestamp();
-            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
-        }
-    }
-
-    pub fn get_archived_pets(env: Env, owner: Address) -> Vec<PetProfile> {
-        let count = Self::get_owner_pet_count(&env, &owner);
-        let mut archived = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(pid) = env
-                .storage()
-                .instance()
-                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
-            {
-                if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pid)) {
-                    if pet.archived {
-                        if let Some(profile) = Self::get_pet(env.clone(), pid) {
-                            archived.push_back(profile);
-                        }
-                    }
-                }
-            }
-        }
-        archived
+            .get::<_, Pet>(&DataKey::Pet(id))
+            .map(|pet| Self::build_pet_profile(&env, &pet))
     }
 
 
@@ -2238,11 +1637,7 @@ impl PetChainContract {
             Species::Bird => String::from_str(env, "Bird"),
         }
     }
-<<<<<<< add-temporary-custody-system
-
     fn validate_ipfs_hash(hash: &String) {
-=======
->>>>>>> main
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
@@ -2264,22 +1659,14 @@ impl PetChainContract {
         let global_count: u64 = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::OwnershipRecordCount)
-=======
             .get(&DataKeyExt::OwnershipRecordCount)
->>>>>>> main
             .unwrap_or(0);
         let record_id = global_count + 1;
 
         let pet_count: u64 = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
-=======
             .get(&DataKeyExt::PetOwnershipRecordCount(pet_id))
->>>>>>> main
             .unwrap_or(0);
         let new_pet_count = pet_count + 1;
 
@@ -2293,17 +1680,6 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .set(&SystemKey::PetOwnershipRecord(record_id), &record);
-        env.storage()
-            .instance()
-            .set(&SystemKey::OwnershipRecordCount, &record_id);
-        env.storage()
-            .instance()
-            .set(&SystemKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
-        env.storage().instance().set(
-            &SystemKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
-=======
             .set(&DataKeyExt::PetOwnershipRecord(record_id), &record);
         env.storage()
             .instance()
@@ -2313,7 +1689,6 @@ impl PetChainContract {
             .set(&DataKeyExt::PetOwnershipRecordCount(pet_id), &new_pet_count);
         env.storage().instance().set(
             &DataKeyExt::PetOwnershipRecordIndex((pet_id, new_pet_count)),
->>>>>>> main
             &record_id,
         );
     }
@@ -2322,11 +1697,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
-=======
             .get(&DataKeyExt::PetOwnershipRecordCount(pet_id))
->>>>>>> main
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
@@ -2334,20 +1705,12 @@ impl PetChainContract {
             if let Some(record_id) = env
                 .storage()
                 .instance()
-<<<<<<< add-temporary-custody-system
-                .get::<SystemKey, u64>(&SystemKey::PetOwnershipRecordIndex((pet_id, i)))
-=======
                 .get::<_, u64>(&DataKeyExt::PetOwnershipRecordIndex((pet_id, i)))
->>>>>>> main
             {
                 if let Some(record) = env
                     .storage()
                     .instance()
-<<<<<<< add-temporary-custody-system
-                    .get::<SystemKey, OwnershipRecord>(&SystemKey::PetOwnershipRecord(record_id))
-=======
                     .get::<_, OwnershipRecord>(&DataKeyExt::PetOwnershipRecord(record_id))
->>>>>>> main
                 {
                     history.push_back(record);
                 }
@@ -2771,18 +2134,7 @@ impl PetChainContract {
 
             env.storage()
                 .instance()
-<<<<<<< HEAD
-                .set(&DataKey::MedicalRecord(record_id), &record);
-            Self::log_access(
-                &env,
-                record.pet_id,
-                record.veterinarian,
-                AccessAction::Write,
-                String::from_str(&env, "Medical record updated"),
-            );
-=======
                 .set(&DataKeyExt::MedicalRecord(record_id), &record);
->>>>>>> upstream/main
             true
         } else {
             false
@@ -2793,21 +2145,8 @@ impl PetChainContract {
         let record: Option<MedicalRecord> = env
             .storage()
             .instance()
-<<<<<<< HEAD
-            .get(&DataKey::MedicalRecord(record_id));
-        if let Some(ref r) = record {
-            Self::log_access(
-                &env,
-                r.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record accessed"),
-            );
-        }
+            .get(&DataKeyExt::MedicalRecord(record_id));
         record
-=======
-            .get(&DataKeyExt::MedicalRecord(record_id))
->>>>>>> upstream/main
     }
 
     pub fn get_pet_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
@@ -3008,7 +2347,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::MedicationCount)
+            .get(&DataKeyExt::MedicationCount)
             .unwrap_or(0);
         let id = count + 1;
 
@@ -3026,21 +2365,21 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::GlobalMedication(id), &medication);
-        env.storage().instance().set(&DataKey::MedicationCount, &id);
+            .set(&DataKeyExt::GlobalMedication(id), &medication);
+        env.storage().instance().set(&DataKeyExt::MedicationCount, &id);
 
         let pet_med_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetMedicationCount(pet_id))
+            .get(&DataKeyExt::PetMedicationCount(pet_id))
             .unwrap_or(0);
         let new_count = pet_med_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationCount(pet_id), &new_count);
+            .set(&DataKeyExt::PetMedicationCount(pet_id), &new_count);
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationIndex((pet_id, new_count)), &id);
+            .set(&DataKeyExt::PetMedicationIndex((pet_id, new_count)), &id);
 
         id
     }
@@ -3337,11 +2676,7 @@ impl PetChainContract {
         let slot_count: u64 = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
-=======
             .get(&DataKeyExt::VetAvailabilityCount(vet_address.clone()))
->>>>>>> main
             .unwrap_or(0);
         let slot_index = slot_count + 1;
 
@@ -3355,16 +2690,6 @@ impl PetChainContract {
         // Store the slot
         env.storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .set(&SystemKey::VetAvailability((vet_address.clone(), slot_index)), &slot);
-        env.storage()
-            .instance()
-            .set(&SystemKey::VetAvailabilityCount(vet_address.clone()), &slot_index);
-
-        // Add to date-based index for efficient querying
-        let date = Self::get_date_from_timestamp(start_time);
-        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
-=======
             .set(&DataKeyExt::VetAvailability((vet_address.clone(), slot_index)), &slot);
         env.storage()
             .instance()
@@ -3373,7 +2698,6 @@ impl PetChainContract {
         // Add to date-based index for efficient querying
         let date = Self::get_date_from_timestamp(start_time);
         let date_key = DataKeyExt::VetAvailabilityByDate((vet_address.clone(), date));
->>>>>>> main
         let mut date_slots: Vec<u64> = env
             .storage()
             .instance()
@@ -3387,11 +2711,7 @@ impl PetChainContract {
 
     /// Get available slots for a vet on a specific date
     pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
-<<<<<<< add-temporary-custody-system
-        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
-=======
         let date_key = DataKeyExt::VetAvailabilityByDate((vet_address.clone(), date));
->>>>>>> main
         let slot_indices: Vec<u64> = env
             .storage()
             .instance()
@@ -3404,11 +2724,7 @@ impl PetChainContract {
             if let Some(slot) = env
                 .storage()
                 .instance()
-<<<<<<< add-temporary-custody-system
-                .get::<SystemKey, AvailabilitySlot>(&SystemKey::VetAvailability((vet_address.clone(), index)))
-=======
                 .get::<_, AvailabilitySlot>(&DataKeyExt::VetAvailability((vet_address.clone(), index)))
->>>>>>> main
             {
                 if slot.available {
                     available_slots.push_back(slot);
@@ -3538,20 +2854,12 @@ impl PetChainContract {
 
     /// Book a slot (mark as unavailable)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
-<<<<<<< add-temporary-custody-system
-        let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
-=======
         let key = DataKeyExt::VetAvailability((vet_address.clone(), slot_index));
->>>>>>> main
         
         if let Some(mut slot) = env
             .storage()
             .instance()
-<<<<<<< add-temporary-custody-system
-            .get::<SystemKey, AvailabilitySlot>(&key)
-=======
             .get::<_, AvailabilitySlot>(&key)
->>>>>>> main
         {
             if !slot.available {
                 panic!("Slot already booked");
@@ -3671,21 +2979,10 @@ impl PetChainContract {
     pub fn propose_action(env: Env, proposer: Address, action: ProposalAction, expires_in: u64) -> u64 {
         Self::require_admin_auth(&env, &proposer);
         
-<<<<<<< add-temporary-custody-system
-        let count: u64 = env.storage().instance().get(&SystemKey::ProposalCount).unwrap_or(0);
-        let proposal_id = count + 1;
-        
-        let threshold = env
-            .storage()
-            .instance()
-            .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
-            .unwrap_or(1);
-=======
         let count: u64 = env.storage().instance().get(&DataKeyExt::ProposalCount).unwrap_or(0);
         let proposal_id = count + 1;
         
         let threshold = env.storage().instance().get::<_, u32>(&DataKeyExt::AdminThreshold).unwrap_or(1);
->>>>>>> main
         
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
@@ -3702,17 +2999,8 @@ impl PetChainContract {
             executed: false,
         };
 
-<<<<<<< add-temporary-custody-system
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
-        env.storage()
-            .instance()
-            .set(&SystemKey::ProposalCount, &proposal_id);
-=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
         env.storage().instance().set(&DataKeyExt::ProposalCount, &proposal_id);
->>>>>>> main
         
         proposal_id
     }
@@ -3721,11 +3009,7 @@ impl PetChainContract {
         Self::require_admin_auth(&env, &admin);
         
         let mut proposal: MultiSigProposal = env.storage().instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::Proposal(proposal_id))
-=======
             .get(&DataKeyExt::Proposal(proposal_id))
->>>>>>> main
             .expect("Proposal not found");
         
         if proposal.executed {
@@ -3741,22 +3025,12 @@ impl PetChainContract {
         }
         
         proposal.approvals.push_back(admin);
-<<<<<<< add-temporary-custody-system
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
-=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
->>>>>>> main
     }
 
     pub fn execute_proposal(env: Env, proposal_id: u64) {
         let mut proposal: MultiSigProposal = env.storage().instance()
-<<<<<<< add-temporary-custody-system
-            .get(&SystemKey::Proposal(proposal_id))
-=======
             .get(&DataKeyExt::Proposal(proposal_id))
->>>>>>> main
             .expect("Proposal not found");
         
         if proposal.executed {
@@ -3788,36 +3062,19 @@ impl PetChainContract {
                 if threshold == 0 || threshold > admins.len() {
                     panic!("Invalid threshold");
                 }
-<<<<<<< add-temporary-custody-system
-                env.storage().instance().set(&SystemKey::Admins, &admins);
-                env.storage()
-                    .instance()
-                    .set(&SystemKey::AdminThreshold, &threshold);
-=======
                 env.storage().instance().set(&DataKeyExt::Admins, &admins);
                 env.storage().instance().set(&DataKeyExt::AdminThreshold, &threshold);
->>>>>>> main
                 // Also clean up legacy admin if needed
                 env.storage().instance().remove(&DataKey::Admin);
             }
         }
 
         proposal.executed = true;
-<<<<<<< add-temporary-custody-system
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
-    }
-
-    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
-        env.storage().instance().get(&SystemKey::Proposal(proposal_id))
-=======
         env.storage().instance().set(&DataKeyExt::Proposal(proposal_id), &proposal);
     }
 
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
         env.storage().instance().get(&DataKeyExt::Proposal(proposal_id))
->>>>>>> main
     }
 
     // --- VET REVIEWS ---
@@ -3917,14 +3174,6 @@ impl PetChainContract {
             total += review.rating;
         }
         total / reviews.len()
-    }
-
-    fn require_admin(env: &Env) {
-        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
-            admin.require_auth();
-        } else {
-            panic!("Admin not set");
-        }
     }
 
     // --- MEDICATION TRACKING ---
@@ -4070,8 +3319,6 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
-<<<<<<< add-temporary-custody-system
-=======
 
 #[cfg(test)]
 mod test_batch;
@@ -4079,4 +3326,3 @@ mod test_batch;
 // mod test;
 #[cfg(test)]
 mod test_access_control;
->>>>>>> main
