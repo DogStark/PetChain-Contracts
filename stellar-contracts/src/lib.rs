@@ -281,13 +281,20 @@ pub enum DataKey {
     LostPetAlert(u64),
     LostPetAlertCount,
     ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
-    AlertSightings(u64),     // Vec<SightingReport> for each alert
+  AlertSightings(u64),
 
     // Vet Availability System keys
-    VetAvailability((Address, u64)), // (vet_address, slot_index) -> AvailabilitySlot
-    VetAvailabilityCount(Address),   // vet_address -> count of slots
-    VetAvailabilityByDate((Address, u64)), // (vet_address, date) -> Vec<u64> slot indices
+    VetAvailability((Address, u64)),
+    VetAvailabilityCount(Address),
+    VetAvailabilityByDate((Address, u64)),
+
+    // Consent System keys
+    Consent(u64),
+    ConsentCount,
+    PetConsentIndex((u64, u64)),
+    PetConsentCount(u64),
 }
+
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -320,6 +327,7 @@ pub struct SightingReport {
     pub description: String,
 }
 
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AvailabilitySlot {
@@ -338,6 +346,28 @@ pub struct AvailabilitySlot {
     AdminThreshold,
     Proposal(u64),
     ProposalCount,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsentType {
+    Insurance,
+    Research,
+    PublicHealth,
+    Other,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Consent {
+    pub id: u64,
+    pub pet_id: u64,
+    pub owner: Address,
+    pub consent_type: ConsentType,
+    pub granted_to: Address,
+    pub granted_at: u64,
+    pub revoked_at: Option<u64>,
+    pub is_active: bool,
 }
 
 #[contracttype]
@@ -2774,6 +2804,123 @@ impl PetChainContract {
         }
 
         available_slots
+    }
+    // --- CONSENT SYSTEM ---
+
+    pub fn grant_consent(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+    ) -> u64 {
+        owner.require_auth();
+
+        // Verify owner owns the pet
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        if pet.owner != owner {
+            panic!("Not the pet owner");
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConsentCount)
+            .unwrap_or(0);
+        let consent_id = count + 1;
+        let now = env.ledger().timestamp();
+
+        let consent = Consent {
+            id: consent_id,
+            pet_id,
+            owner,
+            consent_type,
+            granted_to,
+            granted_at: now,
+            revoked_at: None,
+            is_active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Consent(consent_id), &consent);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConsentCount, &consent_id);
+
+        // Update pet consent index
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::PetConsentCount(pet_id), &new_pet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetConsentIndex((pet_id, new_pet_count)), &consent_id);
+
+        consent_id
+    }
+
+    pub fn revoke_consent(env: Env, consent_id: u64, owner: Address) -> bool {
+        owner.require_auth();
+
+        if let Some(mut consent) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+        {
+            if consent.owner != owner {
+                panic!("Not the consent owner");
+            }
+            if !consent.is_active {
+                panic!("Consent already revoked");
+            }
+
+            consent.is_active = false;
+            consent.revoked_at = Some(env.ledger().timestamp());
+
+            env.storage()
+                .instance()
+                .set(&DataKey::Consent(consent_id), &consent);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_consent_history(env: Env, pet_id: u64) -> Vec<Consent> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(consent_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(consent) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+                {
+                    history.push_back(consent);
+                }
+            }
+        }
+        history
     }
 
     /// Book a slot (mark as unavailable)
