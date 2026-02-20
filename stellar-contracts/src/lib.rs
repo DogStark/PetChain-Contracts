@@ -277,6 +277,18 @@ pub enum DataKey {
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
 
+    // Vet Review keys
+    VetReview(u64),                      // review_id -> VetReview
+    VetReviewCount,                      // Global count of reviews
+    VetReviewByVetIndex((Address, u64)), // (Vet, index) -> review_id
+    VetReviewCountByVet(Address),        // Vet -> count
+    VetReviewByOwnerVet((Address, Address)), // (Owner, Vet) -> review_id (Duplicate check)
+
+    // Medication keys
+    GlobalMedication(u64),               // medication_id -> Medication
+    MedicationCount,                     // Global count
+    PetMedicationCount(u64),             // pet_id -> count
+    PetMedicationIndex((u64, u64)),      // (pet_id, index) -> medication_id
         // Lost Pet Alert System keys
     LostPetAlert(u64),
     LostPetAlertCount,
@@ -375,11 +387,13 @@ pub struct Consent {
 pub struct LabResult {
     pub id: u64,
     pub pet_id: u64,
-    pub veterinarian: Address,
-    pub test_type: String,              // e.g., "Blood Work", "X-Ray"
-    pub result_summary: String,         // e.g., "Normal", "Fracture detected"
-    pub medical_record_id: Option<u64>, // Link to optional medical record
-    pub created_at: u64,
+    pub test_type: String,
+    pub date: u64,
+    pub results: String,
+    pub vet_address: Address,
+    pub reference_ranges: String,
+    pub attachment_hash: Option<String>, // IPFS hash for PDF
+    pub medical_record_id: Option<u64>,  // Link to medical record
 }
 
 #[contracttype]
@@ -413,12 +427,13 @@ pub struct AccessGrant {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Medication {
+    pub id: u64,
+    pub pet_id: u64,
     pub name: String,
     pub dosage: String,
     pub frequency: String,
     pub start_date: u64,
-    pub end_date: u64,
-    // Added for Issue 45 Requirements
+    pub end_date: Option<u64>,
     pub prescribing_vet: Address,
     pub active: bool,
 }
@@ -459,6 +474,14 @@ pub struct MedicalRecordInput {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VetReview {
+    pub id: u64,
+    pub vet_address: Address,
+    pub reviewer: Address,
+    pub rating: u32, // 1-5 stars
+    pub comment: String,
+    pub date: u64,
 #[derive(Clone)]
 pub struct OwnershipRecord {
     pub pet_id: u64,
@@ -2272,12 +2295,14 @@ impl PetChainContract {
     pub fn add_lab_result(
         env: Env,
         pet_id: u64,
-        veterinarian: Address,
+        vet_address: Address,
         test_type: String,
-        result_summary: String,
+        results: String,
+        reference_ranges: String,
+        attachment_hash: Option<String>,
         medical_record_id: Option<u64>,
     ) -> u64 {
-        veterinarian.require_auth();
+        vet_address.require_auth();
         let _pet: Pet = env
             .storage()
             .instance()
@@ -2295,11 +2320,13 @@ impl PetChainContract {
         let result = LabResult {
             id,
             pet_id,
-            veterinarian,
             test_type,
-            result_summary,
+            date: env.ledger().timestamp(),
+            results,
+            vet_address,
+            reference_ranges,
+            attachment_hash,
             medical_record_id,
-            created_at: env.ledger().timestamp(),
         };
         env.storage()
             .instance()
@@ -2327,7 +2354,7 @@ impl PetChainContract {
             .get(&DataKey::LabResult(lab_result_id))
     }
 
-    pub fn get_pet_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
+    pub fn get_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
         let count = env
             .storage()
             .instance()
@@ -2349,6 +2376,7 @@ impl PetChainContract {
     }
     // --- MEDICATION MANAGEMENT ---
 
+    pub fn add_medication_to_record(
     #[allow(clippy::too_many_arguments)]
     pub fn add_medication(
         env: Env,
@@ -2369,11 +2397,13 @@ impl PetChainContract {
             prescribing_vet.require_auth();
 
             let med = Medication {
+                id: 0,
+                pet_id: record.pet_id,
                 name,
                 dosage,
                 frequency,
                 start_date,
-                end_date,
+                end_date: Some(end_date),
                 prescribing_vet,
                 active: true,
             };
@@ -2390,7 +2420,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn mark_medication_completed(env: Env, record_id: u64, med_index: u32) -> bool {
+    pub fn mark_record_med_completed(env: Env, record_id: u64, med_index: u32) -> bool {
         if let Some(mut record) = env
             .storage()
             .instance()
@@ -2428,7 +2458,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_active_medications(env: Env, pet_id: u64) -> Vec<Medication> {
+    pub fn get_active_record_meds(env: Env, pet_id: u64) -> Vec<Medication> {
         let records = Self::get_pet_medical_records(env.clone(), pet_id);
         let mut active_meds = Vec::new(&env);
         // let now = env.ledger().timestamp(); // usage disabled to just rely on active flag for now
@@ -2443,7 +2473,7 @@ impl PetChainContract {
         active_meds
     }
 
-    pub fn get_medication_history(env: Env, pet_id: u64) -> Vec<Medication> {
+    pub fn get_record_med_history(env: Env, pet_id: u64) -> Vec<Medication> {
         let records = Self::get_pet_medical_records(env.clone(), pet_id);
         let mut history = Vec::new(&env);
 
@@ -3146,6 +3176,218 @@ impl PetChainContract {
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
         env.storage().instance().get(&DataKey::Proposal(proposal_id))
     }
+
+    // --- VET REVIEWS ---
+
+    pub fn add_vet_review(
+        env: Env,
+        reviewer: Address,
+        vet: Address,
+        rating: u32,
+        comment: String,
+    ) -> u64 {
+        reviewer.require_auth();
+
+        if rating < 1 || rating > 5 {
+            panic!("Rating must be between 1 and 5");
+        }
+
+        // Check duplicate
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::VetReviewByOwnerVet((reviewer.clone(), vet.clone())))
+        {
+            panic!("You have already reviewed this veterinarian");
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetReviewCount)
+            .unwrap_or(0);
+        let id = count + 1;
+
+        let review = VetReview {
+            id,
+            vet_address: vet.clone(),
+            reviewer: reviewer.clone(),
+            rating,
+            comment,
+            date: env.ledger().timestamp(),
+        };
+
+        env.storage().instance().set(&DataKey::VetReview(id), &review);
+        env.storage().instance().set(&DataKey::VetReviewCount, &id);
+
+        // Index by Vet
+        let vet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .unwrap_or(0);
+        let new_vet_count = vet_count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetReviewByVetIndex((vet.clone(), new_vet_count)), &id);
+
+        // Mark as reviewed by this owner
+        env.storage()
+            .instance()
+            .set(&DataKey::VetReviewByOwnerVet((reviewer, vet)), &id);
+
+        id
+    }
+
+    pub fn get_vet_reviews(env: Env, vet: Address) -> Vec<VetReview> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .unwrap_or(0);
+        let mut reviews = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(review_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::VetReviewByVetIndex((vet.clone(), i)))
+            {
+                if let Some(review) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, VetReview>(&DataKey::VetReview(review_id))
+                {
+                    reviews.push_back(review);
+                }
+            }
+        }
+        reviews
+    }
+
+    pub fn get_vet_average_rating(env: Env, vet: Address) -> u32 {
+        let reviews = Self::get_vet_reviews(env.clone(), vet);
+        if reviews.is_empty() {
+            return 0;
+        }
+        let mut total = 0u32;
+        for review in reviews.iter() {
+            total += review.rating;
+        }
+        total / reviews.len()
+    }
+
+    // --- MEDICATION TRACKING ---
+
+    pub fn add_medication(
+        env: Env,
+        pet_id: u64,
+        name: String,
+        dosage: String,
+        frequency: String,
+        start_date: u64,
+        end_date: Option<u64>,
+        prescribing_vet: Address,
+    ) -> u64 {
+        prescribing_vet.require_auth();
+
+        // Verify the pet exists
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MedicationCount)
+            .unwrap_or(0);
+        let id = count + 1;
+
+        let medication = Medication {
+            id,
+            pet_id,
+            name,
+            dosage,
+            frequency,
+            start_date,
+            end_date,
+            prescribing_vet: prescribing_vet.clone(),
+            active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::GlobalMedication(id), &medication);
+        env.storage().instance().set(&DataKey::MedicationCount, &id);
+
+        // Index by pet
+        let pet_med_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicationCount(pet_id))
+            .unwrap_or(0);
+        let new_count = pet_med_count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::PetMedicationCount(pet_id), &new_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetMedicationIndex((pet_id, new_count)), &id);
+
+        id
+    }
+
+    pub fn get_active_medications(env: Env, pet_id: u64) -> Vec<Medication> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetMedicationCount(pet_id))
+            .unwrap_or(0);
+        let mut active_meds = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(med_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetMedicationIndex((pet_id, i)))
+            {
+                if let Some(med) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Medication>(&DataKey::GlobalMedication(med_id))
+                {
+                    if med.active {
+                        active_meds.push_back(med);
+                    }
+                }
+            }
+        }
+        active_meds
+    }
+
+    pub fn mark_medication_completed(env: Env, medication_id: u64) {
+        if let Some(mut med) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Medication>(&DataKey::GlobalMedication(medication_id))
+        {
+            med.prescribing_vet.require_auth();
+            med.active = false;
+            // If end_date is not set, set it to current ledger timestamp
+            if med.end_date.is_none() {
+                med.end_date = Some(env.ledger().timestamp());
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::GlobalMedication(medication_id), &med);
+        } else {
+            panic!("Medication not found");
+        }
+    }
 }
 
 // --- ENCRYPTION HELPERS ---
@@ -3166,4 +3408,5 @@ fn decrypt_sensitive_data(
 }
 
 #[cfg(test)]
+mod test;
 mod test;
