@@ -3306,4 +3306,66 @@ mod test {
         let pet_unknown_profile = client.get_pet(&pet_unknown).unwrap();
         assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
     }
+
+    #[test]
+    fn test_grant_custody() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let custodian = Address::generate(&env);
+        let mut permissions = Vec::new(&env);
+        permissions.push_back(String::from_str(&env, "feed"));
+        permissions.push_back(String::from_str(&env, "walk"));
+
+        let custody = client.grant_temporary_custody(&1u64, &custodian, &100u64, &200u64, &permissions);
+
+        assert!(custody.is_active);
+        assert_eq!(custody.custodian, custodian);
+        assert_eq!(custody.permissions.len(), 2);
+    }
+
+    #[test]
+    fn test_auto_expiry() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+
+        let custodian = Address::generate(&env);
+        let mut permissions = Vec::new(&env);
+        permissions.push_back(String::from_str(&env, "feed"));
+
+        client.grant_temporary_custody(&7u64, &custodian, &900u64, &1100u64, &permissions);
+        assert!(client.is_custody_valid(&7u64));
+
+        env.ledger().with_mut(|l| l.timestamp = 1200);
+        assert!(!client.is_custody_valid(&7u64));
+    }
+
+    #[test]
+    fn test_limited_permissions() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let custodian = Address::generate(&env);
+        let mut permissions = Vec::new(&env);
+        permissions.push_back(String::from_str(&env, "medicate"));
+
+        let custody = client.grant_temporary_custody(&99u64, &custodian, &10u64, &20u64, &permissions);
+
+        assert_eq!(custody.permissions.len(), 1);
+        assert_eq!(
+            custody.permissions.get(0).unwrap(),
+            String::from_str(&env, "medicate")
+        );
+    }
 }

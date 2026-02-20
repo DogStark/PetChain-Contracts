@@ -259,6 +259,7 @@ pub enum DataKey {
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
+    TemporaryCustody(u64),        // pet_id -> temporary custody record
     UserAccessList(Address),      // grantee -> list of pet_ids they have access to
     UserAccessCount(Address),     // grantee -> count of pets they can access
 
@@ -421,6 +422,18 @@ pub struct AccessGrant {
     pub access_level: AccessLevel,
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct TemporaryCustody {
+    pub pet_id: u64,
+    pub owner: Address,
+    pub custodian: Address,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub permissions: Vec<String>,
     pub is_active: bool,
 }
 
@@ -2106,6 +2119,65 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn grant_temporary_custody(
+        env: Env,
+        pet_id: u64,
+        custodian: Address,
+        start_date: u64,
+        end_date: u64,
+        permissions: Vec<String>,
+    ) -> TemporaryCustody {
+        let owner = env.invoker();
+        owner.require_auth();
+
+        let custody = TemporaryCustody {
+            pet_id,
+            owner,
+            custodian,
+            start_date,
+            end_date,
+            permissions,
+            is_active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TemporaryCustody(pet_id), &custody);
+
+        custody
+    }
+
+    pub fn revoke_temporary_custody(env: Env, pet_id: u64) {
+        let owner = env.invoker();
+        owner.require_auth();
+
+        let mut custody: TemporaryCustody = env
+            .storage()
+            .instance()
+            .get(&DataKey::TemporaryCustody(pet_id))
+            .expect("Temporary custody not found");
+
+        if custody.owner != owner {
+            panic!("Only the owner can revoke temporary custody");
+        }
+
+        custody.is_active = false;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TemporaryCustody(pet_id), &custody);
+    }
+
+    pub fn is_custody_valid(env: Env, pet_id: u64) -> bool {
+        let custody: TemporaryCustody = env
+            .storage()
+            .instance()
+            .get(&DataKey::TemporaryCustody(pet_id))
+            .expect("Temporary custody not found");
+        let current_time = env.ledger().timestamp();
+        custody.is_active && current_time <= custody.end_date
     }
 
     // --- MEDICAL RECORDS ---
