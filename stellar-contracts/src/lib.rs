@@ -20,6 +20,7 @@ pub enum Gender {
     NotSpecified,
     Male,
     Female,
+    Unknown,
 }
 
 #[contracttype]
@@ -72,7 +73,9 @@ pub struct Pet {
     pub new_owner: Address,
     pub species: Species,
     pub gender: Gender,
-    pub photo_hashes: Vec<String>,
+    pub color: String,
+    pub weight: u32,
+    pub microchip_id: Option<String>,
 }
 
 #[contracttype]
@@ -90,7 +93,9 @@ pub struct PetProfile {
     pub species: Species,
     pub gender: Gender,
     pub breed: String,
-    pub photo_hashes: Vec<String>,
+    pub color: String,
+    pub weight: u32,
+    pub microchip_id: Option<String>,
 }
 
 #[contracttype]
@@ -434,6 +439,9 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        color: String,
+        weight: u32,
+        microchip_id: Option<String>,
         privacy_level: PrivacyLevel,
     ) -> u64 {
         owner.require_auth();
@@ -514,7 +522,9 @@ impl PetChainContract {
             new_owner: owner.clone(),
             species: species.clone(),
             gender,
-            photo_hashes: Vec::new(&env),
+            color,
+            weight,
+            microchip_id,
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -560,6 +570,9 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        color: String,
+        weight: u32,
+        microchip_id: Option<String>,
         privacy_level: PrivacyLevel,
     ) -> bool {
         if let Some(mut pet) = env
@@ -596,6 +609,9 @@ impl PetChainContract {
             pet.gender = gender;
             pet.species = species;
             pet.privacy_level = privacy_level;
+            pet.color = color;
+            pet.weight = weight;
+            pet.microchip_id = microchip_id;
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -672,7 +688,9 @@ impl PetChainContract {
                 species: pet.species,
                 gender: pet.gender,
                 breed,
-                photo_hashes: pet.photo_hashes,
+                color: pet.color,
+                weight: pet.weight,
+                microchip_id: pet.microchip_id,
             })
         } else {
             None

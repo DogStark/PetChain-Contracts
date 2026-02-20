@@ -6,6 +6,7 @@ on:
 
 permissions:
   pull-requests: write
+  issues: write
   contents: read
 
 jobs:
@@ -32,3 +33,16 @@ jobs:
         run: |
           cd stellar-contracts
           cargo test
+          
+      - name: Comment PR
+        if: success() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ All checks passed! Code looks good.'
+            })
