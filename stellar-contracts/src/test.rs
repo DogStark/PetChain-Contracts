@@ -3307,3 +3307,44 @@ mod test {
         assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
     }
 }
+
+    // VET SPECIALIZATIONS AND CERTIFICATIONS TESTS
+    #[test]
+    fn test_add_multiple_specializations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        client.register_vet(&vet, &String::from_str(&env, "Dr. Smith"), &String::from_str(&env, "VET-123"), &String::from_str(&env, "General"));
+
+        client.add_specialization(&vet, &Specialization::Surgery);
+        client.add_specialization(&vet, &Specialization::Dentistry);
+
+        let vet_info = client.get_vet(&vet).unwrap();
+        assert_eq!(vet_info.specializations.len(), 2);
+    }
+
+    #[test]
+    fn test_certification_expiry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let vet = Address::generate(&env);
+        client.register_vet(&vet, &String::from_str(&env, "Dr. Brown"), &String::from_str(&env, "VET-789"), &String::from_str(&env, "Emergency"));
+
+        let now = 1000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        client.add_certification(&vet, &String::from_str(&env, "Expired Cert"), &(now - 1000), &Some(now - 100));
+        client.add_certification(&vet, &String::from_str(&env, "Valid Cert"), &now, &Some(now + 1000));
+
+        let vet_info = client.get_vet(&vet).unwrap();
+        assert_eq!(vet_info.certifications.len(), 2);
+        assert!(vet_info.certifications.get(0).unwrap().expiry_date.unwrap() < now);
+        assert!(vet_info.certifications.get(1).unwrap().expiry_date.unwrap() > now);
+    }
+}
