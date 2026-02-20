@@ -1,4 +1,7 @@
 #![no_std]
+#[cfg(test)]
+mod test;
+
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec};
 
@@ -17,6 +20,7 @@ pub enum Gender {
     NotSpecified,
     Male,
     Female,
+    Unknown,
 }
 
 #[contracttype]
@@ -69,6 +73,9 @@ pub struct Pet {
     pub new_owner: Address,
     pub species: Species,
     pub gender: Gender,
+    pub color: String,
+    pub weight: u32,
+    pub microchip_id: Option<String>,
 }
 
 #[contracttype]
@@ -86,6 +93,9 @@ pub struct PetProfile {
     pub species: Species,
     pub gender: Gender,
     pub breed: String,
+    pub color: String,
+    pub weight: u32,
+    pub microchip_id: Option<String>,
 }
 
 #[contracttype]
@@ -491,6 +501,7 @@ impl PetChainContract {
     }
 
     // Pet Management Functions
+    #[allow(clippy::too_many_arguments)]
     pub fn register_pet(
         env: Env,
         owner: Address,
@@ -499,6 +510,9 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        color: String,
+        weight: u32,
+        microchip_id: Option<String>,
         privacy_level: PrivacyLevel,
     ) -> u64 {
         owner.require_auth();
@@ -579,6 +593,9 @@ impl PetChainContract {
             new_owner: owner.clone(),
             species: species.clone(),
             gender,
+            color,
+            weight,
+            microchip_id,
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -623,6 +640,7 @@ impl PetChainContract {
         pet_id
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_pet_profile(
         env: Env,
         id: u64,
@@ -631,6 +649,9 @@ impl PetChainContract {
         gender: Gender,
         species: Species,
         breed: String,
+        color: String,
+        weight: u32,
+        microchip_id: Option<String>,
         privacy_level: PrivacyLevel,
     ) -> bool {
         if let Some(mut pet) = env
@@ -667,6 +688,9 @@ impl PetChainContract {
             pet.gender = gender;
             pet.species = species;
             pet.privacy_level = privacy_level;
+            pet.color = color;
+            pet.weight = weight;
+            pet.microchip_id = microchip_id;
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -743,6 +767,9 @@ impl PetChainContract {
                 species: pet.species,
                 gender: pet.gender,
                 breed,
+                color: pet.color,
+                weight: pet.weight,
+                microchip_id: pet.microchip_id,
             })
         } else {
             None
@@ -795,6 +822,35 @@ impl PetChainContract {
             pet.active = false;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+        }
+    }
+
+    pub fn add_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            Self::validate_ipfs_hash(&photo_hash);
+            pet.photo_hashes.push_back(photo_hash);
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_pet_photos(env: Env, pet_id: u64) -> Vec<String> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.photo_hashes
+        } else {
+            Vec::new(&env)
         }
     }
 
@@ -1121,6 +1177,7 @@ impl PetChainContract {
     }
 
     // Pet Vaccination Record
+    #[allow(clippy::too_many_arguments)]
     pub fn add_vaccination(
         env: Env,
         pet_id: u64,
@@ -1573,6 +1630,13 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
             .unwrap_or(0)
+    }
+
+    fn validate_ipfs_hash(hash: &String) {
+        let len = hash.len();
+        if !(32_u32..=128_u32).contains(&len) {
+            panic!("Invalid IPFS hash: length must be 32-128 chars");
+        }
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
@@ -2106,6 +2170,7 @@ impl PetChainContract {
     }
     // --- MEDICATION MANAGEMENT ---
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_medication(
         env: Env,
         record_id: u64,
