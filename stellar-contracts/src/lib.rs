@@ -1166,29 +1166,27 @@ impl PetChainContract {
         }
     }
 
-            Some(PetProfile {
-                id: pet.id,
-                owner: pet.owner,
-                privacy_level: pet.privacy_level,
-                name,
-                birthday,
-                active: pet.active,
-                created_at: pet.created_at,
-                updated_at: pet.updated_at,
-                new_owner: pet.new_owner,
-                species: pet.species,
-                gender: pet.gender,
-                breed,
-                color: pet.color,
-                weight: pet.weight,
-                microchip_id: pet.microchip_id,
-                photo_hashes: pet.photo_hashes,
-            })
-        } else {
-            None
+    pub fn get_archived_pets(env: Env, owner: Address) -> Vec<PetProfile> {
+        let count = Self::get_owner_pet_count(&env, &owner);
+        let mut archived = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(pid) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
+            {
+                if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pid)) {
+                    if pet.archived {
+                        if let Some(profile) = Self::get_pet(env.clone(), pid) {
+                            archived.push_back(profile);
+                        }
+                    }
+                }
+            }
         }
-        pets
+        archived
     }
+
 
     pub fn is_pet_active(env: Env, id: u64) -> bool {
         if let Some(pet) = env
