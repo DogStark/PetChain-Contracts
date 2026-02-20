@@ -776,6 +776,88 @@ mod test {
         let slots = client.get_available_slots(&vet, &date);
         assert_eq!(slots.len(), 0);
     }
+     #[test]
+fn test_get_version() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let version = client.get_version();
+    assert_eq!(version.major, 1);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+fn test_propose_upgrade() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin, &wasm_hash);
+
+    assert_eq!(proposal_id, 1);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approved, false);
+    assert_eq!(proposal.executed, false);
+}
+
+#[test]
+fn test_approve_upgrade() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin, &wasm_hash);
+
+    let approved = client.approve_upgrade(&proposal_id);
+    assert_eq!(approved, true);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.approved, true);
+}
+
+#[test]
+fn test_migrate_version() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    client.migrate_version(&2u32, &1u32, &0u32);
+
+    let version = client.get_version();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 1);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_requires_admin() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+
+    // No admin set - should panic
+    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&Address::generate(&env), &wasm_hash);
+}
 }
 #[cfg(test)]
 mod test {
