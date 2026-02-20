@@ -280,6 +280,6 @@ fn test_log_retrieval_by_pet_id() {
     let logs_pet_1 = client.get_access_logs(&pet_1);
     let logs_pet_2 = client.get_access_logs(&pet_2);
 
-    assert!(logs_pet_1.len() > 0);
+    assert!(!logs_pet_1.is_empty());
     assert_eq!(logs_pet_2.len(), 0);
 }

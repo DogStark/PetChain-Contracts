@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 #[cfg(test)]
 mod test;
 
@@ -3415,7 +3416,7 @@ impl PetChainContract {
     ) -> u64 {
         reviewer.require_auth();
 
-        if rating < 1 || rating > 5 {
+        if !(1..=5).contains(&rating) {
             panic!("Rating must be between 1 and 5");
         }
 
