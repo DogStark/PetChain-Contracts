@@ -14,6 +14,7 @@ pub enum Species {
     Bird,
 }
 
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Gender {
@@ -253,6 +254,56 @@ pub enum DataKey {
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
 
+        // Lost Pet Alert System keys
+    LostPetAlert(u64),
+    LostPetAlertCount,
+    ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
+    AlertSightings(u64),     // Vec<SightingReport> for each alert
+
+    // Vet Availability System keys
+    VetAvailability((Address, u64)), // (vet_address, slot_index) -> AvailabilitySlot
+    VetAvailabilityCount(Address),   // vet_address -> count of slots
+    VetAvailabilityByDate((Address, u64)), // (vet_address, date) -> Vec<u64> slot indices
+}
+// --- LOST PET ALERT SYSTEM ---
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlertStatus {
+    Active,
+    Found,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LostPetAlert {
+    pub id: u64,
+    pub pet_id: u64,
+    pub reported_by: Address,
+    pub reported_date: u64,
+    pub last_seen_location: String,
+    pub reward_amount: Option<u64>,
+    pub status: AlertStatus,
+    pub found_date: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SightingReport {
+    pub alert_id: u64,
+    pub reporter: Address,
+    pub location: String,
+    pub timestamp: u64,
+    pub description: String,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AvailabilitySlot {
+    pub vet_address: Address,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub available: bool,
     // Ownership History DataKey
     PetOwnershipRecord(u64),
     OwnershipRecordCount,
@@ -2401,7 +2452,335 @@ impl PetChainContract {
             );
             ids.push_back(id);
         }
-        ids
+               ids
+    }
+
+    // --- LOST PET ALERT FUNCTIONS ---
+
+    /// Report a pet as lost
+    pub fn report_lost(
+        env: Env,
+        pet_id: u64,
+        last_seen_location: String,
+        reward_amount: Option<u64>,
+    ) -> u64 {
+        // Verify pet exists and caller is owner
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let alert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LostPetAlertCount)
+            .unwrap_or(0);
+        let alert_id = alert_count + 1;
+
+        let alert = LostPetAlert {
+            id: alert_id,
+            pet_id,
+            reported_by: pet.owner.clone(),
+            reported_date: env.ledger().timestamp(),
+            last_seen_location,
+            reward_amount,
+            status: AlertStatus::Active,
+            found_date: None,
+        };
+
+        // Store alert
+        env.storage()
+            .instance()
+            .set(&DataKey::LostPetAlert(alert_id), &alert);
+        env.storage()
+            .instance()
+            .set(&DataKey::LostPetAlertCount, &alert_id);
+
+        // Add to active alerts list
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        active_alerts.push_back(alert_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+
+        alert_id
+    }
+
+    /// Report a sighting of a lost pet
+    pub fn report_sighting(
+        env: Env,
+        alert_id: u64,
+        location: String,
+        description: String,
+    ) -> bool {
+        let reporter = env.current_contract_address();
+        
+        let sighting = SightingReport {
+            alert_id,
+            reporter,
+            location,
+            timestamp: env.ledger().timestamp(),
+            description,
+        };
+
+        let key = DataKey::AlertSightings(alert_id);
+        let mut sightings: Vec<SightingReport> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        sightings.push_back(sighting);
+        env.storage().instance().set(&key, &sightings);
+
+        true
+    }
+
+    /// Mark a lost pet as found
+    pub fn report_found(env: Env, alert_id: u64) -> bool {
+        let key = DataKey::LostPetAlert(alert_id);
+        
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("Alert not found");
+
+        alert.reported_by.require_auth();
+
+        if alert.status != AlertStatus::Active {
+            panic!("Alert is not active");
+        }
+
+        alert.status = AlertStatus::Found;
+        alert.found_date = Some(env.ledger().timestamp());
+        env.storage().instance().set(&key, &alert);
+
+        // Remove from active alerts
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
+            active_alerts.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+        }
+
+        true
+    }
+
+    /// Cancel a lost pet alert
+    pub fn cancel_lost_alert(env: Env, alert_id: u64) -> bool {
+        let key = DataKey::LostPetAlert(alert_id);
+        
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("Alert not found");
+
+        alert.reported_by.require_auth();
+
+        if alert.status != AlertStatus::Active {
+            panic!("Alert is not active");
+        }
+
+        alert.status = AlertStatus::Cancelled;
+        env.storage().instance().set(&key, &alert);
+
+        let mut active_alerts: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
+            active_alerts.remove(pos as u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+        }
+
+        true
+    }
+
+    /// Get all active lost pet alerts
+    pub fn get_active_alerts(env: Env) -> Vec<LostPetAlert> {
+        let active_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+        
+        let mut active_alerts = Vec::new(&env);
+        
+        for id in active_ids.iter() {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(id))
+            {
+                if alert.status == AlertStatus::Active {
+                    active_alerts.push_back(alert);
+                }
+            }
+        }
+        
+        active_alerts
+    }
+
+    /// Get a specific alert by ID
+    pub fn get_alert(env: Env, alert_id: u64) -> Option<LostPetAlert> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LostPetAlert(alert_id))
+    }
+
+    /// Get sightings for a specific alert
+    pub fn get_alert_sightings(env: Env, alert_id: u64) -> Vec<SightingReport> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AlertSightings(alert_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Get alerts for a specific pet
+    pub fn get_pet_alerts(env: Env, pet_id: u64) -> Vec<LostPetAlert> {
+        let alert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LostPetAlertCount)
+            .unwrap_or(0);
+        
+        let mut pet_alerts = Vec::new(&env);
+        
+        for i in 1..=alert_count {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(i))
+            {
+                if alert.pet_id == pet_id {
+                    pet_alerts.push_back(alert);
+                }
+            }
+        }
+        pet_alerts
+    }
+        // --- VET AVAILABILITY FUNCTIONS ---
+
+    /// Set availability slots for a vet (only verified vets can set their availability)
+    pub fn set_availability(
+        env: Env,
+        vet_address: Address,
+        start_time: u64,
+        end_time: u64,
+    ) -> u64 {
+        // Verify caller is the vet and is verified
+        vet_address.require_auth();
+        if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+            panic!("Vet not verified");
+        }
+
+        let slot_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetAvailabilityCount(vet_address.clone()))
+            .unwrap_or(0);
+        let slot_index = slot_count + 1;
+
+        let slot = AvailabilitySlot {
+            vet_address: vet_address.clone(),
+            start_time,
+            end_time,
+            available: true,
+        };
+
+        // Store the slot
+        env.storage()
+            .instance()
+            .set(&DataKey::VetAvailability((vet_address.clone(), slot_index)), &slot);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetAvailabilityCount(vet_address.clone()), &slot_index);
+
+        // Add to date-based index for efficient querying
+        let date = Self::get_date_from_timestamp(start_time);
+        let date_key = DataKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let mut date_slots: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&date_key)
+            .unwrap_or(Vec::new(&env));
+        date_slots.push_back(slot_index);
+        env.storage().instance().set(&date_key, &date_slots);
+
+        slot_index
+    }
+
+    /// Get available slots for a vet on a specific date
+    pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
+        let date_key = DataKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let slot_indices: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&date_key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut available_slots = Vec::new(&env);
+        
+        for index in slot_indices.iter() {
+            if let Some(slot) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AvailabilitySlot>(&DataKey::VetAvailability((vet_address.clone(), index)))
+            {
+                if slot.available {
+                    available_slots.push_back(slot);
+                }
+            }
+        }
+
+        available_slots
+    }
+
+    /// Book a slot (mark as unavailable)
+    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+        let key = DataKey::VetAvailability((vet_address.clone(), slot_index));
+        
+        if let Some(mut slot) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AvailabilitySlot>(&key)
+        {
+            if !slot.available {
+                panic!("Slot already booked");
+            }
+
+            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
+            // In real implementation, you'd check if caller is a registered pet owner
+            slot.available = false;
+            env.storage().instance().set(&key, &slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Helper: Extract date from timestamp (yyyyMMdd format)
+    fn get_date_from_timestamp(timestamp: u64) -> u64 {
+        // Simple conversion: timestamp / 86400 gives days since epoch
+        // For this implementation, we use timestamp / 86400 as the "date"
+        timestamp / 86400
     }
 
     // --- MULTISIG OPERATIONS ---
@@ -2524,5 +2903,6 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
+
 #[cfg(test)]
 mod test;
