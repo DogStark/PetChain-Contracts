@@ -137,6 +137,17 @@ pub struct PetOwner {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClinicInfo {
+    pub clinic_name: String,
+    pub address: String,
+    pub phone: String,
+    pub email: String,
+    pub operating_hours: String,
+    pub emergency_available: bool,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct Vet {
     pub address: Address,
@@ -144,6 +155,7 @@ pub struct Vet {
     pub license_number: String,
     pub specialization: String,
     pub verified: bool,
+    pub clinic_info: Option<ClinicInfo>,
 }
 
 #[contracttype]
@@ -1351,6 +1363,7 @@ impl PetChainContract {
             license_number: license_number.clone(),
             specialization,
             verified: false,
+            clinic_info: None,
         };
 
         env.storage()
@@ -1423,6 +1436,25 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::VetLicense(license_number));
         vet_address.and_then(|address| Self::get_vet(env, address))
+    }
+
+    /// Update clinic info for a vet. Only the vet can update their own clinic info.
+    pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: ClinicInfo) -> bool {
+        vet_address.require_auth();
+
+        if let Some(mut vet) = env
+            .storage()
+            .instance()
+            .get::<_, Vet>(&DataKey::Vet(vet_address.clone()))
+        {
+            vet.clinic_info = Some(clinic_info);
+            env.storage()
+                .instance()
+                .set(&DataKey::Vet(vet_address), &vet);
+            true
+        } else {
+            panic!("Vet not found");
+        }
     }
 
     // Pet Vaccination Record
