@@ -43,6 +43,16 @@ pub struct EmergencyContactInfo {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct EmergencyContact {
+    pub name: String,
+    pub phone: String,
+    pub email: String,
+    pub relationship: String,
+    pub is_primary: bool,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedData {
     pub nonce: Bytes,
@@ -75,7 +85,7 @@ pub struct Pet {
     pub name: String,
     pub birthday: String,
     pub breed: String,
-    pub emergency_contacts: Vec<EmergencyContactInfo>,
+    pub emergency_contacts: Vec<EmergencyContact>,
     pub medical_alerts: String,
 
     pub active: bool,
@@ -765,7 +775,7 @@ impl PetChainContract {
             ciphertext: alerts_ciphertext,
         };
 
-        let empty_contacts = Vec::<EmergencyContactInfo>::new(&env);
+        let empty_contacts = Vec::<EmergencyContact>::new(&env);
         let contacts_bytes = empty_contacts.to_xdr(&env);
         let (contacts_nonce, contacts_ciphertext) =
             encrypt_sensitive_data(&env, &contacts_bytes, &key);
@@ -788,7 +798,7 @@ impl PetChainContract {
             name: String::from_str(&env, ""),
             birthday: String::from_str(&env, ""),
             breed: String::from_str(&env, ""),
-            emergency_contacts: Vec::new(&env),
+            emergency_contacts: Vec::<EmergencyContact>::new(&env),
             medical_alerts: String::from_str(&env, ""),
 
             active: false,
@@ -918,7 +928,7 @@ impl PetChainContract {
                 ciphertext: alerts_ciphertext,
             };
 
-            let empty_contacts = Vec::<EmergencyContactInfo>::new(&env);
+            let empty_contacts = Vec::<EmergencyContact>::new(&env);
             let contacts_bytes = empty_contacts.to_xdr(&env);
             let (contacts_nonce, contacts_ciphertext) =
                 encrypt_sensitive_data(&env, &contacts_bytes, &key);
@@ -942,7 +952,7 @@ impl PetChainContract {
                 name: String::from_str(&env, ""),
                 birthday: String::from_str(&env, ""),
                 breed: String::from_str(&env, ""),
-                emergency_contacts: Vec::new(&env),
+                emergency_contacts: Vec::<EmergencyContact>::new(&env),
                 medical_alerts: String::from_str(&env, ""),
 
                 active: false,
@@ -2073,11 +2083,6 @@ impl PetChainContract {
             Species::Bird => String::from_str(env, "Bird"),
         }
     }
-        let len = hash.len();
-        if !(32_u32..=128_u32).contains(&len) {
-            panic!("Invalid IPFS hash: length must be 32-128 chars");
-        }
-    }
 
     fn get_encryption_key(env: &Env) -> Bytes {
         // Mock key
@@ -2157,7 +2162,7 @@ impl PetChainContract {
     pub fn set_emergency_contacts(
         env: Env,
         pet_id: u64,
-        contacts: Vec<EmergencyContactInfo>,
+        contacts: Vec<EmergencyContact>,
         medical_notes: String,
     ) {
         if let Some(mut pet) = env
@@ -2194,7 +2199,7 @@ impl PetChainContract {
     pub fn get_emergency_info(
         env: Env,
         pet_id: u64,
-    ) -> Option<(Vec<EmergencyContactInfo>, String)> {
+    ) -> Option<(Vec<EmergencyContact>, String)> {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -2210,7 +2215,7 @@ impl PetChainContract {
             )
             .unwrap_or(Bytes::new(&env));
             let contacts =
-                Vec::<EmergencyContactInfo>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
+                Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
 
             let n_bytes = decrypt_sensitive_data(
                 &env,
@@ -2224,6 +2229,27 @@ impl PetChainContract {
             Some((contacts, notes))
         } else {
             None
+        }
+    }
+
+    /// Get emergency contacts for a pet (publicly accessible - no auth required for emergency responders)
+    pub fn get_emergency_contacts(env: Env, pet_id: u64) -> Vec<EmergencyContact> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        {
+            let key = Self::get_encryption_key(&env);
+            let c_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_emergency_contacts.ciphertext,
+                &pet.encrypted_emergency_contacts.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env))
+        } else {
+            Vec::new(&env)
         }
     }
 
@@ -3729,3 +3755,5 @@ mod test_batch;
 // mod test;
 #[cfg(test)]
 mod test_access_control;
+#[cfg(test)]
+mod test_emergency_contacts;
