@@ -470,13 +470,12 @@ pub struct Medication {
 pub struct MedicalRecord {
     pub id: u64,
     pub pet_id: u64,
-    pub veterinarian: Address,
-    pub record_type: String, // e.g., "Checkup", "Surgery"
+    pub vet_address: Address,
     pub diagnosis: String,
     pub treatment: String,
-    pub medications: Vec<Medication>,
-    pub created_at: u64,
-    pub updated_at: u64,
+    pub medications: String,
+    pub date: u64,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -494,10 +493,10 @@ pub struct VaccinationInput {
 #[derive(Clone)]
 pub struct MedicalRecordInput {
     pub pet_id: u64,
-    pub record_type: String,
     pub diagnosis: String,
     pub treatment: String,
-    pub medications: Vec<Medication>,
+    pub medications: String,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -2292,19 +2291,28 @@ impl PetChainContract {
     pub fn add_medical_record(
         env: Env,
         pet_id: u64,
-        veterinarian: Address,
-        record_type: String,
+        vet_address: Address,
         diagnosis: String,
         treatment: String,
-        medications: Vec<Medication>,
+        medications: String,
+        notes: String,
     ) -> u64 {
-        veterinarian.require_auth();
+        // Vet authorization check
+        vet_address.require_auth();
+
+        // Verify vet is verified
+        if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+            panic!("Veterinarian not verified");
+        }
+
+        // Verify pet exists
         let _pet: Pet = env
             .storage()
             .instance()
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
 
+        // Get and increment medical record count
         let count = env
             .storage()
             .instance()
@@ -2319,20 +2327,20 @@ impl PetChainContract {
         let record = MedicalRecord {
             id,
             pet_id,
-            veterinarian: veterinarian.clone(),
-            record_type,
+            vet_address: vet_address.clone(),
             diagnosis,
             treatment,
             medications,
-            created_at: now,
-            updated_at: now,
+            date: now,
+            notes,
         };
 
+        // Store the medical record
         env.storage()
             .instance()
             .set(&DataKey::MedicalRecord(id), &record);
 
-        // Update pet index
+        // Update pet medical record index
         let pet_record_count = env
             .storage()
             .instance()
@@ -2348,6 +2356,7 @@ impl PetChainContract {
             &id,
         );
 
+        // Publish event
         env.events().publish(
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
@@ -2372,19 +2381,21 @@ impl PetChainContract {
         record_id: u64,
         diagnosis: String,
         treatment: String,
-        medications: Vec<Medication>,
+        medications: String,
+        notes: String,
     ) -> bool {
         if let Some(mut record) = env
             .storage()
             .instance()
             .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
         {
-            record.veterinarian.require_auth();
+            record.vet_address.require_auth();
 
             record.diagnosis = diagnosis;
             record.treatment = treatment;
             record.medications = medications;
-            record.updated_at = env.ledger().timestamp();
+            record.notes = notes;
+            record.date = env.ledger().timestamp();
 
             env.storage()
                 .instance()
@@ -2746,10 +2757,10 @@ impl PetChainContract {
                 env.clone(),
                 input.pet_id,
                 veterinarian.clone(),
-                input.record_type,
                 input.diagnosis,
                 input.treatment,
                 input.medications,
+                input.notes,
             );
             ids.push_back(id);
         }
