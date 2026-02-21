@@ -509,14 +509,19 @@ fn test_set_and_get_emergency_contacts() {
         &Gender::Male,
         &Species::Dog,
         &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
         &PrivacyLevel::Public,
     );
 
     let mut contacts = Vec::new(&env);
-    contacts.push_back(EmergencyContactInfo {
+    contacts.push_back(EmergencyContact {
         name: String::from_str(&env, "Dad"),
         phone: String::from_str(&env, "111-2222"),
+        email: String::from_str(&env, "dad@example.com"),
         relationship: String::from_str(&env, "Owner"),
+        is_primary: true,
     });
 
     client.set_emergency_contacts(
@@ -527,6 +532,8 @@ fn test_set_and_get_emergency_contacts() {
 
     let info = client.get_emergency_info(&pet_id).unwrap();
     assert_eq!(info.0.len(), 1);
+    assert_eq!(info.0.get(0).unwrap().name, String::from_str(&env, "Dad"));
+    assert_eq!(info.0.get(0).unwrap().is_primary, true);
     assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
 }
 
@@ -1699,10 +1706,12 @@ fn test_set_and_get_emergency_contacts() {
     );
 
     let mut contacts = Vec::new(&env);
-    contacts.push_back(EmergencyContactInfo {
+    contacts.push_back(EmergencyContact {
         name: String::from_str(&env, "Dad"),
         phone: String::from_str(&env, "111-2222"),
+        email: String::from_str(&env, "dad@example.com"),
         relationship: String::from_str(&env, "Owner"),
+        is_primary: true,
     });
 
     client.set_emergency_contacts(
@@ -1713,6 +1722,8 @@ fn test_set_and_get_emergency_contacts() {
 
     let info = client.get_emergency_info(&pet_id).unwrap();
     assert_eq!(info.0.len(), 1);
+    assert_eq!(info.0.get(0).unwrap().name, String::from_str(&env, "Dad"));
+    assert_eq!(info.0.get(0).unwrap().is_primary, true);
     assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
 }
 
@@ -2699,14 +2710,19 @@ fn test_set_and_get_emergency_contacts() {
         &Gender::Male,
         &Species::Dog,
         &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
         &PrivacyLevel::Public,
     );
 
     let mut contacts = Vec::new(&env);
-    contacts.push_back(EmergencyContactInfo {
+    contacts.push_back(EmergencyContact {
         name: String::from_str(&env, "Dad"),
         phone: String::from_str(&env, "111-2222"),
+        email: String::from_str(&env, "dad@example.com"),
         relationship: String::from_str(&env, "Owner"),
+        is_primary: true,
     });
 
     client.set_emergency_contacts(
@@ -2717,6 +2733,8 @@ fn test_set_and_get_emergency_contacts() {
 
     let info = client.get_emergency_info(&pet_id).unwrap();
     assert_eq!(info.0.len(), 1);
+    assert_eq!(info.0.get(0).unwrap().name, String::from_str(&env, "Dad"));
+    assert_eq!(info.0.get(0).unwrap().is_primary, true);
     assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
 }
 
@@ -3622,10 +3640,12 @@ fn test_invalid_rating() {
     );
 
     let mut contacts = Vec::new(&env);
-    contacts.push_back(EmergencyContactInfo {
+    contacts.push_back(EmergencyContact {
         name: String::from_str(&env, "Dad"),
         phone: String::from_str(&env, "111-2222"),
+        email: String::from_str(&env, "dad@example.com"),
         relationship: String::from_str(&env, "Owner"),
+        is_primary: true,
     });
 
     client.set_emergency_contacts(
@@ -3636,6 +3656,8 @@ fn test_invalid_rating() {
 
     let info = client.get_emergency_info(&pet_id).unwrap();
     assert_eq!(info.0.len(), 1);
+    assert_eq!(info.0.get(0).unwrap().name, String::from_str(&env, "Dad"));
+    assert_eq!(info.0.get(0).unwrap().is_primary, true);
     assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
 }
 
