@@ -344,6 +344,12 @@ pub enum DataKey {
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+
+    // Treatment DataKey
+Treatment(u64),
+TreatmentCount,
+PetTreatmentCount(u64),
+PetTreatmentIndex((u64, u64)), // (pet_id, index) -> treatment_id
 }
 
 #[contracttype]
@@ -572,6 +578,39 @@ pub struct MultiSigProposal {
     pub created_at: u64,
     pub expires_at: u64,
     pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TreatmentType {
+    Surgery,
+    Therapy,
+    Emergency,
+    Routine,
+    Other,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Treatment {
+    pub id: u64,
+    pub pet_id: u64,
+    pub treatment_type: TreatmentType,
+    pub date: u64,
+    pub vet_address: Address,
+    pub notes: String,
+    pub cost: Option<i128>,
+    pub outcome: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreatmentAddedEvent {
+    pub treatment_id: u64,
+    pub pet_id: u64,
+    pub vet_address: Address,
+    pub treatment_type: TreatmentType,
+    pub timestamp: u64,
 }
 
 // --- EVENTS ---
@@ -3704,6 +3743,146 @@ impl PetChainContract {
             panic!("Medication not found");
         }
     }
+
+    // --- TREATMENT HISTORY ---
+
+pub fn add_treatment(
+    env: Env,
+    pet_id: u64,
+    vet_address: Address,
+    treatment_type: TreatmentType,
+    date: u64,
+    notes: String,
+    cost: Option<i128>,
+    outcome: String,
+) -> u64 {
+    vet_address.require_auth();
+
+    if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+        panic!("Veterinarian not verified");
+    }
+
+    let _pet: Pet = env
+        .storage()
+        .instance()
+        .get(&DataKey::Pet(pet_id))
+        .expect("Pet not found");
+
+    let treatment_count: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TreatmentCount)
+        .unwrap_or(0);
+    let treatment_id = treatment_count + 1;
+
+    let now = env.ledger().timestamp();
+
+    let treatment = Treatment {
+        id: treatment_id,
+        pet_id,
+        treatment_type: treatment_type.clone(),
+        date,
+        vet_address: vet_address.clone(),
+        notes,
+        cost,
+        outcome,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Treatment(treatment_id), &treatment);
+    env.storage()
+        .instance()
+        .set(&DataKey::TreatmentCount, &treatment_id);
+
+    // Update per-pet index
+    let pet_treatment_count: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::PetTreatmentCount(pet_id))
+        .unwrap_or(0);
+    let new_pet_treatment_count = pet_treatment_count + 1;
+    env.storage()
+        .instance()
+        .set(&DataKey::PetTreatmentCount(pet_id), &new_pet_treatment_count);
+    env.storage().instance().set(
+        &DataKey::PetTreatmentIndex((pet_id, new_pet_treatment_count)),
+        &treatment_id,
+    );
+
+    env.events().publish(
+        (String::from_str(&env, "TreatmentAdded"), pet_id),
+        TreatmentAddedEvent {
+            treatment_id,
+            pet_id,
+            vet_address,
+            treatment_type,
+            timestamp: now,
+        },
+    );
+
+    treatment_id
+}
+
+pub fn get_treatment(env: Env, treatment_id: u64) -> Option<Treatment> {
+    env.storage()
+        .instance()
+        .get::<DataKey, Treatment>(&DataKey::Treatment(treatment_id))
+}
+
+pub fn get_treatment_history(env: Env, pet_id: u64) -> Vec<Treatment> {
+    if env
+        .storage()
+        .instance()
+        .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        .is_none()
+    {
+        return Vec::new(&env);
+    }
+
+    let count: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::PetTreatmentCount(pet_id))
+        .unwrap_or(0);
+
+    let mut history = Vec::new(&env);
+
+    for i in 1..=count {
+        if let Some(tid) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetTreatmentIndex((pet_id, i)))
+        {
+            if let Some(treatment) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Treatment>(&DataKey::Treatment(tid))
+            {
+                history.push_back(treatment);
+            }
+        }
+    }
+
+    history
+}
+
+pub fn get_treatments_by_type(
+    env: Env,
+    pet_id: u64,
+    treatment_type: TreatmentType,
+) -> Vec<Treatment> {
+    let history = Self::get_treatment_history(env.clone(), pet_id);
+    let mut filtered = Vec::new(&env);
+
+    for treatment in history.iter() {
+        if treatment.treatment_type == treatment_type {
+            filtered.push_back(treatment);
+        }
+    }
+
+    filtered
+}
 }
 
 // --- ENCRYPTION HELPERS ---
