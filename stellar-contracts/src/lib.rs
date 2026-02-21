@@ -164,6 +164,8 @@ pub struct Vet {
     pub name: String,
     pub license_number: String,
     pub specialization: String,
+    pub specializations: Vec<Specialization>,
+    pub certifications: Vec<Certification>,
     pub verified: bool,
     pub clinic_info: Option<ClinicInfo>,
 }
@@ -342,7 +344,7 @@ pub enum SystemKey {
     PetOwnershipRecord(u64),
     OwnershipRecordCount,
     PetOwnershipRecordCount(u64),
-    PetOwnershipRecordIndex((u64, u64)), // (pet_id, index) -> ownership_record_id
+    PetOwnershipRecordIndex((u64, u64)),
 
     // Multisig keys
     Admins,
@@ -1372,6 +1374,8 @@ impl PetChainContract {
             name,
             license_number: license_number.clone(),
             specialization,
+            specializations: Vec::new(&env),
+            certifications: Vec::new(&env),
             verified: false,
             clinic_info: None,
         };
