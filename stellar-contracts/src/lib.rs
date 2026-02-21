@@ -10,6 +10,8 @@ mod test_batch;
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_export;
+#[cfg(test)]
+mod test_emergency_override;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -82,6 +84,53 @@ pub struct EmergencyContact {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Allergy {
+    pub name: String,
+    pub severity: String,
+    pub is_critical: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Specialization {
+    pub name: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Certification {
+    pub name: String,
+    pub issued_by: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetData {
+    pub name: String,
+    pub species: String,
+    pub breed: String,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct EmergencyInfo {
+    pub pet_id: u64,
+    pub species: String,
+    pub allergies: Vec<Allergy>,
+    pub critical_alerts: Vec<String>,
+    pub emergency_contacts: Vec<EmergencyContact>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct EmergencyAccessLog {
+    pub pet_id: u64,
+    pub accessed_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedData {
     pub nonce: Bytes,
     pub ciphertext: Bytes,
@@ -99,6 +148,7 @@ pub struct Pet {
     pub encrypted_breed: EncryptedData,
     pub encrypted_emergency_contacts: EncryptedData,
     pub encrypted_medical_alerts: EncryptedData,
+    pub encrypted_allergies: EncryptedData,
 
     // Internal/Empty fields to maintain some structural compatibility if needed,
     // or just purely internal placeholders. HEAD set these to empty strings.
@@ -107,6 +157,7 @@ pub struct Pet {
     pub breed: String,
     pub emergency_contacts: Vec<EmergencyContact>,
     pub medical_alerts: String,
+    pub allergies: Vec<Allergy>,
 
     pub active: bool,
     pub created_at: u64,
@@ -138,6 +189,7 @@ pub struct PetProfile {
     pub color: String,
     pub weight: u32,
     pub microchip_id: Option<String>,
+    pub allergies: Vec<Allergy>,
 }
 
 #[contracttype]
@@ -344,6 +396,9 @@ pub enum DataKey {
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+
+    // Emergency Access Logs
+    EmergencyAccessLogs(u64),
 }
 
 #[contracttype]
@@ -505,7 +560,7 @@ pub struct MedicalRecord {
     pub vet_address: Address,
     pub diagnosis: String,
     pub treatment: String,
-    pub medications: String,
+    pub medications: Vec<Medication>,
     pub date: u64,
     pub notes: String,
 }
@@ -527,7 +582,7 @@ pub struct MedicalRecordInput {
     pub pet_id: u64,
     pub diagnosis: String,
     pub treatment: String,
-    pub medications: String,
+    pub medications: Vec<Medication>,
     pub notes: String,
 }
 
@@ -818,6 +873,15 @@ impl PetChainContract {
             ciphertext: contacts_ciphertext,
         };
 
+        let empty_allergies = Vec::<Allergy>::new(&env);
+        let allergies_bytes = empty_allergies.to_xdr(&env);
+        let (allergies_nonce, allergies_ciphertext) =
+            encrypt_sensitive_data(&env, &allergies_bytes, &key);
+        let encrypted_allergies = EncryptedData {
+            nonce: allergies_nonce,
+            ciphertext: allergies_ciphertext,
+        };
+
         let pet = Pet {
             id: pet_id,
             owner: owner.clone(),
@@ -827,6 +891,7 @@ impl PetChainContract {
             encrypted_breed,
             encrypted_emergency_contacts,
             encrypted_medical_alerts,
+            encrypted_allergies,
 
             // Empty placeholders for internal API consistency if needed
             name: String::from_str(&env, ""),
@@ -834,6 +899,7 @@ impl PetChainContract {
             breed: String::from_str(&env, ""),
             emergency_contacts: Vec::<EmergencyContact>::new(&env),
             medical_alerts: String::from_str(&env, ""),
+            allergies: Vec::<Allergy>::new(&env),
 
             active: false,
             created_at: timestamp,
@@ -1027,6 +1093,15 @@ impl PetChainContract {
             let breed =
                 String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
 
+            let a_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_allergies.ciphertext,
+                &pet.encrypted_allergies.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).unwrap_or(Vec::new(&env));
+
             let profile = PetProfile {
                 id: pet.id,
                 owner: pet.owner,
@@ -1043,6 +1118,7 @@ impl PetChainContract {
                 color: pet.color,
                 weight: pet.weight,
                 microchip_id: pet.microchip_id,
+                allergies,
             };
             Self::log_access(
                 &env,
@@ -2030,6 +2106,7 @@ impl PetChainContract {
         env: Env,
         pet_id: u64,
         contacts: Vec<EmergencyContact>,
+        allergies: Vec<Allergy>,
         medical_notes: String,
     ) {
         if let Some(mut pet) = env
@@ -2048,6 +2125,13 @@ impl PetChainContract {
                 ciphertext: c_cipher,
             };
 
+            let allergies_bytes = allergies.to_xdr(&env);
+            let (a_nonce, a_cipher) = encrypt_sensitive_data(&env, &allergies_bytes, &key);
+            pet.encrypted_allergies = EncryptedData {
+                nonce: a_nonce,
+                ciphertext: a_cipher,
+            };
+
             let notes_bytes = medical_notes.to_xdr(&env);
             let (n_nonce, n_cipher) = encrypt_sensitive_data(&env, &notes_bytes, &key);
             pet.encrypted_medical_alerts = EncryptedData {
@@ -2063,10 +2147,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(
-        env: Env,
-        pet_id: u64,
-    ) -> Option<(Vec<EmergencyContact>, String)> {
+    pub fn get_emergency_info(env: Env, pet_id: u64) -> EmergencyInfo {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -2093,9 +2174,52 @@ impl PetChainContract {
             .unwrap_or(Bytes::new(&env));
             let notes = String::from_xdr(&env, &n_bytes).unwrap_or(String::from_str(&env, ""));
 
-            Some((contacts, notes))
+            let mut critical_alerts = Vec::new(&env);
+            if notes.len() > 0 {
+                critical_alerts.push_back(notes);
+            }
+
+            let a_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_allergies.ciphertext,
+                &pet.encrypted_allergies.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let all_allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).unwrap_or(Vec::new(&env));
+
+            let mut critical_allergies = Vec::new(&env);
+            for allergy in all_allergies.iter() {
+                if allergy.is_critical {
+                    critical_allergies.push_back(allergy);
+                }
+            }
+
+            // Log the emergency access
+            let log = EmergencyAccessLog {
+                pet_id,
+                accessed_by: env.current_contract_address(),
+                timestamp: env.ledger().timestamp(),
+            };
+
+            let log_key = DataKey::EmergencyAccessLogs(pet_id);
+            let mut logs: Vec<EmergencyAccessLog> = env
+                .storage()
+                .persistent()
+                .get(&log_key)
+                .unwrap_or(Vec::new(&env));
+            logs.push_back(log);
+            env.storage().persistent().set(&log_key, &logs);
+
+            EmergencyInfo {
+                pet_id,
+                species: Self::species_to_string(&env, &pet.species),
+                allergies: critical_allergies,
+                critical_alerts,
+                emergency_contacts: contacts,
+            }
         } else {
-            None
+            panic!("Pet not found");
         }
     }
 
@@ -2369,7 +2493,7 @@ impl PetChainContract {
         vet_address: Address,
         diagnosis: String,
         treatment: String,
-        medications: String,
+        medications: Vec<Medication>,
         notes: String,
     ) -> u64 {
         // Vet authorization check
@@ -2436,14 +2560,14 @@ impl PetChainContract {
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
                 pet_id,
-                updated_by: veterinarian.clone(),
+                updated_by: vet_address.clone(),
                 timestamp: now,
             },
         );
         Self::log_access(
             &env,
             pet_id,
-            veterinarian,
+            vet_address,
             AccessAction::Write,
             String::from_str(&env, "Medical record added"),
         );
@@ -2456,7 +2580,7 @@ impl PetChainContract {
         record_id: u64,
         diagnosis: String,
         treatment: String,
-        medications: String,
+        medications: Vec<Medication>,
         notes: String,
     ) -> bool {
         if let Some(mut record) = env
