@@ -2,6 +2,14 @@
 #![allow(clippy::too_many_arguments)]
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_access_control;
+#[cfg(test)]
+mod test_batch;
+#[cfg(test)]
+mod test_emergency_contacts;
+#[cfg(test)]
+mod test_export;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
