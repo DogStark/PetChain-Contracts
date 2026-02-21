@@ -3540,6 +3540,75 @@ fn test_vaccination_history_overdue() {
 }
 
 #[test]
+fn test_update_clinic_info() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.budget().reset_unlimited();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "VET-CLINIC-001"),
+        &String::from_str(&env, "General"),
+    );
+
+    // Verify clinic_info is initially None
+    let vet_before = client.get_vet(&vet).unwrap();
+    assert!(vet_before.clinic_info.is_none());
+
+    // Update clinic info
+    let clinic_info = ClinicInfo {
+        clinic_name: String::from_str(&env, "Happy Paws Veterinary"),
+        address: String::from_str(&env, "123 Main St, Pet City"),
+        phone: String::from_str(&env, "555-123-4567"),
+        email: String::from_str(&env, "contact@happypaws.vet"),
+        operating_hours: String::from_str(&env, "Mon-Fri 9am-6pm"),
+        emergency_available: true,
+    };
+    let result = client.update_clinic_info(&vet, &clinic_info);
+    assert!(result);
+
+    // Verify clinic info was stored
+    let vet_after = client.get_vet(&vet).unwrap();
+    let stored_info = vet_after.clinic_info.unwrap();
+    assert_eq!(stored_info.clinic_name, String::from_str(&env, "Happy Paws Veterinary"));
+    assert_eq!(stored_info.address, String::from_str(&env, "123 Main St, Pet City"));
+    assert_eq!(stored_info.phone, String::from_str(&env, "555-123-4567"));
+    assert_eq!(stored_info.email, String::from_str(&env, "contact@happypaws.vet"));
+    assert_eq!(stored_info.emergency_available, true);
+}
+
+#[test]
+#[should_panic]
+fn test_only_vet_can_update_clinic_info() {
+    let env = Env::default();
+    // No mock_all_auths - unauthorized call should fail on require_auth
+    env.budget().reset_unlimited();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    let clinic_info = ClinicInfo {
+        clinic_name: String::from_str(&env, "Fake Clinic"),
+        address: String::from_str(&env, "Nowhere"),
+        phone: String::from_str(&env, "000-0000"),
+        email: String::from_str(&env, "fake@fake.com"),
+        operating_hours: String::from_str(&env, "Never"),
+        emergency_available: false,
+    };
+
+    // Non-vet (no auth) tries to update clinic info for vet - should panic on require_auth
+    client.update_clinic_info(&vet, &clinic_info);
+}
+
+#[test]
 #[should_panic(expected = "You have already reviewed this veterinarian")]
 fn test_duplicate_vet_review() {
     let pet_id = client.register_pet(
