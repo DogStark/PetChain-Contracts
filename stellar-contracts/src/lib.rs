@@ -1,11 +1,19 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+
+#[contracttype]
+pub enum InsuranceKey {
+    Policy(u64),
+    Claim(u64),                // claim_id -> InsuranceClaim
+    ClaimCount,                // Global count of claims
+    PetClaimCount(u64),        // pet_id -> count of claims
+    PetClaimIndex((u64, u64)), // (pet_id, index) -> claim_id
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_access_control;
-#[cfg(test)]
-mod test_batch;
 #[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
@@ -207,6 +215,7 @@ pub struct PetOwner {
     pub is_pet_owner: bool,
 }
 
+/*
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClinicInfo {
@@ -217,6 +226,7 @@ pub struct ClinicInfo {
     pub operating_hours: String,
     pub emergency_available: bool,
 }
+*/
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -241,8 +251,6 @@ pub struct Vet {
     pub name: String,
     pub license_number: String,
     pub specialization: String,
-    pub specializations: Vec<Specialization>,
-    pub certifications: Vec<Certification>,
     pub verified: bool,
     pub clinic_info: Option<String>, // Simplified to String to avoid nested Option issues
 }
@@ -359,60 +367,67 @@ pub enum DataKey {
     UpgradeProposal(u64),
     UpgradeProposalCount,
 
-    // Vaccination DataKey
-    Vaccination(u64),
-    VaccinationCount,
-    PetVaccinationCount(u64),
-    PetVaccinationByIndex((u64, u64)),
-
-    // Tag Linking System keys
-    Tag(BytesN<32>), // tag_id -> PetTag (reverse lookup for QR scan)
-    PetTagId(u64),   // pet_id -> tag_id (forward lookup)
-    TagNonce,        // Global nonce for deterministic tag ID generation
-    PetTagCount,     // Count of tags (mostly for stats)
-
-    // Tag String keys (QR)
     // Access Control keys
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
     TemporaryCustody(u64),        // pet_id -> temporary custody record
 
-    // Lab Result DataKey
+                                  // Lab Result DataKey
+
+                                  // Medical Record DataKey
+
+                                  // Vet Review keys
+
+                                  // Medication keys
+                                  // Lost Pet Alert System keys
+}
+#[contracttype]
+pub enum MedicalKey {
     LabResult(u64),
     LabResultCount,
     PetLabResultIndex((u64, u64)), // (pet_id, index) -> lab_result_id
     PetLabResultCount(u64),
-
-    // Medical Record DataKey
     MedicalRecord(u64),
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+    GlobalMedication(u64),          // medication_id -> Medication
+    MedicationCount,                // Global count
+    PetMedicationCount(u64),        // pet_id -> count
+    PetMedicationIndex((u64, u64)), // (pet_id, index) -> medication_id
+    // Vaccination DataKey
+    Vaccination(u64),
+    VaccinationCount,
+    PetVaccinationCount(u64),
+    PetVaccinationByIndex((u64, u64)),
+}
 
-    // Vet Review keys
+#[contracttype]
+pub enum ReviewKey {
     VetReview(u64),                          // review_id -> VetReview
     VetReviewCount,                          // Global count of reviews
     VetReviewByVetIndex((Address, u64)),     // (Vet, index) -> review_id
     VetReviewCountByVet(Address),            // Vet -> count
     VetReviewByOwnerVet((Address, Address)), // (Owner, Vet) -> review_id (Duplicate check)
+}
 
-    // Medication keys
-    GlobalMedication(u64),          // medication_id -> Medication
-    MedicationCount,                // Global count
-    PetMedicationCount(u64),        // pet_id -> count
-    PetMedicationIndex((u64, u64)), // (pet_id, index) -> medication_id
-    // Lost Pet Alert System keys
+#[contracttype]
+pub enum AlertKey {
     LostPetAlert(u64),
     LostPetAlertCount,
     ActiveLostPetAlerts, // Vec<u64> of active alert IDs
     AlertSightings(u64),
+}
 
+#[contracttype]
+pub enum ConsentKey {
     // Consent System keys
     Consent(u64),
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+}
 
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
@@ -610,6 +625,7 @@ pub struct MedicalRecord {
     pub treatment: String,
     pub medications: Vec<Medication>,
     pub date: u64,
+    pub updated_at: u64,
     pub notes: String,
     pub attachment_hashes: Vec<Attachment>,
 }
@@ -712,6 +728,77 @@ pub struct TreatmentAddedEvent {
 }
 
 // --- EVENTS ---
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsurancePolicy {
+    pub policy_id: String,
+    pub provider: String,
+    pub coverage_type: String,
+    pub premium: u64,
+    pub coverage_limit: u64,
+    pub start_date: u64,
+    pub expiry_date: u64,
+    pub active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceAddedEvent {
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub provider: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceUpdatedEvent {
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub active: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InsuranceClaimStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Paid,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaim {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub amount: u64,
+    pub date: u64,
+    pub status: InsuranceClaimStatus,
+    pub description: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimSubmittedEvent {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub amount: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimStatusUpdatedEvent {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub status: InsuranceClaimStatus,
+    pub timestamp: u64,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -1633,10 +1720,7 @@ impl PetChainContract {
             name,
             license_number: license_number.clone(),
             specialization,
-            specializations: Vec::new(&env),
-            certifications: Vec::new(&env),
             verified: false,
-            clinic_info: None,
         };
 
         env.storage()
@@ -1711,6 +1795,7 @@ impl PetChainContract {
         vet_address.and_then(|address| Self::get_vet(env, address))
     }
 
+    /*
     /// Update clinic info for a vet. Only the vet can update their own clinic info.
     pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: String) -> bool {
         vet_address.require_auth();
@@ -1729,6 +1814,7 @@ impl PetChainContract {
             panic!("Vet not found");
         }
     }
+    */
 
     // Pet Vaccination Record
     #[allow(clippy::too_many_arguments)]
@@ -1756,7 +1842,7 @@ impl PetChainContract {
         let vaccine_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VaccinationCount)
+            .get(&MedicalKey::VaccinationCount)
             .unwrap_or(0);
         let vaccine_id = vaccine_count + 1;
         let now = env.ledger().timestamp();
@@ -1801,23 +1887,23 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::Vaccination(vaccine_id), &record);
+            .set(&MedicalKey::Vaccination(vaccine_id), &record);
         env.storage()
             .instance()
-            .set(&DataKey::VaccinationCount, &vaccine_id);
+            .set(&MedicalKey::VaccinationCount, &vaccine_id);
 
         // Update indexes
         let pet_vax_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
         let new_pet_vax_count = pet_vax_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
+            .set(&MedicalKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
         env.storage().instance().set(
-            &DataKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
+            &MedicalKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
             &vaccine_id,
         );
 
@@ -1840,7 +1926,7 @@ impl PetChainContract {
         if let Some(record) = env
             .storage()
             .instance()
-            .get::<DataKey, Vaccination>(&DataKey::Vaccination(vaccine_id))
+            .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccine_id))
         {
             let key = Self::get_encryption_key(&env);
 
@@ -1886,7 +1972,7 @@ impl PetChainContract {
         let _vax_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
 
         // Here we return decrypted history. Privacy check omitted for brevity in this merge step,
@@ -1894,7 +1980,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
@@ -1902,7 +1988,7 @@ impl PetChainContract {
             if let Some(vid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+                .get::<MedicalKey, u64>(&MedicalKey::PetVaccinationByIndex((pet_id, i)))
             {
                 if let Some(vax) = Self::get_vaccinations(env.clone(), vid) {
                     history.push_back(vax);
@@ -1971,13 +2057,9 @@ impl PetChainContract {
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
 
     fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
-        let nonce: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TagNonce)
-            .unwrap_or(0);
+        let nonce: u64 = env.storage().instance().get(&TagKey::TagNonce).unwrap_or(0);
         let new_nonce = nonce + 1;
-        env.storage().instance().set(&DataKey::TagNonce, &new_nonce);
+        env.storage().instance().set(&TagKey::TagNonce, &new_nonce);
 
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
@@ -2010,7 +2092,7 @@ impl PetChainContract {
         if env
             .storage()
             .instance()
-            .get::<DataKey, BytesN<32>>(&DataKey::PetTagId(pet_id))
+            .get::<TagKey, BytesN<32>>(&TagKey::PetTagId(pet_id))
             .is_some()
         {
             panic!("Pet already has a linked tag");
@@ -2033,19 +2115,19 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::Tag(tag_id.clone()), &pet_tag);
+            .set(&TagKey::Tag(tag_id.clone()), &pet_tag);
         env.storage()
             .instance()
-            .set(&DataKey::PetTagId(pet_id), &tag_id);
+            .set(&TagKey::PetTagId(pet_id), &tag_id);
 
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetTagCount)
+            .get(&TagKey::PetTagCount)
             .unwrap_or(0);
         env.storage()
             .instance()
-            .set(&DataKey::PetTagCount, &(count + 1));
+            .set(&TagKey::PetTagCount, &(count + 1));
 
         env.events().publish(
             (String::from_str(&env, "TAG_LINKED"),),
@@ -2064,7 +2146,7 @@ impl PetChainContract {
         if let Some(tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id))
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id))
         {
             if !tag.is_active {
                 return None;
@@ -2076,18 +2158,18 @@ impl PetChainContract {
     }
 
     pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
-        env.storage().instance().get(&DataKey::Tag(tag_id))
+        env.storage().instance().get(&TagKey::Tag(tag_id))
     }
 
     pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<BytesN<32>> {
-        env.storage().instance().get(&DataKey::PetTagId(pet_id))
+        env.storage().instance().get(&TagKey::PetTagId(pet_id))
     }
 
     pub fn update_tag_message(env: Env, tag_id: BytesN<32>, message: String) -> bool {
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2099,7 +2181,7 @@ impl PetChainContract {
             tag.message = message;
             tag.updated_at = env.ledger().timestamp();
 
-            env.storage().instance().set(&DataKey::Tag(tag_id), &tag);
+            env.storage().instance().set(&TagKey::Tag(tag_id), &tag);
             true
         } else {
             false
@@ -2110,7 +2192,7 @@ impl PetChainContract {
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2123,7 +2205,7 @@ impl PetChainContract {
             tag.updated_at = env.ledger().timestamp();
             env.storage()
                 .instance()
-                .set(&DataKey::Tag(tag_id.clone()), &tag);
+                .set(&TagKey::Tag(tag_id.clone()), &tag);
 
             env.events().publish(
                 (String::from_str(&env, "TAG_DEACTIVATED"),),
@@ -2144,7 +2226,7 @@ impl PetChainContract {
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2157,7 +2239,7 @@ impl PetChainContract {
             tag.updated_at = env.ledger().timestamp();
             env.storage()
                 .instance()
-                .set(&DataKey::Tag(tag_id.clone()), &tag);
+                .set(&TagKey::Tag(tag_id.clone()), &tag);
 
             env.events().publish(
                 (String::from_str(&env, "TAG_REACTIVATED"),),
@@ -2178,7 +2260,7 @@ impl PetChainContract {
         if let Some(tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id))
+            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id))
         {
             tag.is_active
         } else {
@@ -2699,12 +2781,12 @@ impl PetChainContract {
         let count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::MedicalRecordCount)
+            .get::<MedicalKey, u64>(&MedicalKey::MedicalRecordCount)
             .unwrap_or(0);
         let id = count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::MedicalRecordCount, &id);
+            .set(&MedicalKey::MedicalRecordCount, &id);
 
         let now = env.ledger().timestamp();
         let record = MedicalRecord {
@@ -2715,6 +2797,7 @@ impl PetChainContract {
             treatment,
             medications,
             date: now,
+            updated_at: now,
             notes,
             attachment_hashes: Vec::new(&env),
         };
@@ -2722,21 +2805,21 @@ impl PetChainContract {
         // Store the medical record
         env.storage()
             .instance()
-            .set(&DataKey::MedicalRecord(id), &record);
+            .set(&MedicalKey::MedicalRecord(id), &record);
 
         // Update pet medical record index
         let pet_record_count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id))
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
         let new_pet_record_count = pet_record_count + 1;
         env.storage().instance().set(
-            &DataKey::PetMedicalRecordCount(pet_id),
+            &MedicalKey::PetMedicalRecordCount(pet_id),
             &new_pet_record_count,
         );
         env.storage().instance().set(
-            &DataKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)),
+            &MedicalKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)),
             &id,
         );
 
@@ -2780,7 +2863,7 @@ impl PetChainContract {
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             record.vet_address.require_auth();
 
@@ -2792,7 +2875,7 @@ impl PetChainContract {
 
             env.storage()
                 .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
             Self::log_access(
                 &env,
                 record.pet_id,
@@ -2822,7 +2905,7 @@ impl PetChainContract {
         let record: Option<MedicalRecord> = env
             .storage()
             .instance()
-            .get(&DataKey::MedicalRecord(record_id));
+            .get(&MedicalKey::MedicalRecord(record_id));
         if let Some(ref r) = record {
             Self::log_access(
                 &env,
@@ -2839,14 +2922,14 @@ impl PetChainContract {
         let count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id))
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
         let mut records = Vec::new(&env);
         for i in 1..=count {
             if let Some(rid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetMedicalRecordIndex((pet_id, i)))
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
             {
                 if let Some(record) = Self::get_medical_record(env.clone(), rid) {
                     records.push_back(record);
@@ -3085,10 +3168,12 @@ impl PetChainContract {
         let count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::LabResultCount)
+            .get::<MedicalKey, u64>(&MedicalKey::LabResultCount)
             .unwrap_or(0);
         let id = count + 1;
-        env.storage().instance().set(&DataKey::LabResultCount, &id);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::LabResultCount, &id);
 
         let result = LabResult {
             id,
@@ -3103,20 +3188,20 @@ impl PetChainContract {
         };
         env.storage()
             .instance()
-            .set(&DataKey::LabResult(id), &result);
+            .set(&MedicalKey::LabResult(id), &result);
 
         let p_count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetLabResultCount(pet_id))
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
         let new_p = p_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetLabResultCount(pet_id), &new_p);
+            .set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
         env.storage()
             .instance()
-            .set(&DataKey::PetLabResultIndex((pet_id, new_p)), &id);
+            .set(&MedicalKey::PetLabResultIndex((pet_id, new_p)), &id);
 
         id
     }
@@ -3124,21 +3209,21 @@ impl PetChainContract {
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
         env.storage()
             .instance()
-            .get(&DataKey::LabResult(lab_result_id))
+            .get(&MedicalKey::LabResult(lab_result_id))
     }
 
     pub fn get_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
         let count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetLabResultCount(pet_id))
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
         let mut res = Vec::new(&env);
         for i in 1..=count {
             if let Some(lid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetLabResultIndex((pet_id, i)))
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
             {
                 if let Some(r) = Self::get_lab_result(env.clone(), lid) {
                     res.push_back(r);
@@ -3220,7 +3305,7 @@ impl PetChainContract {
         let alert_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::LostPetAlertCount)
+            .get(&AlertKey::LostPetAlertCount)
             .unwrap_or(0);
         let alert_id = alert_count + 1;
 
@@ -3238,21 +3323,21 @@ impl PetChainContract {
         // Store alert
         env.storage()
             .instance()
-            .set(&DataKey::LostPetAlert(alert_id), &alert);
+            .set(&AlertKey::LostPetAlert(alert_id), &alert);
         env.storage()
             .instance()
-            .set(&DataKey::LostPetAlertCount, &alert_id);
+            .set(&AlertKey::LostPetAlertCount, &alert_id);
 
         // Add to active alerts list
         let mut active_alerts: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&AlertKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
         active_alerts.push_back(alert_id);
         env.storage()
             .instance()
-            .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+            .set(&AlertKey::ActiveLostPetAlerts, &active_alerts);
 
         alert_id
     }
@@ -3269,7 +3354,7 @@ impl PetChainContract {
             description,
         };
 
-        let key = DataKey::AlertSightings(alert_id);
+        let key = AlertKey::AlertSightings(alert_id);
         let mut sightings: Vec<SightingReport> =
             env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
         sightings.push_back(sighting);
@@ -3280,7 +3365,7 @@ impl PetChainContract {
 
     /// Mark a lost pet as found
     pub fn report_found(env: Env, alert_id: u64) -> bool {
-        let key = DataKey::LostPetAlert(alert_id);
+        let key = AlertKey::LostPetAlert(alert_id);
 
         let mut alert: LostPetAlert = env.storage().instance().get(&key).expect("Alert not found");
 
@@ -3298,14 +3383,14 @@ impl PetChainContract {
         let mut active_alerts: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&AlertKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
 
         if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
             active_alerts.remove(pos as u32);
             env.storage()
                 .instance()
-                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+                .set(&AlertKey::ActiveLostPetAlerts, &active_alerts);
         }
 
         true
@@ -3313,7 +3398,7 @@ impl PetChainContract {
 
     /// Cancel a lost pet alert
     pub fn cancel_lost_alert(env: Env, alert_id: u64) -> bool {
-        let key = DataKey::LostPetAlert(alert_id);
+        let key = AlertKey::LostPetAlert(alert_id);
 
         let mut alert: LostPetAlert = env.storage().instance().get(&key).expect("Alert not found");
 
@@ -3329,14 +3414,14 @@ impl PetChainContract {
         let mut active_alerts: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&AlertKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
 
         if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
             active_alerts.remove(pos as u32);
             env.storage()
                 .instance()
-                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+                .set(&AlertKey::ActiveLostPetAlerts, &active_alerts);
         }
 
         true
@@ -3347,7 +3432,7 @@ impl PetChainContract {
         let active_ids: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&AlertKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
 
         let mut active_alerts = Vec::new(&env);
@@ -3356,7 +3441,7 @@ impl PetChainContract {
             if let Some(alert) = env
                 .storage()
                 .instance()
-                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(id))
+                .get::<AlertKey, LostPetAlert>(&AlertKey::LostPetAlert(id))
             {
                 if alert.status == AlertStatus::Active {
                     active_alerts.push_back(alert);
@@ -3371,14 +3456,14 @@ impl PetChainContract {
     pub fn get_alert(env: Env, alert_id: u64) -> Option<LostPetAlert> {
         env.storage()
             .instance()
-            .get(&DataKey::LostPetAlert(alert_id))
+            .get(&AlertKey::LostPetAlert(alert_id))
     }
 
     /// Get sightings for a specific alert
     pub fn get_alert_sightings(env: Env, alert_id: u64) -> Vec<SightingReport> {
         env.storage()
             .instance()
-            .get(&DataKey::AlertSightings(alert_id))
+            .get(&AlertKey::AlertSightings(alert_id))
             .unwrap_or(Vec::new(&env))
     }
 
@@ -3387,7 +3472,7 @@ impl PetChainContract {
         let alert_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::LostPetAlertCount)
+            .get(&AlertKey::LostPetAlertCount)
             .unwrap_or(0);
 
         let mut pet_alerts = Vec::new(&env);
@@ -3396,7 +3481,7 @@ impl PetChainContract {
             if let Some(alert) = env
                 .storage()
                 .instance()
-                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(i))
+                .get::<AlertKey, LostPetAlert>(&AlertKey::LostPetAlert(i))
             {
                 if alert.pet_id == pet_id {
                     pet_alerts.push_back(alert);
@@ -3500,7 +3585,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::ConsentCount)
+            .get(&ConsentKey::ConsentCount)
             .unwrap_or(0);
         let consent_id = count + 1;
         let now = env.ledger().timestamp();
@@ -3518,23 +3603,23 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::Consent(consent_id), &consent);
+            .set(&ConsentKey::Consent(consent_id), &consent);
         env.storage()
             .instance()
-            .set(&DataKey::ConsentCount, &consent_id);
+            .set(&ConsentKey::ConsentCount, &consent_id);
 
         // Update pet consent index
         let pet_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetConsentCount(pet_id))
+            .get(&ConsentKey::PetConsentCount(pet_id))
             .unwrap_or(0);
         let new_pet_count = pet_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetConsentCount(pet_id), &new_pet_count);
+            .set(&ConsentKey::PetConsentCount(pet_id), &new_pet_count);
         env.storage().instance().set(
-            &DataKey::PetConsentIndex((pet_id, new_pet_count)),
+            &ConsentKey::PetConsentIndex((pet_id, new_pet_count)),
             &consent_id,
         );
 
@@ -3547,7 +3632,7 @@ impl PetChainContract {
         if let Some(mut consent) = env
             .storage()
             .instance()
-            .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
         {
             if consent.owner != owner {
                 panic!("Not the consent owner");
@@ -3561,7 +3646,7 @@ impl PetChainContract {
 
             env.storage()
                 .instance()
-                .set(&DataKey::Consent(consent_id), &consent);
+                .set(&ConsentKey::Consent(consent_id), &consent);
             true
         } else {
             false
@@ -3572,7 +3657,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetConsentCount(pet_id))
+            .get(&ConsentKey::PetConsentCount(pet_id))
             .unwrap_or(0);
 
         let mut history = Vec::new(&env);
@@ -3581,12 +3666,12 @@ impl PetChainContract {
             if let Some(consent_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetConsentIndex((pet_id, i)))
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
             {
                 if let Some(consent) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
                 {
                     history.push_back(consent);
                 }
@@ -3865,17 +3950,21 @@ impl PetChainContract {
         }
 
         // Check duplicate
-        if env.storage().instance().has(&DataKey::VetReviewByOwnerVet((
-            reviewer.clone(),
-            vet.clone(),
-        ))) {
+        if env
+            .storage()
+            .instance()
+            .has(&ReviewKey::VetReviewByOwnerVet((
+                reviewer.clone(),
+                vet.clone(),
+            )))
+        {
             panic!("You have already reviewed this veterinarian");
         }
 
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCount)
+            .get(&ReviewKey::VetReviewCount)
             .unwrap_or(0);
         let id = count + 1;
 
@@ -3890,28 +3979,30 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::VetReview(id), &review);
-        env.storage().instance().set(&DataKey::VetReviewCount, &id);
+            .set(&ReviewKey::VetReview(id), &review);
+        env.storage()
+            .instance()
+            .set(&ReviewKey::VetReviewCount, &id);
 
         // Index by Vet
         let vet_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let new_vet_count = vet_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
+            .set(&ReviewKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
         env.storage().instance().set(
-            &DataKey::VetReviewByVetIndex((vet.clone(), new_vet_count)),
+            &ReviewKey::VetReviewByVetIndex((vet.clone(), new_vet_count)),
             &id,
         );
 
         // Mark as reviewed by this owner
         env.storage()
             .instance()
-            .set(&DataKey::VetReviewByOwnerVet((reviewer, vet)), &id);
+            .set(&ReviewKey::VetReviewByOwnerVet((reviewer, vet)), &id);
 
         id
     }
@@ -3920,19 +4011,19 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let mut reviews = Vec::new(&env);
         for i in 1..=count {
             if let Some(review_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::VetReviewByVetIndex((vet.clone(), i)))
+                .get::<ReviewKey, u64>(&ReviewKey::VetReviewByVetIndex((vet.clone(), i)))
             {
                 if let Some(review) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, VetReview>(&DataKey::VetReview(review_id))
+                    .get::<ReviewKey, VetReview>(&ReviewKey::VetReview(review_id))
                 {
                     reviews.push_back(review);
                 }
@@ -3977,7 +4068,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::MedicationCount)
+            .get(&MedicalKey::MedicationCount)
             .unwrap_or(0);
         let id = count + 1;
 
@@ -3995,22 +4086,24 @@ impl PetChainContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::GlobalMedication(id), &medication);
-        env.storage().instance().set(&DataKey::MedicationCount, &id);
+            .set(&MedicalKey::GlobalMedication(id), &medication);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicationCount, &id);
 
         // Index by pet
         let pet_med_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetMedicationCount(pet_id))
+            .get(&MedicalKey::PetMedicationCount(pet_id))
             .unwrap_or(0);
         let new_count = pet_med_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationCount(pet_id), &new_count);
+            .set(&MedicalKey::PetMedicationCount(pet_id), &new_count);
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationIndex((pet_id, new_count)), &id);
+            .set(&MedicalKey::PetMedicationIndex((pet_id, new_count)), &id);
 
         id
     }
@@ -4019,7 +4112,7 @@ impl PetChainContract {
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetMedicationCount(pet_id))
+            .get(&MedicalKey::PetMedicationCount(pet_id))
             .unwrap_or(0);
         let mut active_meds = Vec::new(&env);
 
@@ -4027,12 +4120,12 @@ impl PetChainContract {
             if let Some(med_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetMedicationIndex((pet_id, i)))
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicationIndex((pet_id, i)))
             {
                 if let Some(med) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, Medication>(&DataKey::GlobalMedication(med_id))
+                    .get::<MedicalKey, Medication>(&MedicalKey::GlobalMedication(med_id))
                 {
                     if med.active {
                         active_meds.push_back(med);
@@ -4047,7 +4140,7 @@ impl PetChainContract {
         if let Some(mut med) = env
             .storage()
             .instance()
-            .get::<DataKey, Medication>(&DataKey::GlobalMedication(medication_id))
+            .get::<MedicalKey, Medication>(&MedicalKey::GlobalMedication(medication_id))
         {
             med.prescribing_vet.require_auth();
             med.active = false;
@@ -4057,7 +4150,7 @@ impl PetChainContract {
             }
             env.storage()
                 .instance()
-                .set(&DataKey::GlobalMedication(medication_id), &med);
+                .set(&MedicalKey::GlobalMedication(medication_id), &med);
         } else {
             panic!("Medication not found");
         }
@@ -4065,143 +4158,434 @@ impl PetChainContract {
 
     // --- TREATMENT HISTORY ---
 
-pub fn add_treatment(
-    env: Env,
-    pet_id: u64,
-    vet_address: Address,
-    treatment_type: TreatmentType,
-    date: u64,
-    notes: String,
-    cost: Option<i128>,
-    outcome: String,
-) -> u64 {
-    vet_address.require_auth();
+    pub fn add_treatment(
+        env: Env,
+        pet_id: u64,
+        vet_address: Address,
+        treatment_type: TreatmentType,
+        date: u64,
+        notes: String,
+        cost: Option<i128>,
+        outcome: String,
+    ) -> u64 {
+        vet_address.require_auth();
 
-    if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
-        panic!("Veterinarian not verified");
-    }
+        if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+            panic!("Veterinarian not verified");
+        }
 
-    let _pet: Pet = env
-        .storage()
-        .instance()
-        .get(&DataKey::Pet(pet_id))
-        .expect("Pet not found");
-
-    let treatment_count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::TreatmentCount)
-        .unwrap_or(0);
-    let treatment_id = treatment_count + 1;
-
-    let now = env.ledger().timestamp();
-
-    let treatment = Treatment {
-        id: treatment_id,
-        pet_id,
-        treatment_type: treatment_type.clone(),
-        date,
-        vet_address: vet_address.clone(),
-        notes,
-        cost,
-        outcome,
-    };
-
-    env.storage()
-        .instance()
-        .set(&DataKey::Treatment(treatment_id), &treatment);
-    env.storage()
-        .instance()
-        .set(&DataKey::TreatmentCount, &treatment_id);
-
-    // Update per-pet index
-    let pet_treatment_count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::PetTreatmentCount(pet_id))
-        .unwrap_or(0);
-    let new_pet_treatment_count = pet_treatment_count + 1;
-    env.storage()
-        .instance()
-        .set(&DataKey::PetTreatmentCount(pet_id), &new_pet_treatment_count);
-    env.storage().instance().set(
-        &DataKey::PetTreatmentIndex((pet_id, new_pet_treatment_count)),
-        &treatment_id,
-    );
-
-    env.events().publish(
-        (String::from_str(&env, "TreatmentAdded"), pet_id),
-        TreatmentAddedEvent {
-            treatment_id,
-            pet_id,
-            vet_address,
-            treatment_type,
-            timestamp: now,
-        },
-    );
-
-    treatment_id
-}
-
-pub fn get_treatment(env: Env, treatment_id: u64) -> Option<Treatment> {
-    env.storage()
-        .instance()
-        .get::<DataKey, Treatment>(&DataKey::Treatment(treatment_id))
-}
-
-pub fn get_treatment_history(env: Env, pet_id: u64) -> Vec<Treatment> {
-    if env
-        .storage()
-        .instance()
-        .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-        .is_none()
-    {
-        return Vec::new(&env);
-    }
-
-    let count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::PetTreatmentCount(pet_id))
-        .unwrap_or(0);
-
-    let mut history = Vec::new(&env);
-
-    for i in 1..=count {
-        if let Some(tid) = env
+        let _pet: Pet = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetTreatmentIndex((pet_id, i)))
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let treatment_count: u64 = env
+            .storage()
+            .instance()
+            .get(&TreatmentKey::TreatmentCount)
+            .unwrap_or(0);
+        let treatment_id = treatment_count + 1;
+
+        let now = env.ledger().timestamp();
+
+        let treatment = Treatment {
+            id: treatment_id,
+            pet_id,
+            treatment_type: treatment_type.clone(),
+            date,
+            vet_address: vet_address.clone(),
+            notes,
+            cost,
+            outcome,
+        };
+
+        env.storage()
+            .instance()
+            .set(&TreatmentKey::Treatment(treatment_id), &treatment);
+        env.storage()
+            .instance()
+            .set(&TreatmentKey::TreatmentCount, &treatment_id);
+
+        // Update per-pet index
+        let pet_treatment_count: u64 = env
+            .storage()
+            .instance()
+            .get(&TreatmentKey::PetTreatmentCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_treatment_count = pet_treatment_count + 1;
+        env.storage().instance().set(
+            &TreatmentKey::PetTreatmentCount(pet_id),
+            &new_pet_treatment_count,
+        );
+        env.storage().instance().set(
+            &TreatmentKey::PetTreatmentIndex((pet_id, new_pet_treatment_count)),
+            &treatment_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "TreatmentAdded"), pet_id),
+            TreatmentAddedEvent {
+                treatment_id,
+                pet_id,
+                vet_address,
+                treatment_type,
+                timestamp: now,
+            },
+        );
+
+        treatment_id
+    }
+
+    pub fn get_treatment(env: Env, treatment_id: u64) -> Option<Treatment> {
+        env.storage()
+            .instance()
+            .get::<TreatmentKey, Treatment>(&TreatmentKey::Treatment(treatment_id))
+    }
+
+    pub fn get_treatment_history(env: Env, pet_id: u64) -> Vec<Treatment> {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
         {
-            if let Some(treatment) = env
+            return Vec::new(&env);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&TreatmentKey::PetTreatmentCount(pet_id))
+            .unwrap_or(0);
+
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(tid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, Treatment>(&DataKey::Treatment(tid))
+                .get::<TreatmentKey, u64>(&TreatmentKey::PetTreatmentIndex((pet_id, i)))
             {
-                history.push_back(treatment);
+                if let Some(treatment) = env
+                    .storage()
+                    .instance()
+                    .get::<TreatmentKey, Treatment>(&TreatmentKey::Treatment(tid))
+                {
+                    history.push_back(treatment);
+                }
             }
         }
+
+        history
     }
 
-    history
-}
+    pub fn get_treatments_by_type(
+        env: Env,
+        pet_id: u64,
+        treatment_type: TreatmentType,
+    ) -> Vec<Treatment> {
+        let history = Self::get_treatment_history(env.clone(), pet_id);
+        let mut filtered = Vec::new(&env);
 
-pub fn get_treatments_by_type(
-    env: Env,
-    pet_id: u64,
-    treatment_type: TreatmentType,
-) -> Vec<Treatment> {
-    let history = Self::get_treatment_history(env.clone(), pet_id);
-    let mut filtered = Vec::new(&env);
-
-    for treatment in history.iter() {
-        if treatment.treatment_type == treatment_type {
-            filtered.push_back(treatment);
+        for treatment in history.iter() {
+            if treatment.treatment_type == treatment_type {
+                filtered.push_back(treatment);
+            }
         }
+
+        filtered
     }
 
-    filtered
-}
+    /// Adds an insurance policy to a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet to insure
+    /// * `policy_id` - Unique identifier for the insurance policy
+    /// * `provider` - Name of the insurance provider
+    /// * `coverage_type` - Type of coverage (e.g., "Comprehensive", "Basic")
+    /// * `premium` - Annual premium amount
+    /// * `coverage_limit` - Maximum coverage amount
+    /// * `expiry_date` - Unix timestamp when policy expires
+    ///
+    /// # Returns
+    /// * `true` if policy was added successfully
+    /// * `false` if pet doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceAddedEvent` on success
+    pub fn add_insurance_policy(
+        env: Env,
+        pet_id: u64,
+        policy_id: String,
+        provider: String,
+        coverage_type: String,
+        premium: u64,
+        coverage_limit: u64,
+        expiry_date: u64,
+    ) -> bool {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return false;
+        }
+
+        let start_date = env.ledger().timestamp();
+        let policy = InsurancePolicy {
+            policy_id: policy_id.clone(),
+            provider: provider.clone(),
+            coverage_type,
+            premium,
+            coverage_limit,
+            start_date,
+            expiry_date,
+            active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Policy(pet_id), &policy);
+
+        env.events().publish(
+            (String::from_str(&env, "InsuranceAdded"), pet_id),
+            InsuranceAddedEvent {
+                pet_id,
+                policy_id,
+                provider,
+                timestamp: start_date,
+            },
+        );
+
+        true
+    }
+
+    /// Retrieves the insurance policy for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// * `Some(InsurancePolicy)` if policy exists
+    /// * `None` if no policy found
+    pub fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))
+    }
+
+    /// Updates the active status of an insurance policy.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `active` - New status (true = active, false = inactive)
+    ///
+    /// # Returns
+    /// * `true` if status was updated successfully
+    /// * `false` if policy doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceUpdatedEvent` on success
+    pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
+        if let Some(mut policy) = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))
+        {
+            policy.active = active;
+            env.storage()
+                .instance()
+                .set(&InsuranceKey::Policy(pet_id), &policy);
+
+            env.events().publish(
+                (String::from_str(&env, "InsuranceUpdated"), pet_id),
+                InsuranceUpdatedEvent {
+                    pet_id,
+                    policy_id: policy.policy_id,
+                    active,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Submits an insurance claim for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `amount` - Claim amount
+    /// * `description` - Description of the claim
+    ///
+    /// # Returns
+    /// * `Some(claim_id)` if claim was submitted successfully
+    /// * `None` if pet has no policy or policy is inactive
+    ///
+    /// # Events
+    /// Emits `InsuranceClaimSubmittedEvent` on success
+    pub fn submit_insurance_claim(
+        env: Env,
+        pet_id: u64,
+        amount: u64,
+        description: String,
+    ) -> Option<u64> {
+        let policy = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))?;
+
+        if !policy.active {
+            return None;
+        }
+
+        let claim_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::ClaimCount)
+            .unwrap_or(0);
+        let claim_id = claim_count + 1;
+        let timestamp = env.ledger().timestamp();
+
+        let claim = InsuranceClaim {
+            claim_id,
+            pet_id,
+            policy_id: policy.policy_id.clone(),
+            amount,
+            date: timestamp,
+            status: InsuranceClaimStatus::Pending,
+            description,
+        };
+
+        // Save claim globally
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::ClaimCount, &claim_id);
+
+        // Save claim for pet
+        let pet_claim_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetClaimCount(pet_id), &pet_claim_count);
+        env.storage().instance().set(
+            &InsuranceKey::PetClaimIndex((pet_id, pet_claim_count)),
+            &claim_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "InsuranceClaimSubmitted"), pet_id),
+            InsuranceClaimSubmittedEvent {
+                claim_id,
+                pet_id,
+                policy_id: policy.policy_id,
+                amount,
+                timestamp,
+            },
+        );
+
+        Some(claim_id)
+    }
+
+    /// Retrieves an insurance claim by ID.
+    ///
+    /// # Arguments
+    /// * `claim_id` - The ID of the claim
+    ///
+    /// # Returns
+    /// * `Some(InsuranceClaim)` if claim exists
+    /// * `None` if claim not found
+    pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<InsuranceClaim> {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+    }
+
+    /// Updates the status of an insurance claim.
+    ///
+    /// # Arguments
+    /// * `claim_id` - The ID of the claim
+    /// * `status` - New status (Pending, Approved, Rejected, or Paid)
+    ///
+    /// # Returns
+    /// * `true` if status was updated successfully
+    /// * `false` if claim doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceClaimStatusUpdatedEvent` on success
+    pub fn update_insurance_claim_status(
+        env: Env,
+        claim_id: u64,
+        status: InsuranceClaimStatus,
+    ) -> bool {
+        if let Some(mut claim) = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+        {
+            claim.status = status.clone();
+            env.storage()
+                .instance()
+                .set(&InsuranceKey::Claim(claim_id), &claim);
+
+            env.events().publish(
+                (
+                    String::from_str(&env, "InsuranceClaimStatusUpdated"),
+                    claim.pet_id,
+                ),
+                InsuranceClaimStatusUpdatedEvent {
+                    claim_id,
+                    pet_id: claim.pet_id,
+                    status,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Retrieves all insurance claims for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// Vector of all insurance claims for the pet (empty if none)
+    pub fn get_pet_insurance_claims(env: Env, pet_id: u64) -> Vec<InsuranceClaim> {
+        let mut claims = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(claim_id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimIndex((pet_id, i)))
+            {
+                if let Some(claim) = env
+                    .storage()
+                    .instance()
+                    .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+                {
+                    claims.push_back(claim);
+                }
+            }
+        }
+        claims
+    }
 }
 
 // --- ENCRYPTION HELPERS ---
