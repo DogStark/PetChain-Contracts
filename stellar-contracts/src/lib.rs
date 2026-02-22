@@ -53,11 +53,11 @@ mod test_insurance_comprehensive;
 #[cfg(test)]
 mod test_multisig_transfer;
 #[cfg(test)]
-mod test_statistics;
-#[cfg(test)]
 mod test_nutrition;
 #[cfg(test)]
 mod test_pet_age;
+#[cfg(test)]
+mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -196,14 +196,14 @@ pub struct Allergy {
 // --- NUTRITION / DIET ---
 #[contracttype]
 pub enum NutritionKey {
-    DietPlan(u64),           // diet_id -> DietPlan
-    DietPlanCount,           // global count
-    PetDietCount(u64),       // pet_id -> count
+    DietPlan(u64),              // diet_id -> DietPlan
+    DietPlanCount,              // global count
+    PetDietCount(u64),          // pet_id -> count
     PetDietByIndex((u64, u64)), // (pet_id, index) -> diet_id
 
-    WeightEntry(u64),        // weight_id -> WeightEntry
-    WeightCount,             // global weight entry count
-    PetWeightCount(u64),     // pet_id -> count
+    WeightEntry(u64),             // weight_id -> WeightEntry
+    WeightCount,                  // global weight entry count
+    PetWeightCount(u64),          // pet_id -> count
     PetWeightByIndex((u64, u64)), // (pet_id, index) -> weight_id
 }
 
@@ -228,8 +228,6 @@ pub struct WeightEntry {
     pub recorded_at: u64,
     pub recorded_by: Address,
 }
-
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -498,7 +496,7 @@ pub enum DataKey {
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
     VetPetCount(Address),          // unique pets treated
 
-                                  // Lab Result DataKey
+    // Lab Result DataKey
 
     // Medical Record DataKey
 
@@ -574,7 +572,6 @@ pub enum ConsentKey {
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 }
-
 
 #[contracttype]
 pub enum SystemKey {
@@ -2335,15 +2332,18 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
-        env.storage()
-            .instance()
-            .set(&NutritionKey::PetDietByIndex((pet_id, pet_diet_count)), &diet_id);
+        env.storage().instance().set(
+            &NutritionKey::PetDietByIndex((pet_id, pet_diet_count)),
+            &diet_id,
+        );
 
         true
     }
 
     pub fn get_diet_plan(env: Env, diet_id: u64) -> Option<DietPlan> {
-        env.storage().instance().get(&NutritionKey::DietPlan(diet_id))
+        env.storage()
+            .instance()
+            .get(&NutritionKey::DietPlan(diet_id))
     }
 
     pub fn get_diet_history(env: Env, pet_id: u64) -> Vec<DietPlan> {
@@ -2418,9 +2418,10 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&NutritionKey::PetWeightCount(pet_id), &pet_weight_count);
-        env.storage()
-            .instance()
-            .set(&NutritionKey::PetWeightByIndex((pet_id, pet_weight_count)), &weight_id);
+        env.storage().instance().set(
+            &NutritionKey::PetWeightByIndex((pet_id, pet_weight_count)),
+            &weight_id,
+        );
 
         // Update current pet weight
         pet.weight = weight;
@@ -2453,7 +2454,10 @@ impl PetChainContract {
                 .instance()
                 .get::<NutritionKey, u64>(&NutritionKey::PetWeightByIndex((pet_id, i)))
             {
-                if let Some(entry) = env.storage().instance().get(&NutritionKey::WeightEntry(wid))
+                if let Some(entry) = env
+                    .storage()
+                    .instance()
+                    .get(&NutritionKey::WeightEntry(wid))
                 {
                     history.push_back(entry);
                 }
