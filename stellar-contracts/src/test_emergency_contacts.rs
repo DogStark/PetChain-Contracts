@@ -34,7 +34,12 @@ fn test_emergency_contacts_add() {
         is_primary: true,
     });
 
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
     let retrieved = client.get_emergency_contacts(&pet_id);
     assert_eq!(retrieved.len(), 1);
     assert_eq!(
@@ -95,7 +100,12 @@ fn test_emergency_contacts_multiple() {
         is_primary: false,
     });
 
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
     let retrieved = client.get_emergency_contacts(&pet_id);
     assert_eq!(retrieved.len(), 3);
     assert_eq!(retrieved.get(0).unwrap().is_primary, true);
@@ -138,7 +148,12 @@ fn test_emergency_contacts_public_access() {
         relationship: String::from_str(&env, "Owner"),
         is_primary: true,
     });
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
 
     // get_emergency_contacts is publicly accessible - no auth required for emergency responders
     let retrieved = client.get_emergency_contacts(&pet_id);

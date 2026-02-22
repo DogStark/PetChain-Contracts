@@ -5,7 +5,14 @@ use soroban_sdk::{
 };
 
 // Helper function to setup test environment
-fn setup_test_env() -> (Env, PetChainContractClient<'static>, Address, Address, u64, u64) {
+fn setup_test_env() -> (
+    Env,
+    PetChainContractClient<'static>,
+    Address,
+    Address,
+    u64,
+    u64,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -49,7 +56,7 @@ fn setup_test_env() -> (Env, PetChainContractClient<'static>, Address, Address, 
         &vet,
         &String::from_str(&env, "Annual checkup"),
         &String::from_str(&env, "Healthy"),
-        &String::from_str(&env, "None"),
+        &soroban_sdk::Vec::new(&env),
         &String::from_str(&env, "All vitals normal"),
     );
 
@@ -57,7 +64,12 @@ fn setup_test_env() -> (Env, PetChainContractClient<'static>, Address, Address, 
 }
 
 // Helper function to create test attachment metadata
-fn create_test_metadata(env: &Env, filename: &str, file_type: &str, size: u64) -> AttachmentMetadata {
+fn create_test_metadata(
+    env: &Env,
+    filename: &str,
+    file_type: &str,
+    size: u64,
+) -> AttachmentMetadata {
     AttachmentMetadata {
         filename: String::from_str(env, filename),
         file_type: String::from_str(env, file_type),
@@ -80,7 +92,10 @@ fn test_add_attachment_success() {
     let attachments = client.get_attachments(&record_id);
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments.get(0).unwrap().ipfs_hash, ipfs_hash);
-    assert_eq!(attachments.get(0).unwrap().metadata.filename, String::from_str(&env, "xray_001.jpg"));
+    assert_eq!(
+        attachments.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "xray_001.jpg")
+    );
 }
 
 #[test]
@@ -105,9 +120,18 @@ fn test_add_multiple_attachments() {
     // Verify all attachments were added
     let attachments = client.get_attachments(&record_id);
     assert_eq!(attachments.len(), 3);
-    assert_eq!(attachments.get(0).unwrap().metadata.filename, String::from_str(&env, "xray_001.jpg"));
-    assert_eq!(attachments.get(1).unwrap().metadata.filename, String::from_str(&env, "blood_test.pdf"));
-    assert_eq!(attachments.get(2).unwrap().metadata.filename, String::from_str(&env, "ultrasound.png"));
+    assert_eq!(
+        attachments.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "xray_001.jpg")
+    );
+    assert_eq!(
+        attachments.get(1).unwrap().metadata.filename,
+        String::from_str(&env, "blood_test.pdf")
+    );
+    assert_eq!(
+        attachments.get(2).unwrap().metadata.filename,
+        String::from_str(&env, "ultrasound.png")
+    );
 }
 
 #[test]
@@ -143,9 +167,15 @@ fn test_attachment_metadata_storage() {
 
     let attachments = client.get_attachments(&record_id);
     let stored_attachment = attachments.get(0).unwrap();
-    
-    assert_eq!(stored_attachment.metadata.filename, String::from_str(&env, "detailed_report.pdf"));
-    assert_eq!(stored_attachment.metadata.file_type, String::from_str(&env, "application/pdf"));
+
+    assert_eq!(
+        stored_attachment.metadata.filename,
+        String::from_str(&env, "detailed_report.pdf")
+    );
+    assert_eq!(
+        stored_attachment.metadata.file_type,
+        String::from_str(&env, "application/pdf")
+    );
     assert_eq!(stored_attachment.metadata.size, 3145728);
     assert_eq!(stored_attachment.metadata.uploaded_date, timestamp);
 }
@@ -244,7 +274,10 @@ fn test_remove_attachment_success() {
     // Verify only one attachment remains
     let attachments = client.get_attachments(&record_id);
     assert_eq!(attachments.len(), 1);
-    assert_eq!(attachments.get(0).unwrap().metadata.filename, String::from_str(&env, "blood_test.pdf"));
+    assert_eq!(
+        attachments.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "blood_test.pdf")
+    );
 }
 
 #[test]
@@ -362,7 +395,7 @@ fn test_medical_record_with_attachments_integration() {
         &vet,
         &String::from_str(&env, "Fracture diagnosis"),
         &String::from_str(&env, "Cast applied"),
-        &String::from_str(&env, "Pain medication"),
+        &soroban_sdk::Vec::new(&env),
         &String::from_str(&env, "Follow-up in 6 weeks"),
     );
 
@@ -376,21 +409,34 @@ fn test_medical_record_with_attachments_integration() {
     client.add_attachment(&record_id, &xray2_hash, &xray2_metadata);
 
     // Add medical report
-    let report_metadata = create_test_metadata(&env, "diagnosis_report.pdf", "application/pdf", 512000);
+    let report_metadata =
+        create_test_metadata(&env, "diagnosis_report.pdf", "application/pdf", 512000);
     let report_hash = String::from_str(&env, "QmReportHash");
     client.add_attachment(&record_id, &report_hash, &report_metadata);
 
     // Verify the complete medical record
     let record = client.get_medical_record(&record_id).unwrap();
-    assert_eq!(record.diagnosis, String::from_str(&env, "Fracture diagnosis"));
+    assert_eq!(
+        record.diagnosis,
+        String::from_str(&env, "Fracture diagnosis")
+    );
     assert_eq!(record.attachment_hashes.len(), 3);
 
     // Verify attachments can be retrieved
     let attachments = client.get_attachments(&record_id);
     assert_eq!(attachments.len(), 3);
-    assert_eq!(attachments.get(0).unwrap().metadata.filename, String::from_str(&env, "xray_front.jpg"));
-    assert_eq!(attachments.get(1).unwrap().metadata.filename, String::from_str(&env, "xray_side.jpg"));
-    assert_eq!(attachments.get(2).unwrap().metadata.filename, String::from_str(&env, "diagnosis_report.pdf"));
+    assert_eq!(
+        attachments.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "xray_front.jpg")
+    );
+    assert_eq!(
+        attachments.get(1).unwrap().metadata.filename,
+        String::from_str(&env, "xray_side.jpg")
+    );
+    assert_eq!(
+        attachments.get(2).unwrap().metadata.filename,
+        String::from_str(&env, "diagnosis_report.pdf")
+    );
 }
 
 #[test]
@@ -403,7 +449,7 @@ fn test_multiple_records_with_attachments() {
         &vet,
         &String::from_str(&env, "Checkup 1"),
         &String::from_str(&env, "Healthy"),
-        &String::from_str(&env, "None"),
+        &soroban_sdk::Vec::new(&env),
         &String::from_str(&env, "All good"),
     );
     let metadata1 = create_test_metadata(&env, "checkup1.pdf", "application/pdf", 512000);
@@ -415,7 +461,7 @@ fn test_multiple_records_with_attachments() {
         &vet,
         &String::from_str(&env, "Checkup 2"),
         &String::from_str(&env, "Healthy"),
-        &String::from_str(&env, "None"),
+        &soroban_sdk::Vec::new(&env),
         &String::from_str(&env, "All good"),
     );
     let metadata2 = create_test_metadata(&env, "checkup2.pdf", "application/pdf", 512000);
@@ -427,9 +473,15 @@ fn test_multiple_records_with_attachments() {
 
     let attachments1 = client.get_attachments(&record1_id);
     let attachments2 = client.get_attachments(&record2_id);
-    
-    assert_eq!(attachments1.get(0).unwrap().metadata.filename, String::from_str(&env, "checkup1.pdf"));
-    assert_eq!(attachments2.get(0).unwrap().metadata.filename, String::from_str(&env, "checkup2.pdf"));
+
+    assert_eq!(
+        attachments1.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "checkup1.pdf")
+    );
+    assert_eq!(
+        attachments2.get(0).unwrap().metadata.filename,
+        String::from_str(&env, "checkup2.pdf")
+    );
 }
 
 #[test]
