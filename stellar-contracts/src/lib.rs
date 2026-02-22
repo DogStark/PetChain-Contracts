@@ -22,10 +22,20 @@ pub enum BehaviorKey {
     PetMilestoneIndex((u64, u64)),
 }
 
+#[contracttype]
+pub enum ActivityKey {
+    ActivityRecord(u64),
+    ActivityRecordCount,
+    PetActivityCount(u64),
+    PetActivityIndex((u64, u64)),
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_access_control;
+#[cfg(test)]
+mod test_activity;
 #[cfg(test)]
 mod test_attachments;
 #[cfg(test)]
@@ -57,6 +67,29 @@ pub enum Species {
     Dog,
     Cat,
     Bird,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivityType {
+    Walk,
+    Run,
+    Play,
+    Training,
+    Other,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub activity_type: ActivityType,
+    pub duration_minutes: u32,
+    pub intensity: u32,
+    pub distance_meters: u32,
+    pub recorded_at: u64,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -5207,6 +5240,114 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::PetTransferProposal(proposal_id))
+    }
+
+    // --- ACTIVITY TRACKING SYSTEM ---
+
+    pub fn add_activity_record(
+        env: Env,
+        pet_id: u64,
+        activity_type: ActivityType,
+        duration_minutes: u32,
+        intensity: u32,
+        distance_meters: u32,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if intensity > 10 {
+            panic!("Intensity must be between 0 and 10");
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::ActivityRecordCount)
+            .unwrap_or(0);
+        let record_id = count + 1;
+
+        let record = ActivityRecord {
+            id: record_id,
+            pet_id,
+            activity_type,
+            duration_minutes,
+            intensity,
+            distance_meters,
+            recorded_at: env.ledger().timestamp(),
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecordCount, &record_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&ActivityKey::PetActivityCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &ActivityKey::PetActivityIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    pub fn get_activity_history(env: Env, pet_id: u64) -> Vec<ActivityRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<ActivityKey, u64>(&ActivityKey::PetActivityIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<ActivityKey, ActivityRecord>(&ActivityKey::ActivityRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_activity_stats(env: Env, pet_id: u64, days: u32) -> (u32, u32) {
+        let current_time = env.ledger().timestamp();
+        let cutoff_time = current_time.saturating_sub((days as u64) * 86400);
+        let history = Self::get_activity_history(env, pet_id);
+
+        let mut total_duration = 0u32;
+        let mut total_distance = 0u32;
+
+        for record in history.iter() {
+            if record.recorded_at >= cutoff_time {
+                total_duration = total_duration.saturating_add(record.duration_minutes);
+                total_distance = total_distance.saturating_add(record.distance_meters);
+            }
+        }
+
+        (total_duration, total_distance)
     }
 }
 
