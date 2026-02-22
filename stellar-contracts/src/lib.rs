@@ -10,6 +10,8 @@ mod test_batch;
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_export;
+#[cfg(test)]
+mod test_attachments;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -166,6 +168,22 @@ pub struct ClinicInfo {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Specialization {
+    pub name: String,
+    pub certified_date: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Certification {
+    pub name: String,
+    pub issuer: String,
+    pub issue_date: u64,
+    pub expiry_date: Option<u64>,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct Vet {
     pub address: Address,
@@ -175,7 +193,7 @@ pub struct Vet {
     pub specializations: Vec<Specialization>,
     pub certifications: Vec<Certification>,
     pub verified: bool,
-    pub clinic_info: Option<ClinicInfo>,
+    pub clinic_info: Option<String>, // Simplified to String to avoid nested Option issues
 }
 
 #[contracttype]
@@ -505,6 +523,22 @@ pub struct Medication {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttachmentMetadata {
+    pub filename: String,
+    pub file_type: String,
+    pub size: u64,
+    pub uploaded_date: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Attachment {
+    pub ipfs_hash: String,
+    pub metadata: AttachmentMetadata,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MedicalRecord {
     pub id: u64,
     pub pet_id: u64,
@@ -514,6 +548,7 @@ pub struct MedicalRecord {
     pub medications: String,
     pub date: u64,
     pub notes: String,
+    pub attachment_hashes: Vec<Attachment>,
 }
 
 #[contracttype]
@@ -1500,7 +1535,7 @@ impl PetChainContract {
     }
 
     /// Update clinic info for a vet. Only the vet can update their own clinic info.
-    pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: ClinicInfo) -> bool {
+    pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: String) -> bool {
         vet_address.require_auth();
 
         if let Some(mut vet) = env
@@ -2447,6 +2482,7 @@ impl PetChainContract {
             medications,
             date: now,
             notes,
+            attachment_hashes: Vec::new(&env),
         };
 
         // Store the medical record
@@ -2475,14 +2511,14 @@ impl PetChainContract {
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
                 pet_id,
-                updated_by: veterinarian.clone(),
+                updated_by: vet_address.clone(),
                 timestamp: now,
             },
         );
         Self::log_access(
             &env,
             pet_id,
-            veterinarian,
+            vet_address,
             AccessAction::Write,
             String::from_str(&env, "Medical record added"),
         );
@@ -2517,7 +2553,7 @@ impl PetChainContract {
             Self::log_access(
                 &env,
                 record.pet_id,
-                record.veterinarian,
+                record.vet_address,
                 AccessAction::Write,
                 String::from_str(&env, "Medical record updated"),
             );
@@ -2570,6 +2606,144 @@ impl PetChainContract {
             String::from_str(&env, "Pet medical records accessed"),
         );
         records
+    }
+
+    // --- ATTACHMENT MANAGEMENT ---
+
+    /// Add an attachment to a medical record
+    /// Only the vet who created the record can add attachments
+    pub fn add_attachment(
+        env: Env,
+        record_id: u64,
+        ipfs_hash: String,
+        metadata: AttachmentMetadata,
+    ) -> bool {
+        // Validate IPFS hash format
+        Self::validate_ipfs_hash(&ipfs_hash);
+
+        // Get the medical record
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+        {
+            // Require authentication from the vet who created the record
+            record.vet_address.require_auth();
+
+            // Validate metadata
+            if metadata.filename.len() == 0 {
+                panic!("Filename cannot be empty");
+            }
+            if metadata.file_type.len() == 0 {
+                panic!("File type cannot be empty");
+            }
+            if metadata.size == 0 {
+                panic!("File size must be greater than 0");
+            }
+
+            // Create attachment
+            let attachment = Attachment {
+                ipfs_hash,
+                metadata,
+            };
+
+            // Add to record
+            record.attachment_hashes.push_back(attachment);
+            record.date = env.ledger().timestamp();
+
+            // Save updated record
+            env.storage()
+                .instance()
+                .set(&DataKey::MedicalRecord(record_id), &record);
+
+            // Log the action
+            Self::log_access(
+                &env,
+                record.pet_id,
+                record.vet_address,
+                AccessAction::Write,
+                String::from_str(&env, "Attachment added to medical record"),
+            );
+
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get all attachments for a medical record
+    pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+        {
+            // Log access
+            Self::log_access(
+                &env,
+                record.pet_id,
+                env.current_contract_address(),
+                AccessAction::Read,
+                String::from_str(&env, "Medical record attachments accessed"),
+            );
+
+            record.attachment_hashes
+        } else {
+            Vec::new(&env)
+        }
+    }
+
+    /// Remove an attachment from a medical record by index
+    /// Only the vet who created the record can remove attachments
+    pub fn remove_attachment(env: Env, record_id: u64, attachment_index: u32) -> bool {
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+        {
+            // Require authentication from the vet who created the record
+            record.vet_address.require_auth();
+
+            // Check if index is valid
+            if attachment_index >= record.attachment_hashes.len() {
+                panic!("Invalid attachment index");
+            }
+
+            // Remove the attachment
+            record.attachment_hashes.remove(attachment_index);
+            record.date = env.ledger().timestamp();
+
+            // Save updated record
+            env.storage()
+                .instance()
+                .set(&DataKey::MedicalRecord(record_id), &record);
+
+            // Log the action
+            Self::log_access(
+                &env,
+                record.pet_id,
+                record.vet_address,
+                AccessAction::Write,
+                String::from_str(&env, "Attachment removed from medical record"),
+            );
+
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the count of attachments for a medical record
+    pub fn get_attachment_count(env: Env, record_id: u64) -> u32 {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+        {
+            record.attachment_hashes.len()
+        } else {
+            0
+        }
     }
 
     pub fn get_access_logs(env: Env, pet_id: u64) -> Vec<AccessLog> {
@@ -2718,116 +2892,6 @@ impl PetChainContract {
         }
         res
     }
-    // --- MEDICATION MANAGEMENT ---
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_medication_to_record(
-        env: Env,
-        record_id: u64,
-        name: String,
-        dosage: String,
-        frequency: String,
-        start_date: u64,
-        end_date: u64,
-        prescribing_vet: Address,
-    ) -> bool {
-        // Find the medical record
-        if let Some(mut record) = env
-            .storage()
-            .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
-        {
-            prescribing_vet.require_auth();
-
-            let med = Medication {
-                id: 0,
-                pet_id: record.pet_id,
-                name,
-                dosage,
-                frequency,
-                start_date,
-                end_date: Some(end_date),
-                prescribing_vet,
-                active: true,
-            };
-
-            record.medications.push_back(med);
-            record.updated_at = env.ledger().timestamp();
-
-            env.storage()
-                .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn mark_record_med_completed(env: Env, record_id: u64, med_index: u32) -> bool {
-        if let Some(mut record) = env
-            .storage()
-            .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
-        {
-            let _pet = env
-                .storage()
-                .instance()
-                .get::<DataKey, Pet>(&DataKey::Pet(record.pet_id))
-                .expect("Pet not found");
-
-            // Allow owner (if they are the caller) or the original vet
-            // Since we can't easily check "if caller == owner" without passing caller,
-            // we rely on require_auth.
-            // But we don't know WHICH to require.
-            // Rule: Try vet first. If fails, try owner?
-            // Soroban require_auth panics if not authorized.
-            // We should ideally pass the "updater" address and require their auth.
-            // But for this signature, let's require the record's veterinarian for now as per "medical management" strictness.
-            record.veterinarian.require_auth();
-
-            if let Some(mut med) = record.medications.get(med_index) {
-                med.active = false;
-                record.medications.set(med_index, med);
-                record.updated_at = env.ledger().timestamp();
-                env.storage()
-                    .instance()
-                    .set(&DataKey::MedicalRecord(record_id), &record);
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
-
-    pub fn get_active_record_meds(env: Env, pet_id: u64) -> Vec<Medication> {
-        let records = Self::get_pet_medical_records(env.clone(), pet_id);
-        let mut active_meds = Vec::new(&env);
-        // let now = env.ledger().timestamp(); // usage disabled to just rely on active flag for now
-
-        for record in records.iter() {
-            for med in record.medications.iter() {
-                if med.active {
-                    active_meds.push_back(med);
-                }
-            }
-        }
-        active_meds
-    }
-
-    pub fn get_record_med_history(env: Env, pet_id: u64) -> Vec<Medication> {
-        let records = Self::get_pet_medical_records(env.clone(), pet_id);
-        let mut history = Vec::new(&env);
-
-        for record in records.iter() {
-            for med in record.medications.iter() {
-                history.push_back(med);
-            }
-        }
-        history
-    }
-
     // --- BATCH OPERATIONS ---
 
     pub fn batch_add_vaccinations(
