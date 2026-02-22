@@ -414,8 +414,9 @@ pub enum DataKey {
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 
-    // Emergency Access Logs
-    EmergencyAccessLogs(u64),
+    VetStats(Address),
+    VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
+    VetPetCount(Address),          // unique pets treated
 }
 
 #[contracttype]
@@ -450,6 +451,15 @@ pub enum AlertStatus {
     Active,
     Found,
     Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VetStats {
+    pub total_records: u64,
+    pub total_vaccinations: u64,
+    pub total_treatments: u64,
+    pub pets_treated: u64,
 }
 
 #[contracttype]
@@ -902,6 +912,48 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::AdminThreshold, &threshold);
     }
+
+    fn update_vet_stats(
+    env: &Env,
+    vet: &Address,
+    pet_id: u64,
+    record_increment: u64,
+    vaccination_increment: u64,
+    treatment_increment: u64,
+) {
+    let mut stats = env
+        .storage()
+        .instance()
+        .get::<_, VetStats>(&DataKey::VetStats(vet.clone()))
+        .unwrap_or(VetStats {
+            total_records: 0,
+            total_vaccinations: 0,
+            total_treatments: 0,
+            pets_treated: 0,
+        });
+
+    stats.total_records += record_increment;
+    stats.total_vaccinations += vaccination_increment;
+    stats.total_treatments += treatment_increment;
+
+    // Unique pet tracking
+    if !env
+        .storage()
+        .instance()
+        .has(&DataKey::VetPetTreated((vet.clone(), pet_id)))
+    {
+        env.storage().instance().set(
+            &DataKey::VetPetTreated((vet.clone(), pet_id)),
+            &true,
+        );
+
+        stats.pets_treated += 1;
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::VetStats(vet.clone()), &stats);
+}
 
     // Pet Management Functions
     #[allow(clippy::too_many_arguments)]
@@ -1737,6 +1789,15 @@ impl PetChainContract {
             encrypted_batch_number,
             created_at: now,
         };
+
+        Self::update_vet_stats(
+            &env,
+            &veterinarian,
+            pet_id,
+            1,
+            1,
+            0,
+        );
 
         env.storage()
             .instance()
@@ -2679,6 +2740,15 @@ impl PetChainContract {
             &id,
         );
 
+            Self::update_vet_stats(
+            &env,
+            &vet_address,
+            pet_id,
+            1,
+            0,
+            1,
+        );
+
         // Publish event
         env.events().publish(
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
@@ -2735,6 +2805,18 @@ impl PetChainContract {
             false
         }
     }
+
+    pub fn get_vet_stats(env: Env, vet: Address) -> VetStats {
+    env.storage()
+        .instance()
+        .get::<_, VetStats>(&DataKey::VetStats(vet))
+        .unwrap_or(VetStats {
+            total_records: 0,
+            total_vaccinations: 0,
+            total_treatments: 0,
+            pets_treated: 0,
+        })
+}
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
         let record: Option<MedicalRecord> = env
