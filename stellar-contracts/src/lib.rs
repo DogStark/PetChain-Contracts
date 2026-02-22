@@ -160,6 +160,7 @@ pub struct Pet {
     pub allergies: Vec<Allergy>,
 
     pub active: bool,
+    pub archived: bool,
     pub created_at: u64,
     pub updated_at: u64,
     pub new_owner: Address,
@@ -968,6 +969,7 @@ impl PetChainContract {
             allergies: Vec::<Allergy>::new(&env),
 
             active: false,
+            archived: false,
             created_at: timestamp,
             updated_at: timestamp,
             new_owner: owner.clone(),
