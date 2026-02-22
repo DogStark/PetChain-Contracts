@@ -56,6 +56,8 @@ mod test_multisig_transfer;
 mod test_statistics;
 #[cfg(test)]
 mod test_nutrition;
+#[cfg(test)]
+mod test_pet_age;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -216,6 +218,15 @@ pub struct DietPlan {
     pub allergies: Vec<String>,
     pub created_by: Address,
     pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightEntry {
+    pub pet_id: u64,
+    pub weight: u32,
+    pub recorded_at: u64,
+    pub recorded_by: Address,
 }
 
 
@@ -1548,6 +1559,51 @@ impl PetChainContract {
         } else {
             None
         }
+    }
+
+    pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
+        if let Some(pet) = Self::get_pet(env.clone(), pet_id) {
+            let current_time = env.ledger().timestamp();
+            let birthday_timestamp = match Self::parse_birthday_timestamp(&pet.birthday) {
+                Some(timestamp) => timestamp,
+                None => return (0, 0),
+            };
+
+            if current_time < birthday_timestamp {
+                return (0, 0);
+            }
+
+            let elapsed_seconds = current_time - birthday_timestamp;
+            let elapsed_days = elapsed_seconds / 86_400;
+            let years = elapsed_days / 365;
+            let remaining_days = elapsed_days % 365;
+            let months = remaining_days / 30;
+
+            return (years, months);
+        }
+
+        (0, 0)
+    }
+
+    fn parse_birthday_timestamp(birthday: &String) -> Option<u64> {
+        let len = birthday.len() as usize;
+        if len == 0 || len > 20 {
+            return None;
+        }
+
+        let mut bytes = [0u8; 20];
+        birthday.copy_into_slice(&mut bytes[..len]);
+
+        let mut timestamp = 0u64;
+        for b in bytes.iter().take(len) {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            let digit = (b - b'0') as u64;
+            timestamp = timestamp.checked_mul(10)?.checked_add(digit)?;
+        }
+
+        Some(timestamp)
     }
 
     pub fn is_pet_active(env: Env, id: u64) -> bool {
