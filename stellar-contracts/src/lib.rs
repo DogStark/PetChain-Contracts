@@ -54,6 +54,8 @@ mod test_insurance_comprehensive;
 mod test_multisig_transfer;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_nutrition;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -188,6 +190,35 @@ pub struct Allergy {
     pub severity: String,
     pub is_critical: bool,
 }
+
+// --- NUTRITION / DIET ---
+#[contracttype]
+pub enum NutritionKey {
+    DietPlan(u64),           // diet_id -> DietPlan
+    DietPlanCount,           // global count
+    PetDietCount(u64),       // pet_id -> count
+    PetDietByIndex((u64, u64)), // (pet_id, index) -> diet_id
+
+    WeightEntry(u64),        // weight_id -> WeightEntry
+    WeightCount,             // global weight entry count
+    PetWeightCount(u64),     // pet_id -> count
+    PetWeightByIndex((u64, u64)), // (pet_id, index) -> weight_id
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DietPlan {
+    pub pet_id: u64,
+    pub food_type: String,
+    pub portion_size: String,
+    pub feeding_frequency: String,
+    pub dietary_restrictions: Vec<String>,
+    pub allergies: Vec<String>,
+    pub created_by: Address,
+    pub created_at: u64,
+}
+
+
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -451,7 +482,12 @@ pub enum DataKey {
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
     TemporaryCustody(u64),        // pet_id -> temporary custody record
 
-    // Lab Result DataKey
+    // Vet stats and tracking
+    VetStats(Address),
+    VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
+    VetPetCount(Address),          // unique pets treated
+
+                                  // Lab Result DataKey
 
     // Medical Record DataKey
 
@@ -527,6 +563,7 @@ pub enum ConsentKey {
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 }
+
 
 #[contracttype]
 pub enum SystemKey {
@@ -2186,6 +2223,187 @@ impl PetChainContract {
             }
         }
         overdue
+    }
+
+    // --- NUTRITION / DIET FUNCTIONS ---
+    pub fn set_diet_plan(
+        env: Env,
+        pet_id: u64,
+        food_type: String,
+        portion_size: String,
+        frequency: String,
+        restrictions: Vec<String>,
+        allergies: Vec<String>,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let diet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::DietPlanCount)
+            .unwrap_or(0);
+        let diet_id = diet_count + 1;
+
+        let now = env.ledger().timestamp();
+
+        let plan = DietPlan {
+            pet_id,
+            food_type,
+            portion_size,
+            feeding_frequency: frequency,
+            dietary_restrictions: restrictions,
+            allergies,
+            created_by: pet.owner.clone(),
+            created_at: now,
+        };
+
+        env.storage()
+            .instance()
+            .set(&NutritionKey::DietPlan(diet_id), &plan);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::DietPlanCount, &diet_id);
+
+        let pet_diet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetDietCount(pet_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetDietByIndex((pet_id, pet_diet_count)), &diet_id);
+
+        true
+    }
+
+    pub fn get_diet_plan(env: Env, diet_id: u64) -> Option<DietPlan> {
+        env.storage().instance().get(&NutritionKey::DietPlan(diet_id))
+    }
+
+    pub fn get_diet_history(env: Env, pet_id: u64) -> Vec<DietPlan> {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return Vec::new(&env);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetDietCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(did) = env
+                .storage()
+                .instance()
+                .get::<NutritionKey, u64>(&NutritionKey::PetDietByIndex((pet_id, i)))
+            {
+                if let Some(plan) = Self::get_diet_plan(env.clone(), did) {
+                    history.push_back(plan);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool {
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        pet.owner.require_auth();
+
+        let weight_count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::WeightCount)
+            .unwrap_or(0);
+        let weight_id = weight_count + 1;
+        let now = env.ledger().timestamp();
+
+        let entry = WeightEntry {
+            pet_id,
+            weight,
+            recorded_at: now,
+            recorded_by: pet.owner.clone(),
+        };
+
+        // Persist entry
+        env.storage()
+            .instance()
+            .set(&NutritionKey::WeightEntry(weight_id), &entry);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::WeightCount, &weight_id);
+
+        let pet_weight_count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetWeightCount(pet_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetWeightCount(pet_id), &pet_weight_count);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetWeightByIndex((pet_id, pet_weight_count)), &weight_id);
+
+        // Update current pet weight
+        pet.weight = weight;
+        pet.updated_at = now;
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+        true
+    }
+
+    pub fn get_weight_history(env: Env, pet_id: u64) -> Vec<WeightEntry> {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return Vec::new(&env);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetWeightCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(wid) = env
+                .storage()
+                .instance()
+                .get::<NutritionKey, u64>(&NutritionKey::PetWeightByIndex((pet_id, i)))
+            {
+                if let Some(entry) = env.storage().instance().get(&NutritionKey::WeightEntry(wid))
+                {
+                    history.push_back(entry);
+                }
+            }
+        }
+        history
     }
 
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
