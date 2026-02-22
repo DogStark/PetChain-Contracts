@@ -10,6 +10,18 @@ pub enum InsuranceKey {
     PetClaimIndex((u64, u64)), // (pet_id, index) -> claim_id
 }
 
+#[contracttype]
+pub enum BehaviorKey {
+    BehaviorRecord(u64),
+    BehaviorRecordCount,
+    PetBehaviorCount(u64),
+    PetBehaviorIndex((u64, u64)),
+    TrainingMilestone(u64),
+    TrainingMilestoneCount,
+    PetMilestoneCount(u64),
+    PetMilestoneIndex((u64, u64)),
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -22,6 +34,8 @@ mod test_insurance;
 mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
+#[cfg(test)]
+mod test_behavior;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -35,6 +49,40 @@ pub enum Species {
     Dog,
     Cat,
     Bird,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BehaviorType {
+    Aggression,
+    Anxiety,
+    Training,
+    Socialization,
+    Other,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BehaviorRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub behavior_type: BehaviorType,
+    pub severity: u32,
+    pub description: String,
+    pub recorded_by: Address,
+    pub recorded_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrainingMilestone {
+    pub id: u64,
+    pub pet_id: u64,
+    pub milestone_name: String,
+    pub achieved: bool,
+    pub achieved_at: Option<u64>,
+    pub trainer: Address,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -4279,6 +4327,207 @@ impl PetChainContract {
             }
         }
         claims
+    }
+
+    // --- BEHAVIORAL TRACKING SYSTEM ---
+
+    pub fn add_behavior_record(
+        env: Env,
+        pet_id: u64,
+        behavior_type: BehaviorType,
+        severity: u32,
+        description: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if severity > 10 {
+            panic!("Severity must be between 0 and 10");
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::BehaviorRecordCount)
+            .unwrap_or(0);
+        let record_id = count + 1;
+
+        let record = BehaviorRecord {
+            id: record_id,
+            pet_id,
+            behavior_type,
+            severity,
+            description,
+            recorded_by: pet.owner.clone(),
+            recorded_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::BehaviorRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::BehaviorRecordCount, &record_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetBehaviorCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::PetBehaviorCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &BehaviorKey::PetBehaviorIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    pub fn get_behavior_history(env: Env, pet_id: u64) -> Vec<BehaviorRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetBehaviorCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<BehaviorKey, u64>(&BehaviorKey::PetBehaviorIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, BehaviorRecord>(&BehaviorKey::BehaviorRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn add_training_milestone(
+        env: Env,
+        pet_id: u64,
+        milestone_name: String,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::TrainingMilestoneCount)
+            .unwrap_or(0);
+        let milestone_id = count + 1;
+
+        let milestone = TrainingMilestone {
+            id: milestone_id,
+            pet_id,
+            milestone_name,
+            achieved: false,
+            achieved_at: None,
+            trainer: pet.owner.clone(),
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestone(milestone_id), &milestone);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestoneCount, &milestone_id);
+
+        let pet_milestone_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let new_count = pet_milestone_count + 1;
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::PetMilestoneCount(pet_id), &new_count);
+        env.storage().instance().set(
+            &BehaviorKey::PetMilestoneIndex((pet_id, new_count)),
+            &milestone_id,
+        );
+
+        milestone_id
+    }
+
+    pub fn mark_milestone_achieved(env: Env, milestone_id: u64) -> bool {
+        if let Some(mut milestone) = env
+            .storage()
+            .instance()
+            .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(milestone_id))
+        {
+            milestone.trainer.require_auth();
+
+            milestone.achieved = true;
+            milestone.achieved_at = Some(env.ledger().timestamp());
+
+            env.storage()
+                .instance()
+                .set(&BehaviorKey::TrainingMilestone(milestone_id), &milestone);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_training_milestones(env: Env, pet_id: u64) -> Vec<TrainingMilestone> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let mut milestones = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(milestone_id) = env
+                .storage()
+                .instance()
+                .get::<BehaviorKey, u64>(&BehaviorKey::PetMilestoneIndex((pet_id, i)))
+            {
+                if let Some(milestone) = env.storage().instance().get::<BehaviorKey, TrainingMilestone>(
+                    &BehaviorKey::TrainingMilestone(milestone_id),
+                ) {
+                    milestones.push_back(milestone);
+                }
+            }
+        }
+        milestones
+    }
+
+    pub fn get_behavior_improvements(env: Env, pet_id: u64, behavior_type: BehaviorType) -> Vec<BehaviorRecord> {
+        let history = Self::get_behavior_history(env.clone(), pet_id);
+        let mut filtered = Vec::new(&env);
+
+        for record in history.iter() {
+            if record.behavior_type == behavior_type {
+                filtered.push_back(record);
+            }
+        }
+        filtered
+    }
+
+    pub fn get_behavior_by_type(env: Env, pet_id: u64, behavior_type: BehaviorType) -> Vec<BehaviorRecord> {
+        Self::get_behavior_improvements(env, pet_id, behavior_type)
     }
 }
 
