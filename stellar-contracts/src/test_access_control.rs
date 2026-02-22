@@ -396,7 +396,10 @@ fn test_multiple_access_levels() {
     client.grant_access(&pet_id, &family_member, &AccessLevel::Basic, &None);
 
     assert_eq!(client.check_access(&pet_id, &vet), AccessLevel::Full);
-    assert_eq!(client.check_access(&pet_id, &family_member), AccessLevel::Basic);
+    assert_eq!(
+        client.check_access(&pet_id, &family_member),
+        AccessLevel::Basic
+    );
     assert_eq!(client.check_access(&pet_id, &owner), AccessLevel::Full);
 }
 
