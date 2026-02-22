@@ -3991,6 +3991,23 @@ impl PetChainContract {
         filtered
     }
 
+    /// Adds an insurance policy to a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet to insure
+    /// * `policy_id` - Unique identifier for the insurance policy
+    /// * `provider` - Name of the insurance provider
+    /// * `coverage_type` - Type of coverage (e.g., "Comprehensive", "Basic")
+    /// * `premium` - Annual premium amount
+    /// * `coverage_limit` - Maximum coverage amount
+    /// * `expiry_date` - Unix timestamp when policy expires
+    ///
+    /// # Returns
+    /// * `true` if policy was added successfully
+    /// * `false` if pet doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceAddedEvent` on success
     pub fn add_insurance_policy(
         env: Env,
         pet_id: u64,
@@ -4039,12 +4056,32 @@ impl PetChainContract {
         true
     }
 
+    /// Retrieves the insurance policy for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// * `Some(InsurancePolicy)` if policy exists
+    /// * `None` if no policy found
     pub fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
         env.storage()
             .instance()
             .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))
     }
 
+    /// Updates the active status of an insurance policy.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `active` - New status (true = active, false = inactive)
+    ///
+    /// # Returns
+    /// * `true` if status was updated successfully
+    /// * `false` if policy doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceUpdatedEvent` on success
     pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
         if let Some(mut policy) = env
             .storage()
@@ -4070,6 +4107,19 @@ impl PetChainContract {
         false
     }
 
+    /// Submits an insurance claim for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `amount` - Claim amount
+    /// * `description` - Description of the claim
+    ///
+    /// # Returns
+    /// * `Some(claim_id)` if claim was submitted successfully
+    /// * `None` if pet has no policy or policy is inactive
+    ///
+    /// # Events
+    /// Emits `InsuranceClaimSubmittedEvent` on success
     pub fn submit_insurance_claim(
         env: Env,
         pet_id: u64,
@@ -4140,12 +4190,32 @@ impl PetChainContract {
         Some(claim_id)
     }
 
+    /// Retrieves an insurance claim by ID.
+    ///
+    /// # Arguments
+    /// * `claim_id` - The ID of the claim
+    ///
+    /// # Returns
+    /// * `Some(InsuranceClaim)` if claim exists
+    /// * `None` if claim not found
     pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<InsuranceClaim> {
         env.storage()
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
     }
 
+    /// Updates the status of an insurance claim.
+    ///
+    /// # Arguments
+    /// * `claim_id` - The ID of the claim
+    /// * `status` - New status (Pending, Approved, Rejected, or Paid)
+    ///
+    /// # Returns
+    /// * `true` if status was updated successfully
+    /// * `false` if claim doesn't exist
+    ///
+    /// # Events
+    /// Emits `InsuranceClaimStatusUpdatedEvent` on success
     pub fn update_insurance_claim_status(
         env: Env,
         claim_id: u64,
@@ -4178,6 +4248,13 @@ impl PetChainContract {
         false
     }
 
+    /// Retrieves all insurance claims for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// Vector of all insurance claims for the pet (empty if none)
     pub fn get_pet_insurance_claims(env: Env, pet_id: u64) -> Vec<InsuranceClaim> {
         let mut claims = Vec::new(&env);
         let count: u64 = env
