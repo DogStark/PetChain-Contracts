@@ -29,13 +29,11 @@ mod test_access_control;
 #[cfg(test)]
 mod test_attachments;
 #[cfg(test)]
-mod test_batch;
+mod test_behavior;
 #[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
-#[cfg(test)]
-mod test_export;
 #[cfg(test)]
 mod test_insurance;
 #[cfg(test)]
@@ -154,19 +152,6 @@ pub struct Allergy {
     pub name: String,
     pub severity: String,
     pub is_critical: bool,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Specialization {
-    pub name: String,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Certification {
-    pub name: String,
-    pub issued_by: String,
 }
 
 #[contracttype]
@@ -431,15 +416,36 @@ pub enum DataKey {
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
     TemporaryCustody(u64),        // pet_id -> temporary custody record
 
-                                  // Lab Result DataKey
+    // Lab Result DataKey
 
-                                  // Medical Record DataKey
+    // Medical Record DataKey
 
-                                  // Vet Review keys
+    // Vet Review keys
 
-                                  // Medication keys
-                                  // Lost Pet Alert System keys
+    // Medication keys
+    // Lost Pet Alert System keys
+    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
 }
+
+#[contracttype]
+pub enum TreatmentKey {
+    // Treatment DataKey
+    Treatment(u64),
+    TreatmentCount,
+    PetTreatmentCount(u64),
+    PetTreatmentIndex((u64, u64)), // (pet_id, index) -> treatment_id
+}
+
+#[contracttype]
+pub enum TagKey {
+    // Tag Linking System keys
+    Tag(soroban_sdk::BytesN<32>), // tag_id -> PetTag (reverse lookup for QR scan)
+    // Tag String keys (QR)
+    PetTagId(u64), // pet_id -> tag_id (forward lookup)
+    TagNonce,      // Global nonce for deterministic tag ID generation
+    PetTagCount,   // Count of tags (mostly for stats)
+}
+
 #[contracttype]
 pub enum MedicalKey {
     LabResult(u64),
@@ -487,11 +493,6 @@ pub enum ConsentKey {
     PetConsentCount(u64),
 }
 
-    VetStats(Address),
-    VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
-    VetPetCount(Address),          // unique pets treated
-}
-
 #[contracttype]
 pub enum SystemKey {
     // Ownership History keys
@@ -510,6 +511,13 @@ pub enum SystemKey {
     VetAvailability((Address, u64)),
     VetAvailabilityCount(Address),
     VetAvailabilityByDate((Address, u64)),
+}
+
+#[contracttype]
+pub enum VetKey {
+    VetStats(Address),
+    VetPetTreated((Address, u64)),
+    VetPetCount(Address),
 }
 
 #[contracttype]
@@ -1059,46 +1067,45 @@ impl PetChainContract {
     }
 
     fn update_vet_stats(
-    env: &Env,
-    vet: &Address,
-    pet_id: u64,
-    record_increment: u64,
-    vaccination_increment: u64,
-    treatment_increment: u64,
-) {
-    let mut stats = env
-        .storage()
-        .instance()
-        .get::<_, VetStats>(&DataKey::VetStats(vet.clone()))
-        .unwrap_or(VetStats {
-            total_records: 0,
-            total_vaccinations: 0,
-            total_treatments: 0,
-            pets_treated: 0,
-        });
+        env: &Env,
+        vet: &Address,
+        pet_id: u64,
+        record_increment: u64,
+        vaccination_increment: u64,
+        treatment_increment: u64,
+    ) {
+        let mut stats = env
+            .storage()
+            .instance()
+            .get::<_, VetStats>(&VetKey::VetStats(vet.clone()))
+            .unwrap_or(VetStats {
+                total_records: 0,
+                total_vaccinations: 0,
+                total_treatments: 0,
+                pets_treated: 0,
+            });
 
-    stats.total_records += record_increment;
-    stats.total_vaccinations += vaccination_increment;
-    stats.total_treatments += treatment_increment;
+        stats.total_records += record_increment;
+        stats.total_vaccinations += vaccination_increment;
+        stats.total_treatments += treatment_increment;
 
-    // Unique pet tracking
-    if !env
-        .storage()
-        .instance()
-        .has(&DataKey::VetPetTreated((vet.clone(), pet_id)))
-    {
-        env.storage().instance().set(
-            &DataKey::VetPetTreated((vet.clone(), pet_id)),
-            &true,
-        );
+        // Unique pet tracking
+        if !env
+            .storage()
+            .instance()
+            .has(&VetKey::VetPetTreated((vet.clone(), pet_id)))
+        {
+            env.storage()
+                .instance()
+                .set(&VetKey::VetPetTreated((vet.clone(), pet_id)), &true);
 
-        stats.pets_treated += 1;
+            stats.pets_treated += 1;
+        }
+
+        env.storage()
+            .instance()
+            .set(&VetKey::VetStats(vet.clone()), &stats);
     }
-
-    env.storage()
-        .instance()
-        .set(&DataKey::VetStats(vet.clone()), &stats);
-}
 
     // Pet Management Functions
     #[allow(clippy::too_many_arguments)]
@@ -1779,6 +1786,7 @@ impl PetChainContract {
             license_number: license_number.clone(),
             specialization,
             verified: false,
+            clinic_info: None,
         };
 
         env.storage()
@@ -1934,14 +1942,7 @@ impl PetChainContract {
             created_at: now,
         };
 
-        Self::update_vet_stats(
-            &env,
-            &veterinarian,
-            pet_id,
-            1,
-            1,
-            0,
-        );
+        Self::update_vet_stats(&env, &veterinarian, pet_id, 1, 1, 0);
 
         env.storage()
             .instance()
@@ -2881,14 +2882,7 @@ impl PetChainContract {
             &id,
         );
 
-            Self::update_vet_stats(
-            &env,
-            &vet_address,
-            pet_id,
-            1,
-            0,
-            1,
-        );
+        Self::update_vet_stats(&env, &vet_address, pet_id, 1, 0, 1);
 
         // Publish event
         env.events().publish(
@@ -2948,16 +2942,16 @@ impl PetChainContract {
     }
 
     pub fn get_vet_stats(env: Env, vet: Address) -> VetStats {
-    env.storage()
-        .instance()
-        .get::<_, VetStats>(&DataKey::VetStats(vet))
-        .unwrap_or(VetStats {
-            total_records: 0,
-            total_vaccinations: 0,
-            total_treatments: 0,
-            pets_treated: 0,
-        })
-}
+        env.storage()
+            .instance()
+            .get::<_, VetStats>(&VetKey::VetStats(vet))
+            .unwrap_or(VetStats {
+                total_records: 0,
+                total_vaccinations: 0,
+                total_treatments: 0,
+                pets_treated: 0,
+            })
+    }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
         let record: Option<MedicalRecord> = env
@@ -3021,7 +3015,7 @@ impl PetChainContract {
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             // Require authentication from the vet who created the record
             record.vet_address.require_auth();
@@ -3050,7 +3044,7 @@ impl PetChainContract {
             // Save updated record
             env.storage()
                 .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
 
             // Log the action
             Self::log_access(
@@ -3072,7 +3066,7 @@ impl PetChainContract {
         if let Some(record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             // Log access
             Self::log_access(
@@ -3095,7 +3089,7 @@ impl PetChainContract {
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             // Require authentication from the vet who created the record
             record.vet_address.require_auth();
@@ -3112,7 +3106,7 @@ impl PetChainContract {
             // Save updated record
             env.storage()
                 .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
 
             // Log the action
             Self::log_access(
@@ -3134,7 +3128,7 @@ impl PetChainContract {
         if let Some(record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             record.attachment_hashes.len()
         } else {

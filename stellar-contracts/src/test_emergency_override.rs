@@ -1,7 +1,7 @@
 use crate::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Env, String, Vec, Address,
+    Address, Env, String, Vec,
 };
 
 #[test]
@@ -46,7 +46,12 @@ fn test_public_emergency_access() {
         is_critical: false,
     });
 
-    client.set_emergency_contacts(&pet_id, &contacts, &allergies, &String::from_str(&env, "Critical medical condition!"));
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &allergies,
+        &String::from_str(&env, "Critical medical condition!"),
+    );
 
     // Set responder (no owner auth needed)
     env.mock_all_auths(); // Clear auths
@@ -55,7 +60,10 @@ fn test_public_emergency_access() {
     assert_eq!(info.pet_id, pet_id);
     assert_eq!(info.species, String::from_str(&env, "Dog"));
     assert_eq!(info.emergency_contacts.len(), 1);
-    assert_eq!(info.emergency_contacts.get(0).unwrap().phone, String::from_str(&env, "555-1234"));
+    assert_eq!(
+        info.emergency_contacts.get(0).unwrap().phone,
+        String::from_str(&env, "555-1234")
+    );
 }
 
 #[test]
@@ -91,15 +99,23 @@ fn test_emergency_data_filtering() {
         is_critical: false,
     });
 
-    client.set_emergency_contacts(&pet_id, &Vec::new(&env), &allergies, &String::from_str(&env, "Needs daily medication"));
+    client.set_emergency_contacts(
+        &pet_id,
+        &Vec::new(&env),
+        &allergies,
+        &String::from_str(&env, "Needs daily medication"),
+    );
 
     let info = client.get_emergency_info(&pet_id);
 
     // Should only have the critical allergy
     assert_eq!(info.allergies.len(), 1);
-    assert_eq!(info.allergies.get(0).unwrap().name, String::from_str(&env, "Penicillin"));
+    assert_eq!(
+        info.allergies.get(0).unwrap().name,
+        String::from_str(&env, "Penicillin")
+    );
     assert!(info.allergies.get(0).unwrap().is_critical);
-    
+
     // Critical alert should be present
     assert_eq!(info.critical_alerts.len(), 1);
 }
@@ -134,7 +150,10 @@ fn test_emergency_logging() {
     // Verify logs in storage
     let log_key = DataKey::EmergencyAccessLogs(pet_id);
     let logs: Vec<EmergencyAccessLog> = env.as_contract(&contract_id, || {
-        env.storage().persistent().get(&log_key).unwrap_or(Vec::new(&env))
+        env.storage()
+            .persistent()
+            .get(&log_key)
+            .unwrap_or(Vec::new(&env))
     });
 
     assert_eq!(logs.len(), 3);
