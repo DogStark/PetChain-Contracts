@@ -283,3 +283,322 @@ fn test_log_retrieval_by_pet_id() {
     assert!(!logs_pet_1.is_empty());
     assert_eq!(logs_pet_2.len(), 0);
 }
+
+// --- TREATMENT HISTORY TESTS ---
+
+#[test]
+fn test_add_treatment_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Alice"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &Species::Dog,
+        &Gender::Male,
+        &0u64,
+        &String::from_str(&env, "Labrador"),
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "LIC-001"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let treatment_id = client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Surgery,
+        &1_000_000u64,
+        &String::from_str(&env, "Splenectomy performed successfully"),
+        &Some(500_00i128),
+        &String::from_str(&env, "Full recovery expected"),
+    );
+
+    assert_eq!(treatment_id, 1);
+
+    let treatment = client.get_treatment(&treatment_id).unwrap();
+    assert_eq!(treatment.pet_id, pet_id);
+    assert_eq!(treatment.treatment_type, TreatmentType::Surgery);
+    assert_eq!(treatment.vet_address, vet);
+    assert_eq!(treatment.cost, Some(500_00i128));
+    assert_eq!(
+        treatment.outcome,
+        String::from_str(&env, "Full recovery expected")
+    );
+}
+
+#[test]
+fn test_get_treatment_history_multiple() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Alice"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &Species::Cat,
+        &Gender::Female,
+        &0u64,
+        &String::from_str(&env, "Siamese"),
+    );
+
+    client.register_vet(&vet, &String::from_str(&env, "Dr. Lee"), &String::from_str(&env, "LIC-002"));
+    client.verify_vet(&admin, &vet);
+
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Routine,
+        &1_000_000u64,
+        &String::from_str(&env, "Annual checkup"),
+        &Some(100_00i128),
+        &String::from_str(&env, "Healthy"),
+    );
+
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Emergency,
+        &2_000_000u64,
+        &String::from_str(&env, "Swallowed foreign object"),
+        &Some(800_00i128),
+        &String::from_str(&env, "Recovered after observation"),
+    );
+
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Therapy,
+        &3_000_000u64,
+        &String::from_str(&env, "Post-op physiotherapy"),
+        &None,
+        &String::from_str(&env, "Ongoing"),
+    );
+
+    let history = client.get_treatment_history(&pet_id);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history.get(0).unwrap().treatment_type, TreatmentType::Routine);
+    assert_eq!(history.get(1).unwrap().treatment_type, TreatmentType::Emergency);
+    assert_eq!(history.get(2).unwrap().treatment_type, TreatmentType::Therapy);
+}
+
+#[test]
+fn test_filter_treatments_by_type() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Bob"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &Species::Dog,
+        &Gender::Female,
+        &0u64,
+        &String::from_str(&env, "Beagle"),
+    );
+
+    client.register_vet(&vet, &String::from_str(&env, "Dr. Park"), &String::from_str(&env, "LIC-003"));
+    client.verify_vet(&admin, &vet);
+
+    // Add 2 surgeries and 1 routine
+    client.add_treatment(
+        &pet_id, &vet, &TreatmentType::Surgery, &1_000_000u64,
+        &String::from_str(&env, "Leg surgery"), &Some(1200_00i128),
+        &String::from_str(&env, "Success"),
+    );
+    client.add_treatment(
+        &pet_id, &vet, &TreatmentType::Routine, &2_000_000u64,
+        &String::from_str(&env, "Checkup"), &Some(80_00i128),
+        &String::from_str(&env, "Healthy"),
+    );
+    client.add_treatment(
+        &pet_id, &vet, &TreatmentType::Surgery, &3_000_000u64,
+        &String::from_str(&env, "Tooth extraction"), &Some(400_00i128),
+        &String::from_str(&env, "Healed"),
+    );
+
+    let surgeries = client.get_treatments_by_type(&pet_id, &TreatmentType::Surgery);
+    assert_eq!(surgeries.len(), 2);
+
+    let routines = client.get_treatments_by_type(&pet_id, &TreatmentType::Routine);
+    assert_eq!(routines.len(), 1);
+
+    let therapies = client.get_treatments_by_type(&pet_id, &TreatmentType::Therapy);
+    assert_eq!(therapies.len(), 0);
+}
+
+#[test]
+fn test_treatment_outcome_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Carol"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &Species::Dog,
+        &Gender::Male,
+        &0u64,
+        &String::from_str(&env, "German Shepherd"),
+    );
+
+    client.register_vet(&vet, &String::from_str(&env, "Dr. Jones"), &String::from_str(&env, "LIC-004"));
+    client.verify_vet(&admin, &vet);
+
+    let treatment_id = client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Emergency,
+        &1_000_000u64,
+        &String::from_str(&env, "Trauma from accident"),
+        &Some(2000_00i128),
+        &String::from_str(&env, "Stable after surgery"),
+    );
+
+    let treatment = client.get_treatment(&treatment_id).unwrap();
+    assert_eq!(
+        treatment.outcome,
+        String::from_str(&env, "Stable after surgery")
+    );
+    assert_eq!(treatment.treatment_type, TreatmentType::Emergency);
+}
+
+#[test]
+fn test_treatment_history_empty_for_unknown_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let history = client.get_treatment_history(&999u64);
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_add_treatment_without_cost() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Dave"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Milo"),
+        &Species::Cat,
+        &Gender::Male,
+        &0u64,
+        &String::from_str(&env, "Persian"),
+    );
+
+    client.register_vet(&vet, &String::from_str(&env, "Dr. Kim"), &String::from_str(&env, "LIC-005"));
+    client.verify_vet(&admin, &vet);
+
+    let treatment_id = client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Other,
+        &1_000_000u64,
+        &String::from_str(&env, "Behavioral assessment"),
+        &None,
+        &String::from_str(&env, "Pending follow-up"),
+    );
+
+    let treatment = client.get_treatment(&treatment_id).unwrap();
+    assert_eq!(treatment.cost, None);
+    assert_eq!(treatment.treatment_type, TreatmentType::Other);
+}
+
+#[test]
+#[should_panic(expected = "Veterinarian not verified")]
+fn test_add_treatment_unverified_vet_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let unverified_vet = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.register_pet_owner(&owner, &String::from_str(&env, "Eve"));
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Nala"),
+        &Species::Dog,
+        &Gender::Female,
+        &0u64,
+        &String::from_str(&env, "Poodle"),
+    );
+
+    // Vet registered but NOT verified
+    client.register_vet(
+        &unverified_vet,
+        &String::from_str(&env, "Fake Vet"),
+        &String::from_str(&env, "FAKE-001"),
+    );
+
+    client.add_treatment(
+        &pet_id,
+        &unverified_vet,
+        &TreatmentType::Surgery,
+        &1_000_000u64,
+        &String::from_str(&env, "Unauthorised surgery"),
+        &None,
+        &String::from_str(&env, "N/A"),
+    );
+}
