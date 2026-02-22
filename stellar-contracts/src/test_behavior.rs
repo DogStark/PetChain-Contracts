@@ -47,7 +47,10 @@ fn test_add_behavior_record() {
 
     let history = client.get_behavior_history(&pet_id);
     assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().behavior_type, BehaviorType::Training);
+    assert_eq!(
+        history.get(0).unwrap().behavior_type,
+        BehaviorType::Training
+    );
     assert_eq!(history.get(0).unwrap().severity, 5);
 }
 
@@ -221,7 +224,7 @@ fn test_behavior_improvements_tracking() {
 
     let improvements = client.get_behavior_improvements(&pet_id, &BehaviorType::Anxiety);
     assert_eq!(improvements.len(), 3);
-    
+
     // Verify severity is decreasing (improvement)
     assert_eq!(improvements.get(0).unwrap().severity, 8);
     assert_eq!(improvements.get(1).unwrap().severity, 6);
@@ -346,4 +349,3 @@ fn test_all_behavior_types() {
     let history = client.get_behavior_history(&pet_id);
     assert_eq!(history.len(), 5);
 }
-

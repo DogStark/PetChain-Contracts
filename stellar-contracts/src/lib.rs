@@ -27,6 +27,8 @@ mod test;
 #[cfg(test)]
 mod test_access_control;
 #[cfg(test)]
+mod test_behavior;
+#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_insurance;
@@ -34,8 +36,6 @@ mod test_insurance;
 mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
-#[cfg(test)]
-mod test_behavior;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -4504,9 +4504,13 @@ impl PetChainContract {
                 .instance()
                 .get::<BehaviorKey, u64>(&BehaviorKey::PetMilestoneIndex((pet_id, i)))
             {
-                if let Some(milestone) = env.storage().instance().get::<BehaviorKey, TrainingMilestone>(
-                    &BehaviorKey::TrainingMilestone(milestone_id),
-                ) {
+                if let Some(milestone) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(
+                        milestone_id,
+                    ))
+                {
                     milestones.push_back(milestone);
                 }
             }
@@ -4514,7 +4518,11 @@ impl PetChainContract {
         milestones
     }
 
-    pub fn get_behavior_improvements(env: Env, pet_id: u64, behavior_type: BehaviorType) -> Vec<BehaviorRecord> {
+    pub fn get_behavior_improvements(
+        env: Env,
+        pet_id: u64,
+        behavior_type: BehaviorType,
+    ) -> Vec<BehaviorRecord> {
         let history = Self::get_behavior_history(env.clone(), pet_id);
         let mut filtered = Vec::new(&env);
 
@@ -4526,7 +4534,11 @@ impl PetChainContract {
         filtered
     }
 
-    pub fn get_behavior_by_type(env: Env, pet_id: u64, behavior_type: BehaviorType) -> Vec<BehaviorRecord> {
+    pub fn get_behavior_by_type(
+        env: Env,
+        pet_id: u64,
+        behavior_type: BehaviorType,
+    ) -> Vec<BehaviorRecord> {
         Self::get_behavior_improvements(env, pet_id, behavior_type)
     }
 }
