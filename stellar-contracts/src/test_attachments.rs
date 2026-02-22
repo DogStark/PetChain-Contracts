@@ -350,17 +350,17 @@ fn test_attachment_with_various_file_types() {
     for (i, (filename, file_type)) in file_types.iter().enumerate() {
         let metadata = create_test_metadata(&env, filename, file_type, 1024000);
         let hash_str = if i == 0 {
-            "QmHash0"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
         } else if i == 1 {
-            "QmHash1"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"
         } else if i == 2 {
-            "QmHash2"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"
         } else if i == 3 {
-            "QmHash3"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdJ"
         } else if i == 4 {
-            "QmHash4"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdK"
         } else {
-            "QmHash5"
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdL"
         };
         let ipfs_hash = String::from_str(&env, hash_str);
         client.add_attachment(&record_id, &ipfs_hash, &metadata);
@@ -401,17 +401,17 @@ fn test_medical_record_with_attachments_integration() {
 
     // Add X-ray images
     let xray1_metadata = create_test_metadata(&env, "xray_front.jpg", "image/jpeg", 2048000);
-    let xray1_hash = String::from_str(&env, "QmXray1Hash");
+    let xray1_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdM");
     client.add_attachment(&record_id, &xray1_hash, &xray1_metadata);
 
     let xray2_metadata = create_test_metadata(&env, "xray_side.jpg", "image/jpeg", 2048000);
-    let xray2_hash = String::from_str(&env, "QmXray2Hash");
+    let xray2_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdN");
     client.add_attachment(&record_id, &xray2_hash, &xray2_metadata);
 
     // Add medical report
     let report_metadata =
         create_test_metadata(&env, "diagnosis_report.pdf", "application/pdf", 512000);
-    let report_hash = String::from_str(&env, "QmReportHash");
+    let report_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdO");
     client.add_attachment(&record_id, &report_hash, &report_metadata);
 
     // Verify the complete medical record
@@ -453,7 +453,7 @@ fn test_multiple_records_with_attachments() {
         &String::from_str(&env, "All good"),
     );
     let metadata1 = create_test_metadata(&env, "checkup1.pdf", "application/pdf", 512000);
-    client.add_attachment(&record1_id, &String::from_str(&env, "QmHash1"), &metadata1);
+    client.add_attachment(&record1_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"), &metadata1);
 
     // Create second record with attachments
     let record2_id = client.add_medical_record(
@@ -465,7 +465,7 @@ fn test_multiple_records_with_attachments() {
         &String::from_str(&env, "All good"),
     );
     let metadata2 = create_test_metadata(&env, "checkup2.pdf", "application/pdf", 512000);
-    client.add_attachment(&record2_id, &String::from_str(&env, "QmHash2"), &metadata2);
+    client.add_attachment(&record2_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"), &metadata2);
 
     // Verify each record has its own attachments
     assert_eq!(client.get_attachment_count(&record1_id), 1);
@@ -492,13 +492,13 @@ fn test_attachment_timestamp_tracking() {
     env.ledger().with_mut(|l| l.timestamp = 1000);
 
     let metadata1 = create_test_metadata(&env, "file1.jpg", "image/jpeg", 1024000);
-    client.add_attachment(&record_id, &String::from_str(&env, "QmHash1"), &metadata1);
+    client.add_attachment(&record_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"), &metadata1);
 
     // Advance time
     env.ledger().with_mut(|l| l.timestamp = 2000);
 
     let metadata2 = create_test_metadata(&env, "file2.jpg", "image/jpeg", 1024000);
-    client.add_attachment(&record_id, &String::from_str(&env, "QmHash2"), &metadata2);
+    client.add_attachment(&record_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"), &metadata2);
 
     // Verify timestamps are different
     let attachments = client.get_attachments(&record_id);
