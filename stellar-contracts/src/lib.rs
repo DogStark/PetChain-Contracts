@@ -2500,7 +2500,7 @@ impl PetChainContract {
             let notes = String::from_xdr(&env, &n_bytes).unwrap_or(String::from_str(&env, ""));
 
             let mut critical_alerts = Vec::new(&env);
-            if notes.len() > 0 {
+            if !notes.is_empty() {
                 critical_alerts.push_back(notes);
             }
 
@@ -3021,10 +3021,10 @@ impl PetChainContract {
             record.vet_address.require_auth();
 
             // Validate metadata
-            if metadata.filename.len() == 0 {
+            if metadata.filename.is_empty() {
                 panic!("Filename cannot be empty");
             }
-            if metadata.file_type.len() == 0 {
+            if metadata.file_type.is_empty() {
                 panic!("File type cannot be empty");
             }
             if metadata.size == 0 {
