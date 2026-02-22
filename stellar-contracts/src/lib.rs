@@ -41,6 +41,8 @@ mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 #[cfg(test)]
+mod test_multisig_transfer;
+#[cfg(test)]
 mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -511,6 +513,11 @@ pub enum SystemKey {
     VetAvailability((Address, u64)),
     VetAvailabilityCount(Address),
     VetAvailabilityByDate((Address, u64)),
+
+    // Pet Multisig keys
+    PetMultisigConfig(u64),
+    PetTransferProposal(u64),
+    PetTransferProposalCount,
 }
 
 #[contracttype]
@@ -757,6 +764,41 @@ pub struct MultiSigProposal {
     pub required_approvals: u32,
     pub created_at: u64,
     pub expires_at: u64,
+    pub executed: bool,
+}
+
+/// Multi-signature configuration for a pet.
+/// Enables multiple parties to approve pet ownership transfers.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigConfig {
+    /// The pet ID this configuration applies to
+    pub pet_id: u64,
+    /// List of addresses authorized to sign transfer proposals
+    pub signers: Vec<Address>,
+    /// Minimum number of signatures required to execute a transfer
+    pub threshold: u32,
+    /// Whether multisig enforcement is enabled
+    pub enabled: bool,
+}
+
+/// Proposal for transferring pet ownership with multi-signature approval.
+#[contracttype]
+#[derive(Clone)]
+pub struct PetTransferProposal {
+    /// Unique proposal identifier
+    pub id: u64,
+    /// The pet being transferred
+    pub pet_id: u64,
+    /// Address of the new owner
+    pub to: Address,
+    /// Addresses that have signed this proposal
+    pub signatures: Vec<Address>,
+    /// Timestamp when proposal was created
+    pub created_at: u64,
+    /// Timestamp when proposal expires
+    pub expires_at: u64,
+    /// Whether the transfer has been executed
     pub executed: bool,
 }
 
@@ -4850,6 +4892,321 @@ impl PetChainContract {
         behavior_type: BehaviorType,
     ) -> Vec<BehaviorRecord> {
         Self::get_behavior_improvements(env, pet_id, behavior_type)
+    }
+
+    // --- PET MULTISIG TRANSFER SYSTEM ---
+
+    /// Configure multi-signature requirements for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet to configure
+    /// * `signers` - List of authorized signers (must include owner)
+    /// * `threshold` - Minimum signatures required (1 to signers.len())
+    ///
+    /// # Returns
+    /// `true` if configuration was successful
+    ///
+    /// # Panics
+    /// * If pet not found
+    /// * If caller is not the pet owner
+    /// * If threshold is invalid (0 or > signers.len())
+    /// * If owner is not in signers list
+    pub fn configure_multisig(
+        env: Env,
+        pet_id: u64,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if threshold == 0 || threshold > signers.len() {
+            panic!("Invalid threshold");
+        }
+
+        if !signers.contains(pet.owner.clone()) {
+            panic!("Owner must be in signers list");
+        }
+
+        let config = MultisigConfig {
+            pet_id,
+            signers,
+            threshold,
+            enabled: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetMultisigConfig(pet_id), &config);
+        true
+    }
+
+    /// Get the multi-signature configuration for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet ID
+    ///
+    /// # Returns
+    /// `Some(MultisigConfig)` if configured, `None` otherwise
+    pub fn get_multisig_config(env: Env, pet_id: u64) -> Option<MultisigConfig> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(pet_id))
+    }
+
+    /// Disable multi-signature enforcement for a pet.
+    /// Configuration is preserved but not enforced.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet ID
+    ///
+    /// # Returns
+    /// `true` if disabled successfully, `false` if no config exists
+    ///
+    /// # Panics
+    /// * If pet not found
+    /// * If caller is not the pet owner
+    pub fn disable_multisig(env: Env, pet_id: u64) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if let Some(mut config) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, MultisigConfig>(&SystemKey::PetMultisigConfig(pet_id))
+        {
+            config.enabled = false;
+            env.storage()
+                .instance()
+                .set(&SystemKey::PetMultisigConfig(pet_id), &config);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Initiate a multi-signature transfer proposal.
+    /// Owner's signature is automatically added.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet to transfer
+    /// * `to` - Address of the new owner
+    ///
+    /// # Returns
+    /// The proposal ID
+    ///
+    /// # Panics
+    /// * If pet not found
+    /// * If caller is not the pet owner
+    /// * If multisig not configured
+    /// * If multisig is disabled
+    pub fn require_multisig_for_transfer(env: Env, pet_id: u64, to: Address) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let config: MultisigConfig = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(pet_id))
+            .expect("Multisig not configured");
+
+        if !config.enabled {
+            panic!("Multisig not enabled");
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetTransferProposalCount)
+            .unwrap_or(0);
+        let proposal_id = count + 1;
+
+        let now = env.ledger().timestamp();
+        let mut signatures = Vec::new(&env);
+        signatures.push_back(pet.owner.clone());
+
+        let proposal = PetTransferProposal {
+            id: proposal_id,
+            pet_id,
+            to,
+            signatures,
+            created_at: now,
+            expires_at: now + 604800, // 7 days
+            executed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetTransferProposalCount, &proposal_id);
+
+        proposal_id
+    }
+
+    /// Add a signature to a transfer proposal.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - The proposal to sign
+    /// * `signer` - The signer's address
+    ///
+    /// # Returns
+    /// `true` if signature was added successfully
+    ///
+    /// # Panics
+    /// * If proposal not found
+    /// * If proposal already executed
+    /// * If proposal expired
+    /// * If signer not authorized
+    /// * If signer already signed
+    pub fn sign_transfer_proposal(env: Env, proposal_id: u64, signer: Address) -> bool {
+        signer.require_auth();
+
+        let mut proposal: PetTransferProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetTransferProposal(proposal_id))
+            .expect("Proposal not found");
+
+        if proposal.executed {
+            panic!("Proposal already executed");
+        }
+
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Proposal expired");
+        }
+
+        let config: MultisigConfig = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(proposal.pet_id))
+            .expect("Multisig not configured");
+
+        if !config.signers.contains(signer.clone()) {
+            panic!("Not authorized signer");
+        }
+
+        if proposal.signatures.contains(signer.clone()) {
+            panic!("Already signed");
+        }
+
+        proposal.signatures.push_back(signer);
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+        true
+    }
+
+    /// Execute a multi-signature pet transfer.
+    /// Requires threshold signatures to be met.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - The proposal to execute
+    ///
+    /// # Returns
+    /// `true` if transfer was executed successfully
+    ///
+    /// # Panics
+    /// * If proposal not found
+    /// * If proposal already executed
+    /// * If proposal expired
+    /// * If threshold not met
+    pub fn multisig_transfer_pet(env: Env, proposal_id: u64) -> bool {
+        let mut proposal: PetTransferProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetTransferProposal(proposal_id))
+            .expect("Proposal not found");
+
+        if proposal.executed {
+            panic!("Proposal already executed");
+        }
+
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Proposal expired");
+        }
+
+        let config: MultisigConfig = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(proposal.pet_id))
+            .expect("Multisig not configured");
+
+        if proposal.signatures.len() < config.threshold {
+            panic!("Threshold not met");
+        }
+
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(proposal.pet_id))
+            .expect("Pet not found");
+
+        let old_owner = pet.owner.clone();
+        Self::remove_pet_from_owner_index(&env, &old_owner, proposal.pet_id);
+
+        pet.owner = proposal.to.clone();
+        pet.new_owner = proposal.to.clone();
+        pet.updated_at = env.ledger().timestamp();
+
+        Self::add_pet_to_owner_index(&env, &pet.owner, proposal.pet_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::Pet(proposal.pet_id), &pet);
+
+        Self::log_ownership_change(
+            &env,
+            proposal.pet_id,
+            old_owner.clone(),
+            pet.owner.clone(),
+            String::from_str(&env, "Multisig Transfer"),
+        );
+
+        env.events().publish(
+            (
+                String::from_str(&env, "PetOwnershipTransferred"),
+                proposal.pet_id,
+            ),
+            PetOwnershipTransferredEvent {
+                pet_id: proposal.pet_id,
+                old_owner,
+                new_owner: pet.owner.clone(),
+                timestamp: pet.updated_at,
+            },
+        );
+
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+
+        true
+    }
+
+    /// Get details of a transfer proposal.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - The proposal ID
+    ///
+    /// # Returns
+    /// `Some(PetTransferProposal)` if found, `None` otherwise
+    pub fn get_transfer_proposal(env: Env, proposal_id: u64) -> Option<PetTransferProposal> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::PetTransferProposal(proposal_id))
     }
 }
 
