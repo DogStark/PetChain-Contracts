@@ -15,9 +15,21 @@ mod test;
 #[cfg(test)]
 mod test_access_control;
 #[cfg(test)]
+mod test_attachments;
+#[cfg(test)]
+mod test_batch;
+#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
+mod test_emergency_override;
+#[cfg(test)]
 mod test_export;
+#[cfg(test)]
+mod test_insurance;
+#[cfg(test)]
+mod test_insurance_claims;
+#[cfg(test)]
+mod test_insurance_comprehensive;
 #[cfg(test)]
 mod test_statistics;
 
