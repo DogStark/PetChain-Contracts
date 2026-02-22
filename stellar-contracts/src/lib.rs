@@ -4,6 +4,10 @@
 #[contracttype]
 pub enum InsuranceKey {
     Policy(u64),
+    Claim(u64),                // claim_id -> InsuranceClaim
+    ClaimCount,                // Global count of claims
+    PetClaimCount(u64),        // pet_id -> count of claims
+    PetClaimIndex((u64, u64)), // (pet_id, index) -> claim_id
 }
 
 #[cfg(test)]
@@ -14,6 +18,8 @@ mod test_access_control;
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_insurance;
+#[cfg(test)]
+mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 
@@ -669,6 +675,46 @@ pub struct InsuranceUpdatedEvent {
     pub pet_id: u64,
     pub policy_id: String,
     pub active: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InsuranceClaimStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Paid,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaim {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub amount: u64,
+    pub date: u64,
+    pub status: InsuranceClaimStatus,
+    pub description: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimSubmittedEvent {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub amount: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimStatusUpdatedEvent {
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub status: InsuranceClaimStatus,
     pub timestamp: u64,
 }
 
@@ -4022,6 +4068,140 @@ impl PetChainContract {
             return true;
         }
         false
+    }
+
+    pub fn submit_insurance_claim(
+        env: Env,
+        pet_id: u64,
+        amount: u64,
+        description: String,
+    ) -> Option<u64> {
+        let policy = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))?;
+
+        if !policy.active {
+            return None;
+        }
+
+        let claim_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::ClaimCount)
+            .unwrap_or(0);
+        let claim_id = claim_count + 1;
+        let timestamp = env.ledger().timestamp();
+
+        let claim = InsuranceClaim {
+            claim_id,
+            pet_id,
+            policy_id: policy.policy_id.clone(),
+            amount,
+            date: timestamp,
+            status: InsuranceClaimStatus::Pending,
+            description,
+        };
+
+        // Save claim globally
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::ClaimCount, &claim_id);
+
+        // Save claim for pet
+        let pet_claim_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetClaimCount(pet_id), &pet_claim_count);
+        env.storage().instance().set(
+            &InsuranceKey::PetClaimIndex((pet_id, pet_claim_count)),
+            &claim_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "InsuranceClaimSubmitted"), pet_id),
+            InsuranceClaimSubmittedEvent {
+                claim_id,
+                pet_id,
+                policy_id: policy.policy_id,
+                amount,
+                timestamp,
+            },
+        );
+
+        Some(claim_id)
+    }
+
+    pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<InsuranceClaim> {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+    }
+
+    pub fn update_insurance_claim_status(
+        env: Env,
+        claim_id: u64,
+        status: InsuranceClaimStatus,
+    ) -> bool {
+        if let Some(mut claim) = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+        {
+            claim.status = status.clone();
+            env.storage()
+                .instance()
+                .set(&InsuranceKey::Claim(claim_id), &claim);
+
+            env.events().publish(
+                (
+                    String::from_str(&env, "InsuranceClaimStatusUpdated"),
+                    claim.pet_id,
+                ),
+                InsuranceClaimStatusUpdatedEvent {
+                    claim_id,
+                    pet_id: claim.pet_id,
+                    status,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            return true;
+        }
+        false
+    }
+
+    pub fn get_pet_insurance_claims(env: Env, pet_id: u64) -> Vec<InsuranceClaim> {
+        let mut claims = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(claim_id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimIndex((pet_id, i)))
+            {
+                if let Some(claim) = env
+                    .storage()
+                    .instance()
+                    .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+                {
+                    claims.push_back(claim);
+                }
+            }
+        }
+        claims
     }
 }
 
