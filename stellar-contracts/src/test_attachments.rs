@@ -80,7 +80,7 @@ fn create_test_metadata(
 
 #[test]
 fn test_add_attachment_success() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let metadata = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -100,7 +100,7 @@ fn test_add_attachment_success() {
 
 #[test]
 fn test_add_multiple_attachments() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add first attachment
     let metadata1 = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
@@ -136,7 +136,7 @@ fn test_add_multiple_attachments() {
 
 #[test]
 fn test_get_attachments_empty() {
-    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+    let (_env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let attachments = client.get_attachments(&record_id);
     assert_eq!(attachments.len(), 0);
@@ -144,7 +144,7 @@ fn test_get_attachments_empty() {
 
 #[test]
 fn test_get_attachments_nonexistent_record() {
-    let (env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
+    let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
 
     let attachments = client.get_attachments(&999u64);
     assert_eq!(attachments.len(), 0);
@@ -152,7 +152,7 @@ fn test_get_attachments_nonexistent_record() {
 
 #[test]
 fn test_attachment_metadata_storage() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let timestamp = env.ledger().timestamp();
     let metadata = AttachmentMetadata {
@@ -183,7 +183,7 @@ fn test_attachment_metadata_storage() {
 #[test]
 #[should_panic(expected = "Invalid IPFS hash")]
 fn test_add_attachment_invalid_ipfs_hash_too_short() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     let invalid_hash = String::from_str(&env, "short"); // Too short
@@ -198,9 +198,9 @@ fn test_add_attachment_invalid_ipfs_hash_too_long() {
 
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     // Create a string longer than 128 characters by repeating a pattern
-    let mut long_chars = soroban_sdk::String::from_str(&env, "");
+    let mut _long_chars = soroban_sdk::String::from_str(&env, "");
     for _ in 0..130 {
-        long_chars = soroban_sdk::String::from_str(&env, "a");
+        _long_chars = soroban_sdk::String::from_str(&env, "a");
     }
     let long_string = soroban_sdk::String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdGQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdGQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
@@ -210,7 +210,7 @@ fn test_add_attachment_invalid_ipfs_hash_too_long() {
 #[test]
 #[should_panic(expected = "Filename cannot be empty")]
 fn test_add_attachment_empty_filename() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let metadata = create_test_metadata(&env, "", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -221,7 +221,7 @@ fn test_add_attachment_empty_filename() {
 #[test]
 #[should_panic(expected = "File type cannot be empty")]
 fn test_add_attachment_empty_file_type() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let metadata = create_test_metadata(&env, "xray.jpg", "", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -232,7 +232,7 @@ fn test_add_attachment_empty_file_type() {
 #[test]
 #[should_panic(expected = "File size must be greater than 0")]
 fn test_add_attachment_zero_file_size() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 0);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -253,7 +253,7 @@ fn test_add_attachment_nonexistent_record() {
 
 #[test]
 fn test_remove_attachment_success() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add two attachments
     let metadata1 = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
@@ -283,7 +283,7 @@ fn test_remove_attachment_success() {
 #[test]
 #[should_panic(expected = "Invalid attachment index")]
 fn test_remove_attachment_invalid_index() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add one attachment
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
@@ -296,7 +296,7 @@ fn test_remove_attachment_invalid_index() {
 
 #[test]
 fn test_remove_attachment_nonexistent_record() {
-    let (env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
+    let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
 
     let result = client.remove_attachment(&999u64, &0u32);
     assert!(!result);
@@ -304,7 +304,7 @@ fn test_remove_attachment_nonexistent_record() {
 
 #[test]
 fn test_get_attachment_count() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Initially no attachments
     assert_eq!(client.get_attachment_count(&record_id), 0);
@@ -328,7 +328,7 @@ fn test_get_attachment_count() {
 
 #[test]
 fn test_get_attachment_count_nonexistent_record() {
-    let (env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
+    let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
 
     assert_eq!(client.get_attachment_count(&999u64), 0);
 }
@@ -372,7 +372,7 @@ fn test_attachment_with_various_file_types() {
 
 #[test]
 fn test_attachment_with_large_file_size() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Test with a large file size (100MB)
     let metadata = create_test_metadata(&env, "large_scan.dicom", "application/dicom", 104857600);
@@ -387,7 +387,7 @@ fn test_attachment_with_large_file_size() {
 
 #[test]
 fn test_medical_record_with_attachments_integration() {
-    let (env, client, owner, vet, pet_id, _record_id) = setup_test_env();
+    let (env, client, _owner, vet, pet_id, _record_id) = setup_test_env();
 
     // Create a new medical record
     let record_id = client.add_medical_record(
@@ -441,7 +441,7 @@ fn test_medical_record_with_attachments_integration() {
 
 #[test]
 fn test_multiple_records_with_attachments() {
-    let (env, client, owner, vet, pet_id, _record_id) = setup_test_env();
+    let (env, client, _owner, vet, pet_id, _record_id) = setup_test_env();
 
     // Create first record with attachments
     let record1_id = client.add_medical_record(
@@ -486,7 +486,7 @@ fn test_multiple_records_with_attachments() {
 
 #[test]
 fn test_attachment_timestamp_tracking() {
-    let (env, client, _owner, vet, _pet_id, record_id) = setup_test_env();
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Set initial timestamp
     env.ledger().with_mut(|l| l.timestamp = 1000);
