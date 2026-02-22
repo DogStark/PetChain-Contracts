@@ -1,8 +1,5 @@
 use crate::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Env,
-};
+use soroban_sdk::{testutils::Address as _, Env};
 
 #[test]
 fn test_emergency_contacts_add() {
