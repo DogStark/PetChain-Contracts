@@ -11,7 +11,7 @@ mod test_emergency_contacts;
 #[cfg(test)]
 mod test_export;
 #[cfg(test)]
-mod test_emergency_override;
+mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -438,6 +438,11 @@ pub enum SystemKey {
     VetAvailabilityByDate((Address, u64)),
 }
 
+#[contracttype]
+pub enum StatsKey {
+    ActivePetsCount,
+}
+
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -769,6 +774,34 @@ pub struct PetChainContract;
 
 #[contractimpl]
 impl PetChainContract {
+    // --- CONTRACT STATISTICS ---
+
+    /// Returns the total number of pets ever registered in the contract.
+    pub fn get_total_pets(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PetCount)
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of registered pets for a given species.
+    /// Pass the species name as a string: "Dog", "Cat", "Bird", or "Other".
+    pub fn get_species_count(env: Env, species: String) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SpeciesPetCount(species))
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of currently active pets.
+    /// This counter is maintained automatically by `activate_pet` and `deactivate_pet`.
+    pub fn get_active_pets_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&StatsKey::ActivePetsCount)
+            .unwrap_or(0)
+    }
+
     fn log_access(env: &Env, pet_id: u64, user: Address, action: AccessAction, details: String) {
         let key = (Symbol::new(env, "access_logs"), pet_id);
         let mut logs: Vec<AccessLog> = env
@@ -1231,6 +1264,16 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
+            if !pet.active {
+                let active_count: u64 = env
+                    .storage()
+                    .instance()
+                    .get(&StatsKey::ActivePetsCount)
+                    .unwrap_or(0);
+                env.storage()
+                    .instance()
+                    .set(&StatsKey::ActivePetsCount, &(active_count + 1));
+            }
             pet.active = true;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -1244,6 +1287,18 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
             pet.owner.require_auth();
+            if pet.active {
+                let active_count: u64 = env
+                    .storage()
+                    .instance()
+                    .get(&StatsKey::ActivePetsCount)
+                    .unwrap_or(0);
+                if active_count > 0 {
+                    env.storage()
+                        .instance()
+                        .set(&StatsKey::ActivePetsCount, &(active_count - 1));
+                }
+            }
             pet.active = false;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
