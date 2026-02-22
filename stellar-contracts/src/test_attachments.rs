@@ -453,7 +453,11 @@ fn test_multiple_records_with_attachments() {
         &String::from_str(&env, "All good"),
     );
     let metadata1 = create_test_metadata(&env, "checkup1.pdf", "application/pdf", 512000);
-    client.add_attachment(&record1_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"), &metadata1);
+    client.add_attachment(
+        &record1_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"),
+        &metadata1,
+    );
 
     // Create second record with attachments
     let record2_id = client.add_medical_record(
@@ -465,7 +469,11 @@ fn test_multiple_records_with_attachments() {
         &String::from_str(&env, "All good"),
     );
     let metadata2 = create_test_metadata(&env, "checkup2.pdf", "application/pdf", 512000);
-    client.add_attachment(&record2_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"), &metadata2);
+    client.add_attachment(
+        &record2_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"),
+        &metadata2,
+    );
 
     // Verify each record has its own attachments
     assert_eq!(client.get_attachment_count(&record1_id), 1);
@@ -492,13 +500,21 @@ fn test_attachment_timestamp_tracking() {
     env.ledger().with_mut(|l| l.timestamp = 1000);
 
     let metadata1 = create_test_metadata(&env, "file1.jpg", "image/jpeg", 1024000);
-    client.add_attachment(&record_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"), &metadata1);
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"),
+        &metadata1,
+    );
 
     // Advance time
     env.ledger().with_mut(|l| l.timestamp = 2000);
 
     let metadata2 = create_test_metadata(&env, "file2.jpg", "image/jpeg", 1024000);
-    client.add_attachment(&record_id, &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"), &metadata2);
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI"),
+        &metadata2,
+    );
 
     // Verify timestamps are different
     let attachments = client.get_attachments(&record_id);
