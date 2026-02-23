@@ -63,11 +63,11 @@ mod test_insurance_comprehensive;
 #[cfg(test)]
 mod test_multisig_transfer;
 #[cfg(test)]
-mod test_statistics;
-#[cfg(test)]
 mod test_nutrition;
 #[cfg(test)]
-mod test_grooming;
+mod test_pet_age;
+#[cfg(test)]
+mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -238,14 +238,14 @@ pub struct Allergy {
 // --- NUTRITION / DIET ---
 #[contracttype]
 pub enum NutritionKey {
-    DietPlan(u64),           // diet_id -> DietPlan
-    DietPlanCount,           // global count
-    PetDietCount(u64),       // pet_id -> count
+    DietPlan(u64),              // diet_id -> DietPlan
+    DietPlanCount,              // global count
+    PetDietCount(u64),          // pet_id -> count
     PetDietByIndex((u64, u64)), // (pet_id, index) -> diet_id
 
-    WeightEntry(u64),        // weight_id -> WeightEntry
-    WeightCount,             // global weight entry count
-    PetWeightCount(u64),     // pet_id -> count
+    WeightEntry(u64),             // weight_id -> WeightEntry
+    WeightCount,                  // global weight entry count
+    PetWeightCount(u64),          // pet_id -> count
     PetWeightByIndex((u64, u64)), // (pet_id, index) -> weight_id
 }
 
@@ -270,8 +270,6 @@ pub struct WeightEntry {
     pub recorded_at: u64,
     pub recorded_by: Address,
 }
-
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -540,7 +538,7 @@ pub enum DataKey {
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
     VetPetCount(Address),          // unique pets treated
 
-                                  // Lab Result DataKey
+    // Lab Result DataKey
 
     // Medical Record DataKey
 
@@ -616,7 +614,6 @@ pub enum ConsentKey {
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
 }
-
 
 #[contracttype]
 pub enum SystemKey {
@@ -1603,6 +1600,51 @@ impl PetChainContract {
         }
     }
 
+    pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
+        if let Some(pet) = Self::get_pet(env.clone(), pet_id) {
+            let current_time = env.ledger().timestamp();
+            let birthday_timestamp = match Self::parse_birthday_timestamp(&pet.birthday) {
+                Some(timestamp) => timestamp,
+                None => return (0, 0),
+            };
+
+            if current_time < birthday_timestamp {
+                return (0, 0);
+            }
+
+            let elapsed_seconds = current_time - birthday_timestamp;
+            let elapsed_days = elapsed_seconds / 86_400;
+            let years = elapsed_days / 365;
+            let remaining_days = elapsed_days % 365;
+            let months = remaining_days / 30;
+
+            return (years, months);
+        }
+
+        (0, 0)
+    }
+
+    fn parse_birthday_timestamp(birthday: &String) -> Option<u64> {
+        let len = birthday.len() as usize;
+        if len == 0 || len > 20 {
+            return None;
+        }
+
+        let mut bytes = [0u8; 20];
+        birthday.copy_into_slice(&mut bytes[..len]);
+
+        let mut timestamp = 0u64;
+        for b in bytes.iter().take(len) {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            let digit = (b - b'0') as u64;
+            timestamp = timestamp.checked_mul(10)?.checked_add(digit)?;
+        }
+
+        Some(timestamp)
+    }
+
     pub fn is_pet_active(env: Env, id: u64) -> bool {
         if let Some(pet) = env
             .storage()
@@ -2332,15 +2374,18 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
-        env.storage()
-            .instance()
-            .set(&NutritionKey::PetDietByIndex((pet_id, pet_diet_count)), &diet_id);
+        env.storage().instance().set(
+            &NutritionKey::PetDietByIndex((pet_id, pet_diet_count)),
+            &diet_id,
+        );
 
         true
     }
 
     pub fn get_diet_plan(env: Env, diet_id: u64) -> Option<DietPlan> {
-        env.storage().instance().get(&NutritionKey::DietPlan(diet_id))
+        env.storage()
+            .instance()
+            .get(&NutritionKey::DietPlan(diet_id))
     }
 
     pub fn get_diet_history(env: Env, pet_id: u64) -> Vec<DietPlan> {
@@ -2415,9 +2460,10 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&NutritionKey::PetWeightCount(pet_id), &pet_weight_count);
-        env.storage()
-            .instance()
-            .set(&NutritionKey::PetWeightByIndex((pet_id, pet_weight_count)), &weight_id);
+        env.storage().instance().set(
+            &NutritionKey::PetWeightByIndex((pet_id, pet_weight_count)),
+            &weight_id,
+        );
 
         // Update current pet weight
         pet.weight = weight;
@@ -2450,7 +2496,10 @@ impl PetChainContract {
                 .instance()
                 .get::<NutritionKey, u64>(&NutritionKey::PetWeightByIndex((pet_id, i)))
             {
-                if let Some(entry) = env.storage().instance().get(&NutritionKey::WeightEntry(wid))
+                if let Some(entry) = env
+                    .storage()
+                    .instance()
+                    .get(&NutritionKey::WeightEntry(wid))
                 {
                     history.push_back(entry);
                 }
