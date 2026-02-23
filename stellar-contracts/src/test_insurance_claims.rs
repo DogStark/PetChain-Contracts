@@ -1,4 +1,3 @@
-#![cfg(test)]
 
 use crate::{
     Gender, InsuranceClaimStatus, PetChainContract, PetChainContractClient, PrivacyLevel, Species,

@@ -1,4 +1,3 @@
-#![cfg(test)]
 
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
