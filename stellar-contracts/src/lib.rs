@@ -30,6 +30,14 @@ pub enum ActivityKey {
     PetActivityIndex((u64, u64)),
 }
 
+#[contracttype]
+pub enum GroomingKey {
+    GroomingRecord(u64),
+    GroomingRecordCount,
+    PetGroomingCount(u64),
+    PetGroomingIndex((u64, u64)),
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -56,6 +64,8 @@ mod test_multisig_transfer;
 mod test_statistics;
 #[cfg(test)]
 mod test_nutrition;
+#[cfg(test)]
+mod test_grooming;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -79,6 +89,19 @@ pub enum ActivityType {
     Play,
     Training,
     Other,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub service_type: String,
+    pub groomer: String,
+    pub date: u64,
+    pub next_due: u64,
+    pub cost: u64,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -216,6 +239,15 @@ pub struct DietPlan {
     pub allergies: Vec<String>,
     pub created_by: Address,
     pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightEntry {
+    pub pet_id: u64,
+    pub weight: u32,
+    pub recorded_at: u64,
+    pub recorded_by: Address,
 }
 
 
@@ -5566,6 +5598,125 @@ impl PetChainContract {
         }
 
         (total_duration, total_distance)
+    }
+
+    // --- GROOMING TRACKING SYSTEM ---
+
+    pub fn add_grooming_record(
+        env: Env,
+        pet_id: u64,
+        service_type: String,
+        groomer: String,
+        cost: u64,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecordCount)
+            .unwrap_or(0);
+        let record_id = count + 1;
+        let date = env.ledger().timestamp();
+        let next_due = date + (2592000 * 2); // 60 days default
+
+        let record = GroomingRecord {
+            id: record_id,
+            pet_id,
+            service_type,
+            groomer,
+            date,
+            next_due,
+            cost,
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecordCount, &record_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&GroomingKey::PetGroomingCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &GroomingKey::PetGroomingIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<GroomingKey, u64>(&GroomingKey::PetGroomingIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<GroomingKey, GroomingRecord>(&GroomingKey::GroomingRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_next_grooming_date(env: Env, pet_id: u64) -> Option<u64> {
+        let history = Self::get_grooming_history(env, pet_id);
+        if history.is_empty() {
+            return None;
+        }
+
+        let mut latest_record: Option<GroomingRecord> = None;
+        for record in history.iter() {
+            match &latest_record {
+                Some(current) => {
+                    if record.date > current.date {
+                        latest_record = Some(record);
+                    }
+                }
+                None => latest_record = Some(record),
+            }
+        }
+
+        latest_record.map(|r| r.next_due)
+    }
+
+    pub fn get_grooming_expenses(env: Env, pet_id: u64) -> u64 {
+        let history = Self::get_grooming_history(env, pet_id);
+        let mut total = 0u64;
+
+        for record in history.iter() {
+            total = total.saturating_add(record.cost);
+        }
+
+        total
     }
 }
 
