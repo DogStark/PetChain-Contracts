@@ -113,8 +113,12 @@ fn test_emergency_data_filtering() {
     );
     assert!(info.allergies.get(0).unwrap().is_critical);
 
-    // Critical alert should be present
+    // Critical alert should be present (from legacy medical notes)
     assert_eq!(info.critical_alerts.len(), 1);
+    assert_eq!(
+        info.critical_alerts.get(0).unwrap().description,
+        String::from_str(&env, "Needs daily medication")
+    );
 }
 
 #[test]
