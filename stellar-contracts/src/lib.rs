@@ -66,6 +66,8 @@ mod test_multisig_transfer;
 mod test_statistics;
 #[cfg(test)]
 mod test_nutrition;
+#[cfg(test)]
+mod test_grooming;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -89,6 +91,19 @@ pub enum ActivityType {
     Play,
     Training,
     Other,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub service_type: String,
+    pub groomer: String,
+    pub date: u64,
+    pub next_due: u64,
+    pub cost: u64,
+    pub notes: String,
 }
 
 #[contracttype]
@@ -245,6 +260,15 @@ pub struct DietPlan {
     pub allergies: Vec<String>,
     pub created_by: Address,
     pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeightEntry {
+    pub pet_id: u64,
+    pub weight: u32,
+    pub recorded_at: u64,
+    pub recorded_by: Address,
 }
 
 
