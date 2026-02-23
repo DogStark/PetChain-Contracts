@@ -55,6 +55,8 @@ mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
 #[cfg(test)]
+mod test_grooming;
+#[cfg(test)]
 mod test_insurance;
 #[cfg(test)]
 mod test_insurance_claims;
