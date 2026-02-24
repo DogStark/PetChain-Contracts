@@ -73,6 +73,8 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_events;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1121,6 +1123,35 @@ pub struct MedicalRecordAddedEvent {
     pub timestamp: u64,
 }
 
+/// Emitted when a medical record is added (topic: RecordAdded). Use for off-chain indexing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordAddedEvent {
+    pub pet_id: u64,
+    pub record_id: u64,
+    pub vet_address: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a pet profile is updated (topic: PetUpdated).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetUpdatedEvent {
+    pub pet_id: u64,
+    pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a lost pet is reported (topic: LostPetReported).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LostPetReportedEvent {
+    pub alert_id: u64,
+    pub pet_id: u64,
+    pub reported_by: Address,
+    pub timestamp: u64,
+}
+
 #[contract]
 pub struct PetChainContract;
 
@@ -1521,6 +1552,14 @@ impl PetChainContract {
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+            env.events().publish(
+                (String::from_str(&env, "PetUpdated"), id),
+                PetUpdatedEvent {
+                    pet_id: id,
+                    updated_by: pet.owner.clone(),
+                    timestamp: pet.updated_at,
+                },
+            );
             Self::log_access(
                 &env,
                 id,
@@ -2612,7 +2651,7 @@ impl PetChainContract {
             .set(&TagKey::PetTagCount, &(count + 1));
 
         env.events().publish(
-            (String::from_str(&env, "TAG_LINKED"),),
+            (String::from_str(&env, "TagLinked"), pet_id),
             TagLinkedEvent {
                 tag_id: tag_id.clone(),
                 pet_id,
@@ -3388,12 +3427,13 @@ impl PetChainContract {
 
         Self::update_vet_stats(&env, &vet_address, pet_id, 1, 0, 1);
 
-        // Publish event
+        // Publish event (RecordAdded for off-chain indexing)
         env.events().publish(
-            (String::from_str(&env, "MedicalRecordAdded"), pet_id),
-            MedicalRecordAddedEvent {
+            (String::from_str(&env, "RecordAdded"), pet_id),
+            RecordAddedEvent {
                 pet_id,
-                updated_by: vet_address.clone(),
+                record_id: id,
+                vet_address: vet_address.clone(),
                 timestamp: now,
             },
         );
@@ -3894,6 +3934,16 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&AlertKey::ActiveLostPetAlerts, &active_alerts);
+
+        env.events().publish(
+            (String::from_str(&env, "LostPetReported"), pet_id),
+            LostPetReportedEvent {
+                alert_id,
+                pet_id,
+                reported_by: pet.owner.clone(),
+                timestamp: alert.reported_date,
+            },
+        );
 
         alert_id
     }
