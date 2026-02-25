@@ -626,6 +626,95 @@ fn test_get_overdue_vaccinations_none() {
     assert_eq!(result.len(), 0);
 }
 
+// pet lookup test
+#[test]
+fn test_get_pet_by_tag_active() {
+    use soroban_sdk::{
+        testutils::Address as _, Address, BytesN, Env
+    };
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, PetRegistry {});
+    let client = PetRegistryClient::new(&env, &contract_id);
+
+    // Create pet
+    let pet_id = client.register_pet(&owner);
+
+    // Create deterministic tag id
+    let tag_id = BytesN::from_array(&env, &[1u8; 32]);
+
+    // Insert tag into storage
+    let tag = PetTag {
+        pet_id,
+        is_active: true,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Tag(tag_id.clone()), &tag);
+
+    let result = client.get_pet_by_tag(&tag_id);
+
+    assert!(result.is_some());
+
+    let profile = result.unwrap();
+    assert_eq!(profile.pet_id, pet_id);
+}
+
+#[test]
+fn test_deactivate_tag() {
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
+
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_700_000_000);
+
+    let owner = Address::generate(&env);
+    let pet_id = 1u64;
+
+    let contract_id = env.register_contract(None, PetRegistry {});
+    let client = PetRegistryClient::new(&env, &contract_id);
+
+    // Insert pet
+    let pet = Pet {
+        id: pet_id,
+        owner: owner.clone(),
+    };
+    env.storage()
+        .instance()
+        .set(&DataKey::Pet(pet_id), &pet);
+
+    // Insert active tag
+    let tag_id = BytesN::from_array(&env, &[1u8; 32]);
+    let tag = PetTag {
+        pet_id,
+        is_active: true,
+        message: String::from_str(&env, "Hello"),
+        updated_at: 0,
+    };
+    env.storage()
+        .instance()
+        .set(&DataKey::Tag(tag_id.clone()), &tag);
+
+    let result = client.deactivate_tag(&tag_id);
+
+    assert!(result);
+
+    let updated_tag: PetTag = env
+        .storage()
+        .instance()
+        .get(&DataKey::Tag(tag_id.clone()))
+        .unwrap();
+
+    assert_eq!(updated_tag.is_active, false);
+    assert_eq!(updated_tag.updated_at, 1_700_000_000);
+}
+
+
 
 
 }
