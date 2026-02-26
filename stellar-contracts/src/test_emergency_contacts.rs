@@ -1,6 +1,6 @@
 use crate::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     Env,
 };
 
@@ -34,7 +34,8 @@ fn test_emergency_contacts_add() {
         is_primary: true,
     });
 
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    let allergies = Vec::new(&env);
+    client.set_emergency_contacts(&pet_id, &contacts, &allergies, &String::from_str(&env, ""));
     let retrieved = client.get_emergency_contacts(&pet_id);
     assert_eq!(retrieved.len(), 1);
     assert_eq!(retrieved.get(0).unwrap().name, String::from_str(&env, "Jane Doe"));
@@ -86,7 +87,8 @@ fn test_emergency_contacts_multiple() {
         is_primary: false,
     });
 
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    let allergies = Vec::new(&env);
+    client.set_emergency_contacts(&pet_id, &contacts, &allergies, &String::from_str(&env, ""));
     let retrieved = client.get_emergency_contacts(&pet_id);
     assert_eq!(retrieved.len(), 3);
     assert_eq!(retrieved.get(0).unwrap().is_primary, true);
@@ -123,7 +125,8 @@ fn test_emergency_contacts_public_access() {
         relationship: String::from_str(&env, "Owner"),
         is_primary: true,
     });
-    client.set_emergency_contacts(&pet_id, &contacts, &String::from_str(&env, ""));
+    let allergies = Vec::new(&env);
+    client.set_emergency_contacts(&pet_id, &contacts, &allergies, &String::from_str(&env, ""));
 
     // get_emergency_contacts is publicly accessible - no auth required for emergency responders
     let retrieved = client.get_emergency_contacts(&pet_id);

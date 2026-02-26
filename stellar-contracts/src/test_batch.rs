@@ -54,7 +54,7 @@ fn test_register_pets_batch_unauthorized() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
-    let malicious = Address::generate(&env);
+    let _malicious = Address::generate(&env);
 
     let mut pets_data = Vec::new(&env);
     pets_data.push_back(PetData {

@@ -43,7 +43,7 @@ fn test_register_pet_and_get_profile() {
 
     let pet = client.get_pet(&pet_id).unwrap();
     assert_eq!(pet.id, pet_id);
-    assert_eq!(pet.owner, owner);
+    assert_eq!(pet.primary_owner, owner);
     assert_eq!(pet.name, String::from_str(&env, "Buddy"));
     assert_eq!(pet.breed, String::from_str(&env, "Golden Retriever"));
     assert_eq!(pet.color, String::from_str(&env, "Golden"));
@@ -176,8 +176,8 @@ fn test_log_all_actions() {
         &vet,
         &String::from_str(&env, "Checkup"),
         &String::from_str(&env, "Healthy"),
-        &String::from_str(&env, "No treatment"),
         &meds,
+        &String::from_str(&env, "No treatment"),
     );
     client.get_medical_record(&record_id);
     client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
@@ -223,8 +223,8 @@ fn test_log_immutability() {
         &vet,
         &String::from_str(&env, "Checkup"),
         &String::from_str(&env, "Stable"),
-        &String::from_str(&env, "Observe"),
         &meds,
+        &String::from_str(&env, "Observe"),
     );
     let logs_before = client.get_access_logs(&pet_id);
     let initial_count = logs_before.len();
@@ -273,8 +273,8 @@ fn test_log_retrieval_by_pet_id() {
         &vet,
         &String::from_str(&env, "Exam"),
         &String::from_str(&env, "Good"),
-        &String::from_str(&env, "None"),
         &meds,
+        &String::from_str(&env, "None"),
     );
 
     let logs_pet_1 = client.get_access_logs(&pet_1);

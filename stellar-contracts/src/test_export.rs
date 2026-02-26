@@ -1,6 +1,6 @@
 use crate::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     Env,
 };
 
@@ -37,7 +37,7 @@ fn test_export_pet_data_complete() {
         &String::from_str(&env, "VET-001"),
         &String::from_str(&env, "General"),
     );
-    client.verify_vet(&vet);
+    client.verify_vet(&admin, &vet);
 
     // Add vaccination
     let now = env.ledger().timestamp();
@@ -57,8 +57,8 @@ fn test_export_pet_data_complete() {
         &vet,
         &String::from_str(&env, "Checkup"),
         &String::from_str(&env, "Healthy"),
-        &String::from_str(&env, "Continue regular care"),
         &Vec::new(&env),
+        &String::from_str(&env, "Continue regular care"),
     );
 
     // Add medication
@@ -165,7 +165,7 @@ fn test_export_data_completeness() {
         &String::from_str(&env, "VET-002"),
         &String::from_str(&env, "Feline"),
     );
-    client.verify_vet(&vet);
+    client.verify_vet(&admin, &vet);
 
     let now = env.ledger().timestamp();
 
@@ -188,8 +188,8 @@ fn test_export_data_completeness() {
             &vet,
             &String::from_str(&env, "Visit"),
             &String::from_str(&env, "Good"),
-            &String::from_str(&env, "None"),
             &Vec::new(&env),
+            &String::from_str(&env, "None"),
         );
     }
 

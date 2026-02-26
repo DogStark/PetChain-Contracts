@@ -1,6 +1,6 @@
 use crate::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     Env, String, Vec, Address,
 };
 
