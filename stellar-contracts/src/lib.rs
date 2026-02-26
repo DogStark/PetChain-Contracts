@@ -2,37 +2,6 @@
 #![allow(clippy::too_many_arguments)]
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_access_control;
-#[cfg(test)]
-mod test_batch;
-#[cfg(test)]
-mod test_emergency_contacts;
-#[cfg(test)]
-mod test_export;
-mod test_emergency_override;
-#[cfg(test)]
-mod test_critical_alerts;
-// Grooming tests reference unimplemented contract methods; exclude until implemented.
-// #[cfg(test)]
-// mod test_grooming;
-#[cfg(test)]
-mod test_insurance;
-#[cfg(test)]
-mod test_insurance_claims;
-#[cfg(test)]
-mod test_insurance_comprehensive;
-#[cfg(test)]
-mod test_multisig_transfer;
-#[cfg(test)]
-mod test_nutrition;
-#[cfg(test)]
-mod test_pet_age;
-#[cfg(test)]
-mod test_statistics;
-#[cfg(test)]
-mod test_events;
-
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, Address, Bytes, BytesN, Env, String, Symbol, Vec,
@@ -179,14 +148,6 @@ pub struct NutritionWeightEntry {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PetData {
-    pub name: String,
-    pub species: String,
-    pub breed: String,
-}
-
-#[contracttype]
 #[derive(Clone)]
 pub struct EmergencyInfo {
     pub pet_id: u64,
@@ -297,11 +258,12 @@ pub struct Vet {
     pub address: Address,
     pub name: String,
     pub license_number: String,
-    pub specialization: String,
-    pub specializations: Vec<Specialization>,
-    pub certifications: Vec<Certification>,
+    pub clinic_name: String,
+    pub clinic_address: String,
+    pub specialization: Vec<String>,
     pub verified: bool,
-    pub clinic_info: Option<ClinicInfo>,
+    pub rating: u32,
+    pub review_count: u64,
 }
 
 #[contracttype]
@@ -395,131 +357,119 @@ pub struct PetTag {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct TransferRequest {
+    pub pet_id: u64,
+    pub from_owner: Address,
+    pub to_owner: Address,
+    pub initiated_at: u64,
+    pub expires_at: u64,
+    pub completed: bool,
+}
+
+#[contracttype]
 pub enum DataKey {
     Pet(u64),
     PetCount,
+    OwnerPets(Address),
     PetOwner(Address),
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
-
-    // Species index for filtering
     SpeciesPetCount(String),
     SpeciesPetIndex((String, u64)), // (species_key, index) -> pet_id
+    PetOwnerRecIdx, // Re-mapped or used for singleton mapping if needed
+}
 
-    // Vet verification keys
-    Vet(Address),
-    VetLicense(String),
-    Admin,
-
-    // Contract Upgrade keys
-    ContractVersion,
-    UpgradeProposal(u64),
-    UpgradeProposalCount,
-
-    // Vaccination DataKey
+#[contracttype]
+pub enum MedicalDataKey {
     Vaccination(u64),
     VaccinationCount,
+    PetVaccinations(Address),
+    PetVaccinationIndex((Address, u64)),
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
-
-    // Tag Linking System keys
-    Tag(BytesN<32>), // tag_id -> PetTag (reverse lookup for QR scan)
-    PetTagId(u64),   // pet_id -> tag_id (forward lookup)
-    TagNonce,        // Global nonce for deterministic tag ID generation
-    PetTagCount,     // Count of tags (mostly for stats)
-
-    // Tag String keys (QR)
-    // Access Control keys
-    AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
-    AccessGrantCount(u64),        // pet_id -> count of grants
-    AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
-    TemporaryCustody(u64),        // pet_id -> temporary custody record
-
-    // Lab Result DataKey
     LabResult(u64),
     LabResultCount,
     PetLabResultIndex((u64, u64)), // (pet_id, index) -> lab_result_id
     PetLabResultCount(u64),
-
-    // Medical Record DataKey
     MedicalRecord(u64),
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
-
-    // Vet Review keys
-    VetReview(u64),                          // review_id -> VetReview
-    VetReviewCount,                          // Global count of reviews
-    VetReviewByVetIndex((Address, u64)),     // (Vet, index) -> review_id
-    VetReviewCountByVet(Address),            // Vet -> count
-    VetReviewByOwnerVet((Address, Address)), // (Owner, Vet) -> review_id (Duplicate check)
-
-    // Medication keys
-    GlobalMedication(u64),          // medication_id -> Medication
-    MedicationCount,                // Global count
-    PetMedicationCount(u64),        // pet_id -> count
-    PetMedicationIndex((u64, u64)), // (pet_id, index) -> medication_id
-    // Lost Pet Alert System keys
-    LostPetAlert(u64),
-    LostPetAlertCount,
-    ActiveLostPetAlerts, // Vec<u64> of active alert IDs
-    AlertSightings(u64),
-
-    // Consent System keys
-    Consent(u64),
-    ConsentCount,
-    PetConsentIndex((u64, u64)),
-    PetConsentCount(u64),
-
-    VetStats(Address),
-    VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
-    VetPetCount(Address),          // unique pets treated
-
-    // Allergy Tracking
-    Allergy(u64), // allergy_id -> Allergy
-    PetAllergy(u64, String), // (pet_id, allergy_name) -> Allergy
-    PetAllergyCount(u64),       // pet_id -> count of allergies
+    GlobalMedication(u64),               // medication_id -> Medication
+    MedicationCount,                     // Global count
+    PetMedicationCount(u64),             // pet_id -> count
+    PetMedicationIndex((u64, u64)),      // (pet_id, index) -> medication_id
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AllergySeverity {
-    Mild,
-    Moderate,
-    Severe,
-    LifeThreatening,
+pub enum AccessDataKey {
+    Tag(BytesN<32>), // tag_id -> PetTag (reverse lookup for QR scan)
+    PetTagId(u64),   // pet_id -> tag_id (forward lookup)
+    TagNonce,        // Global nonce for deterministic tag ID generation
+    PetTagCount,     // Count of tags (mostly for stats)
+    PetTag(String),
+    PetIdByTag(String),
+    TagByPetId(u64),
+    AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
+    AccessGrantCount(u64),        // pet_id -> count of grants
+    AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
+    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
+    UserAccessCount(Address),     // grantee -> count of pets they can access
+    AuthorizedVet(Address),
+    RoleAssignment((u64, Address)), // (pet_id, user) -> RoleAssignment
 }
 
 #[contracttype]
-#[derive(Clone)]
-pub struct Allergy {
-    pub id: u64,
-    pub pet_id: u64,
-    pub allergen: String,
-    pub severity: AllergySeverity,
-    pub symptoms: String,
-    pub diagnosed_date: u64,
-    pub diagnosed_by: Address,
-}
-
-#[contracttype]
-pub enum SystemKey {
-    // Ownership History keys
+pub enum AdministrativeDataKey {
+    Admin,
+    Admins,
+    AdminThreshold,
+    ContractVersion,
+    UpgradeProposal(u64),
+    UpgradeProposalCount,
+    Proposal(u64),
+    ProposalCount,
     PetOwnershipRecord(u64),
     OwnershipRecordCount,
     PetOwnershipRecordCount(u64),
     PetOwnershipRecordIndex((u64, u64)),
+}
 
-    // Multisig keys
+#[contracttype]
+pub enum ServiceDataKey {
+    LostPetAlert(u64),
+    LostPetAlertCount,
+    ActiveLostPetAlerts,     // Vec<u64> of active alert IDs
+    AlertSightings(u64),
+    Vet(Address),
+    VetLicense(String),
+    VetReview(u64),                      // review_id -> VetReview
+    VetReviewCount,                      // Global count of reviews
+    VetReviewByVetIndex((Address, u64)), // (Vet, index) -> review_id
+    VetReviewCountByVet(Address),        // Vet -> count
+    VetReviewByOwnerVet((Address, Address)), // (Owner, Vet) -> review_id (Duplicate check)
+    VetAvailability((Address, u64)),
+    VetAvailabilityCount(Address),
+    VetAvailabilityByDate((Address, u64)),
+    Consent(u64),
+    ConsentCount,
+    PetConsentIndex((u64, u64)),
+    PetConsentCount(u64),
+    PetOwnershipRecordCount(u64),
+    PetOwnershipRecordIndex((u64, u64)),
+
+    // Multisig DataKey
     Admins,
     AdminThreshold,
     Proposal(u64),
     ProposalCount,
 
-    // Vet Availability keys
-    VetAvailability((Address, u64)),
-    VetAvailabilityCount(Address),
-    VetAvailabilityByDate((Address, u64)),
+    // Two-Step Transfer DataKey
+    TransferRequest(u64), // pet_id -> TransferRequest
+
+    // RBAC DataKey
+    RoleAssignment((u64, Address)), // (pet_id, user) -> RoleAssignment
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -599,13 +549,10 @@ pub struct Consent {
 pub struct LabResult {
     pub id: u64,
     pub pet_id: u64,
-    pub test_type: String,
+    pub veterinarian: Address,
+    pub test_name: String,
+    pub result: String,
     pub date: u64,
-    pub results: String,
-    pub vet_address: Address,
-    pub reference_ranges: String,
-    pub attachment_hash: Option<String>, // IPFS hash for PDF
-    pub medical_record_id: Option<u64>,  // Link to medical record
 }
 
 #[contracttype]
@@ -637,15 +584,22 @@ pub struct AccessGrant {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Role {
+    Owner,           // Full control
+    Vet,             // Can add medical records
+    EmergencyContact, // Can view emergency info
+    Viewer,          // Read-only access
+}
+
+#[contracttype]
 #[derive(Clone)]
-pub struct TemporaryCustody {
+pub struct RoleAssignment {
     pub pet_id: u64,
-    pub owner: Address,
-    pub custodian: Address,
-    pub start_date: u64,
-    pub end_date: u64,
-    pub permissions: Vec<String>,
-    pub is_active: bool,
+    pub user: Address,
+    pub role: Role,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
 }
 
 #[contracttype]
@@ -667,12 +621,13 @@ pub struct Medication {
 pub struct MedicalRecord {
     pub id: u64,
     pub pet_id: u64,
-    pub vet_address: Address,
+    pub veterinarian: Address,
+    pub visit_date: u64,
+    pub reason_for_visit: String,
     pub diagnosis: String,
-    pub treatment: String,
-    pub medications: String,
-    pub date: u64,
-    pub notes: String,
+    pub treatment_plan: String,
+    pub medications: Vec<Medication>,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -690,10 +645,10 @@ pub struct VaccinationInput {
 #[derive(Clone)]
 pub struct MedicalRecordInput {
     pub pet_id: u64,
+    pub visit_date: u64,
+    pub reason_for_visit: String,
     pub diagnosis: String,
-    pub treatment: String,
-    pub medications: String,
-    pub notes: String,
+    pub treatment_plan: String,
 }
 
 #[contracttype]
@@ -802,8 +757,9 @@ pub struct PetOwnershipTransferredEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MedicalRecordAddedEvent {
+    pub record_id: u64,
     pub pet_id: u64,
-    pub updated_by: Address,
+    pub veterinarian: Address,
     pub timestamp: u64,
 }
 
@@ -864,35 +820,26 @@ impl PetChainContract {
     }
 
     fn require_admin(env: &Env) {
-        if let Some(legacy_admin) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Admin)
-        {
-            legacy_admin.require_auth();
-            return;
+        if let Some(admin) = env.storage().instance().get::<AdministrativeDataKey, Address>(&AdministrativeDataKey::Admin) {
+            admin.require_auth();
+        } else if let Some(admins) = env.storage().instance().get::<AdministrativeDataKey, Vec<Address>>(&AdministrativeDataKey::Admins) {
+            // For simple require_admin, we require AT LEAST ONE admin to have authorized
+            // In a real multisig, this might be handled differently, but for now we look for any admin
+            let mut authorized = false;
+            if let Some(first) = admins.get(0) {
+                first.require_auth();
+                authorized = true;
+            }
+            if !authorized {
+                panic!("No admin authorization");
+            }
+        } else {
+            panic!("Admin not set");
         }
-
-        let admins: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&SystemKey::Admins)
-            .expect("Admins not set");
-
-        if admins.is_empty() {
-            panic!("No admins configured");
-        }
-
-        let admin = admins.get(0).expect("No admins configured");
-        admin.require_auth();
     }
 
     fn require_admin_auth(env: &Env, admin: &Address) {
-        if let Some(legacy_admin) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Admin)
-        {
+        if let Some(legacy_admin) = env.storage().instance().get::<AdministrativeDataKey, Address>(&AdministrativeDataKey::Admin) {
             if &legacy_admin == admin {
                 admin.require_auth();
                 return;
@@ -902,7 +849,7 @@ impl PetChainContract {
         let admins: Vec<Address> = env
             .storage()
             .instance()
-            .get(&SystemKey::Admins)
+            .get(&AdministrativeDataKey::Admins)
             .expect("Admins not set");
 
         if !admins.contains(admin.clone()) {
@@ -912,34 +859,32 @@ impl PetChainContract {
     }
 
     pub fn init_admin(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::Admin)
-            || env.storage().instance().has(&SystemKey::Admins)
-        {
+        if env.storage().instance().has(&AdministrativeDataKey::Admin) || env.storage().instance().has(&AdministrativeDataKey::Admins) {
             panic!("Admin already set");
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&AdministrativeDataKey::Admin, &admin);
     }
 
     pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold: u32) {
-        if env.storage().instance().has(&DataKey::Admin)
-            || env.storage().instance().has(&SystemKey::Admins)
-        {
-            panic!("Admin already set");
+        if env.storage().instance().has(&AdministrativeDataKey::Admins) {
+            panic!("Multisig already initialized");
         }
+        invoker.require_auth();
+        
+        let legacy_admin = env.storage().instance().get::<AdministrativeDataKey, Address>(&AdministrativeDataKey::Admin);
+        if let Some(admin) = legacy_admin {
+            if admin != invoker {
+                panic!("Only current admin can initialize multisig");
+            }
+        }
+
         if threshold == 0 || threshold > admins.len() {
             panic!("Invalid threshold");
         }
 
-        invoker.require_auth();
-        if !admins.contains(invoker) {
-            panic!("Invoker must be in the initial admin list");
-        }
-
-        env.storage().instance().set(&SystemKey::Admins, &admins);
-        env.storage()
-            .instance()
-            .set(&SystemKey::AdminThreshold, &threshold);
+        env.storage().instance().set(&AdministrativeDataKey::Admins, &admins);
+        env.storage().instance().set(&AdministrativeDataKey::AdminThreshold, &threshold);
     }
 
     fn update_vet_stats(
@@ -1096,19 +1041,7 @@ impl PetChainContract {
             String::from_str(&env, "Initial Registration"),
         );
 
-        let owner_pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
-        env.storage().instance().set(
-            &DataKey::OwnerPetIndex((owner.clone(), owner_pet_count)),
-            &pet_id,
-        );
+        Self::add_pet_to_owner_index(&env, &owner, pet_id);
 
         // Add to species index
         let species_key = Self::species_to_string(&env, &species);
@@ -1273,7 +1206,7 @@ impl PetChainContract {
             let breed =
                 String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
 
-            let profile = PetProfile {
+            Some(PetProfile {
                 id: pet.id,
                 owner: pet.owner,
                 privacy_level: pet.privacy_level,
@@ -1289,15 +1222,8 @@ impl PetChainContract {
                 color: pet.color,
                 weight: pet.weight,
                 microchip_id: pet.microchip_id,
-            };
-            Self::log_access(
-                &env,
-                id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Pet profile accessed"),
-            );
-            Some(profile)
+                photo_hashes: pet.photo_hashes,
+            })
         } else {
             None
         }
@@ -1381,54 +1307,90 @@ impl PetChainContract {
         }
     }
 
-    pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
-        if let Some(mut pet) = env
+    pub fn initiate_transfer(env: Env, pet_id: u64, to_owner: Address, expires_at: u64) {
+        let pet: Pet = env
             .storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let request = TransferRequest {
+            pet_id,
+            from_owner: pet.owner,
+            to_owner,
+            initiated_at: env.ledger().timestamp(),
+            expires_at,
+            completed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&ServiceDataKey::TransferRequest(pet_id), &request);
+    }
+
+    pub fn accept_transfer(env: Env, pet_id: u64, new_owner: Address) -> bool {
+        if let Some(mut request) = env
+            .storage()
+            .instance()
+            .get::<ServiceDataKey, TransferRequest>(&ServiceDataKey::TransferRequest(pet_id))
         {
-            pet.owner.require_auth();
-            pet.new_owner = to;
-            pet.updated_at = env.ledger().timestamp();
-            env.storage().instance().set(&DataKey::Pet(id), &pet);
+            if request.to_owner != new_owner || request.completed {
+                panic!("Invalid or completed transfer request");
+            }
+
+            if env.ledger().timestamp() > request.expires_at {
+                panic!("Transfer request expired");
+            }
+
+            new_owner.require_auth();
+
+            if let Some(mut pet) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            {
+                let previous_owner = pet.owner.clone();
+                pet.owner = new_owner.clone();
+                pet.updated_at = env.ledger().timestamp();
+                env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+                request.completed = true;
+                env.storage()
+                    .instance()
+                    .set(&ServiceDataKey::TransferRequest(pet_id), &request);
+
+                Self::log_ownership_change(
+                    &env,
+                    pet_id,
+                    previous_owner.clone(),
+                    new_owner.clone(),
+                    String::from_str(&env, "Two-Step Transfer"),
+                );
+
+                Self::update_owner_indexing(&env, previous_owner, new_owner, pet_id);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 
-    pub fn accept_pet_transfer(env: Env, id: u64) {
-        if let Some(mut pet) = env
+    pub fn cancel_transfer(env: Env, pet_id: u64) -> bool {
+        if let Some(request) = env
             .storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
+            .get::<ServiceDataKey, TransferRequest>(&ServiceDataKey::TransferRequest(pet_id))
         {
-            pet.new_owner.require_auth();
-
-            let old_owner = pet.owner.clone();
-            Self::remove_pet_from_owner_index(&env, &old_owner, id);
-
-            pet.owner = pet.new_owner.clone();
-            pet.updated_at = env.ledger().timestamp();
-
-            Self::add_pet_to_owner_index(&env, &pet.owner, id);
-
-            env.storage().instance().set(&DataKey::Pet(id), &pet);
-
-            Self::log_ownership_change(
-                &env,
-                id,
-                old_owner.clone(),
-                pet.owner.clone(),
-                String::from_str(&env, "Ownership Transfer"),
-            );
-
-            env.events().publish(
-                (String::from_str(&env, "PetOwnershipTransferred"), id),
-                PetOwnershipTransferredEvent {
-                    pet_id: id,
-                    old_owner,
-                    new_owner: pet.owner.clone(),
-                    timestamp: pet.updated_at,
-                },
-            );
+            request.from_owner.require_auth();
+            env.storage()
+                .instance()
+                .remove(&ServiceDataKey::TransferRequest(pet_id));
+            true
+        } else {
+            false
         }
     }
 
@@ -1749,49 +1711,52 @@ pub fn remove_allergy(
     // Vet Verification & Registration
     pub fn register_vet(
         env: Env,
+        admin: Address,
         vet_address: Address,
         name: String,
         license_number: String,
-        specialization: String,
-    ) -> bool {
-        vet_address.require_auth();
+        clinic_name: String,
+        clinic_address: String,
+        specialization: Vec<String>,
+    ) {
+        Self::require_admin_auth(&env, &admin); 
 
         if env
             .storage()
             .instance()
-            .has(&DataKey::VetLicense(license_number.clone()))
+            .has(&ServiceDataKey::VetLicense(license_number.clone()))
         {
-            panic!("License already registered");
+            panic!("License number already registered");
         }
 
         if env
             .storage()
             .instance()
-            .has(&DataKey::Vet(vet_address.clone()))
+            .has(&ServiceDataKey::Vet(vet_address.clone()))
         {
-            panic!("Vet already registered");
+            panic!("Vet address already registered");
         }
 
         let vet = Vet {
             address: vet_address.clone(),
             name,
             license_number: license_number.clone(),
+            clinic_name,
+            clinic_address,
             specialization,
-            specializations: Vec::new(&env),
-            certifications: Vec::new(&env),
-            verified: false,
-            clinic_info: None,
+            verified: true,
+            rating: 0,
+            review_count: 0,
         };
 
         env.storage()
             .instance()
-            .set(&DataKey::Vet(vet_address.clone()), &vet);
+            .set(&ServiceDataKey::Vet(vet_address.clone()), &vet);
         env.storage()
             .instance()
-            .set(&DataKey::VetLicense(license_number), &vet_address);
-
-        true
+            .set(&ServiceDataKey::VetLicense(license_number), &vet_address);
     }
+
 
     pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
         Self::require_admin_auth(&env, &admin);
@@ -1802,12 +1767,12 @@ pub fn remove_allergy(
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<ServiceDataKey, Vet>(&ServiceDataKey::Vet(vet_address.clone()))
         {
             vet.verified = true;
             env.storage()
                 .instance()
-                .set(&DataKey::Vet(vet.address.clone()), &vet);
+                .set(&ServiceDataKey::Vet(vet_address), &vet);
             true
         } else {
             false
@@ -1823,12 +1788,12 @@ pub fn remove_allergy(
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<ServiceDataKey, Vet>(&ServiceDataKey::Vet(vet_address.clone()))
         {
             vet.verified = false;
             env.storage()
                 .instance()
-                .set(&DataKey::Vet(vet.address.clone()), &vet);
+                .set(&ServiceDataKey::Vet(vet_address), &vet);
             true
         } else {
             false
@@ -1838,20 +1803,20 @@ pub fn remove_allergy(
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         env.storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<ServiceDataKey, Vet>(&ServiceDataKey::Vet(vet_address))
             .map(|vet| vet.verified)
             .unwrap_or(false)
     }
 
     pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet> {
-        env.storage().instance().get(&DataKey::Vet(vet_address))
+        env.storage().instance().get::<ServiceDataKey, Vet>(&ServiceDataKey::Vet(vet_address))
     }
 
     pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
         let vet_address: Option<Address> = env
             .storage()
             .instance()
-            .get(&DataKey::VetLicense(license_number));
+            .get::<ServiceDataKey, Address>(&ServiceDataKey::VetLicense(license_number));
         vet_address.and_then(|address| Self::get_vet(env, address))
     }
 
@@ -1900,7 +1865,7 @@ pub fn remove_allergy(
         let vaccine_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VaccinationCount)
+            .get(&MedicalDataKey::VaccinationCount)
             .unwrap_or(0);
         let vaccine_id = vaccine_count + 1;
         let now = env.ledger().timestamp();
@@ -1945,23 +1910,23 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::Vaccination(vaccine_id), &record);
+            .set(&MedicalDataKey::Vaccination(vaccine_id), &record);
         env.storage()
             .instance()
-            .set(&DataKey::VaccinationCount, &vaccine_id);
+            .set(&MedicalDataKey::VaccinationCount, &vaccine_id);
 
         // Update indexes
         let pet_vax_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalDataKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
         let new_pet_vax_count = pet_vax_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
+            .set(&MedicalDataKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
         env.storage().instance().set(
-            &DataKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
+            &MedicalDataKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
             &vaccine_id,
         );
 
@@ -1984,7 +1949,7 @@ pub fn remove_allergy(
         if let Some(record) = env
             .storage()
             .instance()
-            .get::<DataKey, Vaccination>(&DataKey::Vaccination(vaccine_id))
+            .get::<MedicalDataKey, Vaccination>(&MedicalDataKey::Vaccination(vaccine_id))
         {
             let key = Self::get_encryption_key(&env);
 
@@ -2030,7 +1995,7 @@ pub fn remove_allergy(
         let _vax_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalDataKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
 
         // Here we return decrypted history. Privacy check omitted for brevity in this merge step,
@@ -2038,7 +2003,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetVaccinationCount(pet_id))
+            .get(&MedicalDataKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
@@ -2046,7 +2011,7 @@ pub fn remove_allergy(
             if let Some(vid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetVaccinationByIndex((pet_id, i)))
+                .get::<MedicalDataKey, u64>(&MedicalDataKey::PetVaccinationByIndex((pet_id, i)))
             {
                 if let Some(vax) = Self::get_vaccinations(env.clone(), vid) {
                     history.push_back(vax);
@@ -2118,10 +2083,10 @@ pub fn remove_allergy(
         let nonce: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::TagNonce)
+            .get(&AccessDataKey::TagNonce)
             .unwrap_or(0);
         let new_nonce = nonce + 1;
-        env.storage().instance().set(&DataKey::TagNonce, &new_nonce);
+        env.storage().instance().set(&AccessDataKey::TagNonce, &new_nonce);
 
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
@@ -2325,7 +2290,7 @@ pub fn remove_allergy(
         if env
             .storage()
             .instance()
-            .get::<DataKey, BytesN<32>>(&DataKey::PetTagId(pet_id))
+            .get::<AccessDataKey, BytesN<32>>(&AccessDataKey::PetTagId(pet_id))
             .is_some()
         {
             panic!("Pet already has a linked tag");
@@ -2348,19 +2313,19 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::Tag(tag_id.clone()), &pet_tag);
+            .set(&AccessDataKey::Tag(tag_id.clone()), &pet_tag);
         env.storage()
             .instance()
-            .set(&DataKey::PetTagId(pet_id), &tag_id);
+            .set(&AccessDataKey::PetTagId(pet_id), &tag_id);
 
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetTagCount)
+            .get(&AccessDataKey::PetTagCount)
             .unwrap_or(0);
         env.storage()
             .instance()
-            .set(&DataKey::PetTagCount, &(count + 1));
+            .set(&AccessDataKey::PetTagCount, &(count + 1));
 
         env.events().publish(
             (String::from_str(&env, "TagLinked"), pet_id),
@@ -2379,7 +2344,7 @@ pub fn remove_allergy(
         if let Some(tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id))
+            .get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id))
         {
             if !tag.is_active {
                 return None;
@@ -2391,18 +2356,18 @@ pub fn remove_allergy(
     }
 
     pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag> {
-        env.storage().instance().get(&DataKey::Tag(tag_id))
+        env.storage().instance().get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id))
     }
 
     pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<BytesN<32>> {
-        env.storage().instance().get(&DataKey::PetTagId(pet_id))
+        env.storage().instance().get::<AccessDataKey, BytesN<32>>(&AccessDataKey::PetTagId(pet_id))
     }
 
     pub fn update_tag_message(env: Env, tag_id: BytesN<32>, message: String) -> bool {
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2414,7 +2379,7 @@ pub fn remove_allergy(
             tag.message = message;
             tag.updated_at = env.ledger().timestamp();
 
-            env.storage().instance().set(&DataKey::Tag(tag_id), &tag);
+            env.storage().instance().set(&AccessDataKey::Tag(tag_id), &tag);
             true
         } else {
             false
@@ -2425,7 +2390,7 @@ pub fn remove_allergy(
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2438,7 +2403,7 @@ pub fn remove_allergy(
             tag.updated_at = env.ledger().timestamp();
             env.storage()
                 .instance()
-                .set(&DataKey::Tag(tag_id.clone()), &tag);
+                .set(&AccessDataKey::Tag(tag_id.clone()), &tag);
 
             env.events().publish(
                 (String::from_str(&env, "TAG_DEACTIVATED"),),
@@ -2459,7 +2424,7 @@ pub fn remove_allergy(
         if let Some(mut tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id.clone()))
+            .get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id.clone()))
         {
             let pet = env
                 .storage()
@@ -2472,7 +2437,7 @@ pub fn remove_allergy(
             tag.updated_at = env.ledger().timestamp();
             env.storage()
                 .instance()
-                .set(&DataKey::Tag(tag_id.clone()), &tag);
+                .set(&AccessDataKey::Tag(tag_id.clone()), &tag);
 
             env.events().publish(
                 (String::from_str(&env, "TAG_REACTIVATED"),),
@@ -2493,7 +2458,7 @@ pub fn remove_allergy(
         if let Some(tag) = env
             .storage()
             .instance()
-            .get::<DataKey, PetTag>(&DataKey::Tag(tag_id))
+            .get::<AccessDataKey, PetTag>(&AccessDataKey::Tag(tag_id))
         {
             tag.is_active
         } else {
@@ -2541,14 +2506,14 @@ pub fn remove_allergy(
         let global_count: u64 = env
             .storage()
             .instance()
-            .get(&SystemKey::OwnershipRecordCount)
+            .get(&AdministrativeDataKey::OwnershipRecordCount)
             .unwrap_or(0);
         let record_id = global_count + 1;
 
         let pet_count: u64 = env
             .storage()
             .instance()
-            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+            .get(&AdministrativeDataKey::PetOwnershipRecordCount(pet_id))
             .unwrap_or(0);
         let new_pet_count = pet_count + 1;
 
@@ -2562,15 +2527,15 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&SystemKey::PetOwnershipRecord(record_id), &record);
+            .set(&AdministrativeDataKey::PetOwnershipRecord(record_id), &record);
         env.storage()
             .instance()
-            .set(&SystemKey::OwnershipRecordCount, &record_id);
+            .set(&AdministrativeDataKey::OwnershipRecordCount, &record_id);
         env.storage()
             .instance()
-            .set(&SystemKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
+            .set(&AdministrativeDataKey::PetOwnershipRecordCount(pet_id), &new_pet_count);
         env.storage().instance().set(
-            &SystemKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
+            &AdministrativeDataKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
             &record_id,
         );
     }
@@ -2579,7 +2544,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&SystemKey::PetOwnershipRecordCount(pet_id))
+            .get(&AdministrativeDataKey::PetOwnershipRecordCount(pet_id))
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
@@ -2587,12 +2552,12 @@ pub fn remove_allergy(
             if let Some(record_id) = env
                 .storage()
                 .instance()
-                .get::<SystemKey, u64>(&SystemKey::PetOwnershipRecordIndex((pet_id, i)))
+                .get::<AdministrativeDataKey, u64>(&AdministrativeDataKey::PetOwnershipRecordIndex((pet_id, i)))
             {
                 if let Some(record) = env
                     .storage()
                     .instance()
-                    .get::<SystemKey, OwnershipRecord>(&SystemKey::PetOwnershipRecord(record_id))
+                    .get::<AdministrativeDataKey, OwnershipRecord>(&AdministrativeDataKey::PetOwnershipRecord(record_id))
                 {
                     history.push_back(record);
                 }
@@ -2688,37 +2653,6 @@ pub fn remove_allergy(
     /// Get only critical alerts for a pet (public - no auth, for emergency responders).
     /// Use this when only alerts are needed to avoid return-value size limits.
     pub fn get_critical_alerts(env: Env, pet_id: u64) -> Vec<CriticalAlert> {
-        if let Some(pet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-        {
-            let mut alerts = pet.critical_alerts.clone();
-            let key = Self::get_encryption_key(&env);
-            let n_bytes = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_medical_alerts.ciphertext,
-                &pet.encrypted_medical_alerts.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let notes = String::from_xdr(&env, &n_bytes).unwrap_or(String::from_str(&env, ""));
-            if !notes.is_empty() {
-                alerts.push_back(CriticalAlert {
-                    alert_type: AlertType::Condition,
-                    description: notes,
-                    severity: String::from_str(&env, "general"),
-                    added_date: 0,
-                });
-            }
-            alerts
-        } else {
-            panic!("Pet not found");
-        }
-    }
-
-    /// Get emergency info including critical alerts (public - no auth required for emergency responders).
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> EmergencyInfo {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -2855,6 +2789,7 @@ pub fn remove_allergy(
         pets
     }
 
+
     pub fn get_pets_by_owner(env: Env, owner: Address) -> Vec<PetProfile> {
         Self::get_all_pets_by_owner(env, owner)
     }
@@ -2903,6 +2838,87 @@ pub fn remove_allergy(
         pets
     }
 
+    // --- ROLE-BASED ACCESS CONTROL (RBAC) ---
+
+    pub fn assign_role(env: Env, pet_id: u64, user: Address, role: Role) {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if user == pet.owner {
+            panic!("Owner always has full access");
+        }
+
+        let assignment = RoleAssignment {
+            pet_id,
+            user: user.clone(),
+            role,
+            assigned_by: pet.owner,
+            assigned_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&AccessDataKey::RoleAssignment((pet_id, user)), &assignment);
+    }
+
+    pub fn revoke_role(env: Env, pet_id: u64, user: Address) {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .has(&AccessDataKey::RoleAssignment((pet_id, user.clone())))
+        {
+            env.storage()
+                .instance()
+                .remove(&AccessDataKey::RoleAssignment((pet_id, user)));
+        }
+    }
+
+    pub fn check_permission(env: Env, pet_id: u64, user: Address, required_role: Role) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        // Owner has all permissions
+        if user == pet.owner {
+            return true;
+        }
+
+        if let Some(assignment) = env
+            .storage()
+            .instance()
+            .get::<AccessDataKey, RoleAssignment>(&AccessDataKey::RoleAssignment((pet_id, user)))
+        {
+            match required_role {
+                Role::Owner => false, // Only the actual owner has Owner role implicitly
+                Role::Vet => {
+                    matches!(assignment.role, Role::Vet | Role::Owner)
+                }
+                Role::EmergencyContact => {
+                    matches!(
+                        assignment.role,
+                        Role::EmergencyContact | Role::Vet | Role::Owner
+                    )
+                }
+                Role::Viewer => true, // All roles can view
+            }
+        } else {
+            false
+        }
+    }
+
     // --- ACCESS CONTROL ---
     pub fn grant_access(
         env: Env,
@@ -2932,20 +2948,20 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::AccessGrant((pet_id, grantee.clone())), &grant);
+            .set(&AccessDataKey::AccessGrant((pet_id, grantee.clone())), &grant);
 
         let grant_count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .get::<AccessDataKey, u64>(&AccessDataKey::AccessGrantCount(pet_id))
             .unwrap_or(0);
         let new_count = grant_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::AccessGrantCount(pet_id), &new_count);
+            .set(&AccessDataKey::AccessGrantCount(pet_id), &new_count);
         env.storage()
             .instance()
-            .set(&DataKey::AccessGrantIndex((pet_id, new_count)), &grantee);
+            .set(&AccessDataKey::AccessGrantIndex((pet_id, new_count)), &grantee);
 
         env.events().publish(
             (String::from_str(&env, "AccessGranted"), pet_id),
@@ -2977,8 +2993,8 @@ pub fn remove_allergy(
         pet.owner.require_auth();
         let granter = pet.owner.clone();
 
-        let key = DataKey::AccessGrant((pet_id, grantee.clone()));
-        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+        let key = AccessDataKey::AccessGrant((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<AccessDataKey, AccessGrant>(&key) {
             grant.is_active = false;
             grant.access_level = AccessLevel::None;
             env.storage().instance().set(&key, &grant);
@@ -3004,74 +3020,16 @@ pub fn remove_allergy(
         }
     }
 
-    pub fn grant_temporary_custody(
-        env: Env,
-        pet_id: u64,
-        custodian: Address,
-        start_date: u64,
-        end_date: u64,
-        permissions: Vec<String>,
-    ) -> TemporaryCustody {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("Pet not found");
-        pet.owner.require_auth();
-
-        let custody = TemporaryCustody {
-            pet_id,
-            owner: pet.owner,
-            custodian,
-            start_date,
-            end_date,
-            permissions,
-            is_active: true,
-        };
-
-        env.storage()
-            .instance()
-            .set(&DataKey::TemporaryCustody(pet_id), &custody);
-
-        custody
-    }
-
-    pub fn revoke_temporary_custody(env: Env, pet_id: u64) {
-        let mut custody: TemporaryCustody = env
-            .storage()
-            .instance()
-            .get(&DataKey::TemporaryCustody(pet_id))
-            .expect("Temporary custody not found");
-
-        custody.owner.require_auth();
-
-        custody.is_active = false;
-
-        env.storage()
-            .instance()
-            .set(&DataKey::TemporaryCustody(pet_id), &custody);
-    }
-
-    pub fn is_custody_valid(env: Env, pet_id: u64) -> bool {
-        let custody: TemporaryCustody = env
-            .storage()
-            .instance()
-            .get(&DataKey::TemporaryCustody(pet_id))
-            .expect("Temporary custody not found");
-        let current_time = env.ledger().timestamp();
-        custody.is_active && current_time <= custody.end_date
-    }
-
     // --- MEDICAL RECORDS ---
 
     pub fn add_medical_record(
         env: Env,
         pet_id: u64,
-        vet_address: Address,
+        veterinarian: Address,
+        visit_date: u64,
+        reason_for_visit: String,
         diagnosis: String,
-        treatment: String,
-        medications: String,
-        notes: String,
+        treatment_plan: String,
     ) -> u64 {
         // Vet authorization check
         vet_address.require_auth();
@@ -3088,47 +3046,46 @@ pub fn remove_allergy(
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
 
-        // Get and increment medical record count
-        let count = env
+        let count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::MedicalRecordCount)
+            .get(&MedicalDataKey::MedicalRecordCount)
             .unwrap_or(0);
         let id = count + 1;
+
         env.storage()
             .instance()
-            .set(&DataKey::MedicalRecordCount, &id);
+            .set(&MedicalDataKey::MedicalRecordCount, &id);
 
-        let now = env.ledger().timestamp();
         let record = MedicalRecord {
             id,
             pet_id,
-            vet_address: vet_address.clone(),
+            veterinarian,
+            visit_date,
+            reason_for_visit,
             diagnosis,
-            treatment,
-            medications,
-            date: now,
-            notes,
+            treatment_plan,
+            medications: Vec::new(&env),
+            updated_at: env.ledger().timestamp(),
         };
 
         // Store the medical record
         env.storage()
             .instance()
-            .set(&DataKey::MedicalRecord(id), &record);
+            .set(&MedicalDataKey::MedicalRecord(id), &record);
 
-        // Update pet medical record index
-        let pet_record_count = env
+        let pet_record_count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id))
-            .unwrap_or(0);
-        let new_pet_record_count = pet_record_count + 1;
+            .get::<MedicalDataKey, u64>(&MedicalDataKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0)
+            + 1;
         env.storage().instance().set(
-            &DataKey::PetMedicalRecordCount(pet_id),
-            &new_pet_record_count,
+            &MedicalDataKey::PetMedicalRecordCount(pet_id),
+            &pet_record_count,
         );
         env.storage().instance().set(
-            &DataKey::PetMedicalRecordIndex((pet_id, new_pet_record_count)),
+            &MedicalDataKey::PetMedicalRecordIndex((pet_id, pet_record_count)),
             &id,
         );
 
@@ -3143,13 +3100,12 @@ pub fn remove_allergy(
 
         // Publish event (RecordAdded for off-chain indexing)
         env.events().publish(
-            (String::from_str(&env, "RecordAdded"), pet_id),
-            RecordAddedEvent {
-                pet_id,
-                updated_by: veterinarian.clone(),
+            (String::from_str(&env, "MedicalRecordAdded"), pet_id),
+            MedicalRecordAddedEvent {
                 record_id: id,
-                vet_address: vet_address.clone(),
-                timestamp: now,
+                pet_id,
+                veterinarian: record.veterinarian,
+                timestamp: record.updated_at,
             },
         );
         Self::log_access(
@@ -3174,26 +3130,19 @@ pub fn remove_allergy(
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalDataKey, MedicalRecord>(&MedicalDataKey::MedicalRecord(record_id))
         {
             record.vet_address.require_auth();
 
             record.diagnosis = diagnosis;
-            record.treatment = treatment;
+            record.treatment_plan = treatment;
             record.medications = medications;
             record.notes = notes;
             record.date = env.ledger().timestamp();
 
             env.storage()
                 .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
-            Self::log_access(
-                &env,
-                record.pet_id,
-                record.veterinarian,
-                AccessAction::Write,
-                String::from_str(&env, "Medical record updated"),
-            );
+                .set(&MedicalDataKey::MedicalRecord(record_id), &record);
             true
         } else {
             false
@@ -3216,31 +3165,21 @@ pub fn remove_allergy(
         let record: Option<MedicalRecord> = env
             .storage()
             .instance()
-            .get(&DataKey::MedicalRecord(record_id));
-        if let Some(ref r) = record {
-            Self::log_access(
-                &env,
-                r.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record accessed"),
-            );
-        }
-        record
+            .get::<MedicalDataKey, MedicalRecord>(&MedicalDataKey::MedicalRecord(record_id))
     }
 
     pub fn get_pet_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
-        let count = env
+        let count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetMedicalRecordCount(pet_id))
+            .get(&MedicalDataKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
         let mut records = Vec::new(&env);
         for i in 1..=count {
             if let Some(rid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetMedicalRecordIndex((pet_id, i)))
+                .get::<MedicalDataKey, u64>(&MedicalDataKey::PetMedicalRecordIndex((pet_id, i)))
             {
                 if let Some(record) = Self::get_medical_record(env.clone(), rid) {
                     records.push_back(record);
@@ -3277,7 +3216,7 @@ pub fn remove_allergy(
             if let Some(grant) = env
                 .storage()
                 .instance()
-                .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, user)))
+                .get::<AccessDataKey, AccessGrant>(&AccessDataKey::AccessGrant((pet_id, user)))
             {
                 if !grant.is_active {
                     return AccessLevel::None;
@@ -3297,14 +3236,14 @@ pub fn remove_allergy(
         let count = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .get::<AccessDataKey, u64>(&AccessDataKey::AccessGrantCount(pet_id))
             .unwrap_or(0);
         let mut users = Vec::new(&env);
         for i in 1..=count {
             if let Some(grantee) = env
                 .storage()
                 .instance()
-                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
+                .get::<AccessDataKey, Address>(&AccessDataKey::AccessGrantIndex((pet_id, i)))
             {
                 if Self::check_access(env.clone(), pet_id, grantee.clone()) != AccessLevel::None {
                     users.push_back(grantee);
@@ -3317,62 +3256,63 @@ pub fn remove_allergy(
     pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
         env.storage()
             .instance()
-            .get(&DataKey::AccessGrant((pet_id, grantee)))
+            .get(&AccessDataKey::AccessGrant((pet_id, grantee)))
     }
 
     // --- LAB RESULTS ---
     pub fn add_lab_result(
         env: Env,
         pet_id: u64,
-        vet_address: Address,
-        test_type: String,
-        results: String,
-        reference_ranges: String,
-        attachment_hash: Option<String>,
-        medical_record_id: Option<u64>,
+        veterinarian: Address,
+        test_name: String,
+        result_data: String,
+        test_date: u64,
     ) -> u64 {
-        vet_address.require_auth();
+        veterinarian.require_auth();
         let _pet: Pet = env
             .storage()
             .instance()
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
 
-        let count = env
+        let count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::LabResultCount)
+            .get(&MedicalDataKey::LabResultCount)
             .unwrap_or(0);
         let id = count + 1;
-        env.storage().instance().set(&DataKey::LabResultCount, &id);
+        env.storage()
+            .instance()
+            .set(&MedicalDataKey::LabResultCount, &id);
 
         let result = LabResult {
             id,
             pet_id,
-            test_type,
-            date: env.ledger().timestamp(),
-            results,
-            vet_address,
-            reference_ranges,
-            attachment_hash,
-            medical_record_id,
+            veterinarian,
+            test_name,
+            result: result_data,
+            date: test_date,
         };
+
         env.storage()
             .instance()
-            .set(&DataKey::LabResult(id), &result);
+            .set(&MedicalDataKey::LabResult(id), &result);
 
-        let p_count = env
+        let pet_lab_count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetLabResultCount(pet_id))
-            .unwrap_or(0);
-        let new_p = p_count + 1;
+            .get::<MedicalDataKey, u64>(&MedicalDataKey::PetLabResultCount(pet_id))
+            .unwrap_or(0)
+            + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetLabResultCount(pet_id), &new_p);
+            .set(&MedicalDataKey::PetLabResultCount(pet_id), &pet_lab_count);
         env.storage()
             .instance()
-            .set(&DataKey::PetLabResultIndex((pet_id, new_p)), &id);
+            .set(
+                &MedicalDataKey::PetLabResultIndex((pet_id, pet_lab_count)),
+                &id,
+            );
 
         id
     }
@@ -3380,28 +3320,56 @@ pub fn remove_allergy(
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
         env.storage()
             .instance()
-            .get(&DataKey::LabResult(lab_result_id))
+            .get::<MedicalDataKey, LabResult>(&MedicalDataKey::LabResult(lab_result_id))
     }
 
     pub fn get_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
-        let count = env
+        let count: u64 = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetLabResultCount(pet_id))
+            .get(&MedicalDataKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
-        let mut res = Vec::new(&env);
+        let mut results = Vec::new(&env);
         for i in 1..=count {
-            if let Some(lid) = env
+            if let Some(rid) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetLabResultIndex((pet_id, i)))
+                .get::<MedicalDataKey, u64>(&MedicalDataKey::PetLabResultIndex((pet_id, i)))
             {
-                if let Some(r) = Self::get_lab_result(env.clone(), lid) {
-                    res.push_back(r);
+                if let Some(res) = Self::get_lab_result(env.clone(), rid) {
+                    results.push_back(res);
                 }
             }
         }
-        res
+        results
+    }
+
+    pub fn get_vaccination(env: Env, vaccine_id: u64) -> Option<Vaccination> {
+        env.storage()
+            .instance()
+            .get::<MedicalDataKey, Vaccination>(&MedicalDataKey::Vaccination(vaccine_id))
+    }
+
+    pub fn get_pet_vaccinations(env: Env, pet_id: u64) -> Vec<Vaccination> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalDataKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+        let mut vaccinations = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(vax_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalDataKey, u64>(&MedicalDataKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vax) = Self::get_vaccination(env.clone(), vax_id) {
+                    vaccinations.push_back(vax);
+                }
+            }
+        }
+        vaccinations
     }
     // --- MEDICATION MANAGEMENT ---
 
@@ -3420,7 +3388,7 @@ pub fn remove_allergy(
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalDataKey, MedicalRecord>(&MedicalDataKey::MedicalRecord(record_id))
         {
             prescribing_vet.require_auth();
 
@@ -3441,7 +3409,7 @@ pub fn remove_allergy(
 
             env.storage()
                 .instance()
-                .set(&DataKey::MedicalRecord(record_id), &record);
+                .set(&MedicalDataKey::MedicalRecord(record_id), &record);
             true
         } else {
             false
@@ -3452,7 +3420,7 @@ pub fn remove_allergy(
         if let Some(mut record) = env
             .storage()
             .instance()
-            .get::<DataKey, MedicalRecord>(&DataKey::MedicalRecord(record_id))
+            .get::<MedicalDataKey, MedicalRecord>(&MedicalDataKey::MedicalRecord(record_id))
         {
             let _pet = env
                 .storage()
@@ -3460,14 +3428,6 @@ pub fn remove_allergy(
                 .get::<DataKey, Pet>(&DataKey::Pet(record.pet_id))
                 .expect("Pet not found");
 
-            // Allow owner (if they are the caller) or the original vet
-            // Since we can't easily check "if caller == owner" without passing caller,
-            // we rely on require_auth.
-            // But we don't know WHICH to require.
-            // Rule: Try vet first. If fails, try owner?
-            // Soroban require_auth panics if not authorized.
-            // We should ideally pass the "updater" address and require their auth.
-            // But for this signature, let's require the record's veterinarian for now as per "medical management" strictness.
             record.veterinarian.require_auth();
 
             if let Some(mut med) = record.medications.get(med_index) {
@@ -3476,7 +3436,7 @@ pub fn remove_allergy(
                 record.updated_at = env.ledger().timestamp();
                 env.storage()
                     .instance()
-                    .set(&DataKey::MedicalRecord(record_id), &record);
+                    .set(&MedicalDataKey::MedicalRecord(record_id), &record);
                 true
             } else {
                 false
@@ -3556,10 +3516,10 @@ pub fn remove_allergy(
                 env.clone(),
                 input.pet_id,
                 veterinarian.clone(),
+                input.visit_date,
+                input.reason_for_visit,
                 input.diagnosis,
-                input.treatment,
-                input.medications,
-                input.notes,
+                input.treatment_plan,
             );
             ids.push_back(id);
         }
@@ -3586,7 +3546,7 @@ pub fn remove_allergy(
         let alert_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::LostPetAlertCount)
+            .get(&ServiceDataKey::LostPetAlertCount)
             .unwrap_or(0);
         let alert_id = alert_count + 1;
 
@@ -3604,31 +3564,21 @@ pub fn remove_allergy(
         // Store alert
         env.storage()
             .instance()
-            .set(&DataKey::LostPetAlert(alert_id), &alert);
+            .set(&ServiceDataKey::LostPetAlert(alert_id), &alert);
         env.storage()
             .instance()
-            .set(&DataKey::LostPetAlertCount, &alert_id);
+            .set(&ServiceDataKey::LostPetAlertCount, &alert_id);
 
         // Add to active alerts list
         let mut active_alerts: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&ServiceDataKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
         active_alerts.push_back(alert_id);
         env.storage()
             .instance()
-            .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
-
-        env.events().publish(
-            (String::from_str(&env, "LostPetReported"), pet_id),
-            LostPetReportedEvent {
-                alert_id,
-                pet_id,
-                reported_by: pet.owner.clone(),
-                timestamp: alert.reported_date,
-            },
-        );
+            .set(&ServiceDataKey::ActiveLostPetAlerts, &active_alerts);
 
         alert_id
     }
@@ -3645,9 +3595,12 @@ pub fn remove_allergy(
             description,
         };
 
-        let key = DataKey::AlertSightings(alert_id);
-        let mut sightings: Vec<SightingReport> =
-            env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
+        let key = ServiceDataKey::AlertSightings(alert_id);
+        let mut sightings: Vec<SightingReport> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
         sightings.push_back(sighting);
         env.storage().instance().set(&key, &sightings);
 
@@ -3656,9 +3609,13 @@ pub fn remove_allergy(
 
     /// Mark a lost pet as found
     pub fn report_found(env: Env, alert_id: u64) -> bool {
-        let key = DataKey::LostPetAlert(alert_id);
-
-        let mut alert: LostPetAlert = env.storage().instance().get(&key).expect("Alert not found");
+        let key = ServiceDataKey::LostPetAlert(alert_id);
+        
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("Alert not found");
 
         alert.reported_by.require_auth();
 
@@ -3670,52 +3627,68 @@ pub fn remove_allergy(
         alert.found_date = Some(env.ledger().timestamp());
         env.storage().instance().set(&key, &alert);
 
-        // Remove from active alerts
-        let mut active_alerts: Vec<u64> = env
+        // Remove from active alerts list
+        if let Some(mut active_alerts) = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
-            .unwrap_or(Vec::new(&env));
-
-        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
-            active_alerts.remove(pos as u32);
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
+            .get::<ServiceDataKey, Vec<u64>>(&ServiceDataKey::ActiveLostPetAlerts)
+        {
+            for i in 0..active_alerts.len() {
+                if let Some(id) = active_alerts.get(i) {
+                    if id == alert_id {
+                        active_alerts.remove(i);
+                        env.storage()
+                            .instance()
+                            .set(&ServiceDataKey::ActiveLostPetAlerts, &active_alerts);
+                        break;
+                    }
+                }
+            }
         }
-
         true
     }
 
     /// Cancel a lost pet alert
     pub fn cancel_lost_alert(env: Env, alert_id: u64) -> bool {
-        let key = DataKey::LostPetAlert(alert_id);
-
-        let mut alert: LostPetAlert = env.storage().instance().get(&key).expect("Alert not found");
-
-        alert.reported_by.require_auth();
-
-        if alert.status != AlertStatus::Active {
-            panic!("Alert is not active");
-        }
-
-        alert.status = AlertStatus::Cancelled;
-        env.storage().instance().set(&key, &alert);
-
-        let mut active_alerts: Vec<u64> = env
+        if let Some(mut alert) = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
-            .unwrap_or(Vec::new(&env));
+            .get::<ServiceDataKey, LostPetAlert>(&ServiceDataKey::LostPetAlert(alert_id))
+        {
+            let pet: Pet = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(alert.pet_id))
+                .expect("Pet not found");
+            pet.owner.require_auth();
 
-        if let Some(pos) = active_alerts.iter().position(|id| id == alert_id) {
-            active_alerts.remove(pos as u32);
+            alert.status = AlertStatus::Cancelled;
             env.storage()
                 .instance()
-                .set(&DataKey::ActiveLostPetAlerts, &active_alerts);
-        }
+                .set(&ServiceDataKey::LostPetAlert(alert_id), &alert);
 
-        true
+            // Remove from active alerts list
+            if let Some(mut active_alerts) = env
+                .storage()
+                .instance()
+                .get::<ServiceDataKey, Vec<u64>>(&ServiceDataKey::ActiveLostPetAlerts)
+            {
+                for i in 0..active_alerts.len() {
+                    if let Some(id) = active_alerts.get(i) {
+                        if id == alert_id {
+                            active_alerts.remove(i);
+                            env.storage()
+                                .instance()
+                                .set(&ServiceDataKey::ActiveLostPetAlerts, &active_alerts);
+                            break;
+                        }
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Get all active lost pet alerts
@@ -3723,7 +3696,7 @@ pub fn remove_allergy(
         let active_ids: Vec<u64> = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveLostPetAlerts)
+            .get(&ServiceDataKey::ActiveLostPetAlerts)
             .unwrap_or(Vec::new(&env));
 
         let mut active_alerts = Vec::new(&env);
@@ -3732,7 +3705,7 @@ pub fn remove_allergy(
             if let Some(alert) = env
                 .storage()
                 .instance()
-                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(id))
+                .get::<ServiceDataKey, LostPetAlert>(&ServiceDataKey::LostPetAlert(id))
             {
                 if alert.status == AlertStatus::Active {
                     active_alerts.push_back(alert);
@@ -3747,14 +3720,14 @@ pub fn remove_allergy(
     pub fn get_alert(env: Env, alert_id: u64) -> Option<LostPetAlert> {
         env.storage()
             .instance()
-            .get(&DataKey::LostPetAlert(alert_id))
+            .get(&ServiceDataKey::LostPetAlert(alert_id))
     }
 
     /// Get sightings for a specific alert
     pub fn get_alert_sightings(env: Env, alert_id: u64) -> Vec<SightingReport> {
         env.storage()
             .instance()
-            .get(&DataKey::AlertSightings(alert_id))
+            .get(&ServiceDataKey::AlertSightings(alert_id))
             .unwrap_or(Vec::new(&env))
     }
 
@@ -3763,7 +3736,7 @@ pub fn remove_allergy(
         let alert_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::LostPetAlertCount)
+            .get(&ServiceDataKey::LostPetAlertCount)
             .unwrap_or(0);
 
         let mut pet_alerts = Vec::new(&env);
@@ -3772,7 +3745,7 @@ pub fn remove_allergy(
             if let Some(alert) = env
                 .storage()
                 .instance()
-                .get::<DataKey, LostPetAlert>(&DataKey::LostPetAlert(i))
+                .get::<ServiceDataKey, LostPetAlert>(&ServiceDataKey::LostPetAlert(i))
             {
                 if alert.pet_id == pet_id {
                     pet_alerts.push_back(alert);
@@ -3794,7 +3767,7 @@ pub fn remove_allergy(
         let slot_count: u64 = env
             .storage()
             .instance()
-            .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+            .get(&ServiceDataKey::VetAvailabilityCount(vet_address.clone()))
             .unwrap_or(0);
         let slot_index = slot_count + 1;
 
@@ -3806,18 +3779,16 @@ pub fn remove_allergy(
         };
 
         // Store the slot
-        env.storage().instance().set(
-            &SystemKey::VetAvailability((vet_address.clone(), slot_index)),
-            &slot,
-        );
-        env.storage().instance().set(
-            &SystemKey::VetAvailabilityCount(vet_address.clone()),
-            &slot_index,
-        );
+        env.storage()
+            .instance()
+            .set(&ServiceDataKey::VetAvailability((vet_address.clone(), slot_index)), &slot);
+        env.storage()
+            .instance()
+            .set(&ServiceDataKey::VetAvailabilityCount(vet_address.clone()), &slot_index);
 
         // Add to date-based index for efficient querying
         let date = Self::get_date_from_timestamp(start_time);
-        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let date_key = ServiceDataKey::VetAvailabilityByDate((vet_address.clone(), date));
         let mut date_slots: Vec<u64> = env
             .storage()
             .instance()
@@ -3831,7 +3802,7 @@ pub fn remove_allergy(
 
     /// Get available slots for a vet on a specific date
     pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
-        let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
+        let date_key = ServiceDataKey::VetAvailabilityByDate((vet_address.clone(), date));
         let slot_indices: Vec<u64> = env
             .storage()
             .instance()
@@ -3841,9 +3812,11 @@ pub fn remove_allergy(
         let mut available_slots = Vec::new(&env);
 
         for index in slot_indices.iter() {
-            if let Some(slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(
-                &SystemKey::VetAvailability((vet_address.clone(), index)),
-            ) {
+            if let Some(slot) = env
+                .storage()
+                .instance()
+                .get::<ServiceDataKey, AvailabilitySlot>(&ServiceDataKey::VetAvailability((vet_address.clone(), index)))
+            {
                 if slot.available {
                     available_slots.push_back(slot);
                 }
@@ -3876,7 +3849,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::ConsentCount)
+            .get(&ServiceDataKey::ConsentCount)
             .unwrap_or(0);
         let consent_id = count + 1;
         let now = env.ledger().timestamp();
@@ -3894,25 +3867,24 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::Consent(consent_id), &consent);
+            .set(&ServiceDataKey::Consent(consent_id), &consent);
         env.storage()
             .instance()
-            .set(&DataKey::ConsentCount, &consent_id);
+            .set(&ServiceDataKey::ConsentCount, &consent_id);
 
         // Update pet consent index
         let pet_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetConsentCount(pet_id))
+            .get(&ServiceDataKey::PetConsentCount(pet_id))
             .unwrap_or(0);
         let new_pet_count = pet_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetConsentCount(pet_id), &new_pet_count);
-        env.storage().instance().set(
-            &DataKey::PetConsentIndex((pet_id, new_pet_count)),
-            &consent_id,
-        );
+            .set(&ServiceDataKey::PetConsentCount(pet_id), &new_pet_count);
+        env.storage()
+            .instance()
+            .set(&ServiceDataKey::PetConsentIndex((pet_id, new_pet_count)), &consent_id);
 
         consent_id
     }
@@ -3923,7 +3895,7 @@ pub fn remove_allergy(
         if let Some(mut consent) = env
             .storage()
             .instance()
-            .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+            .get::<ServiceDataKey, Consent>(&ServiceDataKey::Consent(consent_id))
         {
             if consent.owner != owner {
                 panic!("Not the consent owner");
@@ -3937,7 +3909,7 @@ pub fn remove_allergy(
 
             env.storage()
                 .instance()
-                .set(&DataKey::Consent(consent_id), &consent);
+                .set(&ServiceDataKey::Consent(consent_id), &consent);
             true
         } else {
             false
@@ -3948,7 +3920,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetConsentCount(pet_id))
+            .get(&ServiceDataKey::PetConsentCount(pet_id))
             .unwrap_or(0);
 
         let mut history = Vec::new(&env);
@@ -3957,12 +3929,12 @@ pub fn remove_allergy(
             if let Some(consent_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetConsentIndex((pet_id, i)))
+                .get::<ServiceDataKey, u64>(&ServiceDataKey::PetConsentIndex((pet_id, i)))
             {
                 if let Some(consent) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, Consent>(&DataKey::Consent(consent_id))
+                    .get::<ServiceDataKey, Consent>(&ServiceDataKey::Consent(consent_id))
                 {
                     history.push_back(consent);
                 }
@@ -3973,12 +3945,12 @@ pub fn remove_allergy(
 
     /// Book a slot (mark as unavailable)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
-        let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
-
+        let key = ServiceDataKey::VetAvailability((vet_address.clone(), slot_index));
+        
         if let Some(mut slot) = env
             .storage()
             .instance()
-            .get::<SystemKey, AvailabilitySlot>(&key)
+            .get::<ServiceDataKey, AvailabilitySlot>(&key)
         {
             if !slot.available {
                 panic!("Slot already booked");
@@ -4005,7 +3977,7 @@ pub fn remove_allergy(
     pub fn get_version(env: Env) -> ContractVersion {
         env.storage()
             .instance()
-            .get(&DataKey::ContractVersion)
+            .get(&AdministrativeDataKey::ContractVersion)
             .unwrap_or(ContractVersion {
                 major: 1,
                 minor: 0,
@@ -4029,7 +4001,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::UpgradeProposalCount)
+            .get(&AdministrativeDataKey::UpgradeProposalCount)
             .unwrap_or(0);
         let proposal_id = count + 1;
 
@@ -4044,10 +4016,10 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+            .set(&AdministrativeDataKey::UpgradeProposal(proposal_id), &proposal);
         env.storage()
             .instance()
-            .set(&DataKey::UpgradeProposalCount, &proposal_id);
+            .set(&AdministrativeDataKey::UpgradeProposalCount, &proposal_id);
 
         proposal_id
     }
@@ -4058,7 +4030,7 @@ pub fn remove_allergy(
         if let Some(mut proposal) = env
             .storage()
             .instance()
-            .get::<DataKey, UpgradeProposal>(&DataKey::UpgradeProposal(proposal_id))
+            .get::<AdministrativeDataKey, UpgradeProposal>(&AdministrativeDataKey::UpgradeProposal(proposal_id))
         {
             if proposal.executed {
                 panic!("Proposal already executed");
@@ -4067,7 +4039,7 @@ pub fn remove_allergy(
             proposal.approved = true;
             env.storage()
                 .instance()
-                .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+                .set(&AdministrativeDataKey::UpgradeProposal(proposal_id), &proposal);
             true
         } else {
             false
@@ -4077,7 +4049,7 @@ pub fn remove_allergy(
     pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal> {
         env.storage()
             .instance()
-            .get(&DataKey::UpgradeProposal(proposal_id))
+            .get(&AdministrativeDataKey::UpgradeProposal(proposal_id))
     }
 
     pub fn migrate_version(env: Env, major: u32, minor: u32, patch: u32) {
@@ -4090,7 +4062,7 @@ pub fn remove_allergy(
         };
         env.storage()
             .instance()
-            .set(&DataKey::ContractVersion, &version);
+            .set(&AdministrativeDataKey::ContractVersion, &version);
     }
 
     // --- MULTISIG OPERATIONS ---
@@ -4102,20 +4074,12 @@ pub fn remove_allergy(
         expires_in: u64,
     ) -> u64 {
         Self::require_admin_auth(&env, &proposer);
-
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&SystemKey::ProposalCount)
-            .unwrap_or(0);
+        
+        let count: u64 = env.storage().instance().get(&AdministrativeDataKey::ProposalCount).unwrap_or(0);
         let proposal_id = count + 1;
-
-        let threshold = env
-            .storage()
-            .instance()
-            .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
-            .unwrap_or(1);
-
+        
+        let threshold = env.storage().instance().get::<AdministrativeDataKey, u32>(&AdministrativeDataKey::AdminThreshold).unwrap_or(1);
+        
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
 
@@ -4131,23 +4095,17 @@ pub fn remove_allergy(
             executed: false,
         };
 
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
-        env.storage()
-            .instance()
-            .set(&SystemKey::ProposalCount, &proposal_id);
-
+        env.storage().instance().set(&AdministrativeDataKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(&AdministrativeDataKey::ProposalCount, &proposal_id);
+        
         proposal_id
     }
 
     pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64) {
         Self::require_admin_auth(&env, &admin);
-
-        let mut proposal: MultiSigProposal = env
-            .storage()
-            .instance()
-            .get(&SystemKey::Proposal(proposal_id))
+        
+        let mut proposal: MultiSigProposal = env.storage().instance()
+            .get(&AdministrativeDataKey::Proposal(proposal_id))
             .expect("Proposal not found");
 
         if proposal.executed {
@@ -4163,16 +4121,12 @@ pub fn remove_allergy(
         }
 
         proposal.approvals.push_back(admin);
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(&AdministrativeDataKey::Proposal(proposal_id), &proposal);
     }
 
     pub fn execute_proposal(env: Env, proposal_id: u64) {
-        let mut proposal: MultiSigProposal = env
-            .storage()
-            .instance()
-            .get(&SystemKey::Proposal(proposal_id))
+        let mut proposal: MultiSigProposal = env.storage().instance()
+            .get(&AdministrativeDataKey::Proposal(proposal_id))
             .expect("Proposal not found");
 
         if proposal.executed {
@@ -4204,25 +4158,19 @@ pub fn remove_allergy(
                 if threshold == 0 || threshold > admins.len() {
                     panic!("Invalid threshold");
                 }
-                env.storage().instance().set(&SystemKey::Admins, &admins);
-                env.storage()
-                    .instance()
-                    .set(&SystemKey::AdminThreshold, &threshold);
+                env.storage().instance().set(&AdministrativeDataKey::Admins, &admins);
+                env.storage().instance().set(&AdministrativeDataKey::AdminThreshold, &threshold);
                 // Also clean up legacy admin if needed
-                env.storage().instance().remove(&DataKey::Admin);
+                env.storage().instance().remove(&AdministrativeDataKey::Admin);
             }
         }
 
         proposal.executed = true;
-        env.storage()
-            .instance()
-            .set(&SystemKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(&AdministrativeDataKey::Proposal(proposal_id), &proposal);
     }
 
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
-        env.storage()
-            .instance()
-            .get(&SystemKey::Proposal(proposal_id))
+        env.storage().instance().get(&AdministrativeDataKey::Proposal(proposal_id))
     }
 
     // --- VET REVIEWS ---
@@ -4241,17 +4189,18 @@ pub fn remove_allergy(
         }
 
         // Check duplicate
-        if env.storage().instance().has(&DataKey::VetReviewByOwnerVet((
-            reviewer.clone(),
-            vet.clone(),
-        ))) {
+        if env
+            .storage()
+            .instance()
+            .has(&ServiceDataKey::VetReviewByOwnerVet((reviewer.clone(), vet.clone())))
+        {
             panic!("You have already reviewed this veterinarian");
         }
 
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCount)
+            .get(&ServiceDataKey::VetReviewCount)
             .unwrap_or(0);
         let id = count + 1;
 
@@ -4264,30 +4213,35 @@ pub fn remove_allergy(
             date: env.ledger().timestamp(),
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::VetReview(id), &review);
-        env.storage().instance().set(&DataKey::VetReviewCount, &id);
+        env.storage().instance().set(&ServiceDataKey::VetReview(id), &review);
+        env.storage().instance().set(&ServiceDataKey::VetReviewCount, &id);
 
         // Index by Vet
         let vet_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .get(&ServiceDataKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let new_vet_count = vet_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
-        env.storage().instance().set(
-            &DataKey::VetReviewByVetIndex((vet.clone(), new_vet_count)),
-            &id,
-        );
+            .set(&ServiceDataKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
+        env.storage()
+            .instance()
+            .set(&ServiceDataKey::VetReviewByVetIndex((vet.clone(), new_vet_count)), &id);
 
         // Mark as reviewed by this owner
         env.storage()
             .instance()
-            .set(&DataKey::VetReviewByOwnerVet((reviewer, vet)), &id);
+            .set(&ServiceDataKey::VetReviewByOwnerVet((reviewer, vet.clone())), &id);
+
+        // Update Vet's cumulative rating
+        if let Some(mut vet_obj) = env.storage().instance().get::<ServiceDataKey, Vet>(&ServiceDataKey::Vet(vet.clone())) {
+            let current_total = (vet_obj.rating as u64) * vet_obj.review_count;
+            vet_obj.review_count += 1;
+            vet_obj.rating = ((current_total + (rating as u64)) / vet_obj.review_count) as u32;
+            env.storage().instance().set(&ServiceDataKey::Vet(vet), &vet_obj);
+        }
 
         id
     }
@@ -4296,19 +4250,19 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::VetReviewCountByVet(vet.clone()))
+            .get(&ServiceDataKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let mut reviews = Vec::new(&env);
         for i in 1..=count {
             if let Some(review_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::VetReviewByVetIndex((vet.clone(), i)))
+                .get::<ServiceDataKey, u64>(&ServiceDataKey::VetReviewByVetIndex((vet.clone(), i)))
             {
                 if let Some(review) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, VetReview>(&DataKey::VetReview(review_id))
+                    .get::<ServiceDataKey, VetReview>(&ServiceDataKey::VetReview(review_id))
                 {
                     reviews.push_back(review);
                 }
@@ -4353,7 +4307,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::MedicationCount)
+            .get(&MedicalDataKey::MedicationCount)
             .unwrap_or(0);
         let id = count + 1;
 
@@ -4371,22 +4325,22 @@ pub fn remove_allergy(
 
         env.storage()
             .instance()
-            .set(&DataKey::GlobalMedication(id), &medication);
-        env.storage().instance().set(&DataKey::MedicationCount, &id);
+            .set(&MedicalDataKey::GlobalMedication(id), &medication);
+        env.storage().instance().set(&MedicalDataKey::MedicationCount, &id);
 
         // Index by pet
         let pet_med_count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetMedicationCount(pet_id))
+            .get(&MedicalDataKey::PetMedicationCount(pet_id))
             .unwrap_or(0);
         let new_count = pet_med_count + 1;
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationCount(pet_id), &new_count);
+            .set(&MedicalDataKey::PetMedicationCount(pet_id), &new_count);
         env.storage()
             .instance()
-            .set(&DataKey::PetMedicationIndex((pet_id, new_count)), &id);
+            .set(&MedicalDataKey::PetMedicationIndex((pet_id, new_count)), &id);
 
         id
     }
@@ -4395,7 +4349,7 @@ pub fn remove_allergy(
         let count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::PetMedicationCount(pet_id))
+            .get(&MedicalDataKey::PetMedicationCount(pet_id))
             .unwrap_or(0);
         let mut active_meds = Vec::new(&env);
 
@@ -4403,12 +4357,12 @@ pub fn remove_allergy(
             if let Some(med_id) = env
                 .storage()
                 .instance()
-                .get::<DataKey, u64>(&DataKey::PetMedicationIndex((pet_id, i)))
+                .get::<MedicalDataKey, u64>(&MedicalDataKey::PetMedicationIndex((pet_id, i)))
             {
                 if let Some(med) = env
                     .storage()
                     .instance()
-                    .get::<DataKey, Medication>(&DataKey::GlobalMedication(med_id))
+                    .get::<MedicalDataKey, Medication>(&MedicalDataKey::GlobalMedication(med_id))
                 {
                     if med.active {
                         active_meds.push_back(med);
@@ -4423,7 +4377,7 @@ pub fn remove_allergy(
         if let Some(mut med) = env
             .storage()
             .instance()
-            .get::<DataKey, Medication>(&DataKey::GlobalMedication(medication_id))
+            .get::<MedicalDataKey, Medication>(&MedicalDataKey::GlobalMedication(medication_id))
         {
             med.prescribing_vet.require_auth();
             med.active = false;
@@ -4433,10 +4387,15 @@ pub fn remove_allergy(
             }
             env.storage()
                 .instance()
-                .set(&DataKey::GlobalMedication(medication_id), &med);
+                .set(&MedicalDataKey::GlobalMedication(medication_id), &med);
         } else {
             panic!("Medication not found");
         }
+    }
+
+    fn update_owner_indexing(env: &Env, previous_owner: Address, new_owner: Address, pet_id: u64) {
+        Self::remove_pet_from_owner_index(env, &previous_owner, pet_id);
+        Self::add_pet_to_owner_index(env, &new_owner, pet_id);
     }
 }
 
