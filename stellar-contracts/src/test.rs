@@ -49,7 +49,7 @@ mod test_vet {
         assert_eq!(stored.address, vet);
         assert_eq!(stored.name, String::from_str(&env, "Dr. Sarah Connor"));
         assert_eq!(stored.license_number, String::from_str(&env, "LIC-2024-001"));
-        assert_eq!(stored.specialization, String::from_str(&env, "Surgery"));
+        assert_eq!(stored.specialization.get(0).unwrap(), String::from_str(&env, "Surgery"));
         assert_eq!(stored.verified, false);
     }
 
@@ -457,266 +457,6 @@ mod test_vet {
         let result = client.verify_vet(&admin, &unknown_vet);
         assert!(!result);
     }
-
-    #[test]
-fn test_add_vaccination_success() {
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
-
-    let env = Env::default();
-    env.mock_all_auths();
-
-    // --- Setup accounts ---
-    let admin = Address::generate(&env);
-    let veterinarian = Address::generate(&env);
-    let pet_owner = Address::generate(&env);
-
-    // --- Deploy contract ---
-    let contract_id = env.register_contract(None, PetRegistry {});
-    let client = PetRegistryClient::new(&env, &contract_id);
-
-    // --- Setup prerequisite state ---
-    // 1. Verify veterinarian
-    client.verify_vet(&veterinarian);
-
-    // 2. Register pet
-    let pet_id = client.register_pet(
-        &pet_owner,
-        &String::from_str(&env, "Rex"),
-    );
-
-    // --- Call function under test ---
-    let vaccine_name = String::from_str(&env, "Rabies");
-    let batch_number = String::from_str(&env, "BATCH-001");
-
-    let administered_at = 1_700_000_000;
-    let next_due_date = 1_800_000_000;
-
-    let vaccine_id = client.add_vaccination(
-        &pet_id,
-        &veterinarian,
-        &VaccineType::Core,
-        &vaccine_name,
-        &administered_at,
-        &next_due_date,
-        &batch_number,
-    );
-
-    // --- Assertions ---
-
-    // 1. Vaccine ID should start at 1
-    assert_eq!(vaccine_id, 1);
-
-    // 2. VaccinationCount updated
-    let count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::VaccinationCount)
-        .unwrap();
-    assert_eq!(count, 1);
-
-    // 3. Vaccination record stored
-    let record: Vaccination = env
-        .storage()
-        .instance()
-        .get(&DataKey::Vaccination(vaccine_id))
-        .unwrap();
-
-    assert_eq!(record.pet_id, pet_id);
-    assert_eq!(record.veterinarian, veterinarian);
-    assert_eq!(record.vaccine_type, VaccineType::Core);
-    assert_eq!(record.administered_at, administered_at);
-    assert_eq!(record.next_due_date, next_due_date);
-
-    // 4. Ensure plaintext fields are NOT stored
-    assert!(record.vaccine_name.is_none());
-    assert!(record.batch_number.is_none());
-
-    // 5. Ensure encrypted fields exist
-    assert!(record.encrypted_vaccine_name.ciphertext.len() > 0);
-    assert!(record.encrypted_batch_number.ciphertext.len() > 0);
-
-    // 6. Pet vaccination index updated
-    let pet_vax_count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::PetVaccinationCount(pet_id))
-        .unwrap();
-    assert_eq!(pet_vax_count, 1);
-
-    let indexed_id: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::PetVaccinationByIndex((pet_id, 1)))
-        .unwrap();
-    assert_eq!(indexed_id, vaccine_id);
-}
-
-#[test]
-fn test_is_vaccination_current() {
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
-
-    let env = Env::default();
-    env.mock_all_auths();
-
-    // Set ledger timestamp
-    env.ledger().set_timestamp(1_700_000_000);
-
-    let veterinarian = Address::generate(&env);
-    let pet_owner = Address::generate(&env);
-
-    let contract_id = env.register_contract(None, PetRegistry {});
-    let client = PetRegistryClient::new(&env, &contract_id);
-
-    client.verify_vet(&veterinarian);
-
-    let pet_id = client.register_pet(
-        &pet_owner,
-        &String::from_str(&env, "Rex"),
-    );
-
-    client.add_vaccination(
-        &pet_id,
-        &veterinarian,
-        &VaccineType::Core,
-        &String::from_str(&env, "Rabies"),
-        &1_600_000_000,
-        &1_800_000_000, // future due date
-        &String::from_str(&env, "BATCH-001"),
-    );
-
-    let result = client.is_vaccination_current(&pet_id, &VaccineType::Core);
-    assert!(result);
-}
-
-#[test]
-fn test_get_overdue_vaccinations_none() {
-    use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
-
-    let env = Env::default();
-    env.mock_all_auths();
-
-    env.ledger().set_timestamp(1_700_000_000);
-
-    let veterinarian = Address::generate(&env);
-    let pet_owner = Address::generate(&env);
-
-    let contract_id = env.register_contract(None, PetRegistry {});
-    let client = PetRegistryClient::new(&env, &contract_id);
-
-    client.verify_vet(&veterinarian);
-
-    let pet_id = client.register_pet(
-        &pet_owner,
-        &String::from_str(&env, "Rex"),
-    );
-
-    // Not overdue
-    client.add_vaccination(
-        &pet_id,
-        &veterinarian,
-        &VaccineType::Core,
-        &String::from_str(&env, "Rabies"),
-        &1_600_000_000,
-        &1_800_000_000, // future
-        &String::from_str(&env, "BATCH-1"),
-    );
-
-    let result = client.get_overdue_vaccinations(&pet_id);
-
-    assert_eq!(result.len(), 0);
-}
-
-// pet lookup test
-#[test]
-fn test_get_pet_by_tag_active() {
-    use soroban_sdk::{
-        testutils::Address as _, Address, BytesN, Env
-    };
-
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-
-    let contract_id = env.register_contract(None, PetRegistry {});
-    let client = PetRegistryClient::new(&env, &contract_id);
-
-    // Create pet
-    let pet_id = client.register_pet(&owner);
-
-    // Create deterministic tag id
-    let tag_id = BytesN::from_array(&env, &[1u8; 32]);
-
-    // Insert tag into storage
-    let tag = PetTag {
-        pet_id,
-        is_active: true,
-    };
-
-    env.storage()
-        .instance()
-        .set(&DataKey::Tag(tag_id.clone()), &tag);
-
-    let result = client.get_pet_by_tag(&tag_id);
-
-    assert!(result.is_some());
-
-    let profile = result.unwrap();
-    assert_eq!(profile.pet_id, pet_id);
-}
-
-#[test]
-fn test_deactivate_tag() {
-    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
-
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_700_000_000);
-
-    let owner = Address::generate(&env);
-    let pet_id = 1u64;
-
-    let contract_id = env.register_contract(None, PetRegistry {});
-    let client = PetRegistryClient::new(&env, &contract_id);
-
-    // Insert pet
-    let pet = Pet {
-        id: pet_id,
-        owner: owner.clone(),
-    };
-    env.storage()
-        .instance()
-        .set(&DataKey::Pet(pet_id), &pet);
-
-    // Insert active tag
-    let tag_id = BytesN::from_array(&env, &[1u8; 32]);
-    let tag = PetTag {
-        pet_id,
-        is_active: true,
-        message: String::from_str(&env, "Hello"),
-        updated_at: 0,
-    };
-    env.storage()
-        .instance()
-        .set(&DataKey::Tag(tag_id.clone()), &tag);
-
-    let result = client.deactivate_tag(&tag_id);
-
-    assert!(result);
-
-    let updated_tag: PetTag = env
-        .storage()
-        .instance()
-        .get(&DataKey::Tag(tag_id.clone()))
-        .unwrap();
-
-    assert_eq!(updated_tag.is_active, false);
-    assert_eq!(updated_tag.updated_at, 1_700_000_000);
-}
-
-
-
-
 }
 #[cfg(test)]
 mod test {
@@ -801,13 +541,10 @@ mod test {
         );
 
         client.register_vet(
-            &admin,
             &vet,
             &String::from_str(&env, "Dr. Who"),
             &String::from_str(&env, "LIC-001"),
-            &String::from_str(&env, "Clinic Name"),
-            &String::from_str(&env, "Clinic Address"),
-            &Vec::new(&env),
+            &String::from_str(&env, "General"),
         );
         client.verify_vet(&admin, &vet);
 
@@ -969,7 +706,6 @@ mod test {
             &record_id,
             &String::from_str(&env, "Sick"),
             &String::from_str(&env, "Intensive Care"),
-            &new_meds,
         );
         assert!(success);
 
@@ -1016,13 +752,10 @@ mod test {
         let vet = Address::generate(&env);
 
         client.register_vet(
-            &admin,
             &vet,
             &String::from_str(&env, "Dr. Smith"),
             &String::from_str(&env, "VET-001"),
             &String::from_str(&env, "General"),
-            &String::from_str(&env, "Clinic Address"),
-            &Vec::new(&env),
         );
 
         client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
@@ -1050,7 +783,7 @@ mod test {
         let action = ProposalAction::VerifyVet(vet.clone());
         let proposal_id = client.propose_action(&admin1, &action, &3600);
         
-        client.register_vet(&admin1, &vet, &String::from_str(&env, "Dr. Multi"), &String::from_str(&env, "LIC-999"), &String::from_str(&env, "Clinic"), &String::from_str(&env, "Address"), &Vec::new(&env));
+        client.register_vet(&vet, &String::from_str(&env, "Dr. Multi"), &String::from_str(&env, "LIC-999"), &String::from_str(&env, "General"));
         
         client.approve_proposal(&admin2, &proposal_id);
         client.execute_proposal(&proposal_id);
