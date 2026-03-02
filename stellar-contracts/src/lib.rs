@@ -131,14 +131,7 @@ pub struct BreedingRecord {
     pub breeder: Address,
     pub notes: String,
 }
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WeightEntry {
-    pub pet_id: u64,
-    pub weight: u64,
-    pub recorded_at: u64,
-    pub recorded_by: Address,
-}
+
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5751,6 +5744,73 @@ impl PetChainContract {
             pedigree.push_back(record);
         }
         pedigree
+    }
+
+    // --- GROOMING RECORDS SYSTEM ---
+    pub fn add_grooming_record(
+        env: Env,
+        pet_id: u64,
+        service_type: String,
+        groomer: String,
+        date: u64,
+        next_due: u64,
+        cost: u64,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        pet.owner.require_auth();
+        let count: u64 = env.storage().instance().get(&Symbol::new(&env, "grooming_count")).unwrap_or(0);
+        let record_id = count + 1;
+        let record = GroomingRecord {
+            id: record_id,
+            pet_id,
+            service_type,
+            groomer,
+            date,
+            next_due,
+            cost,
+            notes,
+        };
+        env.storage().instance().set(&(Symbol::new(&env, "grooming"), record_id), &record);
+        env.storage().instance().set(&Symbol::new(&env, "grooming_count"), &record_id);
+        let pet_count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let new_count = pet_count + 1;
+        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
+        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count), &record_id);
+        record_id
+    }
+
+    pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let mut history = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i)) {
+                if let Some(record) = env.storage().instance().get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id)) {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_next_grooming_date(env: Env, pet_id: u64) -> u64 {
+        let history = Self::get_grooming_history(env, pet_id);
+        let mut next_date = 0u64;
+        for record in history.iter() {
+            if record.next_due > 0 && (next_date == 0 || record.next_due < next_date) {
+                next_date = record.next_due;
+            }
+        }
+        next_date
+    }
+
+    pub fn get_grooming_expenses(env: Env, pet_id: u64) -> u64 {
+        let history = Self::get_grooming_history(env, pet_id);
+        let mut total = 0u64;
+        for record in history.iter() {
+            total += record.cost;
+        }
+        total
     }
 }
 
