@@ -41,6 +41,8 @@ pub enum BreedingKey {
 }
 
 #[cfg(test)]
+mod test_overflow;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
 mod test_access_control;
@@ -1242,9 +1244,9 @@ impl PetChainContract {
                 pets_treated: 0,
             });
 
-        stats.total_records += record_increment;
-        stats.total_vaccinations += vaccination_increment;
-        stats.total_treatments += treatment_increment;
+        stats.total_records = stats.total_records.checked_add(record_increment).expect("counter overflow");
+        stats.total_vaccinations = stats.total_vaccinations.checked_add(vaccination_increment).expect("counter overflow");
+        stats.total_treatments = stats.total_treatments.checked_add(treatment_increment).expect("counter overflow");
 
         // Unique pet tracking
         if !env
@@ -1256,7 +1258,7 @@ impl PetChainContract {
                 .instance()
                 .set(&VetKey::VetPetTreated((vet.clone(), pet_id)), &true);
 
-            stats.pets_treated += 1;
+            stats.pets_treated = safe_increment(stats.pets_treated);
         }
 
         env.storage()
@@ -1286,7 +1288,7 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCount)
             .unwrap_or(0);
-        let pet_id = pet_count + 1;
+        let pet_id = safe_increment(pet_count);
         let timestamp = env.ledger().timestamp();
 
         let key = Self::get_encryption_key(&env);
@@ -1386,12 +1388,11 @@ impl PetChainContract {
             String::from_str(&env, "Initial Registration"),
         );
 
-        let owner_pet_count: u64 = env
+        let owner_pet_count: u64 = safe_increment(env
             .storage()
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0));
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
@@ -1402,12 +1403,11 @@ impl PetChainContract {
 
         // Add to species index
         let species_key = Self::species_to_string(&env, &species);
-        let species_count: u64 = env
+        let species_count: u64 = safe_increment(env
             .storage()
             .instance()
             .get(&DataKey::SpeciesPetCount(species_key.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0));
         env.storage().instance().set(
             &DataKey::SpeciesPetCount(species_key.clone()),
             &species_count,
@@ -1678,7 +1678,7 @@ impl PetChainContract {
                     .unwrap_or(0);
                 env.storage()
                     .instance()
-                    .set(&StatsKey::ActivePetsCount, &(active_count + 1));
+                    .set(&StatsKey::ActivePetsCount, &safe_increment(active_count));
             }
             pet.active = true;
             pet.updated_at = env.ledger().timestamp();
@@ -1834,7 +1834,7 @@ impl PetChainContract {
 
     fn add_pet_to_owner_index(env: &Env, owner: &Address, pet_id: u64) {
         let count = Self::get_owner_pet_count(env, owner);
-        let new_count = count + 1;
+        let new_count = safe_increment(count);
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &new_count);
@@ -2126,7 +2126,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::VaccinationCount)
             .unwrap_or(0);
-        let vaccine_id = vaccine_count + 1;
+        let vaccine_id = safe_increment(vaccine_count);
         let now = env.ledger().timestamp();
         let key = Self::get_encryption_key(&env);
 
@@ -2173,7 +2173,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
-        let new_pet_vax_count = pet_vax_count + 1;
+        let new_pet_vax_count = safe_increment(pet_vax_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
@@ -2352,7 +2352,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::DietPlanCount)
             .unwrap_or(0);
-        let diet_id = diet_count + 1;
+        let diet_id = safe_increment(diet_count);
 
         let now = env.ledger().timestamp();
 
@@ -2374,12 +2374,11 @@ impl PetChainContract {
             .instance()
             .set(&NutritionKey::DietPlanCount, &diet_id);
 
-        let pet_diet_count: u64 = env
+        let pet_diet_count: u64 = safe_increment(env
             .storage()
             .instance()
             .get(&NutritionKey::PetDietCount(pet_id))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0));
         env.storage()
             .instance()
             .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
@@ -2442,7 +2441,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::WeightCount)
             .unwrap_or(0);
-        let weight_id = weight_count + 1;
+        let weight_id = safe_increment(weight_count);
         let now = env.ledger().timestamp();
 
         let entry = WeightEntry {
@@ -2460,12 +2459,11 @@ impl PetChainContract {
             .instance()
             .set(&NutritionKey::WeightCount, &weight_id);
 
-        let pet_weight_count: u64 = env
+        let pet_weight_count: u64 = safe_increment(env
             .storage()
             .instance()
             .get(&NutritionKey::PetWeightCount(pet_id))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0));
         env.storage()
             .instance()
             .set(&NutritionKey::PetWeightCount(pet_id), &pet_weight_count);
@@ -2521,7 +2519,7 @@ impl PetChainContract {
 
     fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
         let nonce: u64 = env.storage().instance().get(&TagKey::TagNonce).unwrap_or(0);
-        let new_nonce = nonce + 1;
+        let new_nonce = safe_increment(nonce);
         env.storage().instance().set(&TagKey::TagNonce, &new_nonce);
 
         let timestamp = env.ledger().timestamp();
@@ -2590,7 +2588,7 @@ impl PetChainContract {
             .unwrap_or(0);
         env.storage()
             .instance()
-            .set(&TagKey::PetTagCount, &(count + 1));
+            .set(&TagKey::PetTagCount, &safe_increment(count));
 
         env.events().publish(
             (String::from_str(&env, "TAG_LINKED"),),
@@ -2773,14 +2771,14 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::OwnershipRecordCount)
             .unwrap_or(0);
-        let record_id = global_count + 1;
+        let record_id = safe_increment(global_count);
 
         let pet_count: u64 = env
             .storage()
             .instance()
             .get(&SystemKey::PetOwnershipRecordCount(pet_id))
             .unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = safe_increment(pet_count);
 
         let record = OwnershipRecord {
             pet_id,
@@ -3091,7 +3089,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
             .unwrap_or(0);
-        let new_count = grant_count + 1;
+        let new_count = safe_increment(grant_count);
         env.storage()
             .instance()
             .set(&DataKey::AccessGrantCount(pet_id), &new_count);
@@ -3246,7 +3244,7 @@ impl PetChainContract {
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::MedicalRecordCount)
             .unwrap_or(0);
-        let id = count + 1;
+        let id = safe_increment(count);
         env.storage()
             .instance()
             .set(&MedicalKey::MedicalRecordCount, &id);
@@ -3276,7 +3274,7 @@ impl PetChainContract {
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
-        let new_pet_record_count = pet_record_count + 1;
+        let new_pet_record_count = safe_increment(pet_record_count);
         env.storage().instance().set(
             &MedicalKey::PetMedicalRecordCount(pet_id),
             &new_pet_record_count,
@@ -3626,7 +3624,7 @@ impl PetChainContract {
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::LabResultCount)
             .unwrap_or(0);
-        let id = count + 1;
+        let id = safe_increment(count);
         env.storage()
             .instance()
             .set(&MedicalKey::LabResultCount, &id);
@@ -3651,7 +3649,7 @@ impl PetChainContract {
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
-        let new_p = p_count + 1;
+        let new_p = safe_increment(p_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
@@ -3763,7 +3761,7 @@ impl PetChainContract {
             .instance()
             .get(&AlertKey::LostPetAlertCount)
             .unwrap_or(0);
-        let alert_id = alert_count + 1;
+        let alert_id = safe_increment(alert_count);
 
         let alert = LostPetAlert {
             id: alert_id,
@@ -3961,7 +3959,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
             .unwrap_or(0);
-        let slot_index = slot_count + 1;
+        let slot_index = safe_increment(slot_count);
 
         let slot = AvailabilitySlot {
             vet_address: vet_address.clone(),
@@ -4043,7 +4041,7 @@ impl PetChainContract {
             .instance()
             .get(&ConsentKey::ConsentCount)
             .unwrap_or(0);
-        let consent_id = count + 1;
+        let consent_id = safe_increment(count);
         let now = env.ledger().timestamp();
 
         let consent = Consent {
@@ -4070,7 +4068,7 @@ impl PetChainContract {
             .instance()
             .get(&ConsentKey::PetConsentCount(pet_id))
             .unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = safe_increment(pet_count);
         env.storage()
             .instance()
             .set(&ConsentKey::PetConsentCount(pet_id), &new_pet_count);
@@ -4196,7 +4194,7 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::UpgradeProposalCount)
             .unwrap_or(0);
-        let proposal_id = count + 1;
+        let proposal_id = safe_increment(count);
 
         let proposal = UpgradeProposal {
             id: proposal_id,
@@ -4273,7 +4271,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::ProposalCount)
             .unwrap_or(0);
-        let proposal_id = count + 1;
+        let proposal_id = safe_increment(count);
 
         let threshold = env
             .storage()
@@ -4422,7 +4420,7 @@ impl PetChainContract {
             .instance()
             .get(&ReviewKey::VetReviewCount)
             .unwrap_or(0);
-        let id = count + 1;
+        let id = safe_increment(count);
 
         let review = VetReview {
             id,
@@ -4446,7 +4444,7 @@ impl PetChainContract {
             .instance()
             .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
-        let new_vet_count = vet_count + 1;
+        let new_vet_count = safe_increment(vet_count);
         env.storage()
             .instance()
             .set(&ReviewKey::VetReviewCountByVet(vet.clone()), &new_vet_count);
@@ -4495,7 +4493,7 @@ impl PetChainContract {
         }
         let mut total = 0u32;
         for review in reviews.iter() {
-            total += review.rating;
+            total = total.checked_add(review.rating).expect("counter overflow");
         }
         total / reviews.len()
     }
@@ -4526,7 +4524,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::MedicationCount)
             .unwrap_or(0);
-        let id = count + 1;
+        let id = safe_increment(count);
 
         let medication = Medication {
             id,
@@ -4553,7 +4551,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetMedicationCount(pet_id))
             .unwrap_or(0);
-        let new_count = pet_med_count + 1;
+        let new_count = safe_increment(pet_med_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetMedicationCount(pet_id), &new_count);
@@ -4641,7 +4639,7 @@ impl PetChainContract {
             .instance()
             .get(&TreatmentKey::TreatmentCount)
             .unwrap_or(0);
-        let treatment_id = treatment_count + 1;
+        let treatment_id = safe_increment(treatment_count);
 
         let now = env.ledger().timestamp();
 
@@ -4669,7 +4667,7 @@ impl PetChainContract {
             .instance()
             .get(&TreatmentKey::PetTreatmentCount(pet_id))
             .unwrap_or(0);
-        let new_pet_treatment_count = pet_treatment_count + 1;
+        let new_pet_treatment_count = safe_increment(pet_treatment_count);
         env.storage().instance().set(
             &TreatmentKey::PetTreatmentCount(pet_id),
             &new_pet_treatment_count,
@@ -4902,7 +4900,7 @@ impl PetChainContract {
             .instance()
             .get(&InsuranceKey::ClaimCount)
             .unwrap_or(0);
-        let claim_id = claim_count + 1;
+        let claim_id = safe_increment(claim_count);
         let timestamp = env.ledger().timestamp();
 
         let claim = InsuranceClaim {
@@ -4924,12 +4922,11 @@ impl PetChainContract {
             .set(&InsuranceKey::ClaimCount, &claim_id);
 
         // Save claim for pet
-        let pet_claim_count: u64 = env
+        let pet_claim_count: u64 = safe_increment(env
             .storage()
             .instance()
             .get(&InsuranceKey::PetClaimCount(pet_id))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0));
         env.storage()
             .instance()
             .set(&InsuranceKey::PetClaimCount(pet_id), &pet_claim_count);
@@ -5068,7 +5065,7 @@ impl PetChainContract {
             .instance()
             .get(&BehaviorKey::BehaviorRecordCount)
             .unwrap_or(0);
-        let record_id = count + 1;
+        let record_id = safe_increment(count);
 
         let record = BehaviorRecord {
             id: record_id,
@@ -5092,7 +5089,7 @@ impl PetChainContract {
             .instance()
             .get(&BehaviorKey::PetBehaviorCount(pet_id))
             .unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = safe_increment(pet_count);
         env.storage()
             .instance()
             .set(&BehaviorKey::PetBehaviorCount(pet_id), &new_pet_count);
@@ -5148,7 +5145,7 @@ impl PetChainContract {
             .instance()
             .get(&BehaviorKey::TrainingMilestoneCount)
             .unwrap_or(0);
-        let milestone_id = count + 1;
+        let milestone_id = safe_increment(count);
 
         let milestone = TrainingMilestone {
             id: milestone_id,
@@ -5172,7 +5169,7 @@ impl PetChainContract {
             .instance()
             .get(&BehaviorKey::PetMilestoneCount(pet_id))
             .unwrap_or(0);
-        let new_count = pet_milestone_count + 1;
+        let new_count = safe_increment(pet_milestone_count);
         env.storage()
             .instance()
             .set(&BehaviorKey::PetMilestoneCount(pet_id), &new_count);
@@ -5393,7 +5390,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::PetTransferProposalCount)
             .unwrap_or(0);
-        let proposal_id = count + 1;
+        let proposal_id = safe_increment(count);
 
         let now = env.ledger().timestamp();
         let mut signatures = Vec::new(&env);
@@ -5598,7 +5595,7 @@ impl PetChainContract {
             .instance()
             .get(&ActivityKey::ActivityRecordCount)
             .unwrap_or(0);
-        let record_id = count + 1;
+        let record_id = safe_increment(count);
 
         let record = ActivityRecord {
             id: record_id,
@@ -5623,7 +5620,7 @@ impl PetChainContract {
             .instance()
             .get(&ActivityKey::PetActivityCount(pet_id))
             .unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = safe_increment(pet_count);
         env.storage()
             .instance()
             .set(&ActivityKey::PetActivityCount(pet_id), &new_pet_count);
@@ -5689,7 +5686,7 @@ impl PetChainContract {
         let sire: Pet = env.storage().instance().get(&DataKey::Pet(sire_id)).expect("Sire not found");
         sire.owner.require_auth();
         let count: u64 = env.storage().instance().get(&BreedingKey::BreedingRecordCount).unwrap_or(0);
-        let record_id = count + 1;
+        let record_id = safe_increment(count);
         let record = BreedingRecord {
             id: record_id,
             sire_id,
@@ -5702,11 +5699,11 @@ impl PetChainContract {
         env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
         env.storage().instance().set(&BreedingKey::BreedingRecordCount, &record_id);
         let sire_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(sire_id)).unwrap_or(0);
-        let new_sire_count = sire_count + 1;
+        let new_sire_count = safe_increment(sire_count);
         env.storage().instance().set(&BreedingKey::PetBreedingCount(sire_id), &new_sire_count);
         env.storage().instance().set(&BreedingKey::PetBreedingIndex((sire_id, new_sire_count)), &record_id);
         let dam_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(dam_id)).unwrap_or(0);
-        let new_dam_count = dam_count + 1;
+        let new_dam_count = safe_increment(dam_count);
         env.storage().instance().set(&BreedingKey::PetBreedingCount(dam_id), &new_dam_count);
         env.storage().instance().set(&BreedingKey::PetBreedingIndex((dam_id, new_dam_count)), &record_id);
         record_id
@@ -5731,7 +5728,7 @@ impl PetChainContract {
             record.offspring_ids.push_back(offspring_id);
             env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
             let off_count: u64 = env.storage().instance().get(&BreedingKey::PetOffspringCount(record.sire_id)).unwrap_or(0);
-            let new_off_count = off_count + 1;
+            let new_off_count = safe_increment(off_count);
             env.storage().instance().set(&BreedingKey::PetOffspringCount(record.sire_id), &new_off_count);
             env.storage().instance().set(&BreedingKey::PetOffspringIndex((record.sire_id, new_off_count)), &offspring_id);
             true
@@ -5774,7 +5771,7 @@ impl PetChainContract {
         let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
         pet.owner.require_auth();
         let count: u64 = env.storage().instance().get(&Symbol::new(&env, "grooming_count")).unwrap_or(0);
-        let record_id = count + 1;
+        let record_id = safe_increment(count);
         let record = GroomingRecord {
             id: record_id,
             pet_id,
@@ -5788,7 +5785,7 @@ impl PetChainContract {
         env.storage().instance().set(&(Symbol::new(&env, "grooming"), record_id), &record);
         env.storage().instance().set(&Symbol::new(&env, "grooming_count"), &record_id);
         let pet_count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
-        let new_count = pet_count + 1;
+        let new_count = safe_increment(pet_count);
         env.storage().instance().set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
         env.storage().instance().set(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count), &record_id);
         record_id
@@ -5822,10 +5819,15 @@ impl PetChainContract {
         let history = Self::get_grooming_history(env, pet_id);
         let mut total = 0u64;
         for record in history.iter() {
-            total += record.cost;
+            total = total.checked_add(record.cost).expect("counter overflow");
         }
         total
     }
+}
+
+// --- OVERFLOW-SAFE COUNTER HELPER ---
+pub(crate) fn safe_increment(count: u64) -> u64 {
+    count.checked_add(1).expect("counter overflow")
 }
 
 // --- ENCRYPTION HELPERS ---
