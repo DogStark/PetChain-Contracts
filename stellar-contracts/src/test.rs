@@ -2788,53 +2788,16 @@ mod test {
     #[test]
     #[should_panic(expected = "You have already reviewed this veterinarian")]
     fn test_duplicate_vet_review() {
-        let pet_id = client.register_pet(
-            &owner,
-            &String::from_str(&env, "Rex"),
-            &String::from_str(&env, "2019-01-01"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(&env, "Boxer"),
-            &String::from_str(&env, "Brindle"),
-            &28u32,
-            &None,
-            &PrivacyLevel::Public,
-        );
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
 
-        let admin = Address::generate(&env);
-        client.init_admin(&admin);
-        client.register_vet(
-            &vet,
-            &String::from_str(&env, "Dr. What"),
-            &String::from_str(&env, "LIC-002"),
-            &String::from_str(&env, "General"),
-        );
-        client.verify_vet(&vet);
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
 
-        // Set time to future to allow subtraction for past
-        let now = 1_000_000;
-        env.ledger().with_mut(|l| l.timestamp = now);
-
-        let past = now - 10000;
-
-        client.add_vaccination(
-            &pet_id,
-            &vet,
-            &VaccineType::Rabies,
-            &String::from_str(&env, "Old Rabies"),
-            &past,
-            &past, // Already overdue
-            &String::from_str(&env, "B1"),
-        );
-
-        let overdue = client.get_overdue_vaccinations(&pet_id);
-        assert_eq!(overdue.len(), 1);
-        assert_eq!(overdue.get(0).unwrap(), VaccineType::Rabies);
-
-        assert_eq!(
-            client.is_vaccination_current(&pet_id, &VaccineType::Rabies),
-            false
-        );
+        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Great vet!"));
+        client.add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Again"));
     }
 
     #[test]
@@ -2845,15 +2808,6 @@ mod test {
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
-
-        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Good"));
-        client.add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Bad"));
-    }
-
-    #[test]
-    #[should_panic(expected = "Rating must be between 1 and 5")]
-    fn test_invalid_rating() {
         let pet_id = client.register_pet(
             &owner,
             &String::from_str(&env, "Max"),
@@ -2886,7 +2840,8 @@ mod test {
     }
 
     #[test]
-    fn test_lab_results() {
+    #[should_panic(expected = "Rating must be between 1 and 5")]
+    fn test_invalid_rating() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
@@ -2899,7 +2854,56 @@ mod test {
     }
 
     #[test]
+    fn test_lab_results() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Patient"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "White"),
+            &5u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        let lab_id = client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Blood Test"),
+            &String::from_str(&env, "Normal"),
+            &String::from_str(&env, "0.5-1.5"),
+            &None,
+            &None,
+        );
+
+        let res = client.get_lab_result(&lab_id).unwrap();
+        assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
+        assert_eq!(res.results, String::from_str(&env, "Normal"));
+
+        let list = client.get_lab_results(&pet_id);
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
     fn test_standalone_medications() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
         let pet_id = client.register_pet(
             &owner,
             &String::from_str(&env, "Patient"),
@@ -2913,20 +2917,22 @@ mod test {
             &PrivacyLevel::Public,
         );
 
-        let lab_id = client.add_lab_result(
+        let now = 1000u64;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let med_id = client.add_medication(
             &pet_id,
-            &vet,
-            &String::from_str(&env, "Blood Test"),
-            &String::from_str(&env, "Normal"),
+            &String::from_str(&env, "Apoquel"),
+            &String::from_str(&env, "5mg"),
+            &String::from_str(&env, "Daily"),
+            &now,
             &None,
+            &vet,
         );
 
-        let res = client.get_lab_result(&lab_id).unwrap();
-        assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(res.result_summary, String::from_str(&env, "Normal"));
-
-        let list = client.get_pet_lab_results(&pet_id);
-        assert_eq!(list.len(), 1);
+        let active = client.get_active_medications(&pet_id);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(0).unwrap().id, med_id);
     }
 
     #[test]
@@ -2942,14 +2948,17 @@ mod test {
         let pet_id = client.register_pet(
             &owner,
             &String::from_str(&env, "Buddy"),
-            &String::from_str(&env, "2020"),
+            &String::from_str(&env, "2020-01-01"),
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden"),
+            &String::from_str(&env, "Golden"),
+            &20u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
-        let now = 1000;
+        let now = 1000u64;
         env.ledger().with_mut(|l| l.timestamp = now);
 
         let med_id = client.add_medication(
