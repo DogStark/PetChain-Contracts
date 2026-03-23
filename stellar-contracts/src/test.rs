@@ -3306,4 +3306,53 @@ mod test {
         let pet_unknown_profile = client.get_pet(&pet_unknown).unwrap();
         assert_eq!(pet_unknown_profile.gender, Gender::Unknown);
     }
+
+    #[test]
+    fn test_calculate_age_approximation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        // 2 years + 3 months = (2*365 + 3*30) * 86400 seconds
+        let two_years_three_months: u64 = (2 * 365 + 3 * 30) * 86400;
+        let now: u64 = 1_000_000_000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+        let birthday = now - two_years_three_months;
+
+        let age = client.calculate_age(&birthday);
+        // Approximation: years = elapsed_days / 365, months = (elapsed_days % 365) / 30
+        assert_eq!(age.years, 2);
+        assert_eq!(age.months, 3);
+    }
+
+    #[test]
+    fn test_calculate_age_newborn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let now: u64 = 1_000_000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let age = client.calculate_age(&now);
+        assert_eq!(age.years, 0);
+        assert_eq!(age.months, 0);
+    }
+
+    #[test]
+    fn test_calculate_age_future_birthday_returns_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let now: u64 = 1_000_000;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let age = client.calculate_age(&(now + 86400));
+        assert_eq!(age.years, 0);
+        assert_eq!(age.months, 0);
+    }
 }
