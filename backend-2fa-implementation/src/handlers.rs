@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
+use crate::two_factor::TwoFactorAuth;
 
 #[derive(Debug, Deserialize)]
 pub struct EnableTwoFactorRequest {
@@ -106,7 +106,7 @@ impl TwoFactorHandlers {
         
         let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
         
-        if let Some(index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
+        if let Some(_index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
             // Remove used backup code from database
             // two_factor_data.backup_codes.remove(index);
             // db.update_two_factor_data(&req.user_id, &two_factor_data)?;
