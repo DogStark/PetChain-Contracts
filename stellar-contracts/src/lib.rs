@@ -3543,6 +3543,15 @@ impl PetChainContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns the [`AccessLevel`] a user has for a given pet.
+    ///
+    /// # Expiration semantics
+    /// Access is considered **expired** when `ledger_timestamp >= expires_at`.
+    /// This means `expires_at` is an **exclusive** upper bound: access is valid
+    /// for all timestamps strictly less than `expires_at`, and revoked at the
+    /// exact expiration timestamp and beyond.
+    ///
+    /// Example: if `expires_at = 1000`, access is valid at `t=999` and expired at `t=1000`.
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
         if let Some(pet) = env
             .storage()
