@@ -73,6 +73,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -84,7 +87,7 @@ mod test {
             &String::from_str(&env, "LIC-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         let now = env.ledger().timestamp();
         let next = now + 1000;
@@ -104,7 +107,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vet_address, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -132,6 +135,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Golden Retriever"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -168,6 +174,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -199,6 +208,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
         let pet2 = client.register_pet(
@@ -208,6 +220,9 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -233,6 +248,9 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "X"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Private, // Encrypted, restricted
         );
 
@@ -268,6 +286,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Boxer"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -279,7 +300,7 @@ mod test {
             &String::from_str(&env, "LIC-002"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         // Set time to future to allow subtraction for past
         let now = 1_000_000;
@@ -322,25 +343,29 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
         let mut contacts = Vec::new(&env);
-        contacts.push_back(EmergencyContactInfo {
+        contacts.push_back(EmergencyContact { 
             name: String::from_str(&env, "Dad"),
             phone: String::from_str(&env, "111-2222"),
             relationship: String::from_str(&env, "Owner"),
-        });
+         email: String::from_str(&env, ""), is_primary: true });
 
         client.set_emergency_contacts(
             &pet_id,
             &contacts,
+            &Vec::new(&env),
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id).unwrap();
-        assert_eq!(info.0.len(), 1);
-        assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
+        let info = client.get_emergency_info(&pet_id);
+        assert_eq!(info.emergency_contacts.len(), 1);
+        assert_eq!(info.emergency_contacts.len(), 1);
     }
 
     #[test]
@@ -360,6 +385,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -372,10 +400,11 @@ mod test {
         let medical_record_id = client.add_medical_record(
             &pet_id,
             &vet,
-            &String::from_str(&env, "Checkup"),
+            
             &String::from_str(&env, "Healthy"),
             &String::from_str(&env, "None"),
             &Vec::new(&env),
+            &String::from_str(&env, ""),
         );
 
         let lab_id = client.add_lab_result(
@@ -417,6 +446,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -439,14 +471,15 @@ mod test {
         let record_id = client.add_medical_record(
             &pet_id,
             &vet,
-            &String::from_str(&env, "Checkup"),
+            
             &String::from_str(&env, "Healthy"),
             &String::from_str(&env, "Monitor"),
             &medications,
+            &String::from_str(&env, ""),
         );
 
         let created_record = client.get_medical_record(&record_id).unwrap();
-        assert_eq!(created_record.created_at, start_time);
+        assert_eq!(created_record.date, start_time);
         assert_eq!(created_record.updated_at, start_time);
 
         // Advance time
@@ -482,6 +515,7 @@ mod test {
             &String::from_str(&env, "Sick"),
             &String::from_str(&env, "Intensive Care"),
             &new_meds,
+            &String::from_str(&env, ""),
         );
         assert!(success);
 
@@ -504,9 +538,9 @@ mod test {
         // Verify preserved fields
         assert_eq!(updated.id, record_id);
         assert_eq!(updated.pet_id, pet_id);
-        assert_eq!(updated.veterinarian, vet);
-        assert_eq!(updated.record_type, String::from_str(&env, "Checkup"));
-        assert_eq!(updated.created_at, start_time);
+        assert_eq!(updated.vet_address, vet);
+        assert_eq!(updated.diagnosis, String::from_str(&env, "Checkup"));
+        assert_eq!(updated.date, start_time);
     }
 
     #[test]
@@ -522,6 +556,7 @@ mod test {
             &String::from_str(&env, "Diag"),
             &String::from_str(&env, "Treat"),
             &meds,
+            &String::from_str(&env, ""),
         );
         assert_eq!(success, false);
     }
@@ -548,6 +583,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -579,6 +617,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -612,6 +653,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -646,7 +690,10 @@ mod test {
                 &Gender::Male,
                 &Species::Dog,
                 &String::from_str(&env, "Breed"),
-                &PrivacyLevel::Public,
+                &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
+            &PrivacyLevel::Public,
             );
 
             client.report_lost(
@@ -685,6 +732,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -723,6 +773,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -751,7 +804,7 @@ mod test {
             &String::from_str(&env, "VET-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         // Set availability
         let start_time = 1_000_000; // Some timestamp
@@ -791,7 +844,7 @@ mod test {
             &String::from_str(&env, "VET-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         // Set availability
         let start_time = 1_000_000;
@@ -839,7 +892,10 @@ fn test_propose_upgrade() {
         &Gender::Male,
         &Species::Dog,
         &String::from_str(&env, "Labrador"),
-        &PrivacyLevel::Public,
+        &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
+            &PrivacyLevel::Public,
     );
 
     let insurance_company = Address::generate(&env);
@@ -883,7 +939,10 @@ fn test_approve_upgrade() {
         &Gender::Male,
         &Species::Dog,
         &String::from_str(&env, "Labrador"),
-        &PrivacyLevel::Public,
+        &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
+            &PrivacyLevel::Public,
     );
 
     let research_org = Address::generate(&env);
@@ -928,7 +987,10 @@ fn test_migrate_version() {
         &Gender::Male,
         &Species::Dog,
         &String::from_str(&env, "Labrador"),
-        &PrivacyLevel::Public,
+        &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
+            &PrivacyLevel::Public,
     );
 
     let insurance_company = Address::generate(&env);
@@ -1060,7 +1122,7 @@ mod test {
             &String::from_str(&env, "LIC-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         let now = env.ledger().timestamp();
         let next = now + 1000;
@@ -1080,7 +1142,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vet_address, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -1273,7 +1335,7 @@ mod test {
             &String::from_str(&env, "LIC-002"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         // Set time to future to allow subtraction for past
         let now = 1_000_000;
@@ -1323,21 +1385,22 @@ mod test {
         );
 
         let mut contacts = Vec::new(&env);
-        contacts.push_back(EmergencyContactInfo {
+        contacts.push_back(EmergencyContact { 
             name: String::from_str(&env, "Dad"),
             phone: String::from_str(&env, "111-2222"),
             relationship: String::from_str(&env, "Owner"),
-        });
+         email: String::from_str(&env, ""), is_primary: true });
 
         client.set_emergency_contacts(
             &pet_id,
             &contacts,
+            &Vec::new(&env),
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id).unwrap();
-        assert_eq!(info.0.len(), 1);
-        assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
+        let info = client.get_emergency_info(&pet_id);
+        assert_eq!(info.emergency_contacts.len(), 1);
+        assert_eq!(info.emergency_contacts.len(), 1);
     }
 
     #[test]
@@ -1373,9 +1436,9 @@ mod test {
 
         let res = client.get_lab_result(&lab_id).unwrap();
         assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(res.result_summary, String::from_str(&env, "Normal"));
+        assert_eq!(res.results, String::from_str(&env, "Normal"));
 
-        let list = client.get_pet_lab_results(&pet_id);
+        let list = client.get_lab_results(&pet_id);
         assert_eq!(list.len(), 1);
     }
 
@@ -1419,14 +1482,15 @@ mod test {
         let record_id = client.add_medical_record(
             &pet_id,
             &vet,
-            &String::from_str(&env, "Checkup"),
+            
             &String::from_str(&env, "Healthy"),
             &String::from_str(&env, "Monitor"),
             &medications,
+            &String::from_str(&env, ""),
         );
 
         let created_record = client.get_medical_record(&record_id).unwrap();
-        assert_eq!(created_record.created_at, start_time);
+        assert_eq!(created_record.date, start_time);
         assert_eq!(created_record.updated_at, start_time);
 
         // Advance time
@@ -1458,6 +1522,7 @@ mod test {
             &String::from_str(&env, "Sick"),
             &String::from_str(&env, "Intensive Care"),
             &new_meds,
+            &String::from_str(&env, ""),
         );
         assert!(success);
 
@@ -1480,9 +1545,9 @@ mod test {
         // Verify preserved fields
         assert_eq!(updated.id, record_id);
         assert_eq!(updated.pet_id, pet_id);
-        assert_eq!(updated.veterinarian, vet);
-        assert_eq!(updated.record_type, String::from_str(&env, "Checkup"));
-        assert_eq!(updated.created_at, start_time);
+        assert_eq!(updated.vet_address, vet);
+        assert_eq!(updated.diagnosis, String::from_str(&env, "Checkup"));
+        assert_eq!(updated.date, start_time);
     }
 
     #[test]
@@ -1498,6 +1563,7 @@ mod test {
             &String::from_str(&env, "Diag"),
             &String::from_str(&env, "Treat"),
             &meds,
+            &String::from_str(&env, ""),
         );
         assert_eq!(success, false);
     }
@@ -1885,6 +1951,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -1916,7 +1985,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vet_address, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -1944,6 +2013,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -1980,6 +2052,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2011,6 +2086,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Husky"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
         let pet2 = client.register_pet(
@@ -2020,6 +2098,9 @@ mod test {
             &Gender::Female,
             &Species::Dog,
             &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2045,6 +2126,9 @@ mod test {
             &Gender::Male,
             &Species::Cat,
             &String::from_str(&env, "X"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Private, // Encrypted, restricted
         );
 
@@ -2080,6 +2164,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Boxer"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2134,25 +2221,29 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
         let mut contacts = Vec::new(&env);
-        contacts.push_back(EmergencyContactInfo {
+        contacts.push_back(EmergencyContact { 
             name: String::from_str(&env, "Dad"),
             phone: String::from_str(&env, "111-2222"),
             relationship: String::from_str(&env, "Owner"),
-        });
+         email: String::from_str(&env, ""), is_primary: true });
 
         client.set_emergency_contacts(
             &pet_id,
             &contacts,
+            &Vec::new(&env),
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id).unwrap();
-        assert_eq!(info.0.len(), 1);
-        assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
+        let info = client.get_emergency_info(&pet_id);
+        assert_eq!(info.emergency_contacts.len(), 1);
+        assert_eq!(info.emergency_contacts.len(), 1);
     }
 
     #[test]
@@ -2172,6 +2263,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2185,7 +2279,7 @@ mod test {
 
         let res = client.get_lab_result(&lab_id).unwrap();
         assert_eq!(res.test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(res.result_summary, String::from_str(&env, "Normal"));
+        assert_eq!(res.results, String::from_str(&env, "Normal"));
 
         let list = list_pet_lab_results(&env, &contract_id, &pet_id);
         assert_eq!(list.len(), 1);
@@ -2193,7 +2287,7 @@ mod test {
 
     fn list_pet_lab_results(env: &Env, contract_id: &Address, pet_id: &u64) -> Vec<LabResult> {
          let client = PetChainContractClient::new(&env, &contract_id);
-         client.get_pet_lab_results(pet_id)
+         client.get_lab_results(pet_id)
     }
 
     #[test]
@@ -2213,6 +2307,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2233,14 +2330,15 @@ mod test {
         let record_id = client.add_medical_record(
             &pet_id,
             &vet,
-            &String::from_str(&env, "Checkup"),
+            
             &String::from_str(&env, "Healthy"),
             &String::from_str(&env, "Monitor"),
             &medications,
+            &String::from_str(&env, ""),
         );
 
         let created_record = client.get_medical_record(&record_id).unwrap();
-        assert_eq!(created_record.created_at, start_time);
+        assert_eq!(created_record.date, start_time);
         assert_eq!(created_record.updated_at, start_time);
 
         // Advance time
@@ -2272,6 +2370,7 @@ mod test {
             &String::from_str(&env, "Sick"),
             &String::from_str(&env, "Intensive Care"),
             &new_meds,
+            &String::from_str(&env, ""),
         );
         assert!(success);
 
@@ -2294,9 +2393,9 @@ mod test {
         // Verify preserved fields
         assert_eq!(updated.id, record_id);
         assert_eq!(updated.pet_id, pet_id);
-        assert_eq!(updated.veterinarian, vet);
-        assert_eq!(updated.record_type, String::from_str(&env, "Checkup"));
-        assert_eq!(updated.created_at, start_time);
+        assert_eq!(updated.vet_address, vet);
+        assert_eq!(updated.diagnosis, String::from_str(&env, "Checkup"));
+        assert_eq!(updated.date, start_time);
     }
 
     #[test]
@@ -2312,6 +2411,7 @@ mod test {
             &String::from_str(&env, "Diag"),
             &String::from_str(&env, "Treat"),
             &meds,
+            &String::from_str(&env, ""),
         );
         assert_eq!(success, false);
     }
@@ -2336,6 +2436,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &String::from_str(&env, "Retriever"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
@@ -2559,7 +2662,7 @@ mod test {
             &String::from_str(&env, "LIC-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&vet);
+        client.verify_vet(&admin, &vet);
 
         let now = env.ledger().timestamp();
         let next = now + 1000;
@@ -2579,7 +2682,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.veterinarian, vet);
+        assert_eq!(record.vet_address, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -2822,21 +2925,22 @@ mod test {
         );
 
         let mut contacts = Vec::new(&env);
-        contacts.push_back(EmergencyContactInfo {
+        contacts.push_back(EmergencyContact { 
             name: String::from_str(&env, "Dad"),
             phone: String::from_str(&env, "111-2222"),
             relationship: String::from_str(&env, "Owner"),
-        });
+         email: String::from_str(&env, ""), is_primary: true });
 
         client.set_emergency_contacts(
             &pet_id,
             &contacts,
+            &Vec::new(&env),
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id).unwrap();
-        assert_eq!(info.0.len(), 1);
-        assert_eq!(info.1, String::from_str(&env, "Allergic to bees"));
+        let info = client.get_emergency_info(&pet_id);
+        assert_eq!(info.emergency_contacts.len(), 1);
+        assert_eq!(info.emergency_contacts.len(), 1);
     }
 
     #[test]
@@ -3033,6 +3137,7 @@ mod test {
             &String::from_str(&env, "Diag"),
             &String::from_str(&env, "Treat"),
             &meds,
+            &String::from_str(&env, ""),
         );
         assert_eq!(success, false);
     }
@@ -3100,6 +3205,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Unknown"),
+            &0u32,
+            &None,
             &PrivacyLevel::Public,
         );
 
