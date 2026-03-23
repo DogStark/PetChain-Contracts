@@ -6,6 +6,8 @@ use soroban_sdk::{
 };
 
 mod vet_registry;
+#[cfg(test)]
+mod test;
 
 /// ======================================================
 /// CONTRACT
@@ -202,10 +204,14 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let last = history.len() - 1;
-        let mut prev = history.get(last).unwrap();
-        prev.relinquished_at = Some(now);
-        history.set(last, prev);
+        let len = history.len();
+        if len > 0 {
+            let last = len - 1;
+            if let Some(mut prev) = history.get(last) {
+                prev.relinquished_at = Some(now);
+                history.set(last, prev);
+            }
+        }
 
         history.push_back(OwnershipRecord {
             owner: transfer.to.clone(),
