@@ -3308,6 +3308,46 @@ mod test {
     }
 
     #[test]
+    fn test_access_expires_at_exact_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Yellow"),
+            &30u32,
+            &None,
+            &PrivacyLevel::Private,
+        );
+
+        let expires_at: u64 = 1000;
+        env.ledger().with_mut(|l| l.timestamp = 500);
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &Some(expires_at));
+
+        // One second before expiry: access still valid
+        env.ledger().with_mut(|l| l.timestamp = expires_at - 1);
+        assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::Basic);
+
+        // At exact expiry timestamp: access is expired (expires_at is exclusive upper bound)
+        env.ledger().with_mut(|l| l.timestamp = expires_at);
+        assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::None);
+
+        // One second after expiry: still expired
+        env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+        assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::None);
+    }
+
+    #[test]
     fn test_calculate_age_approximation() {
         let env = Env::default();
         env.mock_all_auths();
