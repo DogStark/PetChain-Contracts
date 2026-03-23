@@ -10,7 +10,13 @@ use soroban_sdk::{
 // Helpers
 // -------------------------------------------------------
 
-fn setup() -> (Env, PetOwnershipContractClient<'static>, Address, Address, u64) {
+fn setup() -> (
+    Env,
+    PetOwnershipContractClient<'static>,
+    Address,
+    Address,
+    u64,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
