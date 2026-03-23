@@ -3486,7 +3486,7 @@ impl PetChainContract {
 
             // Check if index is valid
             if attachment_index >= record.attachment_hashes.len() {
-                panic!("Invalid attachment index");
+                return false;
             }
 
             // Remove the attachment
