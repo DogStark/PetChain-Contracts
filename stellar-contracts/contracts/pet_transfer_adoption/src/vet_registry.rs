@@ -77,7 +77,7 @@ fn require_admin(env: &Env) {
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .expect("admin not initialized");
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::Unauthorized));
 
     admin.require_auth();
 }

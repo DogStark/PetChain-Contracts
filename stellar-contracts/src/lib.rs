@@ -47,6 +47,8 @@ mod test_access_control;
 #[cfg(test)]
 mod test_activity;
 #[cfg(test)]
+mod test_admin_initialization;
+#[cfg(test)]
 mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
@@ -73,8 +75,27 @@ mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
+
+/// Contract error types
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    Unauthorized = 1,
+    AdminNotInitialized = 2,
+}
+
+impl From<ContractError> for soroban_sdk::Error {
+    fn from(e: ContractError) -> Self {
+        use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
+        let code = match e {
+            ContractError::Unauthorized => ScErrorCode::InvalidAction,
+            ContractError::AdminNotInitialized => ScErrorCode::MissingValue,
+        };
+        soroban_sdk::Error::from((ScErrorType::Contract, code))
+    }
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1158,13 +1179,15 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&SystemKey::Admins)
-            .expect("Admins not set");
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
 
         if admins.is_empty() {
-            panic!("No admins configured");
+            panic_with_error!(env, ContractError::AdminNotInitialized);
         }
 
-        let admin = admins.get(0).expect("No admins configured");
+        let admin = admins
+            .get(0)
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
         admin.require_auth();
     }
 
@@ -1184,10 +1207,10 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&SystemKey::Admins)
-            .expect("Admins not set");
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
 
         if !admins.contains(admin.clone()) {
-            panic!("Address is not an admin");
+            panic_with_error!(env, ContractError::Unauthorized);
         }
         admin.require_auth();
     }
@@ -1196,7 +1219,7 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -1206,15 +1229,15 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
         if threshold == 0 || threshold > admins.len() {
-            panic!("Invalid threshold");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         invoker.require_auth();
         if !admins.contains(invoker) {
-            panic!("Invoker must be in the initial admin list");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         env.storage().instance().set(&SystemKey::Admins, &admins);
