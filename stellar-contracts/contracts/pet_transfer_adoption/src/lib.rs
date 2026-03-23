@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
     panic_with_error, Address, Env, Symbol, Vec,
 };
 
@@ -59,34 +59,23 @@ enum DataKey {
 
 const EVT_TRANSFER_INITIATED: Symbol = symbol_short!("xfer_init");
 const EVT_TRANSFER_ACCEPTED: Symbol = symbol_short!("xfer_ok");
-const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cancel");
+const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
 
 /// ======================================================
 /// ERRORS
 /// ======================================================
 
-#[contracttype]
+#[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum ContractError {
     PetNotFound = 1,
     Unauthorized = 2,
     TransferAlreadyPending = 3,
     NoPendingTransfer = 4,
     InvalidRecipient = 5,
-}
-
-impl From<ContractError> for soroban_sdk::Error {
-    fn from(e: ContractError) -> Self {
-        use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
-        let code = match e {
-            ContractError::PetNotFound => ScErrorCode::MissingValue,
-            ContractError::Unauthorized => ScErrorCode::InvalidAction,
-            ContractError::TransferAlreadyPending => ScErrorCode::ExistingValue,
-            ContractError::NoPendingTransfer => ScErrorCode::MissingValue,
-            ContractError::InvalidRecipient => ScErrorCode::InvalidAction,
-        };
-        soroban_sdk::Error::from((ScErrorType::Contract, code))
-    }
+    EmptyOwnershipHistory = 6,
+    MissingOwnershipRecord = 7,
 }
 
 /// ======================================================
@@ -202,8 +191,13 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let last = history.len() - 1;
-        let mut prev = history.get(last).unwrap();
+        let last = history
+            .len()
+            .checked_sub(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::EmptyOwnershipHistory));
+        let mut prev = history
+            .get(last)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
         prev.relinquished_at = Some(now);
         history.set(last, prev);
 
@@ -269,3 +263,6 @@ impl PetOwnershipContract {
             .has(&DataKey::PendingTransfer(pet_id))
     }
 }
+
+#[cfg(test)]
+mod test;
