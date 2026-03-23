@@ -458,3 +458,122 @@ mod test_vet {
         assert!(!result);
     }
 }
+
+// ============================================================
+// REGISTER_VET STRING LENGTH VALIDATION TESTS
+// ============================================================
+
+#[cfg(test)]
+mod test_register_vet_length_validation {
+    use crate::{PetChainContract, PetChainContractClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup(env: &Env) -> PetChainContractClient {
+        let contract_id = env.register_contract(None, PetChainContract);
+        PetChainContractClient::new(env, &contract_id)
+    }
+
+    fn repeat(env: &Env, byte: u8, n: usize) -> String {
+        let mut buf = [0u8; 256];
+        for i in 0..n {
+            buf[i] = byte;
+        }
+        String::from_bytes(env, &buf[..n])
+    }
+
+    // ---- name ----
+
+    #[test]
+    fn test_name_at_max_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        let result = client.register_vet(
+            &vet,
+            &repeat(&env, b'a', 100),
+            &String::from_str(&env, "LIC-001"),
+            &String::from_str(&env, "General"),
+        );
+        assert!(result);
+    }
+
+    #[test]
+    #[should_panic(expected = "name too long")]
+    fn test_name_over_max_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &repeat(&env, b'a', 101),
+            &String::from_str(&env, "LIC-001"),
+            &String::from_str(&env, "General"),
+        );
+    }
+
+    // ---- license_number ----
+
+    #[test]
+    fn test_license_at_max_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        let result = client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Valid"),
+            &repeat(&env, b'L', 50),
+            &String::from_str(&env, "General"),
+        );
+        assert!(result);
+    }
+
+    #[test]
+    #[should_panic(expected = "license_number too long")]
+    fn test_license_over_max_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Valid"),
+            &repeat(&env, b'L', 51),
+            &String::from_str(&env, "General"),
+        );
+    }
+
+    // ---- specialization ----
+
+    #[test]
+    fn test_specialization_at_max_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        let result = client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Valid"),
+            &String::from_str(&env, "LIC-002"),
+            &repeat(&env, b's', 100),
+        );
+        assert!(result);
+    }
+
+    #[test]
+    #[should_panic(expected = "specialization too long")]
+    fn test_specialization_over_max_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = setup(&env);
+        let vet = Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Valid"),
+            &String::from_str(&env, "LIC-002"),
+            &repeat(&env, b's', 101),
+        );
+    }
+}

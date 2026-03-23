@@ -59,7 +59,7 @@ enum DataKey {
 
 const EVT_TRANSFER_INITIATED: Symbol = symbol_short!("xfer_init");
 const EVT_TRANSFER_ACCEPTED: Symbol = symbol_short!("xfer_ok");
-const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cancel");
+const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
 
 /// ======================================================
 /// ERRORS
