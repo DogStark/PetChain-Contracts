@@ -1,6 +1,30 @@
 use serde::{Deserialize, Serialize};
 use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup, RecoveryResult};
 
+/// Represents a verified, authenticated caller — constructed by middleware
+/// (e.g. from a validated JWT or session token) and passed into every handler.
+///
+/// Handlers must never trust `user_id` values that arrive in request bodies
+/// directly; they must compare against this principal instead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthenticatedUser {
+    pub user_id: String,
+}
+
+impl AuthenticatedUser {
+    pub fn new(user_id: impl Into<String>) -> Self {
+        Self { user_id: user_id.into() }
+    }
+
+    /// Returns `Err` if the request targets a different user than the caller.
+    pub fn authorize(&self, requested_user_id: &str) -> Result<(), String> {
+        if self.user_id != requested_user_id {
+            return Err("Forbidden: you can only manage your own 2FA".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EnableTwoFactorRequest {
     pub user_id: String,
@@ -52,7 +76,9 @@ pub struct TwoFactorHandlers;
 
 impl TwoFactorHandlers {
     // POST /api/2fa/enable - Generate QR code and backup codes
-    pub fn enable_two_factor(req: EnableTwoFactorRequest) -> Result<EnableTwoFactorResponse, String> {
+    pub fn enable_two_factor(caller: &AuthenticatedUser, req: EnableTwoFactorRequest) -> Result<EnableTwoFactorResponse, String> {
+        caller.authorize(&req.user_id)?;
+
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
         
         // Store in database: user_id -> TwoFactorData { secret, backup_codes, enabled: false }
@@ -66,7 +92,9 @@ impl TwoFactorHandlers {
     }
 
     // POST /api/2fa/verify - Verify token to complete 2FA setup
-    pub fn verify_and_activate(req: VerifyTwoFactorRequest) -> Result<bool, String> {
+    pub fn verify_and_activate(caller: &AuthenticatedUser, req: VerifyTwoFactorRequest) -> Result<bool, String> {
+        caller.authorize(&req.user_id)?;
+
         // Fetch from database: user_id -> TwoFactorData
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
         
@@ -84,7 +112,14 @@ impl TwoFactorHandlers {
     }
 
     // POST /api/auth/login/2fa - Verify 2FA token during login
-    pub fn verify_login_token(req: LoginWithTwoFactorRequest) -> Result<bool, String> {
+    //
+    // Note: login is a pre-auth flow — the caller has already passed password
+    // verification and holds a short-lived pre-auth session token. Middleware
+    // must still construct an AuthenticatedUser from that token so we can
+    // confirm the user_id matches before accepting the TOTP token.
+    pub fn verify_login_token(caller: &AuthenticatedUser, req: LoginWithTwoFactorRequest) -> Result<bool, String> {
+        caller.authorize(&req.user_id)?;
+
         // Fetch from database
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
         
@@ -94,7 +129,9 @@ impl TwoFactorHandlers {
     }
 
     // POST /api/2fa/disable - Disable 2FA
-    pub fn disable_two_factor(req: DisableTwoFactorRequest) -> Result<bool, String> {
+    pub fn disable_two_factor(caller: &AuthenticatedUser, req: DisableTwoFactorRequest) -> Result<bool, String> {
+        caller.authorize(&req.user_id)?;
+
         // Fetch from database
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
         
@@ -117,7 +154,9 @@ impl TwoFactorHandlers {
     //  3. Invalidate ALL remaining backup codes and issue a fresh set.
     //  4. Keep 2FA enabled; the user must re-enroll their authenticator app.
     //  5. Persist the new TwoFactorData to the database before returning.
-    pub fn recover_with_backup(req: RecoverWithBackupRequest) -> Result<RecoverWithBackupResponse, String> {
+    pub fn recover_with_backup(caller: &AuthenticatedUser, req: RecoverWithBackupRequest) -> Result<RecoverWithBackupResponse, String> {
+        caller.authorize(&req.user_id)?;
+
         // Fetch from database
         // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
         

@@ -5,4 +5,4 @@ pub mod handlers;
 mod tests;
 
 pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup, RecoveryResult};
-pub use handlers::TwoFactorHandlers;
+pub use handlers::{TwoFactorHandlers, AuthenticatedUser};
