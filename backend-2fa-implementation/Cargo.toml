@@ -1,0 +1,13 @@
+[package]
+name = "petchain-2fa"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+totp-rs = { version = "5.5", features = ["qr", "otpauth"] }
+qrcode = "0.14"
+base64 = "0.22"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
