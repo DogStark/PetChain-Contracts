@@ -12,6 +12,9 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stellar-contracts
     steps:
       - uses: actions/checkout@v4
       
@@ -20,19 +23,13 @@ jobs:
           toolchain: stable
           
       - name: Check formatting
-        run: |
-          cd stellar-contracts
-          cargo fmt --check
+        run: cargo fmt --check
           
       - name: Run clippy
-        run: |
-          cd stellar-contracts
-          cargo clippy -- -D warnings
+        run: cargo clippy -- -D warnings
           
       - name: Run tests
-        run: |
-          cd stellar-contracts
-          cargo test
+        run: cargo test
           
       - name: Comment PR
         if: success() && github.event.pull_request.head.repo.full_name == github.repository
