@@ -1957,6 +1957,10 @@ impl PetChainContract {
     }
 
     // Vet Verification & Registration
+    const MAX_VET_NAME_LEN: u32 = 100;
+    const MAX_VET_LICENSE_LEN: u32 = 50;
+    const MAX_VET_SPEC_LEN: u32 = 100;
+
     pub fn register_vet(
         env: Env,
         vet_address: Address,
@@ -1965,6 +1969,16 @@ impl PetChainContract {
         specialization: String,
     ) -> bool {
         vet_address.require_auth();
+
+        if name.len() > Self::MAX_VET_NAME_LEN {
+            panic!("name too long");
+        }
+        if license_number.len() > Self::MAX_VET_LICENSE_LEN {
+            panic!("license_number too long");
+        }
+        if specialization.len() > Self::MAX_VET_SPEC_LEN {
+            panic!("specialization too long");
+        }
 
         if env
             .storage()
