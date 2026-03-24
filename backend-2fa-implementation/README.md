@@ -1,14 +1,55 @@
 # PetChain 2FA Implementation
 
-Minimal TOTP-based Two-Factor Authentication for PetChain backend.
+Configurable TOTP-based Two-Factor Authentication for PetChain backend with cryptographic agility.
 
 ## Features
 
+✅ **Configurable TOTP parameters** (SHA1/SHA256/SHA512, 6/8 digits, custom periods)  
+✅ **Cryptographic agility** - Future-proof algorithm support  
 ✅ QR code generation for authenticator apps  
 ✅ 8 backup codes generation  
 ✅ 2FA enable/disable endpoints  
 ✅ Verify 2FA token on login  
 ✅ Recovery mechanism with backup codes  
+✅ **Backward compatibility** with existing SHA1 implementations  
+
+## Configuration Options
+
+### Default Configuration (Recommended)
+- **Algorithm**: SHA256 (secure, modern)
+- **Digits**: 6 (standard)
+- **Period**: 30 seconds (standard)
+- **Window**: 1 (minimal clock skew tolerance)
+
+### Available Configurations
+```rust
+// Default (SHA256)
+let setup = TwoFactorAuth::setup("user@example.com", "PetChain")?;
+
+// Legacy SHA1 (backward compatibility)
+let config = TotpConfig::legacy_sha1();
+let setup = TwoFactorAuth::setup_with_config("user@example.com", "PetChain", config)?;
+
+// High Security (SHA512, 8 digits)
+let config = TotpConfig::high_security();
+let setup = TwoFactorAuth::setup_with_config("user@example.com", "PetChain", config)?;
+
+// Custom configuration
+let config = TotpConfig {
+    algorithm: Algorithm::SHA256,
+    digits: 6,
+    period: 30,
+    window: 1,
+};
+```
+
+## Migration from Hard-coded SHA1
+
+**✅ Backward Compatible**: Existing SHA1 implementations continue to work  
+**✅ Gradual Migration**: Migrate users to SHA256 over time  
+**✅ Configuration Storage**: Store TOTP config with user data  
+
+See [CONFIGURATION.md](CONFIGURATION.md) for detailed migration guide.  
 
 ## API Endpoints
 
