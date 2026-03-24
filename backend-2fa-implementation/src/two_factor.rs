@@ -73,4 +73,16 @@ impl TwoFactorAuth {
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
         stored_codes.iter().position(|code| code == provided_code)
     }
+
+    /// Consume a backup code: removes it from the list if found and returns true.
+    /// The caller MUST persist the mutated `stored_codes` after a `true` return
+    /// to guarantee single-use semantics.
+    pub fn consume_backup_code(stored_codes: &mut Vec<String>, provided_code: &str) -> bool {
+        if let Some(index) = Self::verify_backup_code(stored_codes, provided_code) {
+            stored_codes.remove(index);
+            true
+        } else {
+            false
+        }
+    }
 }

@@ -103,13 +103,14 @@ impl TwoFactorHandlers {
     pub fn recover_with_backup(req: RecoverWithBackupRequest) -> Result<bool, String> {
         // Fetch from database
         // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
-        
-        let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
-        
-        if let Some(index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
-            // Remove used backup code from database
-            // two_factor_data.backup_codes.remove(index);
-            // db.update_two_factor_data(&req.user_id, &two_factor_data)?;
+
+        // --- placeholder: replace with real DB fetch ---
+        let mut backup_codes = vec!["1234-5678".to_string()]; // Get from DB
+        // -----------------------------------------------
+
+        if TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
+            // Persist the updated backup_codes list (code has been removed)
+            // db.update_two_factor_backup_codes(&req.user_id, &backup_codes)?;
             Ok(true)
         } else {
             Ok(false)
