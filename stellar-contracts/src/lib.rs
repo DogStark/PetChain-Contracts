@@ -70,6 +70,8 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_book_slot;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -731,6 +733,15 @@ pub struct LabResult {
     pub reference_ranges: String,
     pub attachment_hash: Option<String>, // IPFS hash for PDF
     pub medical_record_id: Option<u64>,  // Link to medical record
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetAge {
+    /// Approximate years (elapsed_days / 365)
+    pub years: u64,
+    /// Approximate remaining months ((elapsed_days % 365) / 30)
+    pub months: u64,
 }
 
 #[contracttype]
@@ -3486,7 +3497,7 @@ impl PetChainContract {
 
             // Check if index is valid
             if attachment_index >= record.attachment_hashes.len() {
-                panic!("Invalid attachment index");
+                return false;
             }
 
             // Remove the attachment
@@ -4123,7 +4134,22 @@ impl PetChainContract {
     }
 
     /// Book a slot (mark as unavailable)
-    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+    /// Only a registered pet owner can book a slot.
+    pub fn book_slot(env: Env, booker: Address, vet_address: Address, slot_index: u64) -> bool {
+        booker.require_auth();
+
+        // Only registered pet owners may book
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, PetOwner>(&DataKey::PetOwner(booker.clone()))
+            .map(|o| o.is_pet_owner)
+            .unwrap_or(false)
+            == false
+        {
+            panic!("Unauthorized: only registered pet owners can book slots");
+        }
+
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
 
         if let Some(mut slot) = env
@@ -4135,8 +4161,6 @@ impl PetChainContract {
                 panic!("Slot already booked");
             }
 
-            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
-            // In real implementation, you'd check if caller is a registered pet owner
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
@@ -5814,7 +5838,24 @@ impl PetChainContract {
     }
 }
 
-// --- ENCRYPTION HELPERS ---
+    // --- AGE CALCULATION ---
+
+    /// Calculates a pet's approximate age from a Unix timestamp birthday.
+    ///
+    /// # Approximation
+    /// Uses 365 days/year and 30 days/month. This is intentionally approximate
+    /// and may deviate by ±1 month from calendar-accurate results due to leap
+    /// years and variable month lengths. Sufficient for display purposes.
+    pub fn calculate_age(env: Env, birthday_timestamp: u64) -> PetAge {
+        let now = env.ledger().timestamp();
+        let elapsed_secs = if now > birthday_timestamp { now - birthday_timestamp } else { 0 };
+        let elapsed_days = elapsed_secs / 86400;
+        let years = elapsed_days / 365;
+        let remaining_days = elapsed_days % 365;
+        let months = remaining_days / 30;
+        PetAge { years, months }
+    }
+
 fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
     // Mock encryption for demonstration
     let nonce = Bytes::from_array(env, &[0u8; 12]);
