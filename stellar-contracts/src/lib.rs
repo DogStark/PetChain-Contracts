@@ -70,6 +70,8 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_get_pet_decryption;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1525,15 +1527,17 @@ impl PetChainContract {
 
             let key = Self::get_encryption_key(&env);
 
+            // Propagate decryption failures as None rather than masking them
+            // with a sentinel "Error" string. Any corrupt ciphertext or nonce
+            // mismatch causes the whole read to return None deterministically.
             let decrypted_name = decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_name.ciphertext,
                 &pet.encrypted_name.nonce,
                 &key,
             )
-            .unwrap_or(Bytes::new(&env));
-            let name =
-                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
+            .ok()?;
+            let name = String::from_xdr(&env, &decrypted_name).ok()?;
 
             let decrypted_birthday = decrypt_sensitive_data(
                 &env,
@@ -1541,9 +1545,8 @@ impl PetChainContract {
                 &pet.encrypted_birthday.nonce,
                 &key,
             )
-            .unwrap_or(Bytes::new(&env));
-            let birthday = String::from_xdr(&env, &decrypted_birthday)
-                .unwrap_or(String::from_str(&env, "Error"));
+            .ok()?;
+            let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
 
             let decrypted_breed = decrypt_sensitive_data(
                 &env,
@@ -1551,9 +1554,8 @@ impl PetChainContract {
                 &pet.encrypted_breed.nonce,
                 &key,
             )
-            .unwrap_or(Bytes::new(&env));
-            let breed =
-                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
+            .ok()?;
+            let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
 
             let a_bytes = decrypt_sensitive_data(
                 &env,
@@ -1561,8 +1563,8 @@ impl PetChainContract {
                 &pet.encrypted_allergies.nonce,
                 &key,
             )
-            .unwrap_or(Bytes::new(&env));
-            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).unwrap_or(Vec::new(&env));
+            .ok()?;
+            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
 
             let profile = PetProfile {
                 id: pet.id,
