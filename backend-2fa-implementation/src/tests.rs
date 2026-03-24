@@ -140,4 +140,72 @@ mod tests {
         assert!(result.is_ok()); // Should return Ok(None) now because we handle format error internally
         assert_eq!(result.unwrap(), None);
     }
+
+    use std::collections::HashMap;
+    use crate::two_factor::{TwoFactorStorage, TwoFactorData};
+    use crate::handlers::{TwoFactorHandlers, DisableTwoFactorRequest, EnableTwoFactorRequest, VerifyTwoFactorRequest};
+
+    struct MockStorage {
+        data: HashMap<String, TwoFactorData>,
+    }
+
+    impl TwoFactorStorage for MockStorage {
+        fn get_two_factor_data(&self, user_id: &str) -> Result<Option<TwoFactorData>, String> {
+            Ok(self.data.get(user_id).cloned())
+        }
+        fn save_two_factor_data(&mut self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+            self.data.insert(user_id.to_string(), data);
+            Ok(())
+        }
+        fn delete_two_factor_data(&mut self, user_id: &str) -> Result<(), String> {
+            self.data.remove(user_id);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_handler_disable_two_factor() {
+        let mut storage = MockStorage { data: HashMap::new() };
+        let user_id = "user123".to_string();
+        
+        // 1. Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(&mut storage, EnableTwoFactorRequest {
+            user_id: user_id.clone(),
+            email: "test@example.com".to_string(),
+        }).unwrap();
+        
+        // 2. Verify and activate
+        use totp_rs::{Algorithm, Secret, TOTP};
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        ).unwrap();
+        let token = totp.generate_current().unwrap();
+        
+        TwoFactorHandlers::verify_and_activate(&mut storage, VerifyTwoFactorRequest {
+            user_id: user_id.clone(),
+            token: token.clone(),
+        }).unwrap();
+        
+        // Verify it is enabled in storage
+        let data = storage.get_two_factor_data(&user_id).unwrap().unwrap();
+        assert!(data.enabled);
+        
+        // 3. Disable 2FA
+        let result = TwoFactorHandlers::disable_two_factor(&mut storage, DisableTwoFactorRequest {
+            user_id: user_id.clone(),
+            token,
+        }).unwrap();
+        
+        assert!(result);
+        
+        // 4. Verify it is deleted/disabled in storage
+        let data = storage.get_two_factor_data(&user_id).unwrap();
+        assert!(data.is_none());
+    }
 }
