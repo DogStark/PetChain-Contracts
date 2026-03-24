@@ -1,5 +1,4 @@
-
-use crate::{PetChainContract, PetChainContractClient, Gender, Species, PrivacyLevel};
+use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 #[test]
