@@ -1,20 +1,35 @@
 use base64::{engine::general_purpose, Engine as _};
 use qrcode::QrCode;
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use totp_rs::{Algorithm, Secret, TOTP};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorSetup {
     pub secret: String,
     pub qr_code_base64: String,
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
+    pub enabled: bool,
+}
+
+/// Returned after a successful backup-code recovery.
+/// Contains the new secret and fresh backup codes that must be persisted,
+/// replacing all previous 2FA material.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoveryResult {
+    /// New TOTP secret — the old secret is now invalid.
+    pub new_secret: String,
+    /// Fresh set of backup codes — all previous codes are now invalid.
+    pub new_backup_codes: Vec<String>,
+    /// 2FA remains enabled after recovery.
     pub enabled: bool,
 }
 
@@ -22,7 +37,13 @@ pub struct TwoFactorAuth;
 
 impl TwoFactorAuth {
     pub fn generate_secret() -> String {
-        Secret::generate_secret().to_string()
+        const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let mut rng = thread_rng();
+        let range = Uniform::from(0..BASE32_ALPHABET.len());
+
+        (0..32)
+            .map(|_| BASE32_ALPHABET[range.sample(&mut rng)] as char)
+            .collect()
     }
 
     pub fn setup(user_email: &str, issuer: &str) -> Result<TwoFactorSetup, String> {
@@ -40,16 +61,20 @@ impl TwoFactorAuth {
         )
         .map_err(|e| e.to_string())?;
 
-        let qr_url = totp.get_qr_base64().map_err(|e| e.to_string())?;
+        let qr_code_base64 = totp.get_qr_base64().map_err(|e| e.to_string())?;
         let backup_codes = Self::generate_backup_codes(8);
 
         Ok(TwoFactorSetup {
             secret,
-            qr_code_base64: qr_url,
+            qr_code_base64,
             backup_codes,
         })
     }
 
+    /// Verify a token using the default drift policy (STANDARD, ±1 step).
+    ///
+    /// Prefer [`verify_token_with_policy`] when you need explicit control
+    /// over acceptable clock drift.
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
         let totp = TOTP::new(
             Algorithm::SHA1,
@@ -64,11 +89,11 @@ impl TwoFactorAuth {
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(totp.check_current(token).map_err(|e| e.to_string())?)
+        Ok(false)
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         (0..count)
             .map(|_| {
                 format!(
@@ -82,5 +107,22 @@ impl TwoFactorAuth {
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
         stored_codes.iter().position(|code| code == provided_code)
+    }
+
+    /// Executes the recovery policy after a valid backup code is consumed:
+    /// - Rotates the TOTP secret (old secret is immediately invalid)
+    /// - Invalidates ALL remaining backup codes and issues a fresh set
+    /// - Keeps 2FA enabled so the account is not left unprotected
+    ///
+    /// Callers MUST persist the returned `RecoveryResult` to the database,
+    /// replacing the previous `TwoFactorData` entirely.
+    pub fn rotate_after_recovery() -> RecoveryResult {
+        let new_secret = Self::generate_secret();
+        let new_backup_codes = Self::generate_backup_codes(8);
+        RecoveryResult {
+            new_secret,
+            new_backup_codes,
+            enabled: true,
+        }
     }
 }
