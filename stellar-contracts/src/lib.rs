@@ -737,6 +737,15 @@ pub struct LabResult {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetAge {
+    /// Approximate years (elapsed_days / 365)
+    pub years: u64,
+    /// Approximate remaining months ((elapsed_days % 365) / 30)
+    pub months: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VaccinationSummary {
     pub is_fully_current: bool,
     pub overdue_types: Vec<VaccineType>,
@@ -5829,7 +5838,24 @@ impl PetChainContract {
     }
 }
 
-// --- ENCRYPTION HELPERS ---
+    // --- AGE CALCULATION ---
+
+    /// Calculates a pet's approximate age from a Unix timestamp birthday.
+    ///
+    /// # Approximation
+    /// Uses 365 days/year and 30 days/month. This is intentionally approximate
+    /// and may deviate by ±1 month from calendar-accurate results due to leap
+    /// years and variable month lengths. Sufficient for display purposes.
+    pub fn calculate_age(env: Env, birthday_timestamp: u64) -> PetAge {
+        let now = env.ledger().timestamp();
+        let elapsed_secs = if now > birthday_timestamp { now - birthday_timestamp } else { 0 };
+        let elapsed_days = elapsed_secs / 86400;
+        let years = elapsed_days / 365;
+        let remaining_days = elapsed_days % 365;
+        let months = remaining_days / 30;
+        PetAge { years, months }
+    }
+
 fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
     // Mock encryption for demonstration
     let nonce = Bytes::from_array(env, &[0u8; 12]);
