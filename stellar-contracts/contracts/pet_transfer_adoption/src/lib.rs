@@ -1,8 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    panic_with_error, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -115,7 +114,9 @@ fn get_pet(env: &Env, pet_id: u64) -> Pet {
 }
 
 fn save_pet(env: &Env, pet: &Pet) {
-    env.storage().persistent().set(&DataKey::Pet(pet.pet_id), pet);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Pet(pet.pet_id), pet);
 }
 
 fn get_history(env: &Env, pet_id: u64) -> Vec<OwnershipRecord> {
@@ -187,10 +188,8 @@ impl PetOwnershipContract {
             .persistent()
             .set(&DataKey::PendingTransfer(pet_id), &transfer);
 
-        env.events().publish(
-            (EVT_TRANSFER_INITIATED, pet_id),
-            (pet.current_owner, to),
-        );
+        env.events()
+            .publish((EVT_TRANSFER_INITIATED, pet_id), (pet.current_owner, to));
     }
 
     /// ----------------------------------
