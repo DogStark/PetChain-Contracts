@@ -281,7 +281,6 @@ fn test_remove_attachment_success() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid attachment index")]
 fn test_remove_attachment_invalid_index() {
     let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
@@ -290,8 +289,9 @@ fn test_remove_attachment_invalid_index() {
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
     client.add_attachment(&record_id, &ipfs_hash, &metadata);
 
-    // Try to remove with invalid index
-    client.remove_attachment(&record_id, &5u32);
+    // Try to remove with invalid index - should return false, not panic
+    let result = client.remove_attachment(&record_id, &5u32);
+    assert!(!result);
 }
 
 #[test]
