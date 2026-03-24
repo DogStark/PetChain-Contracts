@@ -178,6 +178,7 @@ fn test_multisig_admin_methods_work_after_initialization() {
     let proposal_id = client.propose_action(&admin, &action, &3600u64);
     assert_eq!(proposal_id, 1u64);
 
-    // Approving should work
-    client.approve_proposal(&admin, &proposal_id);
+    // Approving with the other admin should work
+    client.approve_proposal(&admin2, &proposal_id);
+
 }

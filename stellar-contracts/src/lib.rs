@@ -4718,7 +4718,9 @@ impl PetChainContract {
                 Self::_revoke_vet_internal(&env, addr);
             }
             ProposalAction::UpgradeContract(code_hash) => {
-                env.deployer().update_current_contract_wasm(code_hash);
+                if code_hash != BytesN::from_array(&env, &[0u8; 32]) {
+                    env.deployer().update_current_contract_wasm(code_hash);
+                }
             }
             ProposalAction::ChangeAdmin(params) => {
                 let (admins, threshold) = params;
@@ -5690,6 +5692,7 @@ impl PetChainContract {
             .set(&SystemKey::PetMultisigConfig(pet_id), &config);
         true
     }
+
 
     /// Get the multi-signature configuration for a pet.
     ///
