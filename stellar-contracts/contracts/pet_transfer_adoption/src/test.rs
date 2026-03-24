@@ -65,3 +65,30 @@ fn accept_transfer_errors_when_history_is_empty() {
         )))
     );
 }
+
+#[test]
+fn cancel_transfer_errors_when_stale() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    
+    // Create pet and initiate a transfer
+    create_pending_transfer(&client, pet_id, &owner, &new_owner);
+
+    // Deliberately alter the pet's current_owner to simulate a divergent state
+    let rogue_owner = Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        let mut pet: super::Pet = env.storage().persistent().get(&DataKey::Pet(pet_id)).unwrap();
+        pet.current_owner = rogue_owner;
+        env.storage().persistent().set(&DataKey::Pet(pet_id), &pet);
+    });
+
+    // The original owner tries to cancel the transfer, but they no longer match pet.current_owner
+    let result = client.try_cancel_transfer(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::StaleCancellation as u32,
+        )))
+    );
+}
