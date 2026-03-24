@@ -324,6 +324,7 @@ mod tests {
         assert!(result);
     }
 
+main
     /// Verifies that the stored secret (not a placeholder) is used for token validation.
     #[test]
     fn test_verify_uses_stored_secret_not_placeholder() {
@@ -667,5 +668,80 @@ mod tests {
         fn test_authorize_empty_vs_nonempty_is_forbidden() {
             assert!(caller("").authorize("someone").is_err());
         }
+=======
+    // --- backup code single-use tests ---
+
+    #[test]
+    fn test_consume_backup_code_removes_code() {
+        let mut codes = vec![
+            "1111-2222".to_string(),
+            "3333-4444".to_string(),
+            "5555-6666".to_string(),
+        ];
+
+        let consumed = TwoFactorAuth::consume_backup_code(&mut codes, "3333-4444");
+        assert!(consumed);
+        assert_eq!(codes.len(), 2);
+        assert!(!codes.contains(&"3333-4444".to_string()));
+    }
+
+    #[test]
+    fn test_backup_code_cannot_be_reused_after_consumption() {
+        let mut codes = vec!["1234-5678".to_string()];
+
+        // First use succeeds
+        assert!(TwoFactorAuth::consume_backup_code(&mut codes, "1234-5678"));
+        // Second use on the now-empty list must fail
+        assert!(!TwoFactorAuth::consume_backup_code(&mut codes, "1234-5678"));
+        assert!(codes.is_empty());
+    }
+
+    #[test]
+    fn test_consume_invalid_backup_code_returns_false() {
+        let mut codes = vec!["1234-5678".to_string()];
+
+        let result = TwoFactorAuth::consume_backup_code(&mut codes, "9999-9999");
+        assert!(!result);
+        // List must be unchanged
+        assert_eq!(codes.len(), 1);
+    }
+
+    #[test]
+    fn test_each_backup_code_single_use_across_all_codes() {
+        let originals = vec![
+            "1111-1111".to_string(),
+            "2222-2222".to_string(),
+            "3333-3333".to_string(),
+        ];
+        let mut codes = originals.clone();
+
+        // Consume every code exactly once
+        for code in &originals {
+            assert!(TwoFactorAuth::consume_backup_code(&mut codes, code));
+        }
+        assert!(codes.is_empty());
+
+        // Attempting any code again must fail
+        for code in &originals {
+            assert!(!TwoFactorAuth::consume_backup_code(&mut codes, code));
+        }
+    }
+
+    /// Simulates two concurrent recovery attempts using the same backup code.
+    /// In a real system these would race against the DB; here we model atomicity
+    /// by applying both operations sequentially on the same mutable list —
+    /// only the first must succeed.
+    #[test]
+    fn test_concurrent_reuse_only_first_succeeds() {
+        let mut codes = vec!["7777-8888".to_string()];
+
+        // Simulate two "threads" both reading the same code list snapshot
+        // and attempting to consume the same code.
+        let first = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
+        let second = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
+
+        assert!(first,  "first recovery attempt must succeed");
+        assert!(!second, "second recovery attempt must fail — code already consumed");
+ main
     }
 }
