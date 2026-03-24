@@ -1,5 +1,23 @@
+use crate::two_factor::{TwoFactorAuth, TwoFactorData};
 use serde::{Deserialize, Serialize};
-use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup, RecoveryResult};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+fn two_factor_store() -> &'static Mutex<HashMap<String, TwoFactorData>> {
+    static STORE: OnceLock<Mutex<HashMap<String, TwoFactorData>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn load_two_factor_data(user_id: &str) -> Result<TwoFactorData, String> {
+    let store = two_factor_store()
+        .lock()
+        .map_err(|_| "2FA storage lock poisoned".to_string())?;
+
+    store
+        .get(user_id)
+        .cloned()
+        .ok_or_else(|| format!("2FA not configured for user {}", user_id))
+}
 
 /// Represents a verified, authenticated caller — constructed by middleware
 /// (e.g. from a validated JWT or session token) and passed into every handler.
@@ -80,10 +98,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
-        
-        // Store in database: user_id -> TwoFactorData { secret, backup_codes, enabled: false }
-        // Database call here
-        
+
+        let data = TwoFactorData {
+            secret: setup.secret.clone(),
+            backup_codes: setup.backup_codes.clone(),
+            enabled: false,
+        };
+
+        let mut store = two_factor_store()
+            .lock()
+            .map_err(|_| "2FA storage lock poisoned".to_string())?;
+        store.insert(req.user_id, data);
+
         Ok(EnableTwoFactorResponse {
             secret: setup.secret,
             qr_code: setup.qr_code_base64,
@@ -103,11 +129,20 @@ impl TwoFactorHandlers {
         
         let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
         
+    pub fn verify_and_activate(req: VerifyTwoFactorRequest) -> Result<bool, String> {
+        let mut store = two_factor_store()
+            .lock()
+            .map_err(|_| "2FA storage lock poisoned".to_string())?;
+        let two_factor_data = store
+            .get_mut(&req.user_id)
+            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
+
+        let is_valid = TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)?;
+
         if is_valid {
-            // Update database: set enabled = true
-            // db.update_two_factor_enabled(&req.user_id, true)?;
+            two_factor_data.enabled = true;
         }
-        
+
         Ok(is_valid)
     }
 
@@ -138,11 +173,33 @@ impl TwoFactorHandlers {
         let secret = "PLACEHOLDER_SECRET"; // Get from DB
         let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
         
-        if is_valid {
-            // Delete from database or set enabled = false
-            // db.delete_two_factor_data(&req.user_id)?;
+    pub fn verify_login_token(req: LoginWithTwoFactorRequest) -> Result<bool, String> {
+        let two_factor_data = load_two_factor_data(&req.user_id)?;
+        if !two_factor_data.enabled {
+            return Ok(false);
         }
-        
+
+        TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)
+    }
+
+    // POST /api/2fa/disable - Disable 2FA
+    pub fn disable_two_factor(req: DisableTwoFactorRequest) -> Result<bool, String> {
+        let mut store = two_factor_store()
+            .lock()
+            .map_err(|_| "2FA storage lock poisoned".to_string())?;
+        let two_factor_data = store
+            .get_mut(&req.user_id)
+            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
+        if !two_factor_data.enabled {
+            return Ok(false);
+        }
+
+        let is_valid = TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)?;
+
+        if is_valid {
+            two_factor_data.enabled = false;
+        }
+
         Ok(is_valid)
     }
 
@@ -164,6 +221,21 @@ impl TwoFactorHandlers {
 
         if TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code).is_none() {
             return Err("Invalid backup code".to_string());
+    pub fn recover_with_backup(req: RecoverWithBackupRequest) -> Result<bool, String> {
+        let mut store = two_factor_store()
+            .lock()
+            .map_err(|_| "2FA storage lock poisoned".to_string())?;
+        let two_factor_data = store
+            .get_mut(&req.user_id)
+            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
+
+        if let Some(index) =
+            TwoFactorAuth::verify_backup_code(&two_factor_data.backup_codes, &req.backup_code)
+        {
+            two_factor_data.backup_codes.remove(index);
+            Ok(true)
+        } else {
+            Ok(false)
         }
 
         // Rotate secret and invalidate all old codes (including remaining backup codes)
@@ -181,5 +253,27 @@ impl TwoFactorHandlers {
             new_backup_codes: recovery.new_backup_codes,
             enabled: recovery.enabled,
         })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
+    two_factor_store()
+        .lock()
+        .ok()
+        .and_then(|store| store.get(user_id).cloned())
+}
+
+#[cfg(test)]
+pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactorData) {
+    if let Ok(mut store) = two_factor_store().lock() {
+        store.insert(user_id.to_string(), data);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_two_factor_store_for_tests() {
+    if let Ok(mut store) = two_factor_store().lock() {
+        store.clear();
     }
 }
