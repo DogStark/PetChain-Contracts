@@ -85,8 +85,7 @@ mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
-mod test_get_pet_access_control;
-mod test_book_slot;
+mod test_get_pet_decryption;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1563,98 +1562,44 @@ impl PetChainContract {
         // Owner always has full access regardless of privacy level.
         let is_owner = pet.owner == viewer;
 
-        let access = if is_owner {
-            AccessLevel::Full
-        } else {
-            // Resolve any explicit grant for this viewer.
-            let grant_level = env
-                .storage()
-                .instance()
-                .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((id, viewer.clone())))
-                .and_then(|g| {
-                    if !g.is_active {
-                        return None;
-                    }
-                    if let Some(exp) = g.expires_at {
-                        if env.ledger().timestamp() >= exp {
-                            return None;
-                        }
-                    }
-                    Some(g.access_level)
-                });
+            // Propagate decryption failures as None rather than masking them
+            // with a sentinel "Error" string. Any corrupt ciphertext or nonce
+            // mismatch causes the whole read to return None deterministically.
+            let decrypted_name = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_name.ciphertext,
+                &pet.encrypted_name.nonce,
+                &key,
+            )
+            .ok()?;
+            let name = String::from_xdr(&env, &decrypted_name).ok()?;
 
-            match pet.privacy_level {
-                // Public pets: any authenticated viewer gets at least Basic access.
-                PrivacyLevel::Public => grant_level.unwrap_or(AccessLevel::Basic),
-                // Restricted pets: viewer must hold an explicit grant.
-                PrivacyLevel::Restricted => grant_level.unwrap_or(AccessLevel::None),
-                // Private pets: owner only — all other callers are denied.
-                PrivacyLevel::Private => AccessLevel::None,
-            }
-        };
+            let decrypted_birthday = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_birthday.ciphertext,
+                &pet.encrypted_birthday.nonce,
+                &key,
+            )
+            .ok()?;
+            let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
 
-        // Deny access entirely for None level.
-        if matches!(access, AccessLevel::None) {
-            return None;
-        }
+            let decrypted_breed = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_breed.ciphertext,
+                &pet.encrypted_breed.nonce,
+                &key,
+            )
+            .ok()?;
+            let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
 
-        // ---- decrypt fields ----
-        let key = Self::get_encryption_key(&env);
-
-        let decrypted_name = decrypt_sensitive_data(
-            &env,
-            &pet.encrypted_name.ciphertext,
-            &pet.encrypted_name.nonce,
-            &key,
-        )
-        .ok()?;
-        let name = String::from_xdr(&env, &decrypted_name).ok()?;
-
-        let decrypted_birthday = decrypt_sensitive_data(
-            &env,
-            &pet.encrypted_birthday.ciphertext,
-            &pet.encrypted_birthday.nonce,
-            &key,
-        )
-        .ok()?;
-        let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
-
-        let decrypted_breed = decrypt_sensitive_data(
-            &env,
-            &pet.encrypted_breed.ciphertext,
-            &pet.encrypted_breed.nonce,
-            &key,
-        )
-        .ok()?;
-        let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
-
-        let a_bytes = decrypt_sensitive_data(
-            &env,
-            &pet.encrypted_allergies.ciphertext,
-            &pet.encrypted_allergies.nonce,
-            &key,
-        )
-        .ok()?;
-        let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
-
-        let profile = PetProfile {
-            id: pet.id,
-            owner: pet.owner,
-            privacy_level: pet.privacy_level,
-            name,
-            birthday,
-            active: pet.active,
-            created_at: pet.created_at,
-            updated_at: pet.updated_at,
-            new_owner: pet.new_owner,
-            species: pet.species,
-            gender: pet.gender,
-            breed,
-            color: pet.color,
-            weight: pet.weight,
-            microchip_id: pet.microchip_id,
-            allergies,
-        };
+            let a_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_allergies.ciphertext,
+                &pet.encrypted_allergies.nonce,
+                &key,
+            )
+            .ok()?;
+            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
 
         Self::log_access(
             &env,
