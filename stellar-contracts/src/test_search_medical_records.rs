@@ -16,6 +16,9 @@ mod test_search_medical_records {
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
         let owner = Address::generate(&env);
         let vet = Address::generate(&env);
 
@@ -38,7 +41,8 @@ mod test_search_medical_records {
             &String::from_str(&env, "LIC-001"),
             &String::from_str(&env, "General"),
         );
-        client.verify_vet(&Address::generate(&env), &vet);
+        client.verify_vet(&admin, &vet);
+
 
         (env, client, owner, vet, pet_id)
     }
@@ -55,7 +59,7 @@ mod test_search_medical_records {
             vet,
             &String::from_str(env, diagnosis),
             &String::from_str(env, "Treatment"),
-            &Vec::new(env),
+            &soroban_sdk::Vec::new(env),
             &String::from_str(env, "Notes"),
         )
     }
@@ -108,6 +112,7 @@ mod test_search_medical_records {
         let end = env.ledger().timestamp();
 
         let results = client.search_records_by_date_range(&pet_id, &start, &end);
+
         assert_eq!(results.len(), 2);
     }
 
@@ -118,7 +123,7 @@ mod test_search_medical_records {
         add_record(&client, &env, pet_id, &vet, "Flu");
 
         // Range in the far future — should match nothing
-        let results = client.search_records_by_date_range(&pet_id, &u64::MAX - 100, &u64::MAX);
+        let results = client.search_records_by_date_range(&pet_id, &(u64::MAX - 100), &u64::MAX);
         assert_eq!(results.len(), 0);
     }
 
@@ -131,6 +136,8 @@ mod test_search_medical_records {
 
         // Exact timestamp as both start and end should still match
         let results = client.search_records_by_date_range(&pet_id, &ts, &ts);
+
+
         // At least one record should fall within the boundary
         assert!(results.len() >= 0); // boundary check — no panic
     }
