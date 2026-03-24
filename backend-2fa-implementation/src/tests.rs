@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::handlers::{
+        clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,
+        EnableTwoFactorRequest, LoginWithTwoFactorRequest, TwoFactorHandlers,
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
         overwrite_two_factor_data_for_tests, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
         TwoFactorHandlers, VerifyTwoFactorRequest,
@@ -66,12 +68,12 @@ mod tests {
     fn test_generate_backup_codes() {
         let codes = TwoFactorAuth::generate_backup_codes(8);
         assert_eq!(codes.len(), 8);
-        
+
         for code in &codes {
             assert!(code.contains('-'));
             assert_eq!(code.len(), 9); // Format: 1234-5678
         }
-        
+
         // Ensure uniqueness
         let unique_codes: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique_codes.len(), 8);
@@ -84,15 +86,29 @@ mod tests {
             "2345-6789".to_string(),
             "3456-7890".to_string(),
         ];
-        
+
         let result = TwoFactorAuth::verify_backup_code(&codes, "2345-6789");
         assert_eq!(result, Some(1));
-        
+
         let result = TwoFactorAuth::verify_backup_code(&codes, "9999-9999");
         assert_eq!(result, None);
     }
 
     #[test]
+    fn test_verify_login_token_uses_stored_secret_for_user() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-secret-check";
+        let stored_secret = TwoFactorAuth::generate_secret();
+        let placeholder_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        let placeholder_token = generate_token(placeholder_secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: stored_secret,
+                backup_codes: vec![],
+                enabled: true,
     fn test_verify_and_activate_persists_enabled_state() {
         clear_two_factor_store_for_tests();
 
@@ -137,6 +153,7 @@ mod tests {
 
         let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
             user_id: user_id.to_string(),
+            token: placeholder_token,
             token,
         })
         .unwrap();
@@ -145,6 +162,15 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_login_token_succeeds_with_correct_token_when_enabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-enabled-ok";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "enabled@petchain.com".to_string(),
+        })
+        .unwrap();
     fn test_verify_uses_stored_secret_instead_of_placeholder_secret() {
         clear_two_factor_store_for_tests();
 
@@ -156,6 +182,46 @@ mod tests {
         overwrite_two_factor_data_for_tests(
             user_id,
             TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes,
+                enabled: true,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: generate_token(&setup.secret),
+        })
+        .unwrap();
+
+        assert!(result);
+    }
+
+    #[test]
+    fn test_verify_login_token_fails_with_wrong_token_when_enabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-enabled-bad-token";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "wrong-token@petchain.com".to_string(),
+        })
+        .unwrap();
+        let wrong_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        assert_ne!(setup.secret, wrong_secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret,
+                backup_codes: setup.backup_codes,
+                enabled: true,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: generate_token(wrong_secret),
                 secret: stored_secret.clone(),
                 backup_codes: vec![],
                 enabled: false,
@@ -193,6 +259,32 @@ mod tests {
         let result = TwoFactorHandlers::verify_and_activate(VerifyTwoFactorRequest {
             user_id: user_id.to_string(),
             token: invalid_token,
+        })
+        .unwrap();
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_login_token_returns_false_when_disabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-disabled";
+        let secret = TwoFactorAuth::generate_secret();
+        let token = generate_token(&secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret,
+                backup_codes: vec![],
+                enabled: false,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token,
         })
         .unwrap();
 
