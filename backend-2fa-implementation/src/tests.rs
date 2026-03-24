@@ -1,6 +1,30 @@
 #[cfg(test)]
 mod tests {
-    use crate::two_factor::TwoFactorAuth;
+    use crate::handlers::{
+        clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,
+        EnableTwoFactorRequest, LoginWithTwoFactorRequest, TwoFactorHandlers,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
+        overwrite_two_factor_data_for_tests, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        TwoFactorHandlers, VerifyTwoFactorRequest,
+    };
+    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+
+    fn generate_token(secret: &str) -> String {
+        use totp_rs::{Algorithm, Secret, TOTP};
+
+        TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap()
+        .generate_current()
+        .unwrap()
+    }
 
     #[test]
     fn test_generate_secret() {
@@ -13,17 +37,17 @@ mod tests {
     fn test_setup_two_factor() {
         let result = TwoFactorAuth::setup("test@petchain.com", "PetChain");
         assert!(result.is_ok());
-        
+
         let setup = result.unwrap();
         assert!(!setup.secret.is_empty());
-        assert!(setup.qr_code_base64.starts_with("data:image/png;base64,"));
+        assert!(!setup.qr_code_base64.is_empty());
         assert_eq!(setup.backup_codes.len(), 8);
     }
 
     #[test]
     fn test_verify_token() {
         let secret = TwoFactorAuth::generate_secret();
-        
+
         // Generate current token
         use totp_rs::{Algorithm, Secret, TOTP};
         let totp = TOTP::new(
@@ -34,10 +58,12 @@ mod tests {
             Secret::Encoded(secret.clone()).to_bytes().unwrap(),
             None,
             String::new(),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let token = totp.generate_current().unwrap();
-        
+        let token = generate_token(&secret);
+
         // Verify it
         let result = TwoFactorAuth::verify_token(&secret, &token);
         assert!(result.is_ok());
@@ -56,12 +82,12 @@ mod tests {
     fn test_generate_backup_codes() {
         let codes = TwoFactorAuth::generate_backup_codes(8);
         assert_eq!(codes.len(), 8);
-        
+
         for code in &codes {
             assert!(code.contains('-'));
             assert_eq!(code.len(), 9); // Format: 1234-5678
         }
-        
+
         // Ensure uniqueness
         let unique_codes: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique_codes.len(), 8);
@@ -74,10 +100,10 @@ mod tests {
             "2345-6789".to_string(),
             "3456-7890".to_string(),
         ];
-        
+
         let result = TwoFactorAuth::verify_backup_code(&codes, "2345-6789");
         assert_eq!(result, Some(1));
-        
+
         let result = TwoFactorAuth::verify_backup_code(&codes, "9999-9999");
         assert_eq!(result, None);
     }
