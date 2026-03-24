@@ -6196,21 +6196,17 @@ impl PetChainContract {
         cost: u64,
         notes: String,
     ) -> u64 {
-        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
-        pet.owner.require_auth();
-        let count: u64 = env.storage().instance().get(&Symbol::new(&env, "grooming_count")).unwrap_or(0);
         let pet: Pet = env
             .storage()
             .instance()
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
         pet.owner.require_auth();
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(&env, "grooming_count"))
-            .unwrap_or(0);
-        let record_id = count + 1;
+
+        let id_key = Symbol::new(&env, "grooming_count");
+        let count: u64 = env.storage().instance().get(&id_key).unwrap_or(0);
+        let record_id = safe_increment(count);
+
         let record = GroomingRecord {
             id: record_id,
             pet_id,
@@ -6221,33 +6217,29 @@ impl PetChainContract {
             cost,
             notes,
         };
-        env.storage().instance().set(&(Symbol::new(&env, "grooming"), record_id), &record);
-        env.storage().instance().set(&Symbol::new(&env, "grooming_count"), &record_id);
-        let pet_count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
-        let new_count = pet_count + 1;
-        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
-        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count), &record_id);
+
+        // Store the grooming record
         env.storage()
             .instance()
             .set(&(Symbol::new(&env, "grooming"), record_id), &record);
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "grooming_count"), &record_id);
-        let pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&(Symbol::new(&env, "pet_grooming"), pet_id))
-            .unwrap_or(0);
-        let new_count = pet_count + 1;
-        env.storage()
-            .instance()
-            .set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
+        
+        // Update global count
+        env.storage().instance().set(&id_key, &record_id);
+
+        // Update pet-specific grooming records
+        let pet_count_key = (Symbol::new(&env, "pet_grooming"), pet_id);
+        let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
+        let new_count = safe_increment(pet_count);
+        
+        env.storage().instance().set(&pet_count_key, &new_count);
         env.storage().instance().set(
             &(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count),
             &record_id,
         );
+
         record_id
     }
+
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
         let count: u64 = env
