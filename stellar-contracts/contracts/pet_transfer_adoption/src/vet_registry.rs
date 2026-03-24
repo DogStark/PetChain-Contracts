@@ -61,6 +61,7 @@ const EVT_REVOKED: Symbol = symbol_short!("rev_vet");
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContractError {
+    AlreadyInitialized = 0,
     Unauthorized = 1,
     VetAlreadyRegistered = 2,
     VetNotFound = 3,
@@ -88,7 +89,7 @@ fn require_admin(env: &Env) {
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .expect("admin not initialized");
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::Unauthorized));
 
     admin.require_auth();
 }
@@ -118,7 +119,7 @@ impl VetRegistryContract {
 
     pub fn init(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("contract already initialized");
+            panic_with_error!(env, ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
