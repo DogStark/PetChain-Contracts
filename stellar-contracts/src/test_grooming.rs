@@ -32,6 +32,8 @@ fn test_add_grooming_record() {
         &pet_id,
         &String::from_str(&env, "Full Grooming"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 2592000),
         &5000,
         &String::from_str(&env, "Haircut and bath"),
     );
@@ -69,6 +71,8 @@ fn test_get_grooming_history() {
         &pet_id,
         &String::from_str(&env, "Full Grooming"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 2592000),
         &5000,
         &String::from_str(&env, "Haircut and bath"),
     );
@@ -77,6 +81,8 @@ fn test_get_grooming_history() {
         &pet_id,
         &String::from_str(&env, "Nail Trim"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 1296000),
         &1500,
         &String::from_str(&env, "Nail trimming only"),
     );
@@ -115,12 +121,14 @@ fn test_get_next_grooming_date() {
         &pet_id,
         &String::from_str(&env, "Full Grooming"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 2592000),
         &5000,
         &String::from_str(&env, "Haircut and bath"),
     );
 
     let next_date = client.get_next_grooming_date(&pet_id);
-    assert!(next_date.is_some());
+    assert!(next_date > 0);
 }
 
 #[test]
@@ -153,6 +161,8 @@ fn test_get_grooming_expenses() {
         &pet_id,
         &String::from_str(&env, "Full Grooming"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 2592000),
         &5000,
         &String::from_str(&env, "Haircut and bath"),
     );
@@ -161,6 +171,8 @@ fn test_get_grooming_expenses() {
         &pet_id,
         &String::from_str(&env, "Nail Trim"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 1296000),
         &1500,
         &String::from_str(&env, "Nail trimming only"),
     );
@@ -185,6 +197,8 @@ fn test_add_grooming_record_invalid_pet() {
         &999,
         &String::from_str(&env, "Full Grooming"),
         &String::from_str(&env, "Pet Spa"),
+        &env.ledger().timestamp(),
+        &(env.ledger().timestamp() + 2592000),
         &5000,
         &String::from_str(&env, "Haircut and bath"),
     );
@@ -220,7 +234,7 @@ fn test_empty_grooming_history() {
     assert_eq!(history.len(), 0);
 
     let next_date = client.get_next_grooming_date(&pet_id);
-    assert!(next_date.is_none());
+    assert_eq!(next_date, 0);
 
     let expenses = client.get_grooming_expenses(&pet_id);
     assert_eq!(expenses, 0);
