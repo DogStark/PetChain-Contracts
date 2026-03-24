@@ -4,5 +4,5 @@ pub mod handlers;
 #[cfg(test)]
 mod tests;
 
-pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
+pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorError, TwoFactorSetup};
 pub use handlers::TwoFactorHandlers;
