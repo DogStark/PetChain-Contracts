@@ -1,8 +1,8 @@
 // #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env, String, Symbol, panic_with_error,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Symbol,
 };
 
 /// ======================================================
@@ -61,16 +61,28 @@ const EVT_REVOKED: Symbol = symbol_short!("rev_vet");
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContractError {
+    AlreadyInitialized = 0,
     Unauthorized = 1,
     VetAlreadyRegistered = 2,
     VetNotFound = 3,
     LicenseAlreadyUsed = 4,
     VetNotVerified = 5,
+    InputTooLong = 6,
 }
 
 /// ======================================================
 /// INTERNAL HELPERS
 /// ======================================================
+
+const MAX_NAME_LEN: u32 = 100;
+const MAX_LICENSE_LEN: u32 = 50;
+const MAX_SPEC_LEN: u32 = 100;
+
+fn validate_len(env: &Env, s: &String, max: u32) {
+    if s.len() > max {
+        panic_with_error!(env, ContractError::InputTooLong);
+    }
+}
 
 fn require_admin(env: &Env) {
     let admin: Address = env
@@ -107,7 +119,7 @@ impl VetRegistryContract {
 
     pub fn init(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("contract already initialized");
+            panic_with_error!(env, ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
@@ -124,6 +136,10 @@ impl VetRegistryContract {
         specialization: String,
     ) {
         vet_address.require_auth();
+
+        validate_len(&env, &name, MAX_NAME_LEN);
+        validate_len(&env, &license_number, MAX_LICENSE_LEN);
+        validate_len(&env, &specialization, MAX_SPEC_LEN);
 
         // Prevent duplicate address
         if env
@@ -159,10 +175,7 @@ impl VetRegistryContract {
             .persistent()
             .set(&DataKey::VetByLicense(license_number), &vet_address);
 
-        env.events().publish(
-            (EVT_REGISTERED,),
-            vet_address,
-        );
+        env.events().publish((EVT_REGISTERED,), vet_address);
     }
 
     /// ----------------------------------
@@ -176,10 +189,7 @@ impl VetRegistryContract {
         vet.verified = true;
         save_vet(&env, &vet);
 
-        env.events().publish(
-            (EVT_VERIFIED,),
-            vet_address,
-        );
+        env.events().publish((EVT_VERIFIED,), vet_address);
     }
 
     pub fn revoke_vet_license(env: Env, vet_address: Address) {
@@ -189,10 +199,7 @@ impl VetRegistryContract {
         vet.verified = false;
         save_vet(&env, &vet);
 
-        env.events().publish(
-            (EVT_REVOKED,),
-            vet_address,
-        );
+        env.events().publish((EVT_REVOKED,), vet_address);
     }
 
     /// ----------------------------------
@@ -206,5 +213,125 @@ impl VetRegistryContract {
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         let vet = get_vet(&env, &vet_address);
         vet.verified
+    }
+}
+
+/// ======================================================
+/// TESTS
+/// ======================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env, String};
+
+    fn setup() -> (Env, soroban_sdk::Address, VetRegistryContractClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VetRegistryContract);
+        let client = VetRegistryContractClient::new(&env, &contract_id);
+        let admin = soroban_sdk::Address::generate(&env);
+        client.init(&admin);
+        (env, admin, client)
+    }
+
+    fn str(env: &Env, s: &str) -> String {
+        String::from_str(env, s)
+    }
+
+    fn repeat(env: &Env, byte: u8, n: usize) -> String {
+        let mut buf = [0u8; 256];
+        for i in 0..n {
+            buf[i] = byte;
+        }
+        String::from_bytes(env, &buf[..n])
+    }
+
+    // ---- name boundary ----
+
+    #[test]
+    fn test_name_at_max_length_accepted() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &repeat(&env, b'a', MAX_NAME_LEN as usize),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_name_over_max_length_rejected() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &repeat(&env, b'a', MAX_NAME_LEN as usize + 1),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+    }
+
+    // ---- license_number boundary ----
+
+    #[test]
+    fn test_license_at_max_length_accepted() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Valid"),
+            &repeat(&env, b'L', MAX_LICENSE_LEN as usize),
+            &str(&env, "General"),
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_license_over_max_length_rejected() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Valid"),
+            &repeat(&env, b'L', MAX_LICENSE_LEN as usize + 1),
+            &str(&env, "General"),
+        );
+    }
+
+    // ---- specialization boundary ----
+
+    #[test]
+    fn test_specialization_at_max_length_accepted() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Valid"),
+            &str(&env, "LIC-002"),
+            &repeat(&env, b's', MAX_SPEC_LEN as usize),
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_specialization_over_max_length_rejected() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Valid"),
+            &str(&env, "LIC-002"),
+            &repeat(&env, b's', MAX_SPEC_LEN as usize + 1),
+        );
+    }
+
+    // ---- error variant ----
+
+    #[test]
+    fn test_input_too_long_error_code() {
+        assert_eq!(ContractError::InputTooLong as u32, 6);
     }
 }
