@@ -70,6 +70,8 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_get_pet_access_control;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1501,104 +1503,147 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_pet(env: Env, id: u64) -> Option<PetProfile> {
+    pub fn get_pet(env: Env, id: u64, viewer: Address) -> Option<PetProfile> {
+        // Require the viewer to authenticate — prevents spoofing the caller identity.
+        viewer.require_auth();
+
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(id))?;
+
+        // ---- access-level resolution ----
+        // Owner always has full access regardless of privacy level.
+        let is_owner = pet.owner == viewer;
+
+        let access = if is_owner {
+            AccessLevel::Full
+        } else {
+            // Resolve any explicit grant for this viewer.
+            let grant_level = env
+                .storage()
+                .instance()
+                .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((id, viewer.clone())))
+                .and_then(|g| {
+                    if !g.is_active {
+                        return None;
+                    }
+                    if let Some(exp) = g.expires_at {
+                        if env.ledger().timestamp() >= exp {
+                            return None;
+                        }
+                    }
+                    Some(g.access_level)
+                });
+
+            match pet.privacy_level {
+                // Public pets: any authenticated viewer gets at least Basic access.
+                PrivacyLevel::Public => grant_level.unwrap_or(AccessLevel::Basic),
+                // Restricted pets: viewer must hold an explicit grant.
+                PrivacyLevel::Restricted => grant_level.unwrap_or(AccessLevel::None),
+                // Private pets: owner only — all other callers are denied.
+                PrivacyLevel::Private => AccessLevel::None,
+            }
+        };
+
+        // Deny access entirely for None level.
+        if matches!(access, AccessLevel::None) {
+            return None;
+        }
+
+        // ---- decrypt fields ----
+        let key = Self::get_encryption_key(&env);
+
+        let decrypted_name = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_name.ciphertext,
+            &pet.encrypted_name.nonce,
+            &key,
+        )
+        .ok()?;
+        let name = String::from_xdr(&env, &decrypted_name).ok()?;
+
+        let decrypted_birthday = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_birthday.ciphertext,
+            &pet.encrypted_birthday.nonce,
+            &key,
+        )
+        .ok()?;
+        let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
+
+        let decrypted_breed = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_breed.ciphertext,
+            &pet.encrypted_breed.nonce,
+            &key,
+        )
+        .ok()?;
+        let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
+
+        let a_bytes = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_allergies.ciphertext,
+            &pet.encrypted_allergies.nonce,
+            &key,
+        )
+        .ok()?;
+        let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
+
+        let profile = PetProfile {
+            id: pet.id,
+            owner: pet.owner,
+            privacy_level: pet.privacy_level,
+            name,
+            birthday,
+            active: pet.active,
+            created_at: pet.created_at,
+            updated_at: pet.updated_at,
+            new_owner: pet.new_owner,
+            species: pet.species,
+            gender: pet.gender,
+            breed,
+            color: pet.color,
+            weight: pet.weight,
+            microchip_id: pet.microchip_id,
+            allergies,
+        };
+
+        Self::log_access(
+            &env,
+            id,
+            viewer,
+            AccessAction::Read,
+            String::from_str(&env, "Pet profile accessed"),
+        );
+        Some(profile)
+    }
+
+    pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
         if let Some(pet) = env
             .storage()
             .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
-            let _current_user = env.current_contract_address(); // Use consistent current user check
-            let _is_authorized_for_full_data = false;
-
-            // Simple check: if caller is owner
-            // Note: Since we don't have the caller in read-only scope easily without require_auth,
-            // this privacy model relies on the caller being verified in context or data being public.
-            // For true read-access control, we would need the caller's address passed in or
-            // use a viewing key pattern. Here we emulate based on contract state.
-            // Assuming this is called by a client who "is" user X.
-            // But soroban read functions don't authenticate "viewer".
-            // So we rely on PrivacyLevel::Public or return limited data?
-            // HEAD impl had logic checking `current_contract_address` or similar which might not work as intended for external calls.
-            // For now, we decrypt if Public, or we assume this function decrypts for the client to see.
-            // Real privacy requires off-chain key management.
-            // We will proceed with decryption to return the Profile.
-
+            // Resolve birthday directly from storage to avoid requiring a viewer
+            // address for a pure age calculation — we only need the encrypted birthday.
             let key = Self::get_encryption_key(&env);
-
-            let decrypted_name = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_name.ciphertext,
-                &pet.encrypted_name.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let name =
-                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_birthday = decrypt_sensitive_data(
+            let decrypted_birthday = match decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_birthday.ciphertext,
                 &pet.encrypted_birthday.nonce,
                 &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let birthday = String::from_xdr(&env, &decrypted_birthday)
-                .unwrap_or(String::from_str(&env, "Error"));
-
-            let decrypted_breed = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_breed.ciphertext,
-                &pet.encrypted_breed.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let breed =
-                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
-
-            let a_bytes = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_allergies.ciphertext,
-                &pet.encrypted_allergies.nonce,
-                &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).unwrap_or(Vec::new(&env));
-
-            let profile = PetProfile {
-                id: pet.id,
-                owner: pet.owner,
-                privacy_level: pet.privacy_level,
-                name,
-                birthday,
-                active: pet.active,
-                created_at: pet.created_at,
-                updated_at: pet.updated_at,
-                new_owner: pet.new_owner,
-                species: pet.species,
-                gender: pet.gender,
-                breed,
-                color: pet.color,
-                weight: pet.weight,
-                microchip_id: pet.microchip_id,
-                allergies,
+            ) {
+                Ok(b) => b,
+                Err(_) => return (0, 0),
             };
-            Self::log_access(
-                &env,
-                id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Pet profile accessed"),
-            );
-            Some(profile)
-        } else {
-            None
-        }
-    }
+            let birthday = match String::from_xdr(&env, &decrypted_birthday) {
+                Ok(s) => s,
+                Err(_) => return (0, 0),
+            };
 
-    pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
-        if let Some(pet) = Self::get_pet(env.clone(), pet_id) {
             let current_time = env.ledger().timestamp();
-            let birthday_timestamp = match Self::parse_birthday_timestamp(&pet.birthday) {
+            let birthday_timestamp = match Self::parse_birthday_timestamp(&birthday) {
                 Some(timestamp) => timestamp,
                 None => return (0, 0),
             };
@@ -2600,7 +2645,51 @@ impl PetChainContract {
             if !tag.is_active {
                 return None;
             }
-            Self::get_pet(env, tag.pet_id)
+            // Tag scans are public by design (lost-pet recovery).
+            // We read the pet directly from storage here rather than going through
+            // get_pet so we don't require an external viewer address.
+            let pet = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))?;
+
+            let key = Self::get_encryption_key(&env);
+
+            let name = String::from_xdr(
+                &env,
+                &decrypt_sensitive_data(&env, &pet.encrypted_name.ciphertext, &pet.encrypted_name.nonce, &key).ok()?,
+            ).ok()?;
+            let birthday = String::from_xdr(
+                &env,
+                &decrypt_sensitive_data(&env, &pet.encrypted_birthday.ciphertext, &pet.encrypted_birthday.nonce, &key).ok()?,
+            ).ok()?;
+            let breed = String::from_xdr(
+                &env,
+                &decrypt_sensitive_data(&env, &pet.encrypted_breed.ciphertext, &pet.encrypted_breed.nonce, &key).ok()?,
+            ).ok()?;
+            let allergies = Vec::<Allergy>::from_xdr(
+                &env,
+                &decrypt_sensitive_data(&env, &pet.encrypted_allergies.ciphertext, &pet.encrypted_allergies.nonce, &key).ok()?,
+            ).ok()?;
+
+            Some(PetProfile {
+                id: pet.id,
+                owner: pet.owner,
+                privacy_level: pet.privacy_level,
+                name,
+                birthday,
+                active: pet.active,
+                created_at: pet.created_at,
+                updated_at: pet.updated_at,
+                new_owner: pet.new_owner,
+                species: pet.species,
+                gender: pet.gender,
+                breed,
+                color: pet.color,
+                weight: pet.weight,
+                microchip_id: pet.microchip_id,
+                allergies,
+            })
         } else {
             None
         }
@@ -2985,7 +3074,7 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
             {
-                if let Some(pet) = Self::get_pet(env.clone(), pid) {
+                if let Some(pet) = Self::get_pet(env.clone(), pid, owner.clone()) {
                     pets.push_back(pet);
                 }
             }
@@ -3010,8 +3099,13 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::SpeciesPetIndex((species.clone(), i)))
             {
-                if let Some(pet) = Self::get_pet(env.clone(), pid) {
-                    pets.push_back(pet);
+                // Only surface Public pets in unauthenticated listing queries.
+                if let Some(raw) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pid)) {
+                    if matches!(raw.privacy_level, PrivacyLevel::Public) {
+                        if let Some(profile) = Self::get_pet(env.clone(), pid, raw.owner.clone()) {
+                            pets.push_back(profile);
+                        }
+                    }
                 }
             }
         }
@@ -3031,8 +3125,9 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, Pet>(&DataKey::Pet(id))
             {
-                if pet.active {
-                    if let Some(profile) = Self::get_pet(env.clone(), id) {
+                // Only surface active Public pets in unauthenticated listing queries.
+                if pet.active && matches!(pet.privacy_level, PrivacyLevel::Public) {
+                    if let Some(profile) = Self::get_pet(env.clone(), id, pet.owner.clone()) {
                         pets.push_back(profile);
                     }
                 }
