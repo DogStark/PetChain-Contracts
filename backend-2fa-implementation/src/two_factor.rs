@@ -10,11 +10,17 @@ pub struct TwoFactorSetup {
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
     pub enabled: bool,
+}
+
+pub trait TwoFactorStorage {
+    fn get_two_factor_data(&self, user_id: &str) -> Result<Option<TwoFactorData>, String>;
+    fn save_two_factor_data(&mut self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
+    fn delete_two_factor_data(&mut self, user_id: &str) -> Result<(), String>;
 }
 
 pub struct TwoFactorAuth;
