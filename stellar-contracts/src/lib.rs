@@ -79,6 +79,8 @@ mod test_insurance_comprehensive;
 #[cfg(test)]
 mod test_multisig_transfer;
 #[cfg(test)]
+mod test_upgrade_proposal;
+#[cfg(test)]
 mod test_nutrition;
 #[cfg(test)]
 mod test_pet_age;
@@ -4620,10 +4622,8 @@ impl PetChainContract {
             ProposalAction::RevokeVet(addr) => {
                 Self::_revoke_vet_internal(&env, addr);
             }
-            ProposalAction::UpgradeContract(_code_hash) => {
-                // Mock upgrade or actual logic if available
-                // In Soroban, upgrades are handled via env.deployer()
-                // For this task, we can just log success or placeholder
+            ProposalAction::UpgradeContract(code_hash) => {
+                env.deployer().update_current_contract_wasm(code_hash);
             }
             ProposalAction::ChangeAdmin(params) => {
                 let (admins, threshold) = params;
