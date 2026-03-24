@@ -1,3 +1,5 @@
+use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
+use serde::{Deserialize, Serialize};
 use crate::two_factor::{TwoFactorAuth, TwoFactorData};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -97,6 +99,10 @@ impl TwoFactorHandlers {
     pub fn enable_two_factor(
         req: EnableTwoFactorRequest,
     ) -> Result<EnableTwoFactorResponse, String> {
+        let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
+
+        // Store in database: user_id -> TwoFactorData { secret, backup_codes, enabled: false }
+        // Database call here
     pub fn enable_two_factor(caller: &AuthenticatedUser, req: EnableTwoFactorRequest) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
@@ -167,6 +173,10 @@ impl TwoFactorHandlers {
 
         // Fetch from database
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
+
+        let secret = "PLACEHOLDER_SECRET"; // Get from DB
+
+        TwoFactorAuth::verify_token(secret, &req.token)
         let secret = "PLACEHOLDER_SECRET"; // Replace with DB fetch
 
         let is_valid =
@@ -235,6 +245,7 @@ impl TwoFactorHandlers {
 
         let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
 
+        if let Some(index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
         if let Some(_index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
             // Remove used backup code from database
             // two_factor_data.backup_codes.remove(index);
