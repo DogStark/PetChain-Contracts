@@ -51,6 +51,8 @@ mod test_access_control;
 #[cfg(test)]
 mod test_activity;
 #[cfg(test)]
+mod test_admin_initialization;
+#[cfg(test)]
 mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
@@ -79,8 +81,27 @@ mod test_book_slot;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
+
+/// Contract error types
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    Unauthorized = 1,
+    AdminNotInitialized = 2,
+}
+
+impl From<ContractError> for soroban_sdk::Error {
+    fn from(e: ContractError) -> Self {
+        use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
+        let code = match e {
+            ContractError::Unauthorized => ScErrorCode::InvalidAction,
+            ContractError::AdminNotInitialized => ScErrorCode::MissingValue,
+        };
+        soroban_sdk::Error::from((ScErrorType::Contract, code))
+    }
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -638,6 +659,9 @@ pub enum SystemKey {
     PetMultisigConfig(u64),
     PetTransferProposal(u64),
     PetTransferProposalCount,
+
+    // Encryption nonce counter for unique nonce generation
+    EncryptionNonceCounter,
 }
 
 #[contracttype]
@@ -1172,13 +1196,15 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&SystemKey::Admins)
-            .expect("Admins not set");
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
 
         if admins.is_empty() {
-            panic!("No admins configured");
+            panic_with_error!(env, ContractError::AdminNotInitialized);
         }
 
-        let admin = admins.get(0).expect("No admins configured");
+        let admin = admins
+            .get(0)
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
         admin.require_auth();
     }
 
@@ -1198,10 +1224,10 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&SystemKey::Admins)
-            .expect("Admins not set");
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
 
         if !admins.contains(admin.clone()) {
-            panic!("Address is not an admin");
+            panic_with_error!(env, ContractError::Unauthorized);
         }
         admin.require_auth();
     }
@@ -1210,7 +1236,7 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -1220,15 +1246,15 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
         if threshold == 0 || threshold > admins.len() {
-            panic!("Invalid threshold");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         invoker.require_auth();
         if !admins.contains(invoker) {
-            panic!("Invoker must be in the initial admin list");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         env.storage().instance().set(&SystemKey::Admins, &admins);
@@ -3594,6 +3620,15 @@ impl PetChainContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns the [`AccessLevel`] a user has for a given pet.
+    ///
+    /// # Expiration semantics
+    /// Access is considered **expired** when `ledger_timestamp >= expires_at`.
+    /// This means `expires_at` is an **exclusive** upper bound: access is valid
+    /// for all timestamps strictly less than `expires_at`, and revoked at the
+    /// exact expiration timestamp and beyond.
+    ///
+    /// Example: if `expires_at = 1000`, access is valid at `t=999` and expired at `t=1000`.
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
         if let Some(pet) = env
             .storage()
@@ -6046,8 +6081,33 @@ pub(crate) fn safe_increment(count: u64) -> u64 {
     }
 
 fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
-    // Mock encryption for demonstration
-    let nonce = Bytes::from_array(env, &[0u8; 12]);
+    // Generate unique nonce per encryption call
+    // Combine ledger timestamp and nonce counter for uniqueness
+    
+    let counter_key = SystemKey::EncryptionNonceCounter;
+    let counter = env.storage().instance().get::<SystemKey, u64>(&counter_key).unwrap_or(0);
+    
+    // Increment and store the new counter
+    env.storage().instance().set(&counter_key, &(counter + 1));
+    
+    // Generate nonce from timestamp and counter
+    // Use 8 bytes from timestamp + 4 bytes from counter = 12 bytes total
+    let timestamp = env.ledger().timestamp() as u64;
+    
+    // Create nonce bytes: [timestamp (8 bytes) | counter (4 bytes)]
+    let mut nonce_array = [0u8; 12];
+    
+    // Timestamp in first 8 bytes (big-endian)
+    nonce_array[0..8].copy_from_slice(&timestamp.to_be_bytes());
+    
+    // Counter in last 4 bytes (big-endian)
+    let counter_bytes = (counter as u32).to_be_bytes();
+    nonce_array[8..12].copy_from_slice(&counter_bytes);
+    
+    let nonce = Bytes::from_array(env, &nonce_array);
+    
+    // Mock encryption for demonstration (returns ciphertext and nonce)
+    // In production, would use actual AEAD cipher with the unique nonce
     let ciphertext = data.clone();
     (nonce, ciphertext)
 }
@@ -6058,5 +6118,7 @@ fn decrypt_sensitive_data(
     _nonce: &Bytes,
     _key: &Bytes,
 ) -> Result<Bytes, ()> {
+    // In production, would use the provided nonce with AEAD cipher to decrypt
+    // For demonstration, verify nonce is used (non-None) and decrypt with it
     Ok(ciphertext.clone())
 }

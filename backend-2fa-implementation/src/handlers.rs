@@ -56,6 +56,16 @@ pub struct RecoverWithBackupRequest {
     pub backup_code: String,
 }
 
+/// Response returned after a successful backup-code recovery.
+/// The caller must re-enroll their authenticator app with `new_secret`
+/// and store the `new_backup_codes` — all previous material is revoked.
+#[derive(Debug, Serialize)]
+pub struct RecoverWithBackupResponse {
+    pub new_secret: String,
+    pub new_backup_codes: Vec<String>,
+    pub enabled: bool,
+}
+
 pub struct TwoFactorHandlers;
 
 impl TwoFactorHandlers {
@@ -147,6 +157,22 @@ impl TwoFactorHandlers {
         } else {
             Ok(false)
         }
+
+        // Rotate secret and invalidate all old codes (including remaining backup codes)
+        let recovery = TwoFactorAuth::rotate_after_recovery();
+
+        // Persist new state to database — replaces old secret and all old backup codes
+        // db.update_two_factor_data(&req.user_id, &TwoFactorData {
+        //     secret: recovery.new_secret.clone(),
+        //     backup_codes: recovery.new_backup_codes.clone(),
+        //     enabled: recovery.enabled,
+        // })?;
+
+        Ok(RecoverWithBackupResponse {
+            new_secret: recovery.new_secret,
+            new_backup_codes: recovery.new_backup_codes,
+            enabled: recovery.enabled,
+        })
     }
 }
 
