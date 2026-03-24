@@ -40,6 +40,14 @@ pub enum BreedingKey {
     PetOffspringIndex((u64, u64)),
 }
 
+#[contracttype]
+pub enum GroomingKey {
+    GroomingRecord(u64),
+    GroomingRecordCount,
+    PetGroomingCount(u64),
+    PetGroomingIndex((u64, u64)),
+}
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -548,7 +556,8 @@ pub enum DataKey {
 
     // Medication keys
     // Lost Pet Alert System keys
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
+    EmergencyAccessLogs(u64),          // pet_id -> Vec<EmergencyAccessLog>
+    EmergencyResponder((u64, Address)), // (pet_id, responder) -> bool
 }
 
 #[contracttype]
@@ -2823,6 +2832,55 @@ impl PetChainContract {
         }
         history
     }
+    // --- EMERGENCY RESPONDER ALLOWLIST ---
+
+    /// Grant a responder address access to read emergency data for a pet.
+    /// Only the pet owner can call this.
+    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyResponder((pet_id, responder)), &true);
+    }
+
+    /// Revoke a responder's access to emergency data for a pet.
+    /// Only the pet owner can call this.
+    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::EmergencyResponder((pet_id, responder)));
+    }
+
+    /// Returns true if `caller` is the pet owner or an approved emergency responder.
+    fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address) -> bool {
+        let pet: Pet = match env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+        {
+            Some(p) => p,
+            None => return false,
+        };
+        if &pet.owner == caller {
+            return true;
+        }
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::EmergencyResponder((pet_id, caller.clone())))
+            .unwrap_or(false)
+    }
+
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
         env: Env,
@@ -2869,7 +2927,11 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_info(env: Env, pet_id: u64) -> EmergencyInfo {
+    pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
+        caller.require_auth();
+        if !Self::is_emergency_authorized(&env, pet_id, &caller) {
+            panic!("Unauthorized: caller is not the owner or an approved emergency responder");
+        }
         if let Some(pet) = env
             .storage()
             .instance()
@@ -2920,7 +2982,7 @@ impl PetChainContract {
             // Log the emergency access
             let log = EmergencyAccessLog {
                 pet_id,
-                accessed_by: env.current_contract_address(),
+                accessed_by: caller.clone(),
                 timestamp: env.ledger().timestamp(),
             };
 
@@ -2945,8 +3007,12 @@ impl PetChainContract {
         }
     }
 
-    /// Get emergency contacts for a pet (publicly accessible - no auth required for emergency responders)
-    pub fn get_emergency_contacts(env: Env, pet_id: u64) -> Vec<EmergencyContact> {
+    /// Get emergency contacts for a pet. Requires caller to be the owner or an approved responder.
+    pub fn get_emergency_contacts(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyContact> {
+        caller.require_auth();
+        if !Self::is_emergency_authorized(&env, pet_id, &caller) {
+            panic!("Unauthorized: caller is not the owner or an approved emergency responder");
+        }
         if let Some(pet) = env
             .storage()
             .instance()
@@ -5751,6 +5817,110 @@ impl PetChainContract {
             pedigree.push_back(record);
         }
         pedigree
+    }
+
+    // --- GROOMING RECORDS SYSTEM ---
+
+    pub fn add_grooming_record(
+        env: Env,
+        pet_id: u64,
+        service_type: String,
+        groomer: String,
+        cost: u64,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecordCount)
+            .unwrap_or(0);
+        let record_id = count + 1;
+        let now = env.ledger().timestamp();
+        let next_due = now + (30 * 86400);
+
+        let record = GroomingRecord {
+            id: record_id,
+            pet_id,
+            service_type,
+            groomer,
+            date: now,
+            next_due,
+            cost,
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecordCount, &record_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let new_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&GroomingKey::PetGroomingCount(pet_id), &new_count);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::PetGroomingIndex((pet_id, new_count)), &record_id);
+
+        record_id
+    }
+
+    pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<GroomingKey, u64>(&GroomingKey::PetGroomingIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<GroomingKey, GroomingRecord>(&GroomingKey::GroomingRecord(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_next_grooming_date(env: Env, pet_id: u64) -> Option<u64> {
+        let history = Self::get_grooming_history(env, pet_id);
+        if history.is_empty() {
+            return None;
+        }
+        let last = history.get(history.len() - 1).unwrap();
+        Some(last.next_due)
+    }
+
+    pub fn get_grooming_expenses(env: Env, pet_id: u64) -> u64 {
+        let history = Self::get_grooming_history(env, pet_id);
+        let mut total = 0u64;
+        for record in history.iter() {
+            total += record.cost;
+        }
+        total
     }
 }
 
