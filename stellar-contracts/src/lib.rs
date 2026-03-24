@@ -132,7 +132,6 @@ pub struct BreedingRecord {
     pub notes: String,
 }
 
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BehaviorType {
@@ -1370,7 +1369,7 @@ impl PetChainContract {
             species: species.clone(),
             gender,
             color,
-            weight: weight.into(),
+            weight,
             microchip_id,
             photo_hashes: Vec::new(&env),
         };
@@ -2433,7 +2432,7 @@ impl PetChainContract {
 
         let entry = WeightEntry {
             pet_id,
-            weight: weight.into(),
+            weight,
             recorded_at: now,
             recorded_by: pet.owner.clone(),
         };
@@ -5672,9 +5671,17 @@ impl PetChainContract {
         breeding_date: u64,
         notes: String,
     ) -> u64 {
-        let sire: Pet = env.storage().instance().get(&DataKey::Pet(sire_id)).expect("Sire not found");
+        let sire: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(sire_id))
+            .expect("Sire not found");
         sire.owner.require_auth();
-        let count: u64 = env.storage().instance().get(&BreedingKey::BreedingRecordCount).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::BreedingRecordCount)
+            .unwrap_or(0);
         let record_id = count + 1;
         let record = BreedingRecord {
             id: record_id,
@@ -5685,25 +5692,59 @@ impl PetChainContract {
             breeder: sire.owner.clone(),
             notes,
         };
-        env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
-        env.storage().instance().set(&BreedingKey::BreedingRecordCount, &record_id);
-        let sire_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(sire_id)).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::BreedingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::BreedingRecordCount, &record_id);
+        let sire_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(sire_id))
+            .unwrap_or(0);
         let new_sire_count = sire_count + 1;
-        env.storage().instance().set(&BreedingKey::PetBreedingCount(sire_id), &new_sire_count);
-        env.storage().instance().set(&BreedingKey::PetBreedingIndex((sire_id, new_sire_count)), &record_id);
-        let dam_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(dam_id)).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::PetBreedingCount(sire_id), &new_sire_count);
+        env.storage().instance().set(
+            &BreedingKey::PetBreedingIndex((sire_id, new_sire_count)),
+            &record_id,
+        );
+        let dam_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(dam_id))
+            .unwrap_or(0);
         let new_dam_count = dam_count + 1;
-        env.storage().instance().set(&BreedingKey::PetBreedingCount(dam_id), &new_dam_count);
-        env.storage().instance().set(&BreedingKey::PetBreedingIndex((dam_id, new_dam_count)), &record_id);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::PetBreedingCount(dam_id), &new_dam_count);
+        env.storage().instance().set(
+            &BreedingKey::PetBreedingIndex((dam_id, new_dam_count)),
+            &record_id,
+        );
         record_id
     }
 
     pub fn get_breeding_history(env: Env, pet_id: u64) -> Vec<BreedingRecord> {
-        let count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(pet_id)).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(pet_id))
+            .unwrap_or(0);
         let mut history = Vec::new(&env);
         for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<BreedingKey, u64>(&BreedingKey::PetBreedingIndex((pet_id, i))) {
-                if let Some(record) = env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id)) {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::PetBreedingIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+                {
                     history.push_back(record);
                 }
             }
@@ -5712,14 +5753,30 @@ impl PetChainContract {
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
-        if let Some(mut record) = env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id)) {
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+        {
             record.breeder.require_auth();
             record.offspring_ids.push_back(offspring_id);
-            env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
-            let off_count: u64 = env.storage().instance().get(&BreedingKey::PetOffspringCount(record.sire_id)).unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&BreedingKey::BreedingRecord(record_id), &record);
+            let off_count: u64 = env
+                .storage()
+                .instance()
+                .get(&BreedingKey::PetOffspringCount(record.sire_id))
+                .unwrap_or(0);
             let new_off_count = off_count + 1;
-            env.storage().instance().set(&BreedingKey::PetOffspringCount(record.sire_id), &new_off_count);
-            env.storage().instance().set(&BreedingKey::PetOffspringIndex((record.sire_id, new_off_count)), &offspring_id);
+            env.storage().instance().set(
+                &BreedingKey::PetOffspringCount(record.sire_id),
+                &new_off_count,
+            );
+            env.storage().instance().set(
+                &BreedingKey::PetOffspringIndex((record.sire_id, new_off_count)),
+                &offspring_id,
+            );
             true
         } else {
             false
@@ -5727,10 +5784,18 @@ impl PetChainContract {
     }
 
     pub fn get_offspring(env: Env, pet_id: u64) -> Vec<u64> {
-        let count: u64 = env.storage().instance().get(&BreedingKey::PetOffspringCount(pet_id)).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetOffspringCount(pet_id))
+            .unwrap_or(0);
         let mut offspring = Vec::new(&env);
         for i in 1..=count {
-            if let Some(offspring_id) = env.storage().instance().get::<BreedingKey, u64>(&BreedingKey::PetOffspringIndex((pet_id, i))) {
+            if let Some(offspring_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::PetOffspringIndex((pet_id, i)))
+            {
                 offspring.push_back(offspring_id);
             }
         }
@@ -5757,9 +5822,17 @@ impl PetChainContract {
         cost: u64,
         notes: String,
     ) -> u64 {
-        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
         pet.owner.require_auth();
-        let count: u64 = env.storage().instance().get(&Symbol::new(&env, "grooming_count")).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "grooming_count"))
+            .unwrap_or(0);
         let record_id = count + 1;
         let record = GroomingRecord {
             id: record_id,
@@ -5771,21 +5844,46 @@ impl PetChainContract {
             cost,
             notes,
         };
-        env.storage().instance().set(&(Symbol::new(&env, "grooming"), record_id), &record);
-        env.storage().instance().set(&Symbol::new(&env, "grooming_count"), &record_id);
-        let pet_count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&(Symbol::new(&env, "grooming"), record_id), &record);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "grooming_count"), &record_id);
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&(Symbol::new(&env, "pet_grooming"), pet_id))
+            .unwrap_or(0);
         let new_count = pet_count + 1;
-        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
-        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count), &record_id);
+        env.storage()
+            .instance()
+            .set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
+        env.storage().instance().set(
+            &(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count),
+            &record_id,
+        );
         record_id
     }
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
-        let count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&(Symbol::new(&env, "pet_grooming"), pet_id))
+            .unwrap_or(0);
         let mut history = Vec::new(&env);
         for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i)) {
-                if let Some(record) = env.storage().instance().get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id)) {
+            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(
+                Symbol::new(&env, "pet_grooming_idx"),
+                pet_id,
+                i,
+            )) {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id))
+                {
                     history.push_back(record);
                 }
             }
@@ -5830,4 +5928,3 @@ fn decrypt_sensitive_data(
 ) -> Result<Bytes, ()> {
     Ok(ciphertext.clone())
 }
-
