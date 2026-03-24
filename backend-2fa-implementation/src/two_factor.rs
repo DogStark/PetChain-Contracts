@@ -18,6 +18,19 @@ pub struct TwoFactorData {
     pub enabled: bool,
 }
 
+/// Returned after a successful backup-code recovery.
+/// Contains the new secret and fresh backup codes that must be persisted,
+/// replacing all previous 2FA material.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoveryResult {
+    /// New TOTP secret — the old secret is now invalid.
+    pub new_secret: String,
+    /// Fresh set of backup codes — all previous codes are now invalid.
+    pub new_backup_codes: Vec<String>,
+    /// 2FA remains enabled after recovery.
+    pub enabled: bool,
+}
+
 pub struct TwoFactorAuth;
 
 impl TwoFactorAuth {
@@ -88,5 +101,22 @@ impl TwoFactorAuth {
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
         stored_codes.iter().position(|code| code == provided_code)
+    }
+
+    /// Executes the recovery policy after a valid backup code is consumed:
+    /// - Rotates the TOTP secret (old secret is immediately invalid)
+    /// - Invalidates ALL remaining backup codes and issues a fresh set
+    /// - Keeps 2FA enabled so the account is not left unprotected
+    ///
+    /// Callers MUST persist the returned `RecoveryResult` to the database,
+    /// replacing the previous `TwoFactorData` entirely.
+    pub fn rotate_after_recovery() -> RecoveryResult {
+        let new_secret = Self::generate_secret();
+        let new_backup_codes = Self::generate_backup_codes(8);
+        RecoveryResult {
+            new_secret,
+            new_backup_codes,
+            enabled: true,
+        }
     }
 }
