@@ -167,6 +167,7 @@ pub struct BreedingRecord {
     pub notes: String,
 }
 
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BehaviorType {
@@ -6037,6 +6038,9 @@ impl PetChainContract {
         cost: u64,
         notes: String,
     ) -> u64 {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id)).expect("Pet not found");
+        pet.owner.require_auth();
+        let count: u64 = env.storage().instance().get(&Symbol::new(&env, "grooming_count")).unwrap_or(0);
         let pet: Pet = env
             .storage()
             .instance()
@@ -6059,6 +6063,12 @@ impl PetChainContract {
             cost,
             notes,
         };
+        env.storage().instance().set(&(Symbol::new(&env, "grooming"), record_id), &record);
+        env.storage().instance().set(&Symbol::new(&env, "grooming_count"), &record_id);
+        let pet_count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let new_count = pet_count + 1;
+        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming"), pet_id), &new_count);
+        env.storage().instance().set(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count), &record_id);
         env.storage()
             .instance()
             .set(&(Symbol::new(&env, "grooming"), record_id), &record);
@@ -6082,6 +6092,11 @@ impl PetChainContract {
     }
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let mut history = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i)) {
+                if let Some(record) = env.storage().instance().get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id)) {
         let count: u64 = env
             .storage()
             .instance()
@@ -6121,6 +6136,10 @@ impl PetChainContract {
         let history = Self::get_grooming_history(env, pet_id);
         let mut total = 0u64;
         for record in history.iter() {
+            total += record.cost;
+        }
+        total
+    }
             total = total.checked_add(record.cost).expect("counter overflow");
         }
         total
