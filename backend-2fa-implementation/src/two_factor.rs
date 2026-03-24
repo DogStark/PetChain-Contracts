@@ -1,8 +1,8 @@
-use totp_rs::{Algorithm, Secret, TOTP};
+use base64::{engine::general_purpose, Engine as _};
 use qrcode::QrCode;
-use base64::{Engine as _, engine::general_purpose};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use totp_rs::{Algorithm, Secret, TOTP};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TwoFactorSetup {
@@ -32,10 +32,13 @@ impl TwoFactorAuth {
             6,
             1,
             30,
-            Secret::Encoded(secret.clone()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.clone())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             Some(issuer.to_string()),
             user_email.to_string(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         let qr_url = totp.get_qr_base64().map_err(|e| e.to_string())?;
         let backup_codes = Self::generate_backup_codes(8);
@@ -53,10 +56,13 @@ impl TwoFactorAuth {
             6,
             1,
             30,
-            Secret::Encoded(secret.to_string()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.to_string())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             None,
             String::new(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         Ok(totp.check_current(token).map_err(|e| e.to_string())?)
     }
@@ -65,7 +71,11 @@ impl TwoFactorAuth {
         let mut rng = rand::thread_rng();
         (0..count)
             .map(|_| {
-                format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000))
+                format!(
+                    "{:04}-{:04}",
+                    rng.gen_range(0..10000),
+                    rng.gen_range(0..10000)
+                )
             })
             .collect()
     }
