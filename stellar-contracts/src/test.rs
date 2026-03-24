@@ -7,25 +7,6 @@ mod test_vet {
     use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-    fn register_test_pet(
-        client: &PetChainContractClient,
-        env: &Env,
-        owner: &Address,
-    ) -> u64 {
-        client.register_pet(
-            owner,
-            &String::from_str(env, "Buddy"),
-            &String::from_str(env, "2020-01-01"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(env, "Labrador"),
-            &String::from_str(env, "Brown"),
-            &25u32,
-            &None,
-            &PrivacyLevel::Public,
-        )
-    }
-
     #[test]
     fn test_register_vet_success() {
         let env = Env::default();
@@ -48,7 +29,10 @@ mod test_vet {
         let stored = client.get_vet(&vet).unwrap();
         assert_eq!(stored.address, vet);
         assert_eq!(stored.name, String::from_str(&env, "Dr. Sarah Connor"));
-        assert_eq!(stored.license_number, String::from_str(&env, "LIC-2024-001"));
+        assert_eq!(
+            stored.license_number,
+            String::from_str(&env, "LIC-2024-001")
+        );
         assert_eq!(stored.specialization, String::from_str(&env, "Surgery"));
         assert_eq!(stored.verified, false);
     }
@@ -283,7 +267,9 @@ mod test_vet {
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
-        assert!(client.get_vet_by_license(&String::from_str(&env, "NONEXISTENT")).is_none());
+        assert!(client
+            .get_vet_by_license(&String::from_str(&env, "NONEXISTENT"))
+            .is_none());
     }
 
     #[test]
