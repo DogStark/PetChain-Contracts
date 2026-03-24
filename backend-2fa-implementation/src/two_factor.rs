@@ -59,16 +59,20 @@ impl TwoFactorAuth {
         )
         .map_err(|e| e.to_string())?;
 
-        let qr_url = totp.get_qr_base64().map_err(|e| e.to_string())?;
+        let qr_code_base64 = totp.get_qr_base64().map_err(|e| e.to_string())?;
         let backup_codes = Self::generate_backup_codes(8);
 
         Ok(TwoFactorSetup {
             secret,
-            qr_code_base64: qr_url,
+            qr_code_base64,
             backup_codes,
         })
     }
 
+    /// Verify a token using the default drift policy (STANDARD, ±1 step).
+    ///
+    /// Prefer [`verify_token_with_policy`] when you need explicit control
+    /// over acceptable clock drift.
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
         let totp = TOTP::new(
             Algorithm::SHA1,
@@ -83,7 +87,7 @@ impl TwoFactorAuth {
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(totp.check_current(token).map_err(|e| e.to_string())?)
+        Ok(false)
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {

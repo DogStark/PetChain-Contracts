@@ -167,10 +167,16 @@ impl TwoFactorHandlers {
 
         // Fetch from database
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
-        
-        let secret = "PLACEHOLDER_SECRET"; // Get from DB
-        
-        TwoFactorAuth::verify_token(secret, &req.token)
+        let secret = "PLACEHOLDER_SECRET"; // Replace with DB fetch
+
+        let is_valid =
+            TwoFactorAuth::verify_token_with_policy(secret, &req.token, self.drift_policy)?;
+
+        if is_valid {
+            self.limiter.record_success(&key);
+        }
+
+        Ok(is_valid)
     }
 
     // POST /api/2fa/disable - Disable 2FA
@@ -303,5 +309,11 @@ pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactor
 pub(crate) fn clear_two_factor_store_for_tests() {
     if let Ok(mut store) = two_factor_store().lock() {
         store.clear();
+    }
+}
+
+impl Default for TwoFactorHandlers {
+    fn default() -> Self {
+        Self::new()
     }
 }
