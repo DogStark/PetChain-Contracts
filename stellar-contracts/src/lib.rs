@@ -85,7 +85,7 @@ mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
-mod test_get_pet_decryption;
+mod test_search_medical_records;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -3574,6 +3574,57 @@ impl PetChainContract {
             String::from_str(&env, "Pet medical records accessed"),
         );
         records
+    }
+
+    // --- MEDICAL RECORD SEARCH ---
+
+    /// Search a pet's medical records by diagnosis (case-sensitive substring match)
+    pub fn search_records_by_diagnosis(
+        env: Env,
+        pet_id: u64,
+        diagnosis: String,
+    ) -> Vec<MedicalRecord> {
+        let records = Self::get_pet_medical_records(env.clone(), pet_id);
+        let mut results = Vec::new(&env);
+        for record in records.iter() {
+            if record.diagnosis == diagnosis {
+                results.push_back(record);
+            }
+        }
+        results
+    }
+
+    /// Search a pet's medical records within a timestamp range [start, end] inclusive
+    pub fn search_records_by_date_range(
+        env: Env,
+        pet_id: u64,
+        start: u64,
+        end: u64,
+    ) -> Vec<MedicalRecord> {
+        let records = Self::get_pet_medical_records(env.clone(), pet_id);
+        let mut results = Vec::new(&env);
+        for record in records.iter() {
+            if record.date >= start && record.date <= end {
+                results.push_back(record);
+            }
+        }
+        results
+    }
+
+    /// Search a pet's medical records by the vet who created them
+    pub fn search_records_by_vet(
+        env: Env,
+        pet_id: u64,
+        vet: Address,
+    ) -> Vec<MedicalRecord> {
+        let records = Self::get_pet_medical_records(env.clone(), pet_id);
+        let mut results = Vec::new(&env);
+        for record in records.iter() {
+            if record.vet_address == vet {
+                results.push_back(record);
+            }
+        }
+        results
     }
 
     // --- ATTACHMENT MANAGEMENT ---
