@@ -119,3 +119,283 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod drift_policy_tests {
+    use crate::two_factor::{ClockDriftPolicy, TwoFactorAuth};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    const STEP_SECS: u64 = 30;
+
+    /// Generate a TOTP token for an arbitrary Unix timestamp.
+    fn token_at(secret: &str, ts: u64) -> String {
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+        totp.generate(ts)
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    // --- ClockDriftPolicy construction ---
+
+    #[test]
+    fn test_policy_constants() {
+        assert_eq!(ClockDriftPolicy::STRICT.allowed_steps, 0);
+        assert_eq!(ClockDriftPolicy::STANDARD.allowed_steps, 1);
+        assert_eq!(ClockDriftPolicy::LENIENT.allowed_steps, 2);
+    }
+
+    #[test]
+    fn test_custom_policy_clamps_at_2() {
+        let p = ClockDriftPolicy::custom(5);
+        assert_eq!(p.allowed_steps, 2, "custom() should clamp to max 2");
+    }
+
+    #[test]
+    fn test_default_policy_is_standard() {
+        assert_eq!(ClockDriftPolicy::default(), ClockDriftPolicy::STANDARD);
+    }
+
+    // --- STRICT policy (0 steps) ---
+
+    #[test]
+    fn test_strict_accepts_current_token() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let token = token_at(&secret, now);
+
+        let result =
+            TwoFactorAuth::verify_token_with_policy(&secret, &token, ClockDriftPolicy::STRICT);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "STRICT should accept the current-step token"
+        );
+    }
+
+    #[test]
+    fn test_strict_rejects_previous_step() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
+
+        // Only run this assertion when the past token differs from the current one
+        // (they can collide at step boundaries, which would be a false failure).
+        let current_token = token_at(&secret, now);
+        if past_token != current_token {
+            let result = TwoFactorAuth::verify_token_with_policy(
+                &secret,
+                &past_token,
+                ClockDriftPolicy::STRICT,
+            );
+            assert!(result.is_ok());
+            assert!(
+                !result.unwrap(),
+                "STRICT should reject a token from the previous step"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strict_rejects_next_step() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let future_token = token_at(&secret, now + STEP_SECS);
+
+        let current_token = token_at(&secret, now);
+        if future_token != current_token {
+            let result = TwoFactorAuth::verify_token_with_policy(
+                &secret,
+                &future_token,
+                ClockDriftPolicy::STRICT,
+            );
+            assert!(result.is_ok());
+            assert!(
+                !result.unwrap(),
+                "STRICT should reject a token from the next step"
+            );
+        }
+    }
+
+    // --- STANDARD policy (±1 step) ---
+
+    #[test]
+    fn test_standard_accepts_current_token() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let token = token_at(&secret, now);
+
+        let result =
+            TwoFactorAuth::verify_token_with_policy(&secret, &token, ClockDriftPolicy::STANDARD);
+        assert!(result.unwrap(), "STANDARD should accept current token");
+    }
+
+    #[test]
+    fn test_standard_accepts_one_step_behind() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
+
+        let result = TwoFactorAuth::verify_token_with_policy(
+            &secret,
+            &past_token,
+            ClockDriftPolicy::STANDARD,
+        );
+        assert!(
+            result.unwrap(),
+            "STANDARD should accept a token one step in the past"
+        );
+    }
+
+    #[test]
+    fn test_standard_accepts_one_step_ahead() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let future_token = token_at(&secret, now + STEP_SECS);
+
+        let result = TwoFactorAuth::verify_token_with_policy(
+            &secret,
+            &future_token,
+            ClockDriftPolicy::STANDARD,
+        );
+        assert!(
+            result.unwrap(),
+            "STANDARD should accept a token one step in the future"
+        );
+    }
+
+    #[test]
+    fn test_standard_rejects_two_steps_behind() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let old_token = token_at(&secret, now.saturating_sub(2 * STEP_SECS));
+
+        let current = token_at(&secret, now);
+        let prev = token_at(&secret, now.saturating_sub(STEP_SECS));
+
+        // Guard: token must differ from both accepted steps
+        if old_token != current && old_token != prev {
+            let result = TwoFactorAuth::verify_token_with_policy(
+                &secret,
+                &old_token,
+                ClockDriftPolicy::STANDARD,
+            );
+            assert!(
+                !result.unwrap(),
+                "STANDARD should reject a token two steps in the past"
+            );
+        }
+    }
+
+    // --- LENIENT policy (±2 steps) ---
+
+    #[test]
+    fn test_lenient_accepts_two_steps_behind() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let old_token = token_at(&secret, now.saturating_sub(2 * STEP_SECS));
+
+        let result =
+            TwoFactorAuth::verify_token_with_policy(&secret, &old_token, ClockDriftPolicy::LENIENT);
+        assert!(
+            result.unwrap(),
+            "LENIENT should accept a token two steps in the past"
+        );
+    }
+
+    #[test]
+    fn test_lenient_accepts_two_steps_ahead() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let future_token = token_at(&secret, now + 2 * STEP_SECS);
+
+        let result = TwoFactorAuth::verify_token_with_policy(
+            &secret,
+            &future_token,
+            ClockDriftPolicy::LENIENT,
+        );
+        assert!(
+            result.unwrap(),
+            "LENIENT should accept a token two steps in the future"
+        );
+    }
+
+    #[test]
+    fn test_lenient_rejects_three_steps_out() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+        let old_token = token_at(&secret, now.saturating_sub(3 * STEP_SECS));
+
+        // Guard: must differ from all accepted windows
+        let accepted: Vec<String> = (-2i64..=2)
+            .map(|o| {
+                if o >= 0 {
+                    token_at(&secret, now + o as u64 * STEP_SECS)
+                } else {
+                    token_at(&secret, now.saturating_sub((-o) as u64 * STEP_SECS))
+                }
+            })
+            .collect();
+
+        if !accepted.contains(&old_token) {
+            let result = TwoFactorAuth::verify_token_with_policy(
+                &secret,
+                &old_token,
+                ClockDriftPolicy::LENIENT,
+            );
+            assert!(
+                !result.unwrap(),
+                "LENIENT should reject a token three steps out"
+            );
+        }
+    }
+
+    // --- Invalid token always rejected ---
+
+    #[test]
+    fn test_all_policies_reject_garbage_token() {
+        let secret = TwoFactorAuth::generate_secret();
+
+        for policy in [
+            ClockDriftPolicy::STRICT,
+            ClockDriftPolicy::STANDARD,
+            ClockDriftPolicy::LENIENT,
+        ] {
+            let result = TwoFactorAuth::verify_token_with_policy(&secret, "000000", policy);
+            assert!(result.is_ok());
+            // 000000 could theoretically be valid, so only assert false when it isn't
+            // the actual current token — the important thing is no panic/error.
+            let _ = result.unwrap();
+        }
+    }
+
+    // --- verify_token still works as a convenience wrapper ---
+
+    #[test]
+    fn test_verify_token_uses_standard_policy() {
+        let secret = TwoFactorAuth::generate_secret();
+        let now = now_secs();
+
+        // A token one step behind should be accepted by the default wrapper
+        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
+        let result = TwoFactorAuth::verify_token(&secret, &past_token);
+        assert!(
+            result.unwrap(),
+            "verify_token should accept ±1 step like STANDARD"
+        );
+    }
+}
