@@ -1,11 +1,22 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
-    panic_with_error, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol, Vec,
 };
 
+/// Expiry policy: a pending transfer that has not been accepted within
+/// this many seconds (~7 days at 5-second ledger close time) may be
+/// reclaimed by the original owner via [`PetOwnershipContract::reclaim_transfer`].
+/// The constant is expressed in ledger timestamp units (seconds since Unix epoch)
+/// so it is independent of ledger sequence numbers.
+pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
+
 mod vet_registry;
+#[cfg(test)]
+mod test;
+
+#[cfg(test)]
+mod test;
 
 /// ======================================================
 /// CONTRACT
@@ -73,6 +84,9 @@ pub enum ContractError {
     TransferAlreadyPending = 3,
     NoPendingTransfer = 4,
     InvalidRecipient = 5,
+    /// Returned when an operation requires the transfer to have expired but it
+    /// has not yet passed the [`TRANSFER_EXPIRY_SECONDS`] window.
+    TransferNotExpired = 6,
 }
 
 impl From<ContractError> for soroban_sdk::Error {
@@ -84,6 +98,7 @@ impl From<ContractError> for soroban_sdk::Error {
             ContractError::TransferAlreadyPending => ScErrorCode::ExistingValue,
             ContractError::NoPendingTransfer => ScErrorCode::MissingValue,
             ContractError::InvalidRecipient => ScErrorCode::InvalidAction,
+            ContractError::TransferNotExpired => ScErrorCode::InvalidAction,
         };
         soroban_sdk::Error::from((ScErrorType::Contract, code))
     }
@@ -101,7 +116,9 @@ fn get_pet(env: &Env, pet_id: u64) -> Pet {
 }
 
 fn save_pet(env: &Env, pet: &Pet) {
-    env.storage().persistent().set(&DataKey::Pet(pet.pet_id), pet);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Pet(pet.pet_id), pet);
 }
 
 fn get_history(env: &Env, pet_id: u64) -> Vec<OwnershipRecord> {
@@ -173,10 +190,8 @@ impl PetOwnershipContract {
             .persistent()
             .set(&DataKey::PendingTransfer(pet_id), &transfer);
 
-        env.events().publish(
-            (EVT_TRANSFER_INITIATED, pet_id),
-            (pet.current_owner, to),
-        );
+        env.events()
+            .publish((EVT_TRANSFER_INITIATED, pet_id), (pet.current_owner, to));
     }
 
     /// ----------------------------------
@@ -202,10 +217,14 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let last = history.len() - 1;
-        let mut prev = history.get(last).unwrap();
-        prev.relinquished_at = Some(now);
-        history.set(last, prev);
+        let len = history.len();
+        if len > 0 {
+            let last = len - 1;
+            if let Some(mut prev) = history.get(last) {
+                prev.relinquished_at = Some(now);
+                history.set(last, prev);
+            }
+        }
 
         history.push_back(OwnershipRecord {
             owner: transfer.to.clone(),
@@ -252,6 +271,48 @@ impl PetOwnershipContract {
     }
 
     /// ----------------------------------
+    /// RECLAIM EXPIRED TRANSFER
+    /// ----------------------------------
+
+    /// Allows the original owner to cancel a pending transfer that has been
+    /// outstanding for longer than [`TRANSFER_EXPIRY_SECONDS`].
+    ///
+    /// # Expiry policy
+    /// A `PendingTransfer` records `initiated_at` (ledger timestamp in seconds).
+    /// If `current_timestamp - initiated_at >= TRANSFER_EXPIRY_SECONDS` the
+    /// transfer is considered stale and the owner may call this function to
+    /// clean it up without requiring the recipient's cooperation.
+    ///
+    /// # Errors
+    /// - [`ContractError::NoPendingTransfer`] – no transfer exists for this pet.
+    /// - [`ContractError::Unauthorized`] – caller is not the original sender.
+    /// - [`ContractError::TransferNotExpired`] – the expiry window has not elapsed;
+    ///   use [`cancel_transfer`] instead if you want to cancel before expiry.
+    pub fn reclaim_transfer(env: Env, pet_id: u64) {
+        let transfer: PendingTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingTransfer(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingTransfer));
+
+        transfer.from.require_auth();
+
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(transfer.initiated_at) < TRANSFER_EXPIRY_SECONDS {
+            panic_with_error!(env, ContractError::TransferNotExpired);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingTransfer(pet_id));
+
+        env.events().publish(
+            (EVT_TRANSFER_CANCELLED, pet_id),
+            (transfer.from, transfer.to),
+        );
+    }
+
+    /// ----------------------------------
     /// READ HELPERS
     /// ----------------------------------
 
@@ -267,5 +328,12 @@ impl PetOwnershipContract {
         env.storage()
             .persistent()
             .has(&DataKey::PendingTransfer(pet_id))
+    }
+
+    /// Returns the [`PendingTransfer`] for `pet_id`, or `None` if none exists.
+    pub fn get_pending_transfer(env: Env, pet_id: u64) -> Option<PendingTransfer> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingTransfer(pet_id))
     }
 }

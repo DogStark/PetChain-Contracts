@@ -1,8 +1,8 @@
 // #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env, String, Symbol, panic_with_error,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, String, Symbol,
 };
 
 /// ======================================================
@@ -174,10 +174,7 @@ impl VetRegistryContract {
             .persistent()
             .set(&DataKey::VetByLicense(license_number), &vet_address);
 
-        env.events().publish(
-            (EVT_REGISTERED,),
-            vet_address,
-        );
+        env.events().publish((EVT_REGISTERED,), vet_address);
     }
 
     /// ----------------------------------
@@ -191,10 +188,7 @@ impl VetRegistryContract {
         vet.verified = true;
         save_vet(&env, &vet);
 
-        env.events().publish(
-            (EVT_VERIFIED,),
-            vet_address,
-        );
+        env.events().publish((EVT_VERIFIED,), vet_address);
     }
 
     pub fn revoke_vet_license(env: Env, vet_address: Address) {
@@ -204,10 +198,7 @@ impl VetRegistryContract {
         vet.verified = false;
         save_vet(&env, &vet);
 
-        env.events().publish(
-            (EVT_REVOKED,),
-            vet_address,
-        );
+        env.events().publish((EVT_REVOKED,), vet_address);
     }
 
     /// ----------------------------------
