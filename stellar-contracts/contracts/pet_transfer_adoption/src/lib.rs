@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    panic_with_error, Address, Env, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -76,32 +77,17 @@ const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
 /// ERRORS
 /// ======================================================
 
-#[contracttype]
+#[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum ContractError {
     PetNotFound = 1,
     Unauthorized = 2,
     TransferAlreadyPending = 3,
     NoPendingTransfer = 4,
     InvalidRecipient = 5,
-    /// Returned when an operation requires the transfer to have expired but it
-    /// has not yet passed the [`TRANSFER_EXPIRY_SECONDS`] window.
-    TransferNotExpired = 6,
-}
-
-impl From<ContractError> for soroban_sdk::Error {
-    fn from(e: ContractError) -> Self {
-        use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
-        let code = match e {
-            ContractError::PetNotFound => ScErrorCode::MissingValue,
-            ContractError::Unauthorized => ScErrorCode::InvalidAction,
-            ContractError::TransferAlreadyPending => ScErrorCode::ExistingValue,
-            ContractError::NoPendingTransfer => ScErrorCode::MissingValue,
-            ContractError::InvalidRecipient => ScErrorCode::InvalidAction,
-            ContractError::TransferNotExpired => ScErrorCode::InvalidAction,
-        };
-        soroban_sdk::Error::from((ScErrorType::Contract, code))
-    }
+    EmptyOwnershipHistory = 6,
+    MissingOwnershipRecord = 7,
 }
 
 /// ======================================================
@@ -217,14 +203,15 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let len = history.len();
-        if len > 0 {
-            let last = len - 1;
-            if let Some(mut prev) = history.get(last) {
-                prev.relinquished_at = Some(now);
-                history.set(last, prev);
-            }
-        }
+        let last = history
+            .len()
+            .checked_sub(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::EmptyOwnershipHistory));
+        let mut prev = history
+            .get(last)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
+        prev.relinquished_at = Some(now);
+        history.set(last, prev);
 
         history.push_back(OwnershipRecord {
             owner: transfer.to.clone(),
@@ -337,3 +324,6 @@ impl PetOwnershipContract {
             .get(&DataKey::PendingTransfer(pet_id))
     }
 }
+
+#[cfg(test)]
+mod test;
