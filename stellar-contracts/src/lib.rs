@@ -2004,6 +2004,7 @@ impl PetChainContract {
     const MAX_STR_LONG: u32 = 1000;      // description, notes, results, reference_ranges
     const MAX_VEC_MEDS: u32 = 50;        // medications vec in a medical record
     const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
+    const MAX_REVIEW_COMMENT_LEN: u32 = 500; // vet review comment
 
     pub fn register_vet(
         env: Env,
@@ -4506,6 +4507,10 @@ impl PetChainContract {
 
         if !(1..=5).contains(&rating) {
             panic!("Rating must be between 1 and 5");
+        }
+
+        if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
+            panic!("comment too long");
         }
 
         // Check duplicate
