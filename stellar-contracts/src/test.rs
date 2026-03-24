@@ -3938,7 +3938,10 @@ mod test_vet {
         let stored = client.get_vet(&vet).unwrap();
         assert_eq!(stored.address, vet);
         assert_eq!(stored.name, String::from_str(&env, "Dr. Sarah Connor"));
-        assert_eq!(stored.license_number, String::from_str(&env, "LIC-2024-001"));
+        assert_eq!(
+            stored.license_number,
+            String::from_str(&env, "LIC-2024-001")
+        );
         assert_eq!(stored.specialization, String::from_str(&env, "Surgery"));
         assert_eq!(stored.verified, false);
     }
@@ -4173,7 +4176,9 @@ mod test_vet {
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
-        assert!(client.get_vet_by_license(&String::from_str(&env, "NONEXISTENT")).is_none());
+        assert!(client
+            .get_vet_by_license(&String::from_str(&env, "NONEXISTENT"))
+            .is_none());
     }
 
     #[test]

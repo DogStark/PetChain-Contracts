@@ -94,6 +94,9 @@ pub struct TwoFactorHandlers;
 
 impl TwoFactorHandlers {
     // POST /api/2fa/enable - Generate QR code and backup codes
+    pub fn enable_two_factor(
+        req: EnableTwoFactorRequest,
+    ) -> Result<EnableTwoFactorResponse, String> {
     pub fn enable_two_factor(caller: &AuthenticatedUser, req: EnableTwoFactorRequest) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
@@ -123,10 +126,10 @@ impl TwoFactorHandlers {
 
         // Fetch from database: user_id -> TwoFactorData
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
-        
+
         // Placeholder - replace with actual DB fetch
         let secret = "PLACEHOLDER_SECRET"; // Get from DB
-        
+
         let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
         
     pub fn verify_and_activate(req: VerifyTwoFactorRequest) -> Result<bool, String> {
@@ -147,6 +150,13 @@ impl TwoFactorHandlers {
     }
 
     // POST /api/auth/login/2fa - Verify 2FA token during login
+    pub fn verify_login_token(req: LoginWithTwoFactorRequest) -> Result<bool, String> {
+        let two_factor_data = load_two_factor_data(&req.user_id)?;
+        if !two_factor_data.enabled {
+            return Ok(false);
+        }
+
+        TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)
     //
     // Note: login is a pre-auth flow — the caller has already passed password
     // verification and holds a short-lived pre-auth session token. Middleware
@@ -169,7 +179,7 @@ impl TwoFactorHandlers {
 
         // Fetch from database
         // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
-        
+
         let secret = "PLACEHOLDER_SECRET"; // Get from DB
         let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
         
@@ -216,9 +226,13 @@ impl TwoFactorHandlers {
 
         // Fetch from database
         // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
-        
+
         let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
 
+        if let Some(_index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
+            // Remove used backup code from database
+            // two_factor_data.backup_codes.remove(index);
+            // db.update_two_factor_data(&req.user_id, &two_factor_data)?;
         if TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code).is_none() {
             return Err("Invalid backup code".to_string());
     pub fn recover_with_backup(req: RecoverWithBackupRequest) -> Result<bool, String> {
@@ -262,6 +276,20 @@ pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorDa
         .lock()
         .ok()
         .and_then(|store| store.get(user_id).cloned())
+}
+
+#[cfg(test)]
+pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactorData) {
+    if let Ok(mut store) = two_factor_store().lock() {
+        store.insert(user_id.to_string(), data);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_two_factor_store_for_tests() {
+    if let Ok(mut store) = two_factor_store().lock() {
+        store.clear();
+    }
 }
 
 #[cfg(test)]
