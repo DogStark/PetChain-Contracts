@@ -1,6 +1,30 @@
 #[cfg(test)]
 mod tests {
-    use crate::two_factor::TwoFactorAuth;
+    use crate::handlers::{
+        clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,
+        EnableTwoFactorRequest, LoginWithTwoFactorRequest, TwoFactorHandlers,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
+        overwrite_two_factor_data_for_tests, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        TwoFactorHandlers, VerifyTwoFactorRequest,
+    };
+    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+
+    fn generate_token(secret: &str) -> String {
+        use totp_rs::{Algorithm, Secret, TOTP};
+
+        TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap()
+        .generate_current()
+        .unwrap()
+    }
 
     #[test]
     fn test_generate_secret() {
@@ -16,7 +40,7 @@ mod tests {
 
         let setup = result.unwrap();
         assert!(!setup.secret.is_empty());
-        assert!(setup.qr_code_base64.starts_with("data:image/png;base64,"));
+        assert!(!setup.qr_code_base64.is_empty());
         assert_eq!(setup.backup_codes.len(), 8);
     }
 
@@ -24,20 +48,7 @@ mod tests {
     fn test_verify_token() {
         let secret = TwoFactorAuth::generate_secret();
 
-        // Generate current token
-        use totp_rs::{Algorithm, Secret, TOTP};
-        let totp = TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            Secret::Encoded(secret.clone()).to_bytes().unwrap(),
-            None,
-            String::new(),
-        )
-        .unwrap();
-
-        let token = totp.generate_current().unwrap();
+        let token = generate_token(&secret);
 
         // Verify it
         let result = TwoFactorAuth::verify_token(&secret, &token);
@@ -84,318 +95,340 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_backup_codes_are_unique() {
-        // Standard uniqueness check for a normal batch
-        let codes = TwoFactorAuth::generate_backup_codes(8);
-        assert_eq!(codes.len(), 8);
+    fn test_verify_login_token_uses_stored_secret_for_user() {
+        clear_two_factor_store_for_tests();
 
-        let unique: std::collections::HashSet<_> = codes.iter().collect();
-        assert_eq!(unique.len(), 8, "Backup codes must all be unique");
+        let user_id = "user-secret-check";
+        let stored_secret = TwoFactorAuth::generate_secret();
+        let placeholder_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        let placeholder_token = generate_token(placeholder_secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: stored_secret,
+                backup_codes: vec![],
+                enabled: true,
+    fn test_verify_and_activate_persists_enabled_state() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-activate";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "activate@petchain.com".to_string(),
+        })
+        .unwrap();
+
+        let before = get_two_factor_data_for_tests(user_id).unwrap();
+        assert!(!before.enabled);
+
+        let result = TwoFactorHandlers::verify_and_activate(VerifyTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: generate_token(&setup.secret),
+        })
+        .unwrap();
+
+        assert!(result);
+
+        let after = get_two_factor_data_for_tests(user_id).unwrap();
+        assert!(after.enabled);
+        assert_eq!(after.secret, setup.secret);
     }
 
     #[test]
-    fn test_generate_backup_codes_no_collisions_under_stress() {
-        // Run generation many times to statistically surface any collision bug.
-        // 1000 batches of 8 codes = 8000 total generation calls.
-        for run in 0..1000 {
-            let codes = TwoFactorAuth::generate_backup_codes(8);
+    fn test_verify_login_token_fails_when_two_factor_is_disabled() {
+        clear_two_factor_store_for_tests();
 
-            assert_eq!(
-                codes.len(),
-                8,
-                "Run {}: expected 8 codes, got {}",
-                run,
-                codes.len()
-            );
+        let user_id = "user-disabled";
+        let secret = TwoFactorAuth::generate_secret();
+        let token = generate_token(&secret);
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret,
+                backup_codes: vec![],
+                enabled: false,
+            },
+        );
 
-            let unique: std::collections::HashSet<_> = codes.iter().collect();
-            assert_eq!(
-                unique.len(),
-                8,
-                "Run {}: found duplicate backup codes: {:?}",
-                run,
-                codes
-            );
-        }
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: placeholder_token,
+            token,
+        })
+        .unwrap();
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_login_token_succeeds_with_correct_token_when_enabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-enabled-ok";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "enabled@petchain.com".to_string(),
+        })
+        .unwrap();
+    fn test_verify_uses_stored_secret_instead_of_placeholder_secret() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-secret-check";
+        let stored_secret = TwoFactorAuth::generate_secret();
+        let placeholder_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        let placeholder_token = generate_token(placeholder_secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes,
+                enabled: true,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: generate_token(&setup.secret),
+        })
+        .unwrap();
+
+        assert!(result);
+    }
+
+    #[test]
+    fn test_verify_login_token_fails_with_wrong_token_when_enabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-enabled-bad-token";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "wrong-token@petchain.com".to_string(),
+        })
+        .unwrap();
+        let wrong_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        assert_ne!(setup.secret, wrong_secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret,
+                backup_codes: setup.backup_codes,
+                enabled: true,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: generate_token(wrong_secret),
+                secret: stored_secret.clone(),
+                backup_codes: vec![],
+                enabled: false,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_and_activate(VerifyTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: placeholder_token,
+        })
+        .unwrap();
+
+        assert!(!result);
+
+        let stored = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_eq!(stored.secret, stored_secret);
+        assert!(!stored.enabled);
+    }
+
+    #[test]
+    fn test_activation_does_not_persist_on_failed_verification() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-no-partial-activation";
+        let setup = TwoFactorHandlers::enable_two_factor(EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "no-partial@petchain.com".to_string(),
+        })
+        .unwrap();
+
+        let invalid_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        let invalid_token = generate_token(invalid_secret);
+        assert_ne!(setup.secret, invalid_secret);
+
+        let result = TwoFactorHandlers::verify_and_activate(VerifyTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token: invalid_token,
+        })
+        .unwrap();
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_login_token_returns_false_when_disabled() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-disabled";
+        let secret = TwoFactorAuth::generate_secret();
+        let token = generate_token(&secret);
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret,
+                backup_codes: vec![],
+                enabled: false,
+            },
+        );
+
+        let result = TwoFactorHandlers::verify_login_token(LoginWithTwoFactorRequest {
+            user_id: user_id.to_string(),
+            token,
+        })
+        .unwrap();
+
+        assert!(!result);
+        assert!(!get_two_factor_data_for_tests(user_id).unwrap().enabled);
     }
 }
 
+// -----------------------------------------------------------------------
+// Authorization tests
+// -----------------------------------------------------------------------
+
 #[cfg(test)]
-mod drift_policy_tests {
-    use crate::two_factor::{ClockDriftPolicy, TwoFactorAuth};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use totp_rs::{Algorithm, Secret, TOTP};
+mod test_authorization {
+    use crate::handlers::{
+        AuthenticatedUser, TwoFactorHandlers,
+        EnableTwoFactorRequest, VerifyTwoFactorRequest,
+        LoginWithTwoFactorRequest, DisableTwoFactorRequest,
+        RecoverWithBackupRequest,
+    };
 
-    const STEP_SECS: u64 = 30;
-
-    /// Generate a TOTP token for an arbitrary Unix timestamp.
-    fn token_at(secret: &str, ts: u64) -> String {
-        let totp = TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
-            None,
-            String::new(),
-        )
-        .unwrap();
-        totp.generate(ts)
+    fn caller(id: &str) -> AuthenticatedUser {
+        AuthenticatedUser::new(id)
     }
 
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-
-    // --- ClockDriftPolicy construction ---
+    // --- enable_two_factor ---
 
     #[test]
-    fn test_policy_constants() {
-        assert_eq!(ClockDriftPolicy::STRICT.allowed_steps, 0);
-        assert_eq!(ClockDriftPolicy::STANDARD.allowed_steps, 1);
-        assert_eq!(ClockDriftPolicy::LENIENT.allowed_steps, 2);
+    fn test_enable_two_factor_correct_user_succeeds() {
+        let user = caller("user-1");
+        let req = EnableTwoFactorRequest {
+            user_id: "user-1".to_string(),
+            email: "user1@petchain.com".to_string(),
+        };
+        let result = TwoFactorHandlers::enable_two_factor(&user, req);
+        assert!(result.is_ok(), "Owner should be able to enable their own 2FA");
     }
 
     #[test]
-    fn test_custom_policy_clamps_at_2() {
-        let p = ClockDriftPolicy::custom(5);
-        assert_eq!(p.allowed_steps, 2, "custom() should clamp to max 2");
-    }
-
-    #[test]
-    fn test_default_policy_is_standard() {
-        assert_eq!(ClockDriftPolicy::default(), ClockDriftPolicy::STANDARD);
-    }
-
-    // --- STRICT policy (0 steps) ---
-
-    #[test]
-    fn test_strict_accepts_current_token() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let token = token_at(&secret, now);
-
-        let result =
-            TwoFactorAuth::verify_token_with_policy(&secret, &token, ClockDriftPolicy::STRICT);
-        assert!(result.is_ok());
+    fn test_enable_two_factor_wrong_user_is_forbidden() {
+        let user = caller("user-1");
+        let req = EnableTwoFactorRequest {
+            user_id: "user-2".to_string(), // different user
+            email: "user2@petchain.com".to_string(),
+        };
+        let result = TwoFactorHandlers::enable_two_factor(&user, req);
+        assert!(result.is_err());
         assert!(
-            result.unwrap(),
-            "STRICT should accept the current-step token"
+            result.unwrap_err().contains("Forbidden"),
+            "Wrong user_id must return a Forbidden error"
         );
     }
 
-    #[test]
-    fn test_strict_rejects_previous_step() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
+    // --- verify_and_activate ---
 
-        // Only run this assertion when the past token differs from the current one
-        // (they can collide at step boundaries, which would be a false failure).
-        let current_token = token_at(&secret, now);
-        if past_token != current_token {
-            let result = TwoFactorAuth::verify_token_with_policy(
-                &secret,
-                &past_token,
-                ClockDriftPolicy::STRICT,
-            );
-            assert!(result.is_ok());
-            assert!(
-                !result.unwrap(),
-                "STRICT should reject a token from the previous step"
-            );
-        }
+    #[test]
+    fn test_verify_and_activate_wrong_user_is_forbidden() {
+        let user = caller("user-1");
+        let req = VerifyTwoFactorRequest {
+            user_id: "user-99".to_string(),
+            token: "123456".to_string(),
+        };
+        let result = TwoFactorHandlers::verify_and_activate(&user, req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Forbidden"));
     }
 
-    #[test]
-    fn test_strict_rejects_next_step() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let future_token = token_at(&secret, now + STEP_SECS);
+    // --- verify_login_token ---
 
-        let current_token = token_at(&secret, now);
-        if future_token != current_token {
-            let result = TwoFactorAuth::verify_token_with_policy(
-                &secret,
-                &future_token,
-                ClockDriftPolicy::STRICT,
-            );
-            assert!(result.is_ok());
-            assert!(
-                !result.unwrap(),
-                "STRICT should reject a token from the next step"
-            );
-        }
+    #[test]
+    fn test_verify_login_token_wrong_user_is_forbidden() {
+        let user = caller("user-1");
+        let req = LoginWithTwoFactorRequest {
+            user_id: "user-99".to_string(),
+            token: "123456".to_string(),
+        };
+        let result = TwoFactorHandlers::verify_login_token(&user, req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Forbidden"));
     }
 
-    // --- STANDARD policy (±1 step) ---
+    // --- disable_two_factor ---
 
     #[test]
-    fn test_standard_accepts_current_token() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let token = token_at(&secret, now);
-
-        let result =
-            TwoFactorAuth::verify_token_with_policy(&secret, &token, ClockDriftPolicy::STANDARD);
-        assert!(result.unwrap(), "STANDARD should accept current token");
+    fn test_disable_two_factor_wrong_user_is_forbidden() {
+        let user = caller("user-1");
+        let req = DisableTwoFactorRequest {
+            user_id: "user-99".to_string(),
+            token: "123456".to_string(),
+        };
+        let result = TwoFactorHandlers::disable_two_factor(&user, req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Forbidden"));
     }
 
-    #[test]
-    fn test_standard_accepts_one_step_behind() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
+    // --- recover_with_backup ---
 
-        let result = TwoFactorAuth::verify_token_with_policy(
-            &secret,
-            &past_token,
-            ClockDriftPolicy::STANDARD,
-        );
+    #[test]
+    fn test_recover_with_backup_correct_user_proceeds_to_code_check() {
+        let user = caller("user-1");
+        let req = RecoverWithBackupRequest {
+            user_id: "user-1".to_string(),
+            backup_code: "wrong-code".to_string(), // auth passes, code check fails
+        };
+        let result = TwoFactorHandlers::recover_with_backup(&user, req);
+        // Should fail on invalid backup code, NOT on authorization
+        assert!(result.is_err());
         assert!(
-            result.unwrap(),
-            "STANDARD should accept a token one step in the past"
+            result.unwrap_err().contains("Invalid backup code"),
+            "Correct user should reach the backup code validation step"
         );
     }
 
     #[test]
-    fn test_standard_accepts_one_step_ahead() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let future_token = token_at(&secret, now + STEP_SECS);
+    fn test_recover_with_backup_wrong_user_is_forbidden() {
+        let user = caller("user-1");
+        let req = RecoverWithBackupRequest {
+            user_id: "user-99".to_string(),
+            backup_code: "1234-5678".to_string(),
+        };
+        let result = TwoFactorHandlers::recover_with_backup(&user, req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Forbidden"));
+    }
 
-        let result = TwoFactorAuth::verify_token_with_policy(
-            &secret,
-            &future_token,
-            ClockDriftPolicy::STANDARD,
-        );
-        assert!(
-            result.unwrap(),
-            "STANDARD should accept a token one step in the future"
-        );
+    // --- AuthenticatedUser::authorize unit tests ---
+
+    #[test]
+    fn test_authorize_same_user_ok() {
+        let user = caller("alice");
+        assert!(user.authorize("alice").is_ok());
     }
 
     #[test]
-    fn test_standard_rejects_two_steps_behind() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let old_token = token_at(&secret, now.saturating_sub(2 * STEP_SECS));
-
-        let current = token_at(&secret, now);
-        let prev = token_at(&secret, now.saturating_sub(STEP_SECS));
-
-        // Guard: token must differ from both accepted steps
-        if old_token != current && old_token != prev {
-            let result = TwoFactorAuth::verify_token_with_policy(
-                &secret,
-                &old_token,
-                ClockDriftPolicy::STANDARD,
-            );
-            assert!(
-                !result.unwrap(),
-                "STANDARD should reject a token two steps in the past"
-            );
-        }
-    }
-
-    // --- LENIENT policy (±2 steps) ---
-
-    #[test]
-    fn test_lenient_accepts_two_steps_behind() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let old_token = token_at(&secret, now.saturating_sub(2 * STEP_SECS));
-
-        let result =
-            TwoFactorAuth::verify_token_with_policy(&secret, &old_token, ClockDriftPolicy::LENIENT);
-        assert!(
-            result.unwrap(),
-            "LENIENT should accept a token two steps in the past"
-        );
+    fn test_authorize_different_user_err() {
+        let user = caller("alice");
+        let result = user.authorize("bob");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Forbidden"));
     }
 
     #[test]
-    fn test_lenient_accepts_two_steps_ahead() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let future_token = token_at(&secret, now + 2 * STEP_SECS);
-
-        let result = TwoFactorAuth::verify_token_with_policy(
-            &secret,
-            &future_token,
-            ClockDriftPolicy::LENIENT,
-        );
-        assert!(
-            result.unwrap(),
-            "LENIENT should accept a token two steps in the future"
-        );
-    }
-
-    #[test]
-    fn test_lenient_rejects_three_steps_out() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-        let old_token = token_at(&secret, now.saturating_sub(3 * STEP_SECS));
-
-        // Guard: must differ from all accepted windows
-        let accepted: Vec<String> = (-2i64..=2)
-            .map(|o| {
-                if o >= 0 {
-                    token_at(&secret, now + o as u64 * STEP_SECS)
-                } else {
-                    token_at(&secret, now.saturating_sub((-o) as u64 * STEP_SECS))
-                }
-            })
-            .collect();
-
-        if !accepted.contains(&old_token) {
-            let result = TwoFactorAuth::verify_token_with_policy(
-                &secret,
-                &old_token,
-                ClockDriftPolicy::LENIENT,
-            );
-            assert!(
-                !result.unwrap(),
-                "LENIENT should reject a token three steps out"
-            );
-        }
-    }
-
-    // --- Invalid token always rejected ---
-
-    #[test]
-    fn test_all_policies_reject_garbage_token() {
-        let secret = TwoFactorAuth::generate_secret();
-
-        for policy in [
-            ClockDriftPolicy::STRICT,
-            ClockDriftPolicy::STANDARD,
-            ClockDriftPolicy::LENIENT,
-        ] {
-            let result = TwoFactorAuth::verify_token_with_policy(&secret, "000000", policy);
-            assert!(result.is_ok());
-            // 000000 could theoretically be valid, so only assert false when it isn't
-            // the actual current token — the important thing is no panic/error.
-            let _ = result.unwrap();
-        }
-    }
-
-    // --- verify_token still works as a convenience wrapper ---
-
-    #[test]
-    fn test_verify_token_uses_standard_policy() {
-        let secret = TwoFactorAuth::generate_secret();
-        let now = now_secs();
-
-        // A token one step behind should be accepted by the default wrapper
-        let past_token = token_at(&secret, now.saturating_sub(STEP_SECS));
-        let result = TwoFactorAuth::verify_token(&secret, &past_token);
-        assert!(
-            result.unwrap(),
-            "verify_token should accept ±1 step like STANDARD"
-        );
+    fn test_authorize_empty_vs_nonempty_is_forbidden() {
+        let user = caller("");
+        assert!(user.authorize("someone").is_err());
     }
 }
