@@ -13,10 +13,7 @@ fn test_upgrade_contract_without_admin_initialization() {
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
-    let new_wasm_hash = BytesN::from_array(
-        &env,
-        &[1u8; 32],
-    );
+    let new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
 
     // Try to upgrade without initializing admin - should panic with typed error
     client.upgrade_contract(&new_wasm_hash);
@@ -32,10 +29,7 @@ fn test_propose_upgrade_without_admin_initialization() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let proposer = Address::generate(&env);
-    let new_wasm_hash = BytesN::from_array(
-        &env,
-        &[2u8; 32],
-    );
+    let new_wasm_hash = BytesN::from_array(&env, &[2u8; 32]);
 
     // Try to propose upgrade without initializing admin - should panic with typed error
     client.propose_upgrade(&proposer, &new_wasm_hash);
@@ -128,7 +122,6 @@ fn test_propose_action_without_admin_initialization() {
 
     // Create a simple proposal action
     let action = ProposalAction::VerifyVet(Address::generate(&env));
-
 
     // Try to propose action without initializing admin - should panic with typed error
     client.propose_action(&proposer, &action, &3600u64);

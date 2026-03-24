@@ -53,13 +53,13 @@ mod test_overflow;
 // #[cfg(test)]
 // mod test;
 #[cfg(test)]
-mod test_input_limits;
-#[cfg(test)]
 mod test_access_control;
 #[cfg(test)]
 mod test_activity;
 #[cfg(test)]
 mod test_admin_initialization;
+#[cfg(test)]
+mod test_input_limits;
 
 #[cfg(test)]
 mod test_attachments;
@@ -79,28 +79,24 @@ mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 #[cfg(test)]
-mod test_multisig_transfer;
+mod test_ipfs;
 #[cfg(test)]
-mod test_upgrade_proposal;
+mod test_multisig_transfer;
 #[cfg(test)]
 mod test_nutrition;
 #[cfg(test)]
 mod test_pet_age;
 #[cfg(test)]
-mod test_statistics;
-#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
-mod test_ipfs;
-
-
-
-
-
+mod test_statistics;
+#[cfg(test)]
+mod test_upgrade_proposal;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN, Env, String,
+    Symbol, Vec,
 };
 
 /// Contract error types
@@ -111,7 +107,6 @@ pub enum ContractError {
     AdminNotInitialized = 2,
     InvalidIpfsHash = 3,
 }
-
 
 impl From<ContractError> for soroban_sdk::Error {
     fn from(e: ContractError) -> Self {
@@ -181,7 +176,6 @@ pub struct BreedingRecord {
     pub breeder: Address,
     pub notes: String,
 }
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -591,7 +585,7 @@ pub enum DataKey {
 
     // Medication keys
     // Lost Pet Alert System keys
-    EmergencyAccessLogs(u64),          // pet_id -> Vec<EmergencyAccessLog>
+    EmergencyAccessLogs(u64),           // pet_id -> Vec<EmergencyAccessLog>
     EmergencyResponder((u64, Address)), // (pet_id, responder) -> bool
 }
 
@@ -1307,9 +1301,18 @@ impl PetChainContract {
                 pets_treated: 0,
             });
 
-        stats.total_records = stats.total_records.checked_add(record_increment).expect("counter overflow");
-        stats.total_vaccinations = stats.total_vaccinations.checked_add(vaccination_increment).expect("counter overflow");
-        stats.total_treatments = stats.total_treatments.checked_add(treatment_increment).expect("counter overflow");
+        stats.total_records = stats
+            .total_records
+            .checked_add(record_increment)
+            .expect("counter overflow");
+        stats.total_vaccinations = stats
+            .total_vaccinations
+            .checked_add(vaccination_increment)
+            .expect("counter overflow");
+        stats.total_treatments = stats
+            .total_treatments
+            .checked_add(treatment_increment)
+            .expect("counter overflow");
 
         // Unique pet tracking
         if !env
@@ -1451,11 +1454,12 @@ impl PetChainContract {
             String::from_str(&env, "Initial Registration"),
         );
 
-        let owner_pet_count: u64 = safe_increment(env
-            .storage()
-            .instance()
-            .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0));
+        let owner_pet_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&DataKey::PetCountByOwner(owner.clone()))
+                .unwrap_or(0),
+        );
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
@@ -1466,11 +1470,12 @@ impl PetChainContract {
 
         // Add to species index
         let species_key = Self::species_to_string(&env, &species);
-        let species_count: u64 = safe_increment(env
-            .storage()
-            .instance()
-            .get(&DataKey::SpeciesPetCount(species_key.clone()))
-            .unwrap_or(0));
+        let species_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&DataKey::SpeciesPetCount(species_key.clone()))
+                .unwrap_or(0),
+        );
         env.storage().instance().set(
             &DataKey::SpeciesPetCount(species_key.clone()),
             &species_count,
@@ -1647,7 +1652,6 @@ impl PetChainContract {
         );
         Some(profile)
     }
-
 
     pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
         if let Some(pet) = env
@@ -2038,9 +2042,9 @@ impl PetChainContract {
     const MAX_VET_SPEC_LEN: u32 = 100;
 
     // Medical / record field limits
-    const MAX_STR_SHORT: u32 = 100;      // names, types, test_type, outcome
-    const MAX_STR_LONG: u32 = 1000;      // description, notes, results, reference_ranges
-    const MAX_VEC_MEDS: u32 = 50;        // medications vec in a medical record
+    const MAX_STR_SHORT: u32 = 100; // names, types, test_type, outcome
+    const MAX_STR_LONG: u32 = 1000; // description, notes, results, reference_ranges
+    const MAX_VEC_MEDS: u32 = 50; // medications vec in a medical record
     const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
     const MAX_REVIEW_COMMENT_LEN: u32 = 500; // vet review comment
 
@@ -2457,11 +2461,12 @@ impl PetChainContract {
             .instance()
             .set(&NutritionKey::DietPlanCount, &diet_id);
 
-        let pet_diet_count: u64 = safe_increment(env
-            .storage()
-            .instance()
-            .get(&NutritionKey::PetDietCount(pet_id))
-            .unwrap_or(0));
+        let pet_diet_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&NutritionKey::PetDietCount(pet_id))
+                .unwrap_or(0),
+        );
         env.storage()
             .instance()
             .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
@@ -2542,11 +2547,12 @@ impl PetChainContract {
             .instance()
             .set(&NutritionKey::WeightCount, &weight_id);
 
-        let pet_weight_count: u64 = safe_increment(env
-            .storage()
-            .instance()
-            .get(&NutritionKey::PetWeightCount(pet_id))
-            .unwrap_or(0));
+        let pet_weight_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&NutritionKey::PetWeightCount(pet_id))
+                .unwrap_or(0),
+        );
         env.storage()
             .instance()
             .set(&NutritionKey::PetWeightCount(pet_id), &pet_weight_count);
@@ -2707,20 +2713,48 @@ impl PetChainContract {
 
             let name = String::from_xdr(
                 &env,
-                &decrypt_sensitive_data(&env, &pet.encrypted_name.ciphertext, &pet.encrypted_name.nonce, &key).ok()?,
-            ).ok()?;
+                &decrypt_sensitive_data(
+                    &env,
+                    &pet.encrypted_name.ciphertext,
+                    &pet.encrypted_name.nonce,
+                    &key,
+                )
+                .ok()?,
+            )
+            .ok()?;
             let birthday = String::from_xdr(
                 &env,
-                &decrypt_sensitive_data(&env, &pet.encrypted_birthday.ciphertext, &pet.encrypted_birthday.nonce, &key).ok()?,
-            ).ok()?;
+                &decrypt_sensitive_data(
+                    &env,
+                    &pet.encrypted_birthday.ciphertext,
+                    &pet.encrypted_birthday.nonce,
+                    &key,
+                )
+                .ok()?,
+            )
+            .ok()?;
             let breed = String::from_xdr(
                 &env,
-                &decrypt_sensitive_data(&env, &pet.encrypted_breed.ciphertext, &pet.encrypted_breed.nonce, &key).ok()?,
-            ).ok()?;
+                &decrypt_sensitive_data(
+                    &env,
+                    &pet.encrypted_breed.ciphertext,
+                    &pet.encrypted_breed.nonce,
+                    &key,
+                )
+                .ok()?,
+            )
+            .ok()?;
             let allergies = Vec::<Allergy>::from_xdr(
                 &env,
-                &decrypt_sensitive_data(&env, &pet.encrypted_allergies.ciphertext, &pet.encrypted_allergies.nonce, &key).ok()?,
-            ).ok()?;
+                &decrypt_sensitive_data(
+                    &env,
+                    &pet.encrypted_allergies.ciphertext,
+                    &pet.encrypted_allergies.nonce,
+                    &key,
+                )
+                .ok()?,
+            )
+            .ok()?;
 
             Some(PetProfile {
                 id: pet.id,
@@ -2909,8 +2943,6 @@ impl PetChainContract {
         }
     }
 
-
-
     fn get_encryption_key(env: &Env) -> Bytes {
         // Mock key
         Bytes::from_array(env, &[0u8; 32])
@@ -3017,11 +3049,7 @@ impl PetChainContract {
 
     /// Returns true if `caller` is the pet owner or an approved emergency responder.
     fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address) -> bool {
-        let pet: Pet = match env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-        {
+        let pet: Pet = match env.storage().instance().get(&DataKey::Pet(pet_id)) {
             Some(p) => p,
             None => return false,
         };
@@ -3237,7 +3265,11 @@ impl PetChainContract {
                 .get::<DataKey, u64>(&DataKey::SpeciesPetIndex((species.clone(), i)))
             {
                 // Only surface Public pets in unauthenticated listing queries.
-                if let Some(raw) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pid)) {
+                if let Some(raw) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Pet>(&DataKey::Pet(pid))
+                {
                     if matches!(raw.privacy_level, PrivacyLevel::Public) {
                         if let Some(profile) = Self::get_pet(env.clone(), pid, raw.owner.clone()) {
                             pets.push_back(profile);
@@ -3681,11 +3713,7 @@ impl PetChainContract {
     }
 
     /// Search a pet's medical records by the vet who created them
-    pub fn search_records_by_vet(
-        env: Env,
-        pet_id: u64,
-        vet: Address,
-    ) -> Vec<MedicalRecord> {
+    pub fn search_records_by_vet(env: Env, pet_id: u64, vet: Address) -> Vec<MedicalRecord> {
         let records = Self::get_pet_medical_records(env.clone(), pet_id);
         let mut results = Vec::new(&env);
         for record in records.iter() {
@@ -3708,7 +3736,6 @@ impl PetChainContract {
     ) -> bool {
         // Validate IPFS hash format
         Self::validate_ipfs_hash(&env, &ipfs_hash);
-
 
         // Get the medical record
         if let Some(mut record) = env
@@ -5272,11 +5299,12 @@ impl PetChainContract {
             .set(&InsuranceKey::ClaimCount, &claim_id);
 
         // Save claim for pet
-        let pet_claim_count: u64 = safe_increment(env
-            .storage()
-            .instance()
-            .get(&InsuranceKey::PetClaimCount(pet_id))
-            .unwrap_or(0));
+        let pet_claim_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&InsuranceKey::PetClaimCount(pet_id))
+                .unwrap_or(0),
+        );
         env.storage()
             .instance()
             .set(&InsuranceKey::PetClaimCount(pet_id), &pet_claim_count);
@@ -6222,7 +6250,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&(Symbol::new(&env, "grooming"), record_id), &record);
-        
+
         // Update global count
         env.storage().instance().set(&id_key, &record_id);
 
@@ -6230,7 +6258,7 @@ impl PetChainContract {
         let pet_count_key = (Symbol::new(&env, "pet_grooming"), pet_id);
         let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
         let new_count = safe_increment(pet_count);
-        
+
         env.storage().instance().set(&pet_count_key, &new_count);
         env.storage().instance().set(
             &(Symbol::new(&env, "pet_grooming_idx"), pet_id, new_count),
@@ -6239,7 +6267,6 @@ impl PetChainContract {
 
         record_id
     }
-
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
         let count: u64 = env
@@ -6266,7 +6293,6 @@ impl PetChainContract {
         history
     }
 
-
     pub fn get_next_grooming_date(env: Env, pet_id: u64) -> u64 {
         let history = Self::get_grooming_history(env, pet_id);
         let mut next_date = 0u64;
@@ -6288,57 +6314,64 @@ impl PetChainContract {
     }
 }
 
-
 // --- OVERFLOW-SAFE COUNTER HELPER ---
 pub(crate) fn safe_increment(count: u64) -> u64 {
     count.checked_add(1).expect("counter overflow")
 }
 
 // --- ENCRYPTION HELPERS ---
-    // --- AGE CALCULATION ---
+// --- AGE CALCULATION ---
 
-    /// Calculates a pet's approximate age from a Unix timestamp birthday.
-    ///
-    /// # Approximation
-    /// Uses 365 days/year and 30 days/month. This is intentionally approximate
-    /// and may deviate by ±1 month from calendar-accurate results due to leap
-    /// years and variable month lengths. Sufficient for display purposes.
-    pub fn calculate_age(env: Env, birthday_timestamp: u64) -> PetAge {
-        let now = env.ledger().timestamp();
-        let elapsed_secs = if now > birthday_timestamp { now - birthday_timestamp } else { 0 };
-        let elapsed_days = elapsed_secs / 86400;
-        let years = elapsed_days / 365;
-        let remaining_days = elapsed_days % 365;
-        let months = remaining_days / 30;
-        PetAge { years, months }
-    }
+/// Calculates a pet's approximate age from a Unix timestamp birthday.
+///
+/// # Approximation
+/// Uses 365 days/year and 30 days/month. This is intentionally approximate
+/// and may deviate by ±1 month from calendar-accurate results due to leap
+/// years and variable month lengths. Sufficient for display purposes.
+pub fn calculate_age(env: Env, birthday_timestamp: u64) -> PetAge {
+    let now = env.ledger().timestamp();
+    let elapsed_secs = if now > birthday_timestamp {
+        now - birthday_timestamp
+    } else {
+        0
+    };
+    let elapsed_days = elapsed_secs / 86400;
+    let years = elapsed_days / 365;
+    let remaining_days = elapsed_days % 365;
+    let months = remaining_days / 30;
+    PetAge { years, months }
+}
 
 fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
     // Generate unique nonce per encryption call
     // Combine ledger timestamp and nonce counter for uniqueness
-    
+
     let counter_key = SystemKey::EncryptionNonceCounter;
-    let counter = env.storage().instance().get::<SystemKey, u64>(&counter_key).unwrap_or(0);
-    
+    let counter = env
+        .storage()
+        .instance()
+        .get::<SystemKey, u64>(&counter_key)
+        .unwrap_or(0);
+
     // Increment and store the new counter
     env.storage().instance().set(&counter_key, &(counter + 1));
-    
+
     // Generate nonce from timestamp and counter
     // Use 8 bytes from timestamp + 4 bytes from counter = 12 bytes total
     let timestamp = env.ledger().timestamp() as u64;
-    
+
     // Create nonce bytes: [timestamp (8 bytes) | counter (4 bytes)]
     let mut nonce_array = [0u8; 12];
-    
+
     // Timestamp in first 8 bytes (big-endian)
     nonce_array[0..8].copy_from_slice(&timestamp.to_be_bytes());
-    
+
     // Counter in last 4 bytes (big-endian)
     let counter_bytes = (counter as u32).to_be_bytes();
     nonce_array[8..12].copy_from_slice(&counter_bytes);
-    
+
     let nonce = Bytes::from_array(env, &nonce_array);
-    
+
     // Mock encryption for demonstration (returns ciphertext and nonce)
     // In production, would use actual AEAD cipher with the unique nonce
     let ciphertext = data.clone();
