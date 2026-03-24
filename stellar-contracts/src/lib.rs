@@ -70,6 +70,8 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_book_slot;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -4123,7 +4125,22 @@ impl PetChainContract {
     }
 
     /// Book a slot (mark as unavailable)
-    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+    /// Only a registered pet owner can book a slot.
+    pub fn book_slot(env: Env, booker: Address, vet_address: Address, slot_index: u64) -> bool {
+        booker.require_auth();
+
+        // Only registered pet owners may book
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, PetOwner>(&DataKey::PetOwner(booker.clone()))
+            .map(|o| o.is_pet_owner)
+            .unwrap_or(false)
+            == false
+        {
+            panic!("Unauthorized: only registered pet owners can book slots");
+        }
+
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
 
         if let Some(mut slot) = env
@@ -4135,8 +4152,6 @@ impl PetChainContract {
                 panic!("Slot already booked");
             }
 
-            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
-            // In real implementation, you'd check if caller is a registered pet owner
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
