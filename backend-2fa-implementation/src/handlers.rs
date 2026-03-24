@@ -243,27 +243,13 @@ impl TwoFactorHandlers {
         // Fetch from database
         // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
 
-        let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
+        // --- placeholder: replace with real DB fetch ---
+        let mut backup_codes = vec!["1234-5678".to_string()]; // Get from DB
+        // -----------------------------------------------
 
-        if let Some(index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
-        if let Some(_index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
-            // Remove used backup code from database
-            // two_factor_data.backup_codes.remove(index);
-            // db.update_two_factor_data(&req.user_id, &two_factor_data)?;
-        if TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code).is_none() {
-            return Err("Invalid backup code".to_string());
-    pub fn recover_with_backup(req: RecoverWithBackupRequest) -> Result<bool, String> {
-        let mut store = two_factor_store()
-            .lock()
-            .map_err(|_| "2FA storage lock poisoned".to_string())?;
-        let two_factor_data = store
-            .get_mut(&req.user_id)
-            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
-
-        if let Some(index) =
-            TwoFactorAuth::verify_backup_code(&two_factor_data.backup_codes, &req.backup_code)
-        {
-            two_factor_data.backup_codes.remove(index);
+        if TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
+            // Persist the updated backup_codes list (code has been removed)
+            // db.update_two_factor_backup_codes(&req.user_id, &backup_codes)?;
             Ok(true)
         } else {
             Ok(false)

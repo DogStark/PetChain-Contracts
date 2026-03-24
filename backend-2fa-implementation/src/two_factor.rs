@@ -109,20 +109,15 @@ impl TwoFactorAuth {
         stored_codes.iter().position(|code| code == provided_code)
     }
 
-    /// Executes the recovery policy after a valid backup code is consumed:
-    /// - Rotates the TOTP secret (old secret is immediately invalid)
-    /// - Invalidates ALL remaining backup codes and issues a fresh set
-    /// - Keeps 2FA enabled so the account is not left unprotected
-    ///
-    /// Callers MUST persist the returned `RecoveryResult` to the database,
-    /// replacing the previous `TwoFactorData` entirely.
-    pub fn rotate_after_recovery() -> RecoveryResult {
-        let new_secret = Self::generate_secret();
-        let new_backup_codes = Self::generate_backup_codes(8);
-        RecoveryResult {
-            new_secret,
-            new_backup_codes,
-            enabled: true,
+    /// Consume a backup code: removes it from the list if found and returns true.
+    /// The caller MUST persist the mutated `stored_codes` after a `true` return
+    /// to guarantee single-use semantics.
+    pub fn consume_backup_code(stored_codes: &mut Vec<String>, provided_code: &str) -> bool {
+        if let Some(index) = Self::verify_backup_code(stored_codes, provided_code) {
+            stored_codes.remove(index);
+            true
+        } else {
+            false
         }
     }
 }
