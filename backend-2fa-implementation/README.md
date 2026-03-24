@@ -153,12 +153,27 @@ async fn main() -> std::io::Result<()> {
 ```
 
 **Axum example:**
+
+
 ```rust
-use axum::{routing::post, Json, Router};
+use axum::{
+    routing::post,
+    Json, Router,
+    http::StatusCode,
+    response::IntoResponse,
+};
 use petchain_2fa::handlers::*;
 
-async fn enable_2fa(Json(req): Json<EnableTwoFactorRequest>) -> Json<EnableTwoFactorResponse> {
-    Json(TwoFactorHandlers::enable_two_factor(req).unwrap())
+async fn enable_2fa(
+    Json(req): Json<EnableTwoFactorRequest>,
+) -> impl IntoResponse {
+    match TwoFactorHandlers::enable_two_factor(req) {
+        Ok(response) => (StatusCode::OK, Json(response)),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to enable 2FA: {}", e),
+        ),
+    }
 }
 
 #[tokio::main]
