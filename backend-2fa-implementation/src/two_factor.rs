@@ -1,5 +1,6 @@
 use totp_rs::{Algorithm, Secret, TOTP};
 use rand::Rng;
+use base32::{Alphabet, encode as b32encode};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -30,7 +31,7 @@ impl TwoFactorAuth {
         Secret::generate_secret().to_encoded().to_string()
     }
 
-    pub fn setup(user_email: &str, issuer: &str) -> Result<TwoFactorSetup, String> {
+    pub fn setup(user_email: &str, issuer: &str) -> Result<TwoFactorSetup, TwoFactorError> {
         let secret = Self::generate_secret();
         let totp = TOTP::new(
             Algorithm::SHA1,
