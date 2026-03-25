@@ -1,4 +1,5 @@
-use totp_rs::{Algorithm, Secret, TOTP};
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 use rand::Rng;
 use base32::{Alphabet, encode as b32encode};
 use serde::{Deserialize, Serialize};
@@ -56,33 +57,6 @@ impl TwoFactorAuth {
         })
     }
 
-    pub fn validate_token_format(token: &str) -> Result<String, String> {
-        let trimmed = token.trim();
-        if trimmed.len() != 6 {
-            return Err("Token must be exactly 6 digits".to_string());
-        }
-        if !trimmed.chars().all(|c| c.is_ascii_digit()) {
-            return Err("Token must contain only digits".to_string());
-        }
-        Ok(trimmed.to_string())
-    }
-
-    pub fn validate_backup_code_format(code: &str) -> Result<String, String> {
-        let trimmed = code.trim();
-        // Format: dddd-dddd (9 characters)
-        if trimmed.len() != 9 {
-            return Err("Backup code must be in dddd-dddd format".to_string());
-        }
-        let parts: Vec<&str> = trimmed.split('-').collect();
-        if parts.len() != 2 || parts[0].len() != 4 || parts[1].len() != 4 {
-            return Err("Backup code must be in dddd-dddd format".to_string());
-        }
-        if !parts[0].chars().all(|c| c.is_ascii_digit()) || !parts[1].chars().all(|c| c.is_ascii_digit()) {
-            return Err("Backup code must contain only digits and a hyphen".to_string());
-        }
-        Ok(trimmed.to_string())
-    }
-
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
         let token = match Self::validate_token_format(token) {
             Ok(t) => t,
@@ -102,24 +76,7 @@ impl TwoFactorAuth {
         )
         .map_err(|e| e.to_string())?;
 
-        let mut is_valid = 0u8;
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_secs();
-
-        for i in -1..=1 {
-            let t = (time as i64 + i * 30) as u64;
-            let expected = totp.generate(t);
-            let expected_bytes = expected.as_bytes();
-            let token_bytes = token.as_bytes();
-            
-            if expected_bytes.len() == token_bytes.len() {
-                is_valid |= expected_bytes.ct_eq(token_bytes).unwrap_u8();
-            }
-        }
-
-        Ok(is_valid == 1)
+        Ok(totp.check_current(token).map_err(|e| e.to_string())?)
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
