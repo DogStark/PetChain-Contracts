@@ -118,7 +118,9 @@ mod test_search_medical_records {
         add_record(&client, &env, pet_id, &vet, "Flu");
 
         // Range in the far future — should match nothing
-        let results = client.search_records_by_date_range(&pet_id, &u64::MAX - 100, &u64::MAX);
+        let start_val = u64::MAX - 100;
+        let end_val = u64::MAX;
+        let results = client.search_records_by_date_range(&pet_id, &start_val, &end_val);
         assert_eq!(results.len(), 0);
     }
 

@@ -473,6 +473,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &String::from_str(&env, "Unknown"),  // color
+            &0u32,  // weight
+            &None,  // microchip_id
             &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
@@ -553,7 +556,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.veterinarian, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -809,7 +812,7 @@ mod test {
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id);
+        let info = client.get_emergency_info(&pet_id, &owner);
         assert_eq!(info.emergency_contacts.len(), 1);
         assert_eq!(info.emergency_contacts.len(), 1);
     }
@@ -1011,6 +1014,8 @@ mod test {
     fn test_vet_reviews() {
         let env = Env::default();
         env.mock_all_auths();
+    }
+
     // === NEW LOST PET ALERT TESTS ===
 
     #[test]
@@ -1298,7 +1303,7 @@ mod test {
         let slot_index = client.set_availability(&vet, &start_time, &end_time);
 
         // Book the slot
-        let result = client.book_slot(&vet, &slot_index);
+        let result = client.book_slot(&vet, &vet, &slot_index);
         assert!(result);
 
         // Verify slot is no longer available
@@ -1357,14 +1362,22 @@ fn test_propose_upgrade() {
 
 #[test]
 fn test_revoke_consent() {
-    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let proposal_id = client.propose_upgrade(&admin, &wasm_hash);
-
-    assert_eq!(proposal_id, 1);
-
-    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.approved, false);
-    assert_eq!(proposal.executed, false);
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner, &String::from_str(&env, "Buddy"), &String::from_str(&env, "2020"),
+        &Gender::Male, &Species::Dog, &String::from_str(&env, "Lab"),
+        &String::from_str(&env, "Brown"), &5u32, &None, &PrivacyLevel::Public,
+    );
+    let grantee = Address::generate(&env);
+    let consent_id = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let revoked = client.revoke_consent(&consent_id, &owner);
+    assert!(revoked);
 }
 
 #[test]
@@ -1405,14 +1418,22 @@ fn test_approve_upgrade() {
 
 #[test]
 fn test_consent_history() {
-    let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let proposal_id = client.propose_upgrade(&admin, &wasm_hash);
-
-    let approved = client.approve_upgrade(&proposal_id);
-    assert_eq!(approved, true);
-
-    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.approved, true);
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner, &String::from_str(&env, "Buddy"), &String::from_str(&env, "2020"),
+        &Gender::Male, &Species::Dog, &String::from_str(&env, "Lab"),
+        &String::from_str(&env, "Brown"), &5u32, &None, &PrivacyLevel::Public,
+    );
+    let grantee = Address::generate(&env);
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let history = client.get_consent_history(&pet_id);
+    assert_eq!(history.len(), 1);
 }
 
 #[test]
@@ -1455,13 +1476,6 @@ fn test_migrate_version() {
     assert_eq!(history.get(1).unwrap().is_active, true);  // second still active
 }
 }
-    client.migrate_version(&2u32, &1u32, &0u32);
-
-    let version = client.get_version();
-    assert_eq!(version.major, 2);
-    assert_eq!(version.minor, 1);
-    assert_eq!(version.patch, 0);
-}
 
 #[test]
 #[should_panic]
@@ -1477,7 +1491,7 @@ fn test_upgrade_requires_admin() {
 }
 }
 #[cfg(test)]
-mod test {
+mod test_b {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -1588,7 +1602,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.veterinarian, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -1844,7 +1858,7 @@ mod test {
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id);
+        let info = client.get_emergency_info(&pet_id, &owner);
         assert_eq!(info.emergency_contacts.len(), 1);
         assert_eq!(info.emergency_contacts.len(), 1);
     }
@@ -1877,7 +1891,9 @@ mod test {
             &vet,
             &String::from_str(&env, "Blood Test"),
             &String::from_str(&env, "Normal"),
-            &None,
+            &String::from_str(&env, ""),  // reference_ranges
+            &None,  // attachment_hash
+            &None,  // medical_record_id
         );
 
         let res = client.get_lab_result(&lab_id).unwrap();
@@ -1912,12 +1928,12 @@ mod test {
         );
 
         let mut medications = Vec::new(&env);
-        medications.push_back(Medication {
+        medications.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "10mg"),
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -1944,21 +1960,21 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = update_time);
 
         let mut new_meds = Vec::new(&env);
-        new_meds.push_back(Medication {
+        new_meds.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "20mg"), // Modified dosage
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
-        new_meds.push_back(Medication {
+        new_meds.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "NewMed"), // New med
             dosage: String::from_str(&env, "5mg"),
             frequency: String::from_str(&env, "Once"),
             start_date: update_time,
-            end_date: update_time + 100,
+            end_date: Some(update_time + 100),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -2323,7 +2339,7 @@ mod test {
     }
 }
 #[cfg(test)]
-mod test {
+mod test_c {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -2351,6 +2367,9 @@ mod test {
             &Gender::Male,
             &Species::Dog,
             &breed,
+            &String::from_str(&env, "Unknown"),  // color
+            &0u32,  // weight
+            &None,  // microchip_id
             &PrivacyLevel::Public,
         );
         assert_eq!(pet_id, 1);
@@ -2431,7 +2450,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.veterinarian, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -2687,7 +2706,7 @@ mod test {
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id);
+        let info = client.get_emergency_info(&pet_id, &owner);
         assert_eq!(info.emergency_contacts.len(), 1);
         assert_eq!(info.emergency_contacts.len(), 1);
     }
@@ -2720,7 +2739,9 @@ mod test {
             &vet,
             &String::from_str(&env, "Blood Test"),
             &String::from_str(&env, "Normal"),
-            &None,
+            &String::from_str(&env, ""),  // reference_ranges
+            &None,  // attachment_hash
+            &None,  // medical_record_id
         );
 
         let res = client.get_lab_result(&lab_id).unwrap();
@@ -2760,12 +2781,12 @@ mod test {
         );
 
         let mut medications = Vec::new(&env);
-        medications.push_back(Medication {
+        medications.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "10mg"),
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -2792,21 +2813,21 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = update_time);
 
         let mut new_meds = Vec::new(&env);
-        new_meds.push_back(Medication {
+        new_meds.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "20mg"), // Modified dosage
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
-        new_meds.push_back(Medication {
+        new_meds.push_back(Medication { id: 0, pet_id: 0,
             name: String::from_str(&env, "NewMed"), // New med
             dosage: String::from_str(&env, "5mg"),
             frequency: String::from_str(&env, "Once"),
             start_date: update_time,
-            end_date: update_time + 100,
+            end_date: Some(update_time + 100),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -3017,7 +3038,7 @@ mod test {
     }
 }
 #[cfg(test)]
-mod test {
+mod test_d {
     use crate::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -3128,7 +3149,7 @@ mod test {
 
         assert_eq!(record.id, 1);
         assert_eq!(record.pet_id, pet_id);
-        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.veterinarian, vet);
         assert_eq!(record.vaccine_type, VaccineType::Rabies);
         assert_eq!(
             record.batch_number,
@@ -3384,7 +3405,7 @@ mod test {
             &String::from_str(&env, "Allergic to bees"),
         );
 
-        let info = client.get_emergency_info(&pet_id);
+        let info = client.get_emergency_info(&pet_id, &owner);
         assert_eq!(info.emergency_contacts.len(), 1);
         assert_eq!(info.emergency_contacts.len(), 1);
     }
@@ -3893,7 +3914,7 @@ mod test {
 // ============================================================
 
 #[cfg(test)]
-mod test_vet {
+mod test_vet_b {
     use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 

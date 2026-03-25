@@ -1,0 +1,14 @@
+l
+    }
+            total = total.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        }
+        total
+    }
+}
+
+
+
+// --- ENCRYPTION HELPERS ---
+    // --- AGE CALCULATION ---
+
+    /// Calcula
