@@ -1,0 +1,183 @@
+{
+  "file": "stellar-contracts/src/lib.rs",
+  "total_occurrences": 21,
+  "pattern": ".expect(\"Pet not found\")",
+  "replacement": ".unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound))",
+  "note": "All occurrences have env: Env parameter (not &Env), so no .clone() needed",
+  "replacements": [
+    {
+      "line": 2192,
+      "function": "add_vaccine_record (or similar medical function)",
+      "env_type": "Env",
+      "context_before": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");",
+      "new_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));"
+    },
+    {
+      "line": 2416,
+      "function": "add_nutrition/diet function",
+      "env_type": "Env",
+      "context_before": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 2505,
+      "function": "add_weight_entry",
+      "env_type": "Env",
+      "context_before": "    pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool {\n        let mut pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let mut pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n\n        pet.owner.require_auth();",
+      "new_code": "        let mut pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 2620,
+      "function": "link_tag_to_pet",
+      "env_type": "Env",
+      "context_before": "    pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32> {\n        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 2753,
+      "function": "update_tag_message (inside tag update branch)",
+      "env_type": "Env",
+      "context_before": "        {\n            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))",
+      "old_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .expect(\"Pet not found\");\n            pet.owner.require_auth();",
+      "new_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n            pet.owner.require_auth();"
+    },
+    {
+      "line": 2776,
+      "function": "deactivate_tag or similar",
+      "env_type": "Env",
+      "context_before": "            .get::<TagKey, PetTag>(&TagKey::Tag(tag_id.clone()))\n        {\n            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))",
+      "old_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .expect(\"Pet not found\");\n            pet.owner.require_auth();",
+      "new_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n            pet.owner.require_auth();"
+    },
+    {
+      "line": 2810,
+      "function": "reactivate_tag or similar",
+      "env_type": "Env",
+      "context_before": "        {\n            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))",
+      "old_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .expect(\"Pet not found\");\n            pet.owner.require_auth();",
+      "new_code": "            let pet = env\n                .storage()\n                .instance()\n                .get::<DataKey, Pet>(&DataKey::Pet(tag.pet_id))\n                .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n            pet.owner.require_auth();"
+    },
+    {
+      "line": 2954,
+      "function": "add_emergency_responder",
+      "env_type": "Env",
+      "context_before": "    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 2968,
+      "function": "remove_emergency_responder",
+      "env_type": "Env",
+      "context_before": "    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 3245,
+      "function": "grant_access",
+      "env_type": "Env",
+      "context_before": "    ) -> bool {\n        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 3303,
+      "function": "revoke_access",
+      "env_type": "Env",
+      "context_before": "    pub fn revoke_access(env: Env, pet_id: u64, grantee: Address) -> bool {\n        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet = env\n            .storage()\n            .instance()\n            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 3346,
+      "function": "grant_temporary_custody",
+      "env_type": "Env",
+      "context_before": "    ) -> TemporaryCustody {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 3429,
+      "function": "add_medical_record (Comment: Verify pet exists)",
+      "env_type": "Env",
+      "context_before": "        // Verify pet exists\n        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");",
+      "new_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));"
+    },
+    {
+      "line": 3896,
+      "function": "add_lab_result",
+      "env_type": "Env",
+      "context_before": "        }\n        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");",
+      "new_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));"
+    },
+    {
+      "line": 4032,
+      "function": "create_lost_pet_alert",
+      "env_type": "Env",
+      "context_before": "        // Verify pet exists and caller is owner\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 4310,
+      "function": "record_health_consent",
+      "env_type": "Env",
+      "context_before": "        // Verify owner owns the pet\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        if pet.owner != owner {",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        if pet.owner != owner {"
+    },
+    {
+      "line": 4820,
+      "function": "add_medication",
+      "env_type": "Env",
+      "context_before": "        // Verify the pet exists\n        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");",
+      "new_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));"
+    },
+    {
+      "line": 4941,
+      "function": "add_treatment_record",
+      "env_type": "Env",
+      "context_before": "\n        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");",
+      "new_code": "        let _pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));"
+    },
+    {
+      "line": 5362,
+      "function": "record_behavioral_issue",
+      "env_type": "Env",
+      "context_before": "    ) -> u64 {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 5449,
+      "function": "record_development_milestone",
+      "env_type": "Env",
+      "context_before": "    ) -> u64 {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    },
+    {
+      "line": 5598,
+      "function": "initialize_multisig_transfer",
+      "env_type": "Env",
+      "context_before": "    ) -> bool {\n        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))",
+      "old_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .expect(\"Pet not found\");\n        pet.owner.require_auth();",
+      "new_code": "        let pet: Pet = env\n            .storage()\n            .instance()\n            .get(&DataKey::Pet(pet_id))\n            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));\n        pet.owner.require_auth();"
+    }
+  ],
+  "summary": {
+    "total_replacements": 21,
+    "replacements_with_env": 21,
+    "replacements_with_env_clone": 0,
+    "all_env_type": "Env (not &Env)"
+  }
+}

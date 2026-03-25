@@ -146,10 +146,9 @@ Response:
 ### 1. Add to your backend's Cargo.toml
 ```toml
 [dependencies]
-totp-rs = { version = "5.5", features = ["qr", "otpauth"] }
-qrcode = "0.14"
-base64 = "0.22"
+totp-rs = { version = "5.7.1", features = ["qr", "otpauth", "gen_secret"] }
 rand = "0.8"
+subtle = "2.6"
 ```
 
 ### 2. Copy files to your backend
@@ -194,12 +193,27 @@ async fn main() -> std::io::Result<()> {
 ```
 
 **Axum example:**
+
+
 ```rust
-use axum::{routing::post, Json, Router};
+use axum::{
+    routing::post,
+    Json, Router,
+    http::StatusCode,
+    response::IntoResponse,
+};
 use petchain_2fa::handlers::*;
 
-async fn enable_2fa(Json(req): Json<EnableTwoFactorRequest>) -> Json<EnableTwoFactorResponse> {
-    Json(TwoFactorHandlers::enable_two_factor(req).unwrap())
+async fn enable_2fa(
+    Json(req): Json<EnableTwoFactorRequest>,
+) -> impl IntoResponse {
+    match TwoFactorHandlers::enable_two_factor(req) {
+        Ok(response) => (StatusCode::OK, Json(response)),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to enable 2FA: {}", e),
+        ),
+    }
 }
 
 #[tokio::main]
