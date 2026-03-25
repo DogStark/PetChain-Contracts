@@ -114,6 +114,7 @@ pub enum ContractError {
     TooManyItems = 12,
     InvalidState = 13,
     InvalidInput = 14,
+    CommentTooLong = 15,
 }
 
 impl From<ContractError> for soroban_sdk::Error {
@@ -134,6 +135,7 @@ impl From<ContractError> for soroban_sdk::Error {
             ContractError::TooManyItems => ScErrorCode::InvalidInput,
             ContractError::InvalidState => ScErrorCode::InvalidAction,
             ContractError::InvalidInput => ScErrorCode::InvalidInput,
+            ContractError::CommentTooLong => ScErrorCode::InvalidInput,
         };
         soroban_sdk::Error::from((ScErrorType::Contract, code))
     }
@@ -2083,11 +2085,9 @@ impl PetChainContract {
     const MAX_VEC_MEDS: u32 = 50;
     const MAX_VEC_ATTACHMENTS: u32 = 20;
 
-    // Medical / record field limits
-    const MAX_STR_SHORT: u32 = 100;      // names, types, test_type, outcome
-    const MAX_STR_LONG: u32 = 1000;      // description, notes, results, reference_ranges
-    const MAX_VEC_MEDS: u32 = 50;        // medications vec in a medical record
-    const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
+    /// Maximum byte length of a vet-review comment.
+    /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
+    const MAX_REVIEW_COMMENT_LEN: u32 = 500;
 
     pub fn register_vet(
         env: Env,
@@ -4765,7 +4765,7 @@ impl PetChainContract {
         }
 
         if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
-            panic_with_error!(&env, ContractError::InputStringTooLong);
+            panic_with_error!(&env, ContractError::CommentTooLong);
         }
 
         // Check duplicate
@@ -6432,11 +6432,6 @@ impl PetChainContract {
     }
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
-        let count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
-        let mut history = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i)) {
-                if let Some(record) = env.storage().instance().get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id)) {
         let count: u64 = env
             .storage()
             .instance()
@@ -6477,10 +6472,6 @@ impl PetChainContract {
         let mut total = 0u64;
         for record in history.iter() {
             total += record.cost;
-        }
-        total
-    }
-            total = total.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         }
         total
     }
