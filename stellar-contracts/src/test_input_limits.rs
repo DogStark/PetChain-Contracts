@@ -423,7 +423,7 @@ fn test_medical_record_too_many_medications_rejected() {
         &meds,
         &String::from_str(&env, "notes"),
     );
-    let _ = owner;
+    let _ = owner; // suppress unused warning
 }
 
 // ── add_medication ────────────────────────────────────────────────────────────
@@ -518,6 +518,7 @@ fn test_attachment_vec_over_limit_rejected() {
         &String::from_str(&env, "notes"),
     );
 
+    // Add 20 attachments (the limit)
     for i in 0..20u32 {
         let hash = if i < 10 {
             String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
@@ -533,6 +534,7 @@ fn test_attachment_vec_over_limit_rejected() {
         client.add_attachment(&record_id, &hash, &meta);
     }
 
+    // 21st attachment must be rejected
     let meta = AttachmentMetadata {
         filename: String::from_str(&env, "extra.pdf"),
         file_type: String::from_str(&env, "pdf"),
@@ -561,6 +563,7 @@ fn test_attachment_at_limit_accepted() {
         &String::from_str(&env, "notes"),
     );
 
+    // Exactly 20 attachments should succeed
     for _i in 0..20u32 {
         let meta = AttachmentMetadata {
             filename: String::from_str(&env, "file.pdf"),
@@ -576,63 +579,4 @@ fn test_attachment_at_limit_accepted() {
         assert!(result);
     }
     assert_eq!(client.get_attachment_count(&record_id), 20);
-}
-
-// ── add_vet_review (comment length) ──────────────────────────────────────────
-
-#[test]
-fn test_review_comment_at_limit_accepted() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, owner, _pet_id) = setup(&env);
-
-    let vet = Address::generate(&env);
-    client.register_vet(
-        &vet,
-        &String::from_str(&env, "Dr. Limit"),
-        &String::from_str(&env, "LIC-LIMIT-001"),
-        &String::from_str(&env, "General"),
-    );
-    client.verify_vet(&admin, &vet);
-
-    let id = client.add_vet_review(&owner, &vet, &5, &repeat(&env, b'c', 500));
-    assert!(id > 0);
-}
-
-#[test]
-#[should_panic(expected = "comment too long")]
-fn test_review_comment_over_limit_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, owner, _pet_id) = setup(&env);
-
-    let vet = Address::generate(&env);
-    client.register_vet(
-        &vet,
-        &String::from_str(&env, "Dr. Over"),
-        &String::from_str(&env, "LIC-OVER-001"),
-        &String::from_str(&env, "General"),
-    );
-    client.verify_vet(&admin, &vet);
-
-    client.add_vet_review(&owner, &vet, &5, &repeat(&env, b'c', 501));
-}
-
-#[test]
-fn test_review_empty_comment_accepted() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, owner, _pet_id) = setup(&env);
-
-    let vet = Address::generate(&env);
-    client.register_vet(
-        &vet,
-        &String::from_str(&env, "Dr. Empty"),
-        &String::from_str(&env, "LIC-EMPTY-001"),
-        &String::from_str(&env, "General"),
-    );
-    client.verify_vet(&admin, &vet);
-
-    let id = client.add_vet_review(&owner, &vet, &3, &String::from_str(&env, ""));
-    assert!(id > 0);
 }

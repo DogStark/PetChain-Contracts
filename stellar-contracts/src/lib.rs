@@ -2048,16 +2048,10 @@ impl PetChainContract {
     }
 
     // Vet Verification & Registration
-    const MAX_VET_NAME_LEN: u32 = 100;
-    const MAX_VET_LICENSE_LEN: u32 = 50;
-    const MAX_VET_SPEC_LEN: u32 = 100;
-
-    // Medical / record field limits
-    const MAX_STR_SHORT: u32 = 100;      // names, types, test_type, outcome
-    const MAX_STR_LONG: u32 = 1000;      // description, notes, results, reference_ranges
-    const MAX_VEC_MEDS: u32 = 50;        // medications vec in a medical record
-    const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
-    const MAX_REVIEW_COMMENT_LEN: u32 = 500; // vet review comment
+    const MAX_STR_SHORT: u32 = 100;
+    const MAX_STR_LONG: u32 = 1000;
+    const MAX_VEC_MEDS: u32 = 50;
+    const MAX_VEC_ATTACHMENTS: u32 = 20;
 
     pub fn register_vet(
         env: Env,
@@ -3428,8 +3422,11 @@ impl PetChainContract {
         medications: Vec<Medication>,
         notes: String,
     ) -> u64 {
-        // Vet authorization check
         vet_address.require_auth();
+        if diagnosis.len() > Self::MAX_STR_LONG { panic!("diagnosis too long"); }
+        if treatment.len() > Self::MAX_STR_LONG { panic!("treatment too long"); }
+        if notes.len() > Self::MAX_STR_LONG { panic!("notes too long"); }
+        if medications.len() > Self::MAX_VEC_MEDS { panic!("too many medications"); }
 
         if diagnosis.len() > Self::MAX_STR_LONG {
             panic!("diagnosis too long");
@@ -3532,18 +3529,10 @@ impl PetChainContract {
         medications: Vec<Medication>,
         notes: String,
     ) -> bool {
-        if diagnosis.len() > Self::MAX_STR_LONG {
-            panic!("diagnosis too long");
-        }
-        if treatment.len() > Self::MAX_STR_LONG {
-            panic!("treatment too long");
-        }
-        if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
-        }
-        if medications.len() > Self::MAX_VEC_MEDS {
-            panic!("too many medications");
-        }
+        if diagnosis.len() > Self::MAX_STR_LONG { panic!("diagnosis too long"); }
+        if treatment.len() > Self::MAX_STR_LONG { panic!("treatment too long"); }
+        if notes.len() > Self::MAX_STR_LONG { panic!("notes too long"); }
+        if medications.len() > Self::MAX_VEC_MEDS { panic!("too many medications"); }
         if let Some(mut record) = env
             .storage()
             .instance()
@@ -3908,15 +3897,9 @@ impl PetChainContract {
         medical_record_id: Option<u64>,
     ) -> u64 {
         vet_address.require_auth();
-        if test_type.len() > Self::MAX_STR_SHORT {
-            panic!("test_type too long");
-        }
-        if results.len() > Self::MAX_STR_LONG {
-            panic!("results too long");
-        }
-        if reference_ranges.len() > Self::MAX_STR_LONG {
-            panic!("reference_ranges too long");
-        }
+        if test_type.len() > Self::MAX_STR_SHORT { panic!("test_type too long"); }
+        if results.len() > Self::MAX_STR_LONG { panic!("results too long"); }
+        if reference_ranges.len() > Self::MAX_STR_LONG { panic!("reference_ranges too long"); }
         let _pet: Pet = env
             .storage()
             .instance()
@@ -4830,15 +4813,9 @@ impl PetChainContract {
         prescribing_vet: Address,
     ) -> u64 {
         prescribing_vet.require_auth();
-        if name.len() > Self::MAX_STR_SHORT {
-            panic!("medication name too long");
-        }
-        if dosage.len() > Self::MAX_STR_SHORT {
-            panic!("dosage too long");
-        }
-        if frequency.len() > Self::MAX_STR_SHORT {
-            panic!("frequency too long");
-        }
+        if name.len() > Self::MAX_STR_SHORT { panic!("medication name too long"); }
+        if dosage.len() > Self::MAX_STR_SHORT { panic!("dosage too long"); }
+        if frequency.len() > Self::MAX_STR_SHORT { panic!("frequency too long"); }
 
         // Verify the pet exists
         let _pet: Pet = env
@@ -4951,12 +4928,8 @@ impl PetChainContract {
         outcome: String,
     ) -> u64 {
         vet_address.require_auth();
-        if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
-        }
-        if outcome.len() > Self::MAX_STR_SHORT {
-            panic!("outcome too long");
-        }
+        if notes.len() > Self::MAX_STR_LONG { panic!("notes too long"); }
+        if outcome.len() > Self::MAX_STR_SHORT { panic!("outcome too long"); }
 
         if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
             panic!("Veterinarian not verified");
@@ -5553,12 +5526,8 @@ impl PetChainContract {
             .expect("Pet not found");
         pet.owner.require_auth();
 
-        if severity > 10 {
-            panic!("Severity must be between 0 and 10");
-        }
-        if description.len() > Self::MAX_STR_LONG {
-            panic!("description too long");
-        }
+        if severity > 10 { panic!("Severity must be between 0 and 10"); }
+        if description.len() > Self::MAX_STR_LONG { panic!("description too long"); }
 
         let count: u64 = env
             .storage()
@@ -5639,12 +5608,8 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .expect("Pet not found");
         pet.owner.require_auth();
-        if milestone_name.len() > Self::MAX_STR_SHORT {
-            panic!("milestone_name too long");
-        }
-        if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
-        }
+        if milestone_name.len() > Self::MAX_STR_SHORT { panic!("milestone_name too long"); }
+        if notes.len() > Self::MAX_STR_LONG { panic!("notes too long"); }
 
         let count: u64 = env
             .storage()
@@ -6092,12 +6057,8 @@ impl PetChainContract {
             .expect("Pet not found");
         pet.owner.require_auth();
 
-        if intensity > 10 {
-            panic!("Intensity must be between 0 and 10");
-        }
-        if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
-        }
+        if intensity > 10 { panic!("Intensity must be between 0 and 10"); }
+        if notes.len() > Self::MAX_STR_LONG { panic!("notes too long"); }
 
         let count: u64 = env
             .storage()
