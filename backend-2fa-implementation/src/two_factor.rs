@@ -3,6 +3,8 @@ use qrcode::QrCode;
 use base64::{Engine as _, engine::general_purpose};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Configuration for TOTP parameters to ensure cryptographic agility
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,5 +148,66 @@ impl TwoFactorAuth {
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
         stored_codes.iter().position(|code| code == provided_code)
+    }
+}
+
+/// Persistence abstraction for 2FA state
+pub trait TwoFactorStore: Send + Sync {
+    fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
+    fn get(&self, user_id: &str) -> Result<TwoFactorData, String>;
+    fn delete(&self, user_id: &str) -> Result<(), String>;
+    fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String>;
+    fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String>;
+}
+
+/// In-memory implementation of TwoFactorStore for testing
+#[derive(Default, Clone)]
+pub struct InMemoryStore {
+    data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
+}
+
+impl TwoFactorStore for InMemoryStore {
+    fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+        self.data.lock().unwrap().insert(user_id.to_string(), data);
+        Ok(())
+    }
+
+    fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        self.data
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .map(|d| TwoFactorData {
+                secret: d.secret.clone(),
+                backup_codes: d.backup_codes.clone(),
+                enabled: d.enabled,
+                config: d.config.clone(),
+            })
+            .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))
+    }
+
+    fn delete(&self, user_id: &str) -> Result<(), String> {
+        self.data
+            .lock()
+            .unwrap()
+            .remove(user_id)
+            .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
+        Ok(())
+    }
+
+    fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
+        let mut store = self.data.lock().unwrap();
+        store
+            .get_mut(user_id)
+            .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))
+            .map(|d| d.enabled = enabled)
+    }
+
+    fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
+        let mut store = self.data.lock().unwrap();
+        store
+            .get_mut(user_id)
+            .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))
+            .map(|d| d.backup_codes = codes)
     }
 }
