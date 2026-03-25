@@ -11,7 +11,7 @@ fn repeat(env: &Env, byte: u8, n: usize) -> String {
     String::from_bytes(env, &buf[..n])
 }
 
-fn setup(env: &Env) -> (PetChainContractClient, Address, Address, u64) {
+fn setup(env: &Env) -> (PetChainContractClient<'_>, Address, Address, u64) {
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(env, &contract_id);
 
@@ -36,7 +36,7 @@ fn setup(env: &Env) -> (PetChainContractClient, Address, Address, u64) {
     (client, admin, owner, pet_id)
 }
 
-fn setup_with_vet(env: &Env) -> (PetChainContractClient, Address, Address, Address, u64) {
+fn setup_with_vet(env: &Env) -> (PetChainContractClient<'_>, Address, Address, Address, u64) {
     let (client, admin, owner, pet_id) = setup(env);
     let vet = Address::generate(env);
     client.register_vet(

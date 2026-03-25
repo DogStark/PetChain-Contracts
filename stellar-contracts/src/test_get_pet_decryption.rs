@@ -15,7 +15,7 @@ mod test_get_pet_decryption {
         PrivacyLevel, Species,
     };
     use soroban_sdk::{
-        testutils::Address as _, Address, Bytes, Env, String, Vec,
+        testutils::Address as _, Address, Bytes, Env, String,
     };
 
     // ---- helpers ----
@@ -219,7 +219,7 @@ mod test_get_pet_decryption {
     /// A non-existent pet must still return None (regression guard).
     #[test]
     fn test_nonexistent_pet_returns_none() {
-        let (env, client) = setup();
+        let (_env, client) = setup();
         assert!(client.get_pet(&9999u64).is_none());
     }
 }
