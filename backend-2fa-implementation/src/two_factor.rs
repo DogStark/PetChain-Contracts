@@ -28,6 +28,8 @@ pub trait TwoFactorStorage {
 pub struct TwoFactorAuth;
 
 impl TwoFactorAuth {
+    const BACKUP_CODE_SPACE: u32 = 100_000_000; // 0000-0000 .. 9999-9999
+
     pub fn generate_secret() -> String {
         Secret::generate_secret().to_encoded().to_string()
     }
@@ -80,14 +82,21 @@ impl TwoFactorAuth {
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
+        if count as u32 > Self::BACKUP_CODE_SPACE {
+            panic!("Requested backup code count exceeds unique code space");
+        }
+
         let mut rng = thread_rng();
-        (0..count)
-            .map(|_| {
-                format!(
-                    "{:04}-{:04}",
-                    rng.gen_range(0..10000),
-                    rng.gen_range(0..10000)
-                )
+        let start = rng.gen_range(0..Self::BACKUP_CODE_SPACE);
+
+        // Generate from a rotating window in the full code space, which guarantees
+        // uniqueness for any count <= BACKUP_CODE_SPACE without collision retries.
+        (0..count as u32)
+            .map(|i| {
+                let value = (start + i as u32) % Self::BACKUP_CODE_SPACE;
+                let first = value / 10_000;
+                let second = value % 10_000;
+                format!("{:04}-{:04}", first, second)
             })
             .collect()
     }
