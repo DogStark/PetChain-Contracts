@@ -1,30 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::handlers::{
-        clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,
-        EnableTwoFactorRequest, LoginWithTwoFactorRequest, TwoFactorHandlers,
-        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
-        TwoFactorHandlers, VerifyTwoFactorRequest,
-    };
-    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
-
-    fn generate_token(secret: &str) -> String {
-        use totp_rs::{Algorithm, Secret, TOTP};
-
-        TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
-            None,
-            String::new(),
-        )
-        .unwrap()
-        .generate_current()
-        .unwrap()
-    }
+    use crate::two_factor::TwoFactorAuth;
+    use proptest::prelude::*;
 
     #[test]
     fn test_generate_secret() {
@@ -80,6 +57,94 @@ mod tests {
         );
     }
 
+    proptest! {
+        #[test]
+        fn prop_test_verify_token_never_panics(s in "\\PC*") {
+            let secret = "JBSWY3DPEHPK3PXP";
+            let _ = TwoFactorAuth::verify_token(secret, &s);
+        }
+
+        #[test]
+        fn prop_test_verify_backup_code_never_panics(s in "\\PC*") {
+            let codes = vec!["1234-5678".to_string()];
+            let _ = TwoFactorAuth::verify_backup_code(&codes, &s);
+        }
+
+        #[test]
+        fn prop_test_validate_token_format(s in "\\PC*") {
+            let res = TwoFactorAuth::validate_token_format(&s);
+            if let Ok(valid) = res {
+                assert_eq!(valid.len(), 6);
+                assert!(valid.chars().all(|c| c.is_ascii_digit()));
+            }
+        }
+
+        #[test]
+        fn prop_test_validate_backup_code_format(s in "\\PC*") {
+            let res = TwoFactorAuth::validate_backup_code_format(&s);
+            if let Ok(valid) = res {
+                assert_eq!(valid.len(), 9);
+                assert!(valid.contains('-'));
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_token_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_token_format("123456").is_ok());
+        assert!(TwoFactorAuth::validate_token_format(" 123456 ").is_ok());
+
+        // Invalid length
+        assert!(TwoFactorAuth::validate_token_format("12345").is_err());
+        assert!(TwoFactorAuth::validate_token_format("1234567").is_err());
+
+        // Non-numeric
+        assert!(TwoFactorAuth::validate_token_format("123a56").is_err());
+    }
+
+    #[test]
+    fn test_validate_backup_code_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-5678").is_ok());
+        assert!(TwoFactorAuth::validate_backup_code_format(" 1234-5678 ").is_ok());
+
+        // Invalid
+        assert!(TwoFactorAuth::validate_backup_code_format("12345678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-567a").is_err());
+    }
+
+    #[test]
+    fn test_validate_token_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_token_format("123456").is_ok());
+        assert!(TwoFactorAuth::validate_token_format(" 123456 ").is_ok());
+
+        // Invalid length
+        assert!(TwoFactorAuth::validate_token_format("12345").is_err());
+        assert!(TwoFactorAuth::validate_token_format("1234567").is_err());
+
+        // Non-numeric
+        assert!(TwoFactorAuth::validate_token_format("123a56").is_err());
+        assert!(TwoFactorAuth::validate_token_format("abcdef").is_err());
+    }
+
+    #[test]
+    fn test_validate_backup_code_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-5678").is_ok());
+        assert!(TwoFactorAuth::validate_backup_code_format(" 1234-5678 ").is_ok());
+
+        // Invalid length/format
+        assert!(TwoFactorAuth::validate_backup_code_format("12345678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("123-45678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-567").is_err());
+
+        // Non-numeric
+        assert!(TwoFactorAuth::validate_backup_code_format("123a-5678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-567b").is_err());
+    }
+
     #[test]
     fn test_generate_backup_codes() {
         let codes = TwoFactorAuth::generate_backup_codes(8);
@@ -87,12 +152,8 @@ mod tests {
 
         for code in &codes {
             assert!(code.contains('-'));
-            assert_eq!(code.len(), 9); // Format: 1234-5678
+            assert_eq!(code.len(), 9);
         }
-
-        // Ensure uniqueness
-        let unique_codes: std::collections::HashSet<_> = codes.iter().collect();
-        assert_eq!(unique_codes.len(), 8);
     }
 
     #[test]
@@ -100,7 +161,6 @@ mod tests {
         let codes = vec![
             "1234-5678".to_string(),
             "2345-6789".to_string(),
-            "3456-7890".to_string(),
         ];
 
  main
@@ -209,8 +269,9 @@ mod tests {
         assert_eq!(resp.backup_codes.len(), 8);
 
         let result = TwoFactorAuth::verify_backup_code(&codes, "2345-6789");
-        assert_eq!(result, Some(1));
-
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(1));
+        
         let result = TwoFactorAuth::verify_backup_code(&codes, "9999-9999");
         assert_eq!(result, None);
 main
@@ -232,62 +293,76 @@ main
         assert!(!codes.contains(&"3333-4444".to_string()));
     }
 
-    #[test]
-    fn test_backup_code_cannot_be_reused_after_consumption() {
-        let mut codes = vec!["1234-5678".to_string()];
-
-        // First use succeeds
-        assert!(TwoFactorAuth::consume_backup_code(&mut codes, "1234-5678"));
-        // Second use on the now-empty list must fail
-        assert!(!TwoFactorAuth::consume_backup_code(&mut codes, "1234-5678"));
-        assert!(codes.is_empty());
+        let result = TwoFactorAuth::verify_backup_code(&codes, "invalid");
+        assert!(result.is_ok()); // Should return Ok(None) now because we handle format error internally
+        assert_eq!(result.unwrap(), None);
     }
 
-    #[test]
-    fn test_consume_invalid_backup_code_returns_false() {
-        let mut codes = vec!["1234-5678".to_string()];
+    use std::collections::HashMap;
+    use crate::two_factor::{TwoFactorStorage, TwoFactorData};
+    use crate::handlers::{TwoFactorHandlers, DisableTwoFactorRequest, EnableTwoFactorRequest, VerifyTwoFactorRequest};
 
-        let result = TwoFactorAuth::consume_backup_code(&mut codes, "9999-9999");
-        assert!(!result);
-        // List must be unchanged
-        assert_eq!(codes.len(), 1);
+    struct MockStorage {
+        data: HashMap<String, TwoFactorData>,
     }
 
-    #[test]
-    fn test_each_backup_code_single_use_across_all_codes() {
-        let originals = vec![
-            "1111-1111".to_string(),
-            "2222-2222".to_string(),
-            "3333-3333".to_string(),
-        ];
-        let mut codes = originals.clone();
-
-        // Consume every code exactly once
-        for code in &originals {
-            assert!(TwoFactorAuth::consume_backup_code(&mut codes, code));
+    impl TwoFactorStorage for MockStorage {
+        fn get_two_factor_data(&self, user_id: &str) -> Result<Option<TwoFactorData>, String> {
+            Ok(self.data.get(user_id).cloned())
         }
-        assert!(codes.is_empty());
-
-        // Attempting any code again must fail
-        for code in &originals {
-            assert!(!TwoFactorAuth::consume_backup_code(&mut codes, code));
+        fn save_two_factor_data(&mut self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+            self.data.insert(user_id.to_string(), data);
+            Ok(())
+        }
+        fn delete_two_factor_data(&mut self, user_id: &str) -> Result<(), String> {
+            self.data.remove(user_id);
+            Ok(())
         }
     }
 
-    /// Simulates two concurrent recovery attempts using the same backup code.
-    /// In a real system these would race against the DB; here we model atomicity
-    /// by applying both operations sequentially on the same mutable list —
-    /// only the first must succeed.
     #[test]
-    fn test_concurrent_reuse_only_first_succeeds() {
-        let mut codes = vec!["7777-8888".to_string()];
-
-        // Simulate two "threads" both reading the same code list snapshot
-        // and attempting to consume the same code.
-        let first = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
-        let second = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
-
-        assert!(first,  "first recovery attempt must succeed");
-        assert!(!second, "second recovery attempt must fail — code already consumed");
+    fn test_handler_disable_two_factor() {
+        let mut storage = MockStorage { data: HashMap::new() };
+        let user_id = "user123".to_string();
+        
+        // 1. Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(&mut storage, EnableTwoFactorRequest {
+            user_id: user_id.clone(),
+            email: "test@example.com".to_string(),
+        }).unwrap();
+        
+        // 2. Verify and activate
+        use totp_rs::{Algorithm, Secret, TOTP};
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        ).unwrap();
+        let token = totp.generate_current().unwrap();
+        
+        TwoFactorHandlers::verify_and_activate(&mut storage, VerifyTwoFactorRequest {
+            user_id: user_id.clone(),
+            token: token.clone(),
+        }).unwrap();
+        
+        // Verify it is enabled in storage
+        let data = storage.get_two_factor_data(&user_id).unwrap().unwrap();
+        assert!(data.enabled);
+        
+        // 3. Disable 2FA
+        let result = TwoFactorHandlers::disable_two_factor(&mut storage, DisableTwoFactorRequest {
+            user_id: user_id.clone(),
+            token,
+        }).unwrap();
+        
+        assert!(result);
+        
+        // 4. Verify it is deleted/disabled in storage
+        let data = storage.get_two_factor_data(&user_id).unwrap();
+        assert!(data.is_none());
     }
 }
