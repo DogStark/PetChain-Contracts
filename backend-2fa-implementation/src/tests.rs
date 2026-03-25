@@ -22,7 +22,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_token() {
+    fn test_verify_token_valid() {
         let secret = TwoFactorAuth::generate_secret();
 
         // Generate current token
@@ -48,11 +48,13 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_invalid_token() {
+    fn test_verify_invalid_token_format() {
         let secret = TwoFactorAuth::generate_secret();
-        let result = TwoFactorAuth::verify_token(&secret, "000000");
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
+        // Too short / non-numeric → InvalidToken
+        assert_eq!(
+            TwoFactorAuth::verify_token(&secret, "abc"),
+            Err(TwoFactorError::InvalidToken)
+        );
     }
 
     proptest! {
@@ -161,13 +163,135 @@ mod tests {
             "2345-6789".to_string(),
         ];
 
+ main
+        assert_eq!(TwoFactorAuth::verify_backup_code(&codes, "2345-6789"), Some(1));
+        assert_eq!(TwoFactorAuth::verify_backup_code(&codes, "9999-9999"), None);
+    }
+
+    // ── new typed-error tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_token_mismatch_returns_token_mismatch_variant() {
+        let secret = TwoFactorAuth::generate_secret();
+        // "000000" is a valid format but almost certainly wrong
+        let err = TwoFactorAuth::verify_token(&secret, "000000").unwrap_err();
+        assert_eq!(err, TwoFactorError::TokenMismatch);
+    }
+
+    #[test]
+    fn test_invalid_token_format_too_long() {
+        let secret = TwoFactorAuth::generate_secret();
+        let err = TwoFactorAuth::verify_token(&secret, "1234567").unwrap_err();
+        assert_eq!(err, TwoFactorError::InvalidToken);
+    }
+
+    #[test]
+    fn test_invalid_token_format_non_numeric() {
+        let secret = TwoFactorAuth::generate_secret();
+        let err = TwoFactorAuth::verify_token(&secret, "12345a").unwrap_err();
+        assert_eq!(err, TwoFactorError::InvalidToken);
+    }
+
+    #[test]
+    fn test_invalid_token_format_empty() {
+        let secret = TwoFactorAuth::generate_secret();
+        let err = TwoFactorAuth::verify_token(&secret, "").unwrap_err();
+        assert_eq!(err, TwoFactorError::InvalidToken);
+    }
+
+    #[test]
+    fn test_recover_with_backup_invalid_code_returns_invalid_backup_code() {
+        let req = RecoverWithBackupRequest {
+            user_id: "user1".to_string(),
+            backup_code: "9999-9999".to_string(),
+        };
+        let err = TwoFactorHandlers::recover_with_backup(req).unwrap_err();
+        assert_eq!(err, TwoFactorError::InvalidBackupCode);
+    }
+
+    #[test]
+    fn test_recover_with_backup_valid_code_succeeds() {
+        let req = RecoverWithBackupRequest {
+            user_id: "user1".to_string(),
+            backup_code: "1234-5678".to_string(),
+        };
+        assert!(TwoFactorHandlers::recover_with_backup(req).is_ok());
+    }
+
+    #[test]
+    fn test_http_status_token_mismatch_is_401() {
+        assert_eq!(TwoFactorError::TokenMismatch.http_status(), 401);
+    }
+
+    #[test]
+    fn test_http_status_not_found_is_401() {
+        // NotFound must NOT leak "secret exists" vs "token wrong" — same 401
+        assert_eq!(TwoFactorError::NotFound.http_status(), 401);
+    }
+
+    #[test]
+    fn test_http_status_invalid_backup_code_is_401() {
+        assert_eq!(TwoFactorError::InvalidBackupCode.http_status(), 401);
+    }
+
+    #[test]
+    fn test_http_status_invalid_token_is_422() {
+        assert_eq!(TwoFactorError::InvalidToken.http_status(), 422);
+    }
+
+    #[test]
+    fn test_http_status_setup_failure_is_500() {
+        assert_eq!(TwoFactorError::SetupFailure("err".into()).http_status(), 500);
+    }
+
+    #[test]
+    fn test_http_status_storage_error_is_500() {
+        assert_eq!(TwoFactorError::StorageError("db down".into()).http_status(), 500);
+    }
+
+    #[test]
+    fn test_display_does_not_leak_secret_existence() {
+        // Both NotFound and TokenMismatch must produce the same user-facing message
+        assert_eq!(
+            TwoFactorError::NotFound.to_string(),
+            TwoFactorError::TokenMismatch.to_string()
+        );
+    }
+
+    #[test]
+    fn test_enable_two_factor_returns_setup_data() {
+        let req = EnableTwoFactorRequest {
+            user_id: "user1".to_string(),
+            email: "user@petchain.com".to_string(),
+        };
+        let resp = TwoFactorHandlers::enable_two_factor(req).unwrap();
+        assert!(!resp.secret.is_empty());
+        assert_eq!(resp.backup_codes.len(), 8);
+
         let result = TwoFactorAuth::verify_backup_code(&codes, "2345-6789");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some(1));
         
         let result = TwoFactorAuth::verify_backup_code(&codes, "9999-9999");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
+        assert_eq!(result, None);
+main
+    }
+
+    // --- backup code single-use tests ---
+
+    #[test]
+    fn test_consume_backup_code_removes_code() {
+        let mut codes = vec![
+            "1111-2222".to_string(),
+            "3333-4444".to_string(),
+            "5555-6666".to_string(),
+        ];
+
+        let consumed = TwoFactorAuth::consume_backup_code(&mut codes, "3333-4444");
+        assert!(consumed);
+        assert_eq!(codes.len(), 2);
+        assert!(!codes.contains(&"3333-4444".to_string()));
+    }
 
         let result = TwoFactorAuth::verify_backup_code(&codes, "invalid");
         assert!(result.is_ok()); // Should return Ok(None) now because we handle format error internally
