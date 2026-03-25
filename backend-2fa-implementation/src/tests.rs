@@ -79,6 +79,37 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_token_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_token_format("123456").is_ok());
+        assert!(TwoFactorAuth::validate_token_format(" 123456 ").is_ok());
+
+        // Invalid length
+        assert!(TwoFactorAuth::validate_token_format("12345").is_err());
+        assert!(TwoFactorAuth::validate_token_format("1234567").is_err());
+
+        // Non-numeric
+        assert!(TwoFactorAuth::validate_token_format("123a56").is_err());
+        assert!(TwoFactorAuth::validate_token_format("abcdef").is_err());
+    }
+
+    #[test]
+    fn test_validate_backup_code_format() {
+        // Valid
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-5678").is_ok());
+        assert!(TwoFactorAuth::validate_backup_code_format(" 1234-5678 ").is_ok());
+
+        // Invalid length/format
+        assert!(TwoFactorAuth::validate_backup_code_format("12345678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("123-45678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-567").is_err());
+
+        // Non-numeric
+        assert!(TwoFactorAuth::validate_backup_code_format("123a-5678").is_err());
+        assert!(TwoFactorAuth::validate_backup_code_format("1234-567b").is_err());
+    }
+
+    #[test]
     fn test_generate_backup_codes() {
         let codes = TwoFactorAuth::generate_backup_codes(8);
         assert_eq!(codes.len(), 8);
@@ -102,10 +133,16 @@ mod tests {
         ];
 
         let result = TwoFactorAuth::verify_backup_code(&codes, "2345-6789");
-        assert_eq!(result, Some(1));
-
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(1));
+        
         let result = TwoFactorAuth::verify_backup_code(&codes, "9999-9999");
-        assert_eq!(result, None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+
+        // Malformed
+        let result = TwoFactorAuth::verify_backup_code(&codes, "invalid");
+        assert!(result.is_err());
     }
 
     // --- backup code single-use tests ---
