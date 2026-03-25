@@ -1,49 +1,5 @@
-use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
 use serde::{Deserialize, Serialize};
-use crate::two_factor::{TwoFactorAuth, TwoFactorData};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-
-fn two_factor_store() -> &'static Mutex<HashMap<String, TwoFactorData>> {
-    static STORE: OnceLock<Mutex<HashMap<String, TwoFactorData>>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn load_two_factor_data(user_id: &str) -> Result<TwoFactorData, String> {
-    let store = two_factor_store()
-        .lock()
-        .map_err(|_| "2FA storage lock poisoned".to_string())?;
-
-    store
-        .get(user_id)
-        .cloned()
-        .ok_or_else(|| format!("2FA not configured for user {}", user_id))
-}
-
-/// Represents a verified, authenticated caller — constructed by middleware
-/// (e.g. from a validated JWT or session token) and passed into every handler.
-///
-/// Handlers must never trust `user_id` values that arrive in request bodies
-/// directly; they must compare against this principal instead.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AuthenticatedUser {
-    pub user_id: String,
-}
-
-impl AuthenticatedUser {
-    pub fn new(user_id: impl Into<String>) -> Self {
-        Self { user_id: user_id.into() }
-    }
-
-    /// Returns `Err` if the request targets a different user than the caller.
-    pub fn authorize(&self, requested_user_id: &str) -> Result<(), String> {
-        if self.user_id != requested_user_id {
-            return Err("Forbidden: you can only manage your own 2FA".to_string());
-        }
-        Ok(())
-    }
-}
+use crate::two_factor::TwoFactorAuth;
 
 #[derive(Debug, Deserialize)]
 pub struct EnableTwoFactorRequest {
@@ -242,14 +198,13 @@ impl TwoFactorHandlers {
 
         // Fetch from database
         // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
-
-        // --- placeholder: replace with real DB fetch ---
-        let mut backup_codes = vec!["1234-5678".to_string()]; // Get from DB
-        // -----------------------------------------------
-
-        if TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
-            // Persist the updated backup_codes list (code has been removed)
-            // db.update_two_factor_backup_codes(&req.user_id, &backup_codes)?;
+        
+        let backup_codes = vec!["1234-5678".to_string()]; // Get from DB
+        
+        if let Some(_index) = TwoFactorAuth::verify_backup_code(&backup_codes, &req.backup_code) {
+            // Remove used backup code from database
+            // two_factor_data.backup_codes.remove(index);
+            // db.update_two_factor_data(&req.user_id, &two_factor_data)?;
             Ok(true)
         } else {
             Ok(false)
