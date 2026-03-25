@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 mod test_search_medical_records {
-    use crate::{Gender, Medication, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
+    use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
     // ---- helpers ----
@@ -118,7 +118,9 @@ mod test_search_medical_records {
         add_record(&client, &env, pet_id, &vet, "Flu");
 
         // Range in the far future — should match nothing
-        let results = client.search_records_by_date_range(&pet_id, &u64::MAX - 100, &u64::MAX);
+        let start_val = u64::MAX - 100;
+        let end_val = u64::MAX;
+        let results = client.search_records_by_date_range(&pet_id, &start_val, &end_val);
         assert_eq!(results.len(), 0);
     }
 
@@ -132,7 +134,7 @@ mod test_search_medical_records {
         // Exact timestamp as both start and end should still match
         let results = client.search_records_by_date_range(&pet_id, &ts, &ts);
         // At least one record should fall within the boundary
-        assert!(results.len() >= 0); // boundary check — no panic
+        let _ = results.len(); // boundary check â€” no panic
     }
 
     // ---- search by vet ----

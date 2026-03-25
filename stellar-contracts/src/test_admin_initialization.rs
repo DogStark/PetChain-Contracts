@@ -1,6 +1,6 @@
 use crate::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     Env,
 };
 
@@ -120,7 +120,9 @@ fn test_propose_action_without_admin_initialization() {
     let proposer = Address::generate(&env);
 
     // Create a simple proposal action
-    let action = ProposalAction::UpdateThreshold(2u32);
+    let mut new_admins_a = soroban_sdk::Vec::new(&env);
+    new_admins_a.push_back(proposer.clone());
+    let action = ProposalAction::ChangeAdmin((new_admins_a, 1u32));
 
     // Try to propose action without initializing admin - should panic with typed error
     client.propose_action(&proposer, &action, &3600u64);
@@ -172,7 +174,10 @@ fn test_multisig_admin_methods_work_after_initialization() {
     client.init_multisig(&admin, &admins, &1u32);
 
     // Now proposing action should work
-    let action = ProposalAction::UpdateThreshold(2u32);
+    let mut new_admins_b = soroban_sdk::Vec::new(&env);
+    new_admins_b.push_back(admin.clone());
+    new_admins_b.push_back(admin2.clone());
+    let action = ProposalAction::ChangeAdmin((new_admins_b, 2u32));
     let proposal_id = client.propose_action(&admin, &action, &3600u64);
     assert_eq!(proposal_id, 1u64);
 

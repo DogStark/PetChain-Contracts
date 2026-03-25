@@ -90,6 +90,12 @@ mod test_pet_age;
 mod test_statistics;
 #[cfg(test)]
 mod test_search_medical_records;
+#[cfg(test)]
+mod test_encryption_nonce;
+#[cfg(test)]
+mod test_get_pet_decryption;
+#[cfg(test)]
+mod test_book_slot;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -125,12 +131,12 @@ impl From<ContractError> for soroban_sdk::Error {
             ContractError::PetNotFound => ScErrorCode::MissingValue,
             ContractError::VetNotFound => ScErrorCode::MissingValue,
             ContractError::VeterinarianNotVerified => ScErrorCode::InvalidAction,
-            ContractError::VetAlreadyRegistered => ScErrorCode::DuplicateName,
-            ContractError::LicenseAlreadyRegistered => ScErrorCode::DuplicateName,
+            ContractError::VetAlreadyRegistered => ScErrorCode::ExistingValue,
+            ContractError::LicenseAlreadyRegistered => ScErrorCode::ExistingValue,
             ContractError::InputStringTooLong => ScErrorCode::InvalidInput,
-            ContractError::PetAlreadyHasLinkedTag => ScErrorCode::DuplicateName,
+            ContractError::PetAlreadyHasLinkedTag => ScErrorCode::ExistingValue,
             ContractError::InvalidIpfsHash => ScErrorCode::InvalidInput,
-            ContractError::CounterOverflow => ScErrorCode::ArithmeticOverflow,
+            ContractError::CounterOverflow => ScErrorCode::ArithDomain,
             ContractError::TooManyItems => ScErrorCode::InvalidInput,
             ContractError::InvalidState => ScErrorCode::InvalidAction,
             ContractError::InvalidInput => ScErrorCode::InvalidInput,
@@ -1218,6 +1224,11 @@ pub enum DisputeKey {
 #[contract]
 pub struct PetChainContract;
 
+// --- OVERFLOW-SAFE COUNTER HELPER ---
+pub(crate) fn safe_increment(count: u64) -> u64 {
+    count.checked_add(1).unwrap_or(u64::MAX)
+}
+
 #[contractimpl]
 impl PetChainContract {
     // --- CONTRACT STATISTICS ---
@@ -1633,62 +1644,76 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_pet(env: Env, id: u64, viewer: Address) -> Option<PetProfile> {
-        // Require the viewer to authenticate — prevents spoofing the caller identity.
-        viewer.require_auth();
-
+    pub fn get_pet(env: Env, id: u64) -> Option<PetProfile> {
         let pet = env
             .storage()
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))?;
 
-        // ---- access-level resolution ----
-        // Owner always has full access regardless of privacy level.
-        let is_owner = pet.owner == viewer;
+        let key = Self::get_encryption_key(&env);
 
-            // Propagate decryption failures as None rather than masking them
-            // with a sentinel "Error" string. Any corrupt ciphertext or nonce
-            // mismatch causes the whole read to return None deterministically.
-            let decrypted_name = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_name.ciphertext,
-                &pet.encrypted_name.nonce,
-                &key,
-            )
-            .ok()?;
-            let name = String::from_xdr(&env, &decrypted_name).ok()?;
+        // Propagate decryption failures as None rather than masking them
+        // with a sentinel "Error" string. Any corrupt ciphertext or nonce
+        // mismatch causes the whole read to return None deterministically.
+        let decrypted_name = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_name.ciphertext,
+            &pet.encrypted_name.nonce,
+            &key,
+        )
+        .ok()?;
+        let name = String::from_xdr(&env, &decrypted_name).ok()?;
 
-            let decrypted_birthday = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_birthday.ciphertext,
-                &pet.encrypted_birthday.nonce,
-                &key,
-            )
-            .ok()?;
-            let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
+        let decrypted_birthday = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_birthday.ciphertext,
+            &pet.encrypted_birthday.nonce,
+            &key,
+        )
+        .ok()?;
+        let birthday = String::from_xdr(&env, &decrypted_birthday).ok()?;
 
-            let decrypted_breed = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_breed.ciphertext,
-                &pet.encrypted_breed.nonce,
-                &key,
-            )
-            .ok()?;
-            let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
+        let decrypted_breed = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_breed.ciphertext,
+            &pet.encrypted_breed.nonce,
+            &key,
+        )
+        .ok()?;
+        let breed = String::from_xdr(&env, &decrypted_breed).ok()?;
 
-            let a_bytes = decrypt_sensitive_data(
-                &env,
-                &pet.encrypted_allergies.ciphertext,
-                &pet.encrypted_allergies.nonce,
-                &key,
-            )
-            .ok()?;
-            let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
+        let a_bytes = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_allergies.ciphertext,
+            &pet.encrypted_allergies.nonce,
+            &key,
+        )
+        .ok()?;
+        let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).ok()?;
+
+        let profile = PetProfile {
+            id: pet.id,
+            owner: pet.owner.clone(),
+            privacy_level: pet.privacy_level,
+            name,
+            birthday,
+            active: pet.active,
+            created_at: pet.created_at,
+            updated_at: pet.updated_at,
+            new_owner: pet.new_owner,
+            species: pet.species,
+            gender: pet.gender,
+            breed,
+            color: pet.color,
+            weight: pet.weight,
+            microchip_id: pet.microchip_id,
+            allergies,
+        };
 
         Self::log_access(
             &env,
             id,
-            viewer,
+            pet.owner,
             AccessAction::Read,
             String::from_str(&env, "Pet profile accessed"),
         );
@@ -2082,14 +2107,13 @@ impl PetChainContract {
     const MAX_STR_LONG: u32 = 1000;
     const MAX_VEC_MEDS: u32 = 50;
     const MAX_VEC_ATTACHMENTS: u32 = 20;
+    const MAX_VET_NAME_LEN: u32 = 100;
+    const MAX_VET_LICENSE_LEN: u32 = 100;
+    const MAX_VET_SPEC_LEN: u32 = 200;
+    const MAX_REVIEW_COMMENT_LEN: u32 = 500;
 
     // Medical / record field limits
-    const MAX_STR_SHORT: u32 = 100;      // names, types, test_type, outcome
-    const MAX_STR_LONG: u32 = 1000;      // description, notes, results, reference_ranges
-    const MAX_VEC_MEDS: u32 = 50;        // medications vec in a medical record
-    const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
-
-    pub fn register_vet(
+pub fn register_vet(
         env: Env,
         vet_address: Address,
         name: String,
@@ -3226,7 +3250,7 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
             {
-                if let Some(pet) = Self::get_pet(env.clone(), pid, owner.clone()) {
+                if let Some(pet) = Self::get_pet(env.clone(), pid) {
                     pets.push_back(pet);
                 }
             }
@@ -3254,7 +3278,7 @@ impl PetChainContract {
                 // Only surface Public pets in unauthenticated listing queries.
                 if let Some(raw) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pid)) {
                     if matches!(raw.privacy_level, PrivacyLevel::Public) {
-                        if let Some(profile) = Self::get_pet(env.clone(), pid, raw.owner.clone()) {
+                        if let Some(profile) = Self::get_pet(env.clone(), pid) {
                             pets.push_back(profile);
                         }
                     }
@@ -3279,7 +3303,7 @@ impl PetChainContract {
             {
                 // Only surface active Public pets in unauthenticated listing queries.
                 if pet.active && matches!(pet.privacy_level, PrivacyLevel::Public) {
-                    if let Some(profile) = Self::get_pet(env.clone(), id, pet.owner.clone()) {
+                    if let Some(profile) = Self::get_pet(env.clone(), id) {
                         pets.push_back(profile);
                     }
                 }
@@ -4858,7 +4882,7 @@ impl PetChainContract {
         }
         let mut total = 0u32;
         for review in reviews.iter() {
-            total = total.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+            total = total.saturating_add(review.rating);
         }
         total / reviews.len()
     }
@@ -6432,26 +6456,14 @@ impl PetChainContract {
     }
 
     pub fn get_grooming_history(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
-        let count: u64 = env.storage().instance().get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
+        let count: u64 = env.storage().instance()
+            .get(&(Symbol::new(&env, "pet_grooming"), pet_id)).unwrap_or(0);
         let mut history = Vec::new(&env);
         for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i)) {
-                if let Some(record) = env.storage().instance().get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id)) {
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&(Symbol::new(&env, "pet_grooming"), pet_id))
-            .unwrap_or(0);
-        let mut history = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<_, u64>(&(
-                Symbol::new(&env, "pet_grooming_idx"),
-                pet_id,
-                i,
-            )) {
-                if let Some(record) = env
-                    .storage()
-                    .instance()
+            if let Some(record_id) = env.storage().instance()
+                .get::<_, u64>(&(Symbol::new(&env, "pet_grooming_idx"), pet_id, i))
+            {
+                if let Some(record) = env.storage().instance()
                     .get::<_, GroomingRecord>(&(Symbol::new(&env, "grooming"), record_id))
                 {
                     history.push_back(record);
@@ -6462,7 +6474,7 @@ impl PetChainContract {
     }
 
     pub fn get_next_grooming_date(env: Env, pet_id: u64) -> u64 {
-        let history = Self::get_grooming_history(env, pet_id);
+        let history = PetChainContract::get_grooming_history(env, pet_id);
         let mut next_date = 0u64;
         for record in history.iter() {
             if record.next_due > 0 && (next_date == 0 || record.next_due < next_date) {
@@ -6473,32 +6485,20 @@ impl PetChainContract {
     }
 
     pub fn get_grooming_expenses(env: Env, pet_id: u64) -> u64 {
-        let history = Self::get_grooming_history(env, pet_id);
+        let history = PetChainContract::get_grooming_history(env, pet_id);
         let mut total = 0u64;
         for record in history.iter() {
             total += record.cost;
         }
         total
     }
-            total = total.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-        }
-        total
-    }
-}
 
-// --- OVERFLOW-SAFE COUNTER HELPER ---
-pub(crate) fn safe_increment(count: u64) -> u64 {
-    count.checked_add(1).unwrap_or(u64::MAX)
-}
-
-// --- ENCRYPTION HELPERS ---
     // --- AGE CALCULATION ---
-
     /// Calculates a pet's approximate age from a Unix timestamp birthday.
     ///
     /// # Approximation
     /// Uses 365 days/year and 30 days/month. This is intentionally approximate
-    /// and may deviate by ±1 month from calendar-accurate results due to leap
+    /// and may deviate by +/-1 month from calendar-accurate results due to leap
     /// years and variable month lengths. Sufficient for display purposes.
     pub fn calculate_age(env: Env, birthday_timestamp: u64) -> PetAge {
         let now = env.ledger().timestamp();
@@ -6509,48 +6509,127 @@ pub(crate) fn safe_increment(count: u64) -> u64 {
         let months = remaining_days / 30;
         PetAge { years, months }
     }
+}
 
-fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
-    // Generate unique nonce per encryption call
-    // Combine ledger timestamp and nonce counter for uniqueness
-    
+// --- REAL ENCRYPTION: SHA-256 CTR-mode stream cipher + authentication tag ---
+//
+// Privacy model: sensitive fields are encrypted on-chain using a contract-held
+// key (get_encryption_key). The ciphertext stored on-chain is NOT the plaintext.
+// It is XOR-encrypted with a SHA-256-based keystream and authenticated with a
+// 32-byte tag prepended to the ciphertext.
+//
+// Ciphertext layout: [ tag (32 bytes) | encrypted_data ]
+//   tag               = SHA-256( key || nonce || plaintext )
+//   keystream_block_i = SHA-256( key || nonce || i.to_be_bytes() )
+//   encrypted_data[i] = plaintext[i] XOR keystream[i]
+//
+// An on-chain observer sees only tag + ciphertext; recovering plaintext
+// requires the key. The nonce (timestamp || counter) ensures ciphertext
+// differs across calls even for identical plaintext.
+
+fn sha256_block(env: &Env, key: &Bytes, nonce: &Bytes, block_idx: u64) -> [u8; 32] {
+    let mut preimage = Bytes::new(env);
+    preimage.append(key);
+    preimage.append(nonce);
+    for b in block_idx.to_be_bytes() {
+        preimage.push_back(b);
+    }
+    env.crypto().sha256(&preimage).into()
+}
+
+fn encrypt_sensitive_data(env: &Env, data: &Bytes, key: &Bytes) -> (Bytes, Bytes) {
+    // Unique nonce: 8-byte ledger timestamp || 4-byte monotonic counter
     let counter_key = SystemKey::EncryptionNonceCounter;
-    let counter = env.storage().instance().get::<SystemKey, u64>(&counter_key).unwrap_or(0);
-    
-    // Increment and store the new counter
+    let counter: u64 = env.storage().instance().get::<SystemKey, u64>(&counter_key).unwrap_or(0);
     env.storage().instance().set(&counter_key, &(counter + 1));
-    
-    // Generate nonce from timestamp and counter
-    // Use 8 bytes from timestamp + 4 bytes from counter = 12 bytes total
-    let timestamp = env.ledger().timestamp() as u64;
-    
-    // Create nonce bytes: [timestamp (8 bytes) | counter (4 bytes)]
+
     let mut nonce_array = [0u8; 12];
-    
-    // Timestamp in first 8 bytes (big-endian)
-    nonce_array[0..8].copy_from_slice(&timestamp.to_be_bytes());
-    
-    // Counter in last 4 bytes (big-endian)
-    let counter_bytes = (counter as u32).to_be_bytes();
-    nonce_array[8..12].copy_from_slice(&counter_bytes);
-    
+    nonce_array[0..8].copy_from_slice(&env.ledger().timestamp().to_be_bytes());
+    nonce_array[8..12].copy_from_slice(&(counter as u32).to_be_bytes());
     let nonce = Bytes::from_array(env, &nonce_array);
-    
-    // Mock encryption for demonstration (returns ciphertext and nonce)
-    // In production, would use actual AEAD cipher with the unique nonce
-    let ciphertext = data.clone();
+
+    let data_len = data.len() as usize;
+
+    // XOR plaintext with SHA-256 keystream (CTR mode)
+    let mut encrypted = Bytes::new(env);
+    let mut block_idx: u64 = 0;
+    let mut offset = 0usize;
+    while offset < data_len {
+        let block_bytes: [u8; 32] = sha256_block(env, key, &nonce, block_idx);
+        let chunk_end = (offset + 32).min(data_len);
+        for i in offset..chunk_end {
+            encrypted.push_back(data.get(i as u32).unwrap() ^ block_bytes[i - offset]);
+        }
+        offset += 32;
+        block_idx += 1;
+    }
+
+    // Authentication tag: SHA-256( key || nonce || plaintext )
+    let mut tag_preimage = Bytes::new(env);
+    tag_preimage.append(key);
+    tag_preimage.append(&nonce);
+    tag_preimage.append(data);
+    let tag_arr: [u8; 32] = env.crypto().sha256(&tag_preimage).into();
+    let tag = Bytes::from_array(env, &tag_arr);
+
+    // Final ciphertext = tag (32 bytes) || encrypted_data
+    let mut ciphertext = Bytes::new(env);
+    ciphertext.append(&tag);
+    ciphertext.append(&encrypted);
+
     (nonce, ciphertext)
 }
 
 fn decrypt_sensitive_data(
-    _env: &Env,
+    env: &Env,
     ciphertext: &Bytes,
-    _nonce: &Bytes,
-    _key: &Bytes,
+    nonce: &Bytes,
+    key: &Bytes,
 ) -> Result<Bytes, ()> {
-    // In production, would use the provided nonce with AEAD cipher to decrypt
-    // For demonstration, verify nonce is used (non-None) and decrypt with it
-    Ok(ciphertext.clone())
+    let ct_len = ciphertext.len() as usize;
+    if ct_len < 32 {
+        return Err(());
+    }
+
+    // Split stored tag (first 32 bytes) from encrypted payload
+    let mut stored_tag = Bytes::new(env);
+    for i in 0..32u32 {
+        stored_tag.push_back(ciphertext.get(i).unwrap());
+    }
+    let mut encrypted = Bytes::new(env);
+    for i in 32..ct_len as u32 {
+        encrypted.push_back(ciphertext.get(i).unwrap());
+    }
+
+    let enc_len = encrypted.len() as usize;
+
+    // Decrypt: XOR with keystream
+    let mut plaintext = Bytes::new(env);
+    let mut block_idx: u64 = 0;
+    let mut offset = 0usize;
+    while offset < enc_len {
+        let block_bytes: [u8; 32] = sha256_block(env, key, nonce, block_idx);
+        let chunk_end = (offset + 32).min(enc_len);
+        for i in offset..chunk_end {
+            plaintext.push_back(encrypted.get(i as u32).unwrap() ^ block_bytes[i - offset]);
+        }
+        offset += 32;
+        block_idx += 1;
+    }
+
+    // Verify authentication tag: SHA-256( key || nonce || plaintext )
+    let mut tag_preimage = Bytes::new(env);
+    tag_preimage.append(key);
+    tag_preimage.append(nonce);
+    tag_preimage.append(&plaintext);
+    let expected_arr: [u8; 32] = env.crypto().sha256(&tag_preimage).into();
+    let expected_tag = Bytes::from_array(env, &expected_arr);
+
+    if stored_tag != expected_tag {
+        return Err(());
+    }
+
+    Ok(plaintext)
 }
 
 

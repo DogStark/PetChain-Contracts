@@ -77,6 +77,6 @@ fn test_weight_entries_and_pet_update() {
     let w_history = client.get_weight_history(&pet_id);
     assert_eq!(w_history.len(), 2);
 
-    let profile = client.get_pet(&pet_id, &owner).unwrap();
+    let profile = client.get_pet(&pet_id).unwrap();
     assert_eq!(profile.weight, 8u32);
 }
