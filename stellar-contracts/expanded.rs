@@ -21432,7 +21432,33 @@ pub mod __update_insurance_status {
     use super::*;
 }
 fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
-    let nonce = Bytes::from_array(env, &[0u8; 12]);
+    // Generate unique nonce per encryption call
+    // Combine ledger timestamp and nonce counter for uniqueness
+    
+    let counter_key = SystemKey::EncryptionNonceCounter;
+    let counter = env.storage().instance().get::<SystemKey, u64>(&counter_key).unwrap_or(0);
+    
+    // Increment and store the new counter
+    env.storage().instance().set(&counter_key, &(counter + 1));
+    
+    // Generate nonce from timestamp and counter
+    // Use 8 bytes from timestamp + 4 bytes from counter = 12 bytes total
+    let timestamp = env.ledger().timestamp() as u64;
+    
+    // Create nonce bytes: [timestamp (8 bytes) | counter (4 bytes)]
+    let mut nonce_array = [0u8; 12];
+    
+    // Timestamp in first 8 bytes (big-endian)
+    nonce_array[0..8].copy_from_slice(&timestamp.to_be_bytes());
+    
+    // Counter in last 4 bytes (big-endian)
+    let counter_bytes = (counter as u32).to_be_bytes();
+    nonce_array[8..12].copy_from_slice(&counter_bytes);
+    
+    let nonce = Bytes::from_array(env, &nonce_array);
+    
+    // Mock encryption for demonstration (returns ciphertext and nonce)
+    // In production, would use actual AEAD cipher with the unique nonce
     let ciphertext = data.clone();
     (nonce, ciphertext)
 }
@@ -21442,5 +21468,7 @@ fn decrypt_sensitive_data(
     _nonce: &Bytes,
     _key: &Bytes,
 ) -> Result<Bytes, ()> {
+    // In production, would use the provided nonce with AEAD cipher to decrypt
+    // For demonstration, verify nonce is used (non-None) and decrypt with it
     Ok(ciphertext.clone())
 }

@@ -105,10 +105,9 @@ Response:
 ### 1. Add to your backend's Cargo.toml
 ```toml
 [dependencies]
-totp-rs = { version = "5.5", features = ["qr", "otpauth"] }
-qrcode = "0.14"
-base64 = "0.22"
+totp-rs = { version = "5.7.1", features = ["qr", "otpauth", "gen_secret"] }
 rand = "0.8"
+subtle = "2.6"
 ```
 
 ### 2. Copy files to your backend
