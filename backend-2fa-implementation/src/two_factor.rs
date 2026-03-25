@@ -3,7 +3,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorSetup {
     pub secret: String,
     pub qr_code_base64: String,
@@ -37,17 +37,20 @@ impl TwoFactorAuth {
             6,
             1,
             30,
-            Secret::Encoded(secret.clone()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.clone())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             Some(issuer.to_string()),
             user_email.to_string(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         let qr_url = format!("data:image/png;base64,{}", totp.get_qr_base64().map_err(|e| e.to_string())?);
         let backup_codes = Self::generate_backup_codes(8);
 
         Ok(TwoFactorSetup {
             secret,
-            qr_code_base64: qr_url,
+            qr_code_base64,
             backup_codes,
         })
     }
@@ -90,10 +93,13 @@ impl TwoFactorAuth {
             6,
             1,
             30,
-            Secret::Encoded(secret.to_string()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.to_string())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             None,
             String::new(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         let mut is_valid = 0u8;
         let time = std::time::SystemTime::now()
@@ -116,10 +122,14 @@ impl TwoFactorAuth {
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         (0..count)
             .map(|_| {
-                format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000))
+                format!(
+                    "{:04}-{:04}",
+                    rng.gen_range(0..10000),
+                    rng.gen_range(0..10000)
+                )
             })
             .collect()
     }
