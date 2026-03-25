@@ -65,6 +65,8 @@ mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
 #[cfg(test)]
+mod test_disputes;
+#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -1137,6 +1139,56 @@ pub struct MedicalRecordAddedEvent {
     pub pet_id: u64,
     pub updated_by: Address,
     pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    Pending,
+    ResolvedInFavorOfClaimer,
+    ResolvedInFavorOfTarget,
+    Rejected,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dispute {
+    pub dispute_id: u64,
+    pub pet_id: u64,
+    pub claimer: Address,
+    pub target: Address,
+    pub amount: i128,
+    pub reason: String,
+    pub evidence_hash: String,
+    pub status: DisputeStatus,
+    pub raised_at: u64,
+    pub resolved_at: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRaisedEvent {
+    pub dispute_id: u64,
+    pub pet_id: u64,
+    pub claimer: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeResolvedEvent {
+    pub dispute_id: u64,
+    pub status: DisputeStatus,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+pub enum DisputeKey {
+    Dispute(u64),                // dispute_id -> Dispute
+    DisputeCount,                // Global count of disputes
+    PetDisputeCount(u64),        // pet_id -> count of disputes
+    PetDisputeIndex((u64, u64)), // (pet_id, index) -> dispute_id
 }
 
 #[contract]
@@ -5320,6 +5372,169 @@ impl PetChainContract {
             }
         }
         claims
+    }
+
+    /// Raises a dispute for a pet delivery or service.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `claimer` - Address of the party raising the dispute
+    /// * `target` - Address of the party being disputed
+    /// * `amount` - Disputed amount (refund request)
+    /// * `reason` - Reason for the dispute
+    /// * `evidence_hash` - IPFS hash or similar for evidence
+    ///
+    /// # Returns
+    /// * `dispute_id` if successfully raised
+    pub fn raise_dispute(
+        env: Env,
+        pet_id: u64,
+        claimer: Address,
+        target: Address,
+        amount: i128,
+        reason: String,
+        evidence_hash: String,
+    ) -> u64 {
+        claimer.require_auth();
+
+        let dispute_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::DisputeCount)
+            .unwrap_or(0);
+        let dispute_id = dispute_count + 1;
+        let timestamp = env.ledger().timestamp();
+
+        let dispute = Dispute {
+            dispute_id,
+            pet_id,
+            claimer: claimer.clone(),
+            target,
+            amount,
+            reason,
+            evidence_hash,
+            status: DisputeStatus::Pending,
+            raised_at: timestamp,
+            resolved_at: None,
+        };
+
+        // Save dispute globally
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::DisputeCount, &dispute_id);
+
+        // Save dispute for pet
+        let pet_dispute_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DisputeKey::PetDisputeCount(pet_id), &pet_dispute_count);
+        env.storage().instance().set(
+            &DisputeKey::PetDisputeIndex((pet_id, pet_dispute_count)),
+            &dispute_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "DisputeRaised"), pet_id),
+            DisputeRaisedEvent {
+                dispute_id,
+                pet_id,
+                claimer,
+                amount,
+                timestamp,
+            },
+        );
+
+        dispute_id
+    }
+
+    /// Resolves a dispute (Admin only).
+    ///
+    /// # Arguments
+    /// * `dispute_id` - The ID of the dispute
+    /// * `status` - The resolution status (e.g., ResolvedInFavorOfClaimer)
+    ///
+    /// # Returns
+    /// * `true` if successfully resolved
+    pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool {
+        // Only admin can resolve disputes
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
+        admin.require_auth();
+
+        if let Some(mut dispute) = env
+            .storage()
+            .instance()
+            .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+        {
+            if dispute.status != DisputeStatus::Pending {
+                return false;
+            }
+
+            dispute.status = status.clone();
+            dispute.resolved_at = Some(env.ledger().timestamp());
+
+            env.storage()
+                .instance()
+                .set(&DisputeKey::Dispute(dispute_id), &dispute);
+
+            // Emit event
+            env.events().publish(
+                (String::from_str(&env, "DisputeResolved"), dispute.pet_id),
+                DisputeResolvedEvent {
+                    dispute_id,
+                    status,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+
+            return true;
+        }
+        false
+    }
+
+    /// Retrieves a dispute by ID.
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
+        env.storage()
+            .instance()
+            .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+    }
+
+    /// Retrieves all disputes for a pet.
+    pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute> {
+        let mut disputes = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(dispute_id) = env
+                .storage()
+                .instance()
+                .get::<_, u64>(&DisputeKey::PetDisputeIndex((pet_id, i)))
+            {
+                if let Some(dispute) = env
+                    .storage()
+                    .instance()
+                    .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+                {
+                    disputes.push_back(dispute);
+                }
+            }
+        }
+        disputes
     }
 
     // --- BEHAVIORAL TRACKING SYSTEM ---

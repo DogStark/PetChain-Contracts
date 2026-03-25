@@ -10,24 +10,17 @@ pub struct TwoFactorSetup {
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
     pub enabled: bool,
 }
 
-/// Returned after a successful backup-code recovery.
-/// Contains the new secret and fresh backup codes that must be persisted,
-/// replacing all previous 2FA material.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RecoveryResult {
-    /// New TOTP secret — the old secret is now invalid.
-    pub new_secret: String,
-    /// Fresh set of backup codes — all previous codes are now invalid.
-    pub new_backup_codes: Vec<String>,
-    /// 2FA remains enabled after recovery.
-    pub enabled: bool,
+pub trait TwoFactorStorage {
+    fn get_two_factor_data(&self, user_id: &str) -> Result<Option<TwoFactorData>, String>;
+    fn save_two_factor_data(&mut self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
+    fn delete_two_factor_data(&mut self, user_id: &str) -> Result<(), String>;
 }
 
 pub struct TwoFactorAuth;
@@ -90,7 +83,10 @@ impl TwoFactorAuth {
     }
 
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
-        let token = Self::validate_token_format(token)?;
+        let token = match Self::validate_token_format(token) {
+            Ok(t) => t,
+            Err(_) => return Ok(false),
+        };
         
         let totp = TOTP::new(
             Algorithm::SHA1,
@@ -139,7 +135,11 @@ impl TwoFactorAuth {
     }
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Result<Option<usize>, String> {
-        let provided_code = Self::validate_backup_code_format(provided_code)?;
+        let provided_code = match Self::validate_backup_code_format(provided_code) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        
         let provided_bytes = provided_code.as_bytes();
         let mut found_index = None;
 
