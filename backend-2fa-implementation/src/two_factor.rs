@@ -3,17 +3,30 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorSetup {
     pub secret: String,
     pub qr_code_base64: String,
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
+    pub enabled: bool,
+}
+
+/// Returned after a successful backup-code recovery.
+/// Contains the new secret and fresh backup codes that must be persisted,
+/// replacing all previous 2FA material.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoveryResult {
+    /// New TOTP secret — the old secret is now invalid.
+    pub new_secret: String,
+    /// Fresh set of backup codes — all previous codes are now invalid.
+    pub new_backup_codes: Vec<String>,
+    /// 2FA remains enabled after recovery.
     pub enabled: bool,
 }
 
@@ -31,31 +44,41 @@ impl TwoFactorAuth {
             6,
             1,
             30,
-            Secret::Encoded(secret.clone()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.clone())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             Some(issuer.to_string()),
             user_email.to_string(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         let qr_url = format!("data:image/png;base64,{}", totp.get_qr_base64().map_err(|e| e.to_string())?);
         let backup_codes = Self::generate_backup_codes(8);
 
         Ok(TwoFactorSetup {
             secret,
-            qr_code_base64: qr_url,
+            qr_code_base64,
             backup_codes,
         })
     }
 
+    /// Verify a token using the default drift policy (STANDARD, ±1 step).
+    ///
+    /// Prefer [`verify_token_with_policy`] when you need explicit control
+    /// over acceptable clock drift.
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
         let totp = TOTP::new(
             Algorithm::SHA1,
             6,
             1,
             30,
-            Secret::Encoded(secret.to_string()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.to_string())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             None,
             String::new(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // We check current, previous, and next windows to match totp-rs behavior
         // but we do it in constant-time.
@@ -81,10 +104,14 @@ impl TwoFactorAuth {
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         (0..count)
             .map(|_| {
-                format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000))
+                format!(
+                    "{:04}-{:04}",
+                    rng.gen_range(0..10000),
+                    rng.gen_range(0..10000)
+                )
             })
             .collect()
     }
@@ -103,5 +130,17 @@ impl TwoFactorAuth {
             }
         }
         found_index
+    }
+
+    /// Consume a backup code: removes it from the list if found and returns true.
+    /// The caller MUST persist the mutated `stored_codes` after a `true` return
+    /// to guarantee single-use semantics.
+    pub fn consume_backup_code(stored_codes: &mut Vec<String>, provided_code: &str) -> bool {
+        if let Some(index) = Self::verify_backup_code(stored_codes, provided_code) {
+            stored_codes.remove(index);
+            true
+        } else {
+            false
+        }
     }
 }
