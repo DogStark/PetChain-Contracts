@@ -286,6 +286,26 @@ impl TwoFactorHandlers {
         } else {
             Ok(false)
         }
+    }
+
+    // POST /api/2fa/recover - Use backup code for recovery
+    pub fn recover_with_backup<S: TwoFactorStorage>(storage: &mut S, req: RecoverWithBackupRequest) -> Result<bool, String> {
+        let mut data = storage.get_two_factor_data(&req.user_id)?
+            .ok_or_else(|| "2FA not found for user".to_string())?;
+        
+        if !data.enabled {
+            return Err("2FA is not enabled".to_string());
+        }
+        
+        match TwoFactorAuth::verify_backup_code(&data.backup_codes, &req.backup_code)? {
+            Some(index) => {
+                // Remove the used backup code
+                data.backup_codes.remove(index);
+                storage.save_two_factor_data(&req.user_id, data)?;
+                Ok(true)
+            },
+            None => Ok(false),
+        }
 
         let recovery = TwoFactorAuth::rotate_after_recovery();
 
