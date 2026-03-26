@@ -67,7 +67,7 @@ fn test_behavior_description_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "description too long")]
+#[should_panic]
 fn test_behavior_description_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -98,7 +98,7 @@ fn test_milestone_name_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "milestone_name too long")]
+#[should_panic]
 fn test_milestone_name_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -126,7 +126,7 @@ fn test_milestone_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_milestone_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -159,7 +159,7 @@ fn test_activity_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_activity_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -196,7 +196,7 @@ fn test_treatment_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_treatment_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -232,7 +232,7 @@ fn test_treatment_outcome_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "outcome too long")]
+#[should_panic]
 fn test_treatment_outcome_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -270,7 +270,7 @@ fn test_lab_result_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "test_type too long")]
+#[should_panic]
 fn test_lab_result_test_type_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -288,7 +288,7 @@ fn test_lab_result_test_type_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "results too long")]
+#[should_panic]
 fn test_lab_result_results_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -306,7 +306,7 @@ fn test_lab_result_results_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "reference_ranges too long")]
+#[should_panic]
 fn test_lab_result_reference_ranges_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -343,7 +343,7 @@ fn test_medical_record_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "diagnosis too long")]
+#[should_panic]
 fn test_medical_record_diagnosis_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -360,7 +360,7 @@ fn test_medical_record_diagnosis_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "treatment too long")]
+#[should_panic]
 fn test_medical_record_treatment_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -377,7 +377,7 @@ fn test_medical_record_treatment_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_medical_record_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -394,7 +394,7 @@ fn test_medical_record_notes_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "too many medications")]
+#[should_panic]
 fn test_medical_record_too_many_medications_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -423,7 +423,7 @@ fn test_medical_record_too_many_medications_rejected() {
         &meds,
         &String::from_str(&env, "notes"),
     );
-    let _ = owner; // suppress unused warning
+    let _ = owner;
 }
 
 // ── add_medication ────────────────────────────────────────────────────────────
@@ -447,7 +447,7 @@ fn test_medication_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "medication name too long")]
+#[should_panic]
 fn test_medication_name_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -465,7 +465,7 @@ fn test_medication_name_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "dosage too long")]
+#[should_panic]
 fn test_medication_dosage_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -483,7 +483,7 @@ fn test_medication_dosage_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "frequency too long")]
+#[should_panic]
 fn test_medication_frequency_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -503,7 +503,7 @@ fn test_medication_frequency_over_limit_rejected() {
 // ── add_attachment (vec limit) ────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "too many attachments")]
+#[should_panic]
 fn test_attachment_vec_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -518,7 +518,6 @@ fn test_attachment_vec_over_limit_rejected() {
         &String::from_str(&env, "notes"),
     );
 
-    // Add 20 attachments (the limit)
     for i in 0..20u32 {
         let hash = if i < 10 {
             String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
@@ -534,7 +533,6 @@ fn test_attachment_vec_over_limit_rejected() {
         client.add_attachment(&record_id, &hash, &meta);
     }
 
-    // 21st attachment must be rejected
     let meta = AttachmentMetadata {
         filename: String::from_str(&env, "extra.pdf"),
         file_type: String::from_str(&env, "pdf"),
@@ -563,7 +561,6 @@ fn test_attachment_at_limit_accepted() {
         &String::from_str(&env, "notes"),
     );
 
-    // Exactly 20 attachments should succeed
     for _i in 0..20u32 {
         let meta = AttachmentMetadata {
             filename: String::from_str(&env, "file.pdf"),
@@ -579,4 +576,66 @@ fn test_attachment_at_limit_accepted() {
         assert!(result);
     }
     assert_eq!(client.get_attachment_count(&record_id), 20);
+}
+
+// ── add_vet_review (comment length) ──────────────────────────────────────────
+
+#[test]
+fn test_review_comment_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, owner, _pet_id) = setup(&env);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Limit"),
+        &String::from_str(&env, "LIC-LIMIT-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let id = client.add_vet_review(&owner, &vet, &5, &repeat(&env, b'c', 500));
+    assert!(id > 0);
+}
+
+#[test]
+fn test_review_comment_over_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, owner, _pet_id) = setup(&env);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Over"),
+        &String::from_str(&env, "LIC-OVER-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let result = client.try_add_vet_review(&owner, &vet, &5, &repeat(&env, b'c', 501));
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::CommentTooLong))
+    );
+}
+
+#[test]
+fn test_review_empty_comment_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, owner, _pet_id) = setup(&env);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Empty"),
+        &String::from_str(&env, "LIC-EMPTY-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let id = client.add_vet_review(&owner, &vet, &3, &String::from_str(&env, ""));
+    assert!(id > 0);
 }

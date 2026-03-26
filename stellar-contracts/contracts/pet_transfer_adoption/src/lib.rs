@@ -16,9 +16,6 @@ mod vet_registry;
 #[cfg(test)]
 mod test;
 
-#[cfg(test)]
-mod test;
-
 /// ======================================================
 /// CONTRACT
 /// ======================================================
@@ -88,6 +85,7 @@ pub enum ContractError {
     InvalidRecipient = 5,
     EmptyOwnershipHistory = 6,
     MissingOwnershipRecord = 7,
+    TransferNotExpired = 8,
 }
 
 /// ======================================================
@@ -203,10 +201,10 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let last = history
-            .len()
-            .checked_sub(1)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::EmptyOwnershipHistory));
+        if history.len() == 0 {
+            panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+        }
+        let last = history.len() - 1;
         let mut prev = history
             .get(last)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
@@ -246,6 +244,11 @@ impl PetOwnershipContract {
             .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingTransfer));
 
         transfer.from.require_auth();
+
+        let pet = get_pet(&env, pet_id);
+        if pet.current_owner != transfer.from {
+            panic_with_error!(env, ContractError::StaleCancellation);
+        }
 
         env.storage()
             .persistent()
@@ -325,5 +328,3 @@ impl PetOwnershipContract {
     }
 }
 
-#[cfg(test)]
-mod test;
