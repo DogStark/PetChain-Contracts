@@ -106,6 +106,13 @@ pub enum ContractError {
     Unauthorized = 1,
     AdminNotInitialized = 2,
     InvalidIpfsHash = 3,
+    InputStringTooLong = 4,
+    TooManyItems = 5,
+    InvalidState = 6,
+    LicenseAlreadyRegistered = 7,
+    VetAlreadyRegistered = 8,
+    VeterinarianNotVerified = 9,
+    InvalidInput = 10,
 }
 
 impl From<ContractError> for soroban_sdk::Error {
@@ -115,6 +122,13 @@ impl From<ContractError> for soroban_sdk::Error {
             ContractError::Unauthorized => ScErrorCode::InvalidAction,
             ContractError::AdminNotInitialized => ScErrorCode::MissingValue,
             ContractError::InvalidIpfsHash => ScErrorCode::InvalidInput,
+            ContractError::InputStringTooLong => ScErrorCode::ExceededLimit,
+            ContractError::TooManyItems => ScErrorCode::ExceededLimit,
+            ContractError::InvalidState => ScErrorCode::InvalidAction,
+            ContractError::LicenseAlreadyRegistered => ScErrorCode::ExistingValue,
+            ContractError::VetAlreadyRegistered => ScErrorCode::ExistingValue,
+            ContractError::VeterinarianNotVerified => ScErrorCode::InvalidAction,
+            ContractError::InvalidInput => ScErrorCode::InvalidInput,
         };
 
         soroban_sdk::Error::from((ScErrorType::Contract, code))
@@ -2058,13 +2072,13 @@ impl PetChainContract {
         vet_address.require_auth();
 
         if name.len() > Self::MAX_VET_NAME_LEN {
-            panic!("name too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if license_number.len() > Self::MAX_VET_LICENSE_LEN {
-            panic!("license_number too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if specialization.len() > Self::MAX_VET_SPEC_LEN {
-            panic!("specialization too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         if env
@@ -2072,7 +2086,7 @@ impl PetChainContract {
             .instance()
             .has(&DataKey::VetLicense(license_number.clone()))
         {
-            panic!("License already registered");
+            panic_with_error!(&env, ContractError::LicenseAlreadyRegistered);
         }
 
         if env
@@ -2080,7 +2094,7 @@ impl PetChainContract {
             .instance()
             .has(&DataKey::Vet(vet_address.clone()))
         {
-            panic!("Vet already registered");
+            panic_with_error!(&env, ContractError::VetAlreadyRegistered);
         }
 
         let vet = Vet {
@@ -3479,21 +3493,21 @@ impl PetChainContract {
         vet_address.require_auth();
 
         if diagnosis.len() > Self::MAX_STR_LONG {
-            panic!("diagnosis too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if treatment.len() > Self::MAX_STR_LONG {
-            panic!("treatment too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if medications.len() > Self::MAX_VEC_MEDS {
-            panic!("too many medications");
+            panic_with_error!(&env, ContractError::TooManyItems);
         }
 
         // Verify vet is verified
         if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
-            panic!("Veterinarian not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         // Verify pet exists
@@ -3580,16 +3594,16 @@ impl PetChainContract {
         notes: String,
     ) -> bool {
         if diagnosis.len() > Self::MAX_STR_LONG {
-            panic!("diagnosis too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if treatment.len() > Self::MAX_STR_LONG {
-            panic!("treatment too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if medications.len() > Self::MAX_VEC_MEDS {
-            panic!("too many medications");
+            panic_with_error!(&env, ContractError::TooManyItems);
         }
         if let Some(mut record) = env
             .storage()
@@ -3748,13 +3762,13 @@ impl PetChainContract {
 
             // Validate metadata
             if metadata.filename.is_empty() {
-                panic!("Filename cannot be empty");
+                panic_with_error!(&env, ContractError::InvalidInput);
             }
             if metadata.file_type.is_empty() {
-                panic!("File type cannot be empty");
+                panic_with_error!(&env, ContractError::InvalidInput);
             }
             if metadata.size == 0 {
-                panic!("File size must be greater than 0");
+                panic_with_error!(&env, ContractError::InvalidInput);
             }
 
             // Create attachment
@@ -3765,7 +3779,7 @@ impl PetChainContract {
 
             // Enforce attachment vector limit
             if record.attachment_hashes.len() >= Self::MAX_VEC_ATTACHMENTS {
-                panic!("too many attachments");
+                panic_with_error!(&env, ContractError::TooManyItems);
             }
 
             // Add to record
@@ -3952,13 +3966,13 @@ impl PetChainContract {
     ) -> u64 {
         vet_address.require_auth();
         if test_type.len() > Self::MAX_STR_SHORT {
-            panic!("test_type too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if results.len() > Self::MAX_STR_LONG {
-            panic!("results too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if reference_ranges.len() > Self::MAX_STR_LONG {
-            panic!("reference_ranges too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         let _pet: Pet = env
             .storage()
@@ -4043,7 +4057,7 @@ impl PetChainContract {
         veterinarian.require_auth();
         // Verify vet once
         if !Self::is_verified_vet(env.clone(), veterinarian.clone()) {
-            panic!("Veterinarian not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         let mut ids = Vec::new(&env);
@@ -4298,7 +4312,7 @@ impl PetChainContract {
         // Verify caller is the vet and is verified
         vet_address.require_auth();
         if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
-            panic!("Vet not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         let slot_count: u64 = env
@@ -4584,7 +4598,7 @@ impl PetChainContract {
             .get::<DataKey, UpgradeProposal>(&DataKey::UpgradeProposal(proposal_id))
         {
             if proposal.executed {
-                panic!("Proposal already executed");
+                panic_with_error!(&env, ContractError::InvalidState);
             }
 
             proposal.approved = true;
@@ -4674,15 +4688,15 @@ impl PetChainContract {
             .expect("Proposal not found");
 
         if proposal.executed {
-            panic!("Proposal already executed");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if env.ledger().timestamp() > proposal.expires_at {
-            panic!("Proposal expired");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if proposal.approvals.contains(admin.clone()) {
-            panic!("Admin already approved");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         proposal.approvals.push_back(admin);
@@ -4699,15 +4713,15 @@ impl PetChainContract {
             .expect("Proposal not found");
 
         if proposal.executed {
-            panic!("Proposal already executed");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if env.ledger().timestamp() > proposal.expires_at {
-            panic!("Proposal expired");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if proposal.approvals.len() < proposal.required_approvals {
-            panic!("Threshold not met");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         match proposal.action.clone() {
@@ -4725,7 +4739,7 @@ impl PetChainContract {
             ProposalAction::ChangeAdmin(params) => {
                 let (admins, threshold) = params;
                 if threshold == 0 || threshold > admins.len() {
-                    panic!("Invalid threshold");
+                    panic_with_error!(&env, ContractError::InvalidInput);
                 }
                 env.storage().instance().set(&SystemKey::Admins, &admins);
                 env.storage()
@@ -4760,11 +4774,11 @@ impl PetChainContract {
         reviewer.require_auth();
 
         if !(1..=5).contains(&rating) {
-            panic!("Rating must be between 1 and 5");
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
 
         if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
-            panic!("comment too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         // Check duplicate
@@ -4876,13 +4890,13 @@ impl PetChainContract {
     ) -> u64 {
         prescribing_vet.require_auth();
         if name.len() > Self::MAX_STR_SHORT {
-            panic!("medication name too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if dosage.len() > Self::MAX_STR_SHORT {
-            panic!("dosage too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if frequency.len() > Self::MAX_STR_SHORT {
-            panic!("frequency too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         // Verify the pet exists
@@ -4997,14 +5011,14 @@ impl PetChainContract {
     ) -> u64 {
         vet_address.require_auth();
         if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if outcome.len() > Self::MAX_STR_SHORT {
-            panic!("outcome too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
-            panic!("Veterinarian not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         let _pet: Pet = env
@@ -5437,10 +5451,10 @@ impl PetChainContract {
         pet.owner.require_auth();
 
         if severity > 10 {
-            panic!("Severity must be between 0 and 10");
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
         if description.len() > Self::MAX_STR_LONG {
-            panic!("description too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         let count: u64 = env
@@ -5523,10 +5537,10 @@ impl PetChainContract {
             .expect("Pet not found");
         pet.owner.require_auth();
         if milestone_name.len() > Self::MAX_STR_SHORT {
-            panic!("milestone_name too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         let count: u64 = env
@@ -5673,11 +5687,11 @@ impl PetChainContract {
         pet.owner.require_auth();
 
         if threshold == 0 || threshold > signers.len() {
-            panic!("Invalid threshold");
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
 
         if !signers.contains(pet.owner.clone()) {
-            panic!("Owner must be in signers list");
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
 
         let config = MultisigConfig {
@@ -5772,7 +5786,7 @@ impl PetChainContract {
             .expect("Multisig not configured");
 
         if !config.enabled {
-            panic!("Multisig not enabled");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         let count: u64 = env
@@ -5831,11 +5845,11 @@ impl PetChainContract {
             .expect("Proposal not found");
 
         if proposal.executed {
-            panic!("Proposal already executed");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if env.ledger().timestamp() > proposal.expires_at {
-            panic!("Proposal expired");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         let config: MultisigConfig = env
@@ -5845,11 +5859,11 @@ impl PetChainContract {
             .expect("Multisig not configured");
 
         if !config.signers.contains(signer.clone()) {
-            panic!("Not authorized signer");
+            panic_with_error!(&env, ContractError::Unauthorized);
         }
 
         if proposal.signatures.contains(signer.clone()) {
-            panic!("Already signed");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         proposal.signatures.push_back(signer);
@@ -5881,11 +5895,11 @@ impl PetChainContract {
             .expect("Proposal not found");
 
         if proposal.executed {
-            panic!("Proposal already executed");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         if env.ledger().timestamp() > proposal.expires_at {
-            panic!("Proposal expired");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         let config: MultisigConfig = env
@@ -5895,7 +5909,7 @@ impl PetChainContract {
             .expect("Multisig not configured");
 
         if proposal.signatures.len() < config.threshold {
-            panic!("Threshold not met");
+            panic_with_error!(&env, ContractError::InvalidState);
         }
 
         let mut pet: Pet = env
@@ -5977,10 +5991,10 @@ impl PetChainContract {
         pet.owner.require_auth();
 
         if intensity > 10 {
-            panic!("Intensity must be between 0 and 10");
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
         if notes.len() > Self::MAX_STR_LONG {
-            panic!("notes too long");
+            panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
         let count: u64 = env
