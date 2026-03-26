@@ -1,5 +1,3 @@
-use base64::{engine::general_purpose, Engine as _};
-use qrcode::QrCode;
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use rand::Rng;
