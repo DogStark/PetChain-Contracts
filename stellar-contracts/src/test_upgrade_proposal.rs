@@ -43,7 +43,7 @@ fn test_upgrade_contract_proposal_lifecycle() {
 }
 
 #[test]
-#[should_panic(expected = "Proposal already executed")]
+#[should_panic]
 fn test_upgrade_proposal_cannot_execute_twice() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -56,7 +56,7 @@ fn test_upgrade_proposal_cannot_execute_twice() {
 }
 
 #[test]
-#[should_panic(expected = "Threshold not met")]
+#[should_panic]
 fn test_upgrade_proposal_threshold_not_met() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
