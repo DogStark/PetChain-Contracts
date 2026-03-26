@@ -1,4 +1,6 @@
 use totp_rs::{Algorithm, Secret, TOTP};
+use rand::distributions::{Distribution, Uniform};
+use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -54,8 +56,9 @@ impl TotpConfig {
         }
     }
 }
+use subtle::ConstantTimeEq;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorSetup {
     pub secret: String,
     pub qr_code_base64: String,
@@ -63,7 +66,7 @@ pub struct TwoFactorSetup {
     pub config: TotpConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
@@ -71,11 +74,30 @@ pub struct TwoFactorData {
     pub config: TotpConfig,
 }
 
+/// Returned after a successful backup-code recovery.
+/// Contains the new secret and fresh backup codes that must be persisted,
+/// replacing all previous 2FA material.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecoveryResult {
+    /// New TOTP secret — the old secret is now invalid.
+    pub new_secret: String,
+    /// Fresh set of backup codes — all previous codes are now invalid.
+    pub new_backup_codes: Vec<String>,
+    /// 2FA remains enabled after recovery.
+    pub enabled: bool,
+}
+
 pub struct TwoFactorAuth;
 
 impl TwoFactorAuth {
     pub fn generate_secret() -> String {
-        Secret::generate_secret().to_string()
+        const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let mut rng = thread_rng();
+        let range = Uniform::from(0..BASE32_ALPHABET.len());
+
+        (0..32)
+            .map(|_| BASE32_ALPHABET[range.sample(&mut rng)] as char)
+            .collect()
     }
 
     /// Setup 2FA with default configuration (SHA256)
@@ -96,16 +118,27 @@ impl TwoFactorAuth {
             config.window,
             config.period,
             Secret::Encoded(secret.clone()).to_bytes().map_err(|e| e.to_string())?,
+    pub fn setup(user_email: &str, issuer: &str) -> Result<TwoFactorSetup, TwoFactorError> {
+        let secret = Self::generate_secret();
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.clone())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             Some(issuer.to_string()),
             user_email.to_string(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
-        let qr_url = totp.get_qr_base64().map_err(|e| e.to_string())?;
+        let qr_code_base64 = totp.get_qr_base64().map_err(|e| e.to_string())?;
         let backup_codes = Self::generate_backup_codes(8);
 
         Ok(TwoFactorSetup {
             secret,
-            qr_code_base64: qr_url,
+            qr_code_base64,
             backup_codes,
             config,
         })
@@ -128,9 +161,23 @@ impl TwoFactorAuth {
             config.window,
             config.period,
             Secret::Encoded(secret.to_string()).to_bytes().map_err(|e| e.to_string())?,
+        let token = match Self::validate_token_format(token) {
+            Ok(t) => t,
+            Err(_) => return Ok(false),
+        };
+        
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             None,
             String::new(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         Ok(totp.check_current(token).map_err(|e| e.to_string())?)
     }
@@ -142,10 +189,32 @@ impl TwoFactorAuth {
             codes.insert(format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000)));
         }
         codes.into_iter().collect()
+        let mut rng = thread_rng();
+        (0..count)
+            .map(|_| {
+                format!(
+                    "{:04}-{:04}",
+                    rng.gen_range(0..10000),
+                    rng.gen_range(0..10000)
+                )
+            })
+            .collect()
     }
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
         stored_codes.iter().position(|code| code == provided_code)
+    }
+
+    /// Consume a backup code: removes it from the list if found and returns true.
+    /// The caller MUST persist the mutated `stored_codes` after a `true` return
+    /// to guarantee single-use semantics.
+    pub fn consume_backup_code(stored_codes: &mut Vec<String>, provided_code: &str) -> bool {
+        if let Some(index) = Self::verify_backup_code(stored_codes, provided_code) {
+            stored_codes.remove(index);
+            true
+        } else {
+            false
+        }
     }
 }
 
