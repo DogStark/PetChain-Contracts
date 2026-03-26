@@ -16,9 +16,6 @@ mod vet_registry;
 #[cfg(test)]
 mod test;
 
-#[cfg(test)]
-mod test;
-
 /// ======================================================
 /// CONTRACT
 /// ======================================================
@@ -88,6 +85,8 @@ pub enum ContractError {
     InvalidRecipient = 5,
     EmptyOwnershipHistory = 6,
     MissingOwnershipRecord = 7,
+    TransferNotExpired = 8,
+    StaleCancellation = 9,
 }
 
 /// ======================================================
@@ -247,6 +246,11 @@ impl PetOwnershipContract {
 
         transfer.from.require_auth();
 
+        let pet = get_pet(&env, pet_id);
+        if pet.current_owner != transfer.from {
+            panic_with_error!(env, ContractError::StaleCancellation);
+        }
+
         env.storage()
             .persistent()
             .remove(&DataKey::PendingTransfer(pet_id));
@@ -325,5 +329,3 @@ impl PetOwnershipContract {
     }
 }
 
-#[cfg(test)]
-mod test;
