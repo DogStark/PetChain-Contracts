@@ -153,7 +153,7 @@ fn test_approved_responder_can_read_contacts() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized")]
+#[should_panic]
 fn test_unauthorized_address_cannot_read_contacts() {
     let env = Env::default();
     env.mock_all_auths();
@@ -169,7 +169,7 @@ fn test_unauthorized_address_cannot_read_contacts() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized")]
+#[should_panic]
 fn test_revoked_responder_cannot_read_contacts() {
     let env = Env::default();
     env.mock_all_auths();

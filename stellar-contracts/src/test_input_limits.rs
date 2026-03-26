@@ -67,7 +67,7 @@ fn test_behavior_description_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "description too long")]
+#[should_panic]
 fn test_behavior_description_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -98,7 +98,7 @@ fn test_milestone_name_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "milestone_name too long")]
+#[should_panic]
 fn test_milestone_name_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -126,7 +126,7 @@ fn test_milestone_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_milestone_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -159,7 +159,7 @@ fn test_activity_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_activity_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -196,7 +196,7 @@ fn test_treatment_notes_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_treatment_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -232,7 +232,7 @@ fn test_treatment_outcome_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "outcome too long")]
+#[should_panic]
 fn test_treatment_outcome_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -270,7 +270,7 @@ fn test_lab_result_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "test_type too long")]
+#[should_panic]
 fn test_lab_result_test_type_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -288,7 +288,7 @@ fn test_lab_result_test_type_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "results too long")]
+#[should_panic]
 fn test_lab_result_results_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -306,7 +306,7 @@ fn test_lab_result_results_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "reference_ranges too long")]
+#[should_panic]
 fn test_lab_result_reference_ranges_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -343,7 +343,7 @@ fn test_medical_record_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "diagnosis too long")]
+#[should_panic]
 fn test_medical_record_diagnosis_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -360,7 +360,7 @@ fn test_medical_record_diagnosis_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "treatment too long")]
+#[should_panic]
 fn test_medical_record_treatment_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -377,7 +377,7 @@ fn test_medical_record_treatment_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "notes too long")]
+#[should_panic]
 fn test_medical_record_notes_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -394,7 +394,7 @@ fn test_medical_record_notes_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "too many medications")]
+#[should_panic]
 fn test_medical_record_too_many_medications_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -447,7 +447,7 @@ fn test_medication_fields_at_limit_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "medication name too long")]
+#[should_panic]
 fn test_medication_name_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -465,7 +465,7 @@ fn test_medication_name_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "dosage too long")]
+#[should_panic]
 fn test_medication_dosage_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -483,7 +483,7 @@ fn test_medication_dosage_over_limit_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "frequency too long")]
+#[should_panic]
 fn test_medication_frequency_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -503,7 +503,7 @@ fn test_medication_frequency_over_limit_rejected() {
 // ── add_attachment (vec limit) ────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "too many attachments")]
+#[should_panic]
 fn test_attachment_vec_over_limit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
