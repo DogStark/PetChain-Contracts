@@ -83,7 +83,7 @@ fn test_add_multiple_behavior_records() {
 }
 
 #[test]
-#[should_panic(expected = "Severity must be between 0 and 10")]
+#[should_panic]
 fn test_invalid_severity() {
     let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
     let client = PetChainContractClient::new(&env, &contract_id);

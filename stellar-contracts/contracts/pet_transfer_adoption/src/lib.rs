@@ -245,6 +245,11 @@ impl PetOwnershipContract {
 
         transfer.from.require_auth();
 
+        let pet = get_pet(&env, pet_id);
+        if pet.current_owner != transfer.from {
+            panic_with_error!(env, ContractError::StaleCancellation);
+        }
+
         env.storage()
             .persistent()
             .remove(&DataKey::PendingTransfer(pet_id));
