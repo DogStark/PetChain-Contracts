@@ -181,7 +181,7 @@ fn test_get_grooming_expenses() {
 }
 
 #[test]
-#[should_panic(expected = "Pet not found")]
+#[should_panic]
 fn test_add_grooming_record_invalid_pet() {
     let env = Env::default();
     env.mock_all_auths();

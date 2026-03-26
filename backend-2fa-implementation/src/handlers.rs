@@ -73,7 +73,7 @@ impl AuthenticatedUser {
 // Request / Response types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct EnableTwoFactorRequest {
     pub user_id: String,
     pub email: String,
@@ -86,25 +86,25 @@ pub struct EnableTwoFactorResponse {
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct VerifyTwoFactorRequest {
     pub user_id: String,
     pub token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LoginWithTwoFactorRequest {
     pub user_id: String,
     pub token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DisableTwoFactorRequest {
     pub user_id: String,
     pub token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RecoverWithBackupRequest {
     pub user_id: String,
     pub backup_code: String,
@@ -170,6 +170,18 @@ impl TwoFactorHandlers {
         req: EnableTwoFactorRequest,
     ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
+
+        // ISSUE #294: Don't re-disclose secrets if 2FA is already enabled
+        {
+            let store = two_factor_store()
+                .lock()
+                .map_err(|_| "2FA storage lock poisoned".to_string())?;
+            if let Some(existing) = store.get(&req.user_id) {
+                if existing.enabled {
+                    return Err("2FA is already enabled. To re-enroll, you must first disable it.".to_string());
+                }
+            }
+        }
 
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
 
@@ -345,56 +357,32 @@ impl TwoFactorHandlers {
     ) -> Result<RecoverWithBackupResponse, String> {
         caller.authorize(&req.user_id)?;
 
-        // Fetch from database
-        // let mut two_factor_data = db.get_two_factor_data(&req.user_id)?;
+        let data = store_get(&req.user_id)?;
 
-        // --- placeholder: replace with real DB fetch ---
-        let mut backup_codes = vec!["1234-5678".to_string()]; // Get from DB
-        // -----------------------------------------------
-
-        if TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
-            // Persist the updated backup_codes list (code has been removed)
-            // db.update_two_factor_backup_codes(&req.user_id, &backup_codes)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    // POST /api/2fa/recover - Use backup code for recovery
-    pub fn recover_with_backup<S: TwoFactorStorage>(storage: &mut S, req: RecoverWithBackupRequest) -> Result<bool, String> {
-        let mut data = storage.get_two_factor_data(&req.user_id)?
-            .ok_or_else(|| "2FA not found for user".to_string())?;
-        
         if !data.enabled {
-            return Err("2FA is not enabled".to_string());
-        }
-        
-        match TwoFactorAuth::verify_backup_code(&data.backup_codes, &req.backup_code)? {
-            Some(index) => {
-                // Remove the used backup code
-                data.backup_codes.remove(index);
-                storage.save_two_factor_data(&req.user_id, data)?;
-                Ok(true)
-            },
-            None => Ok(false),
+            return Err("2FA not enabled for user".to_string());
         }
 
-        let recovery = TwoFactorAuth::rotate_after_recovery();
+        let mut backup_codes = data.backup_codes.clone();
+        if !TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
+            return Err("Invalid backup code".to_string());
+        }
+
+        let setup = TwoFactorAuth::setup("recovery", "PetChain")?;
 
         store_insert(
             &req.user_id,
             TwoFactorData {
-                secret: recovery.new_secret.clone(),
-                backup_codes: recovery.new_backup_codes.clone(),
-                enabled: recovery.enabled,
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes.clone(),
+                enabled: true,
             },
         )?;
 
         Ok(RecoverWithBackupResponse {
-            new_secret: recovery.new_secret,
-            new_backup_codes: recovery.new_backup_codes,
-            enabled: recovery.enabled,
+            new_secret: setup.secret,
+            new_backup_codes: setup.backup_codes,
+            enabled: true,
         })
     }
 }
