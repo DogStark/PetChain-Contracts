@@ -119,6 +119,7 @@ pub enum ContractError {
     TooManyItems = 12,
     InvalidState = 13,
     InvalidInput = 14,
+    CommentTooLong = 15,
 }
 
 impl From<ContractError> for soroban_sdk::Error {
@@ -139,6 +140,7 @@ impl From<ContractError> for soroban_sdk::Error {
             ContractError::TooManyItems => ScErrorCode::ExceededLimit,
             ContractError::InvalidState => ScErrorCode::InvalidAction,
             ContractError::InvalidInput => ScErrorCode::InvalidInput,
+            ContractError::CommentTooLong => ScErrorCode::InvalidInput,
         };
 
         soroban_sdk::Error::from((ScErrorType::Contract, code))
@@ -2111,12 +2113,9 @@ impl PetChainContract {
     const MAX_VET_LICENSE_LEN: u32 = 50;
     const MAX_VET_SPEC_LEN: u32 = 100;
 
-    // Medical / record field limits
-    const MAX_STR_SHORT: u32 = 100; // names, types, test_type, outcome
-    const MAX_STR_LONG: u32 = 1000; // description, notes, results, reference_ranges
-    const MAX_VEC_MEDS: u32 = 50; // medications vec in a medical record
-    const MAX_VEC_ATTACHMENTS: u32 = 20; // attachment_hashes vec
-    const MAX_REVIEW_COMMENT_LEN: u32 = 500; // vet review comment
+    /// Maximum byte length of a vet-review comment.
+    /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
+    const MAX_REVIEW_COMMENT_LEN: u32 = 500;
 
     pub fn register_vet(
         env: Env,
@@ -4850,7 +4849,7 @@ impl PetChainContract {
         }
 
         if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
-            panic_with_error!(&env, ContractError::InputStringTooLong);
+            panic_with_error!(&env, ContractError::CommentTooLong);
         }
 
         // Check duplicate
@@ -6560,7 +6559,7 @@ impl PetChainContract {
         let history = Self::get_grooming_history(env, pet_id);
         let mut total = 0u64;
         for record in history.iter() {
-            total = total.checked_add(record.cost).expect("counter overflow");
+            total += record.cost;
         }
         total
     }
