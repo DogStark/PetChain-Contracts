@@ -423,7 +423,7 @@ fn test_medical_record_too_many_medications_rejected() {
         &meds,
         &String::from_str(&env, "notes"),
     );
-    let _ = owner;
+    let _ = owner; // suppress unused warning
 }
 
 // ── add_medication ────────────────────────────────────────────────────────────
@@ -518,6 +518,7 @@ fn test_attachment_vec_over_limit_rejected() {
         &String::from_str(&env, "notes"),
     );
 
+    // Add 20 attachments (the limit)
     for i in 0..20u32 {
         let hash = if i < 10 {
             String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
@@ -533,6 +534,7 @@ fn test_attachment_vec_over_limit_rejected() {
         client.add_attachment(&record_id, &hash, &meta);
     }
 
+    // 21st attachment must be rejected
     let meta = AttachmentMetadata {
         filename: String::from_str(&env, "extra.pdf"),
         file_type: String::from_str(&env, "pdf"),
@@ -561,6 +563,7 @@ fn test_attachment_at_limit_accepted() {
         &String::from_str(&env, "notes"),
     );
 
+    // Exactly 20 attachments should succeed
     for _i in 0..20u32 {
         let meta = AttachmentMetadata {
             filename: String::from_str(&env, "file.pdf"),

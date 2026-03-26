@@ -1,25 +1,51 @@
-use crate::two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
-use serde::{Deserialize, Serialize};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
 use crate::two_factor::{TwoFactorAuth, TwoFactorData};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// In-memory persistence store (keyed by user_id)
+// ---------------------------------------------------------------------------
 
 fn two_factor_store() -> &'static Mutex<HashMap<String, TwoFactorData>> {
     static STORE: OnceLock<Mutex<HashMap<String, TwoFactorData>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn load_two_factor_data(user_id: &str) -> Result<TwoFactorData, String> {
-    let store = two_factor_store()
+fn store_insert(user_id: &str, data: TwoFactorData) -> Result<(), String> {
+    two_factor_store()
         .lock()
-        .map_err(|_| "2FA storage lock poisoned".to_string())?;
+        .map_err(|_| "2FA storage lock poisoned".to_string())?
+        .insert(user_id.to_string(), data);
+    Ok(())
+}
 
-    store
+fn store_get(user_id: &str) -> Result<TwoFactorData, String> {
+    two_factor_store()
+        .lock()
+        .map_err(|_| "2FA storage lock poisoned".to_string())?
         .get(user_id)
         .cloned()
         .ok_or_else(|| format!("2FA not configured for user {}", user_id))
 }
+
+fn store_get_mut_then<F, T>(user_id: &str, f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut TwoFactorData) -> Result<T, String>,
+{
+    let mut guard = two_factor_store()
+        .lock()
+        .map_err(|_| "2FA storage lock poisoned".to_string())?;
+    let data = guard
+        .get_mut(user_id)
+        .ok_or_else(|| format!("2FA not configured for user {}", user_id))?;
+    f(data)
+}
+
+// ---------------------------------------------------------------------------
+// AuthenticatedUser — constructed by middleware from a validated JWT/session
+// ---------------------------------------------------------------------------
 
 /// Represents a verified, authenticated caller — constructed by middleware
 /// (e.g. from a validated JWT or session token) and passed into every handler.
@@ -44,6 +70,10 @@ impl AuthenticatedUser {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Request / Response types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct EnableTwoFactorRequest {
@@ -92,18 +122,32 @@ pub struct RecoverWithBackupResponse {
     pub enabled: bool,
 }
 
-pub struct TwoFactorHandlers;
+// ---------------------------------------------------------------------------
+// TwoFactorHandlers
+// ---------------------------------------------------------------------------
+
+pub struct TwoFactorHandlers {
+    limiter: Arc<dyn RateLimiter>,
+}
 
 impl TwoFactorHandlers {
-    // POST /api/2fa/enable - Generate QR code and backup codes
+    pub fn new() -> Self {
+        Self { limiter: Arc::new(InMemoryRateLimiter::default()) }
+    }
+
+    pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
+        Self { limiter }
+    }
+
+    // POST /api/2fa/enable
+    //
+    // Generates a TOTP secret and backup codes, persists TwoFactorData
+    // (enabled: false) keyed by user_id, and returns values consistent
+    // with what was stored.
     pub fn enable_two_factor(
+        caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
     ) -> Result<EnableTwoFactorResponse, String> {
-        let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
-
-        // Store in database: user_id -> TwoFactorData { secret, backup_codes, enabled: false }
-        // Database call here
-    pub fn enable_two_factor(caller: &AuthenticatedUser, req: EnableTwoFactorRequest) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
@@ -114,10 +158,7 @@ impl TwoFactorHandlers {
             enabled: false,
         };
 
-        let mut store = two_factor_store()
-            .lock()
-            .map_err(|_| "2FA storage lock poisoned".to_string())?;
-        store.insert(req.user_id, data);
+        store_insert(&req.user_id, data)?;
 
         Ok(EnableTwoFactorResponse {
             secret: setup.secret,
@@ -126,61 +167,58 @@ impl TwoFactorHandlers {
         })
     }
 
-    // POST /api/2fa/verify - Verify token to complete 2FA setup
-    pub fn verify_and_activate(caller: &AuthenticatedUser, req: VerifyTwoFactorRequest) -> Result<bool, String> {
+    // POST /api/2fa/verify — verify token to complete 2FA setup
+    pub fn verify_and_activate(
+        &self,
+        caller: &AuthenticatedUser,
+        req: VerifyTwoFactorRequest,
+    ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        // Fetch from database: user_id -> TwoFactorData
-        // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
-
-        // Placeholder - replace with actual DB fetch
-        let secret = "PLACEHOLDER_SECRET"; // Get from DB
-
-        let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
-        
-    pub fn verify_and_activate(req: VerifyTwoFactorRequest) -> Result<bool, String> {
-        let mut store = two_factor_store()
-            .lock()
-            .map_err(|_| "2FA storage lock poisoned".to_string())?;
-        let two_factor_data = store
-            .get_mut(&req.user_id)
-            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
-
-        let is_valid = TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)?;
-
-        if is_valid {
-            two_factor_data.enabled = true;
+        let key = format!("verify:{}", req.user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
         }
 
-        Ok(is_valid)
+        let result = store_get_mut_then(&req.user_id, |data| {
+            let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+            if is_valid {
+                data.enabled = true;
+            }
+            Ok(is_valid)
+        })?;
+
+        if result {
+            self.limiter.record_success(&key);
+        }
+
+        Ok(result)
     }
 
-    // POST /api/auth/login/2fa - Verify 2FA token during login
-    pub fn verify_login_token(req: LoginWithTwoFactorRequest) -> Result<bool, String> {
-        let two_factor_data = load_two_factor_data(&req.user_id)?;
-        if !two_factor_data.enabled {
-            return Ok(false);
-        }
-
-        TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)
+    // POST /api/auth/login/2fa — verify 2FA token during login
     //
     // Note: login is a pre-auth flow — the caller has already passed password
     // verification and holds a short-lived pre-auth session token. Middleware
     // must still construct an AuthenticatedUser from that token so we can
     // confirm the user_id matches before accepting the TOTP token.
-    pub fn verify_login_token(caller: &AuthenticatedUser, req: LoginWithTwoFactorRequest) -> Result<bool, String> {
+    pub fn verify_login_token(
+        &self,
+        caller: &AuthenticatedUser,
+        req: LoginWithTwoFactorRequest,
+    ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        // Fetch from database
-        // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
+        let key = format!("login:{}", req.user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+        }
 
-        let secret = "PLACEHOLDER_SECRET"; // Get from DB
+        let data = store_get(&req.user_id)?;
+        if !data.enabled {
+            return Ok(false);
+        }
 
-        TwoFactorAuth::verify_token(secret, &req.token)
-        let secret = "PLACEHOLDER_SECRET"; // Replace with DB fetch
-
-        let is_valid =
-            TwoFactorAuth::verify_token_with_policy(secret, &req.token, self.drift_policy)?;
+        let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
 
         if is_valid {
             self.limiter.record_success(&key);
@@ -189,55 +227,49 @@ impl TwoFactorHandlers {
         Ok(is_valid)
     }
 
-    // POST /api/2fa/disable - Disable 2FA
-    pub fn disable_two_factor(caller: &AuthenticatedUser, req: DisableTwoFactorRequest) -> Result<bool, String> {
+    // POST /api/2fa/disable
+    pub fn disable_two_factor(
+        &self,
+        caller: &AuthenticatedUser,
+        req: DisableTwoFactorRequest,
+    ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        // Fetch from database
-        // let two_factor_data = db.get_two_factor_data(&req.user_id)?;
-
-        let secret = "PLACEHOLDER_SECRET"; // Get from DB
-        let is_valid = TwoFactorAuth::verify_token(secret, &req.token)?;
-        
-    pub fn verify_login_token(req: LoginWithTwoFactorRequest) -> Result<bool, String> {
-        let two_factor_data = load_two_factor_data(&req.user_id)?;
-        if !two_factor_data.enabled {
-            return Ok(false);
+        let key = format!("disable:{}", req.user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
         }
 
-        TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)
+        let result = store_get_mut_then(&req.user_id, |data| {
+            if !data.enabled {
+                return Ok(false);
+            }
+            let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+            if is_valid {
+                data.enabled = false;
+            }
+            Ok(is_valid)
+        })?;
+
+        if result {
+            self.limiter.record_success(&key);
+        }
+
+        Ok(result)
     }
 
-    // POST /api/2fa/disable - Disable 2FA
-    pub fn disable_two_factor(req: DisableTwoFactorRequest) -> Result<bool, String> {
-        let mut store = two_factor_store()
-            .lock()
-            .map_err(|_| "2FA storage lock poisoned".to_string())?;
-        let two_factor_data = store
-            .get_mut(&req.user_id)
-            .ok_or_else(|| format!("2FA not configured for user {}", req.user_id))?;
-        if !two_factor_data.enabled {
-            return Ok(false);
-        }
-
-        let is_valid = TwoFactorAuth::verify_token(&two_factor_data.secret, &req.token)?;
-
-        if is_valid {
-            two_factor_data.enabled = false;
-        }
-
-        Ok(is_valid)
-    }
-
-    // POST /api/2fa/recover - Use backup code for recovery
+    // POST /api/2fa/recover — use backup code for recovery
     //
     // Recovery policy:
     //  1. Validate the provided backup code against stored codes.
     //  2. On success, rotate the TOTP secret — the old secret is immediately invalid.
     //  3. Invalidate ALL remaining backup codes and issue a fresh set.
     //  4. Keep 2FA enabled; the user must re-enroll their authenticator app.
-    //  5. Persist the new TwoFactorData to the database before returning.
-    pub fn recover_with_backup(caller: &AuthenticatedUser, req: RecoverWithBackupRequest) -> Result<RecoverWithBackupResponse, String> {
+    //  5. Persist the new TwoFactorData to the store before returning.
+    pub fn recover_with_backup(
+        caller: &AuthenticatedUser,
+        req: RecoverWithBackupRequest,
+    ) -> Result<RecoverWithBackupResponse, String> {
         caller.authorize(&req.user_id)?;
 
         // Fetch from database
@@ -254,16 +286,37 @@ impl TwoFactorHandlers {
         } else {
             Ok(false)
         }
+    }
 
-        // Rotate secret and invalidate all old codes (including remaining backup codes)
+    // POST /api/2fa/recover - Use backup code for recovery
+    pub fn recover_with_backup<S: TwoFactorStorage>(storage: &mut S, req: RecoverWithBackupRequest) -> Result<bool, String> {
+        let mut data = storage.get_two_factor_data(&req.user_id)?
+            .ok_or_else(|| "2FA not found for user".to_string())?;
+        
+        if !data.enabled {
+            return Err("2FA is not enabled".to_string());
+        }
+        
+        match TwoFactorAuth::verify_backup_code(&data.backup_codes, &req.backup_code)? {
+            Some(index) => {
+                // Remove the used backup code
+                data.backup_codes.remove(index);
+                storage.save_two_factor_data(&req.user_id, data)?;
+                Ok(true)
+            },
+            None => Ok(false),
+        }
+
         let recovery = TwoFactorAuth::rotate_after_recovery();
 
-        // Persist new state to database — replaces old secret and all old backup codes
-        // db.update_two_factor_data(&req.user_id, &TwoFactorData {
-        //     secret: recovery.new_secret.clone(),
-        //     backup_codes: recovery.new_backup_codes.clone(),
-        //     enabled: recovery.enabled,
-        // })?;
+        store_insert(
+            &req.user_id,
+            TwoFactorData {
+                secret: recovery.new_secret.clone(),
+                backup_codes: recovery.new_backup_codes.clone(),
+                enabled: recovery.enabled,
+            },
+        )?;
 
         Ok(RecoverWithBackupResponse {
             new_secret: recovery.new_secret,
@@ -272,6 +325,16 @@ impl TwoFactorHandlers {
         })
     }
 }
+
+impl Default for TwoFactorHandlers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers (not part of the public API)
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
@@ -292,25 +355,5 @@ pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactor
 pub(crate) fn clear_two_factor_store_for_tests() {
     if let Ok(mut store) = two_factor_store().lock() {
         store.clear();
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactorData) {
-    if let Ok(mut store) = two_factor_store().lock() {
-        store.insert(user_id.to_string(), data);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn clear_two_factor_store_for_tests() {
-    if let Ok(mut store) = two_factor_store().lock() {
-        store.clear();
-    }
-}
-
-impl Default for TwoFactorHandlers {
-    fn default() -> Self {
-        Self::new()
     }
 }

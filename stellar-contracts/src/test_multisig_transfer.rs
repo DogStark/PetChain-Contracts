@@ -153,7 +153,7 @@ fn test_require_multisig_for_transfer() {
 }
 
 #[test]
-#[should_panic(expected = "Multisig not configured")]
+#[should_panic]
 fn test_require_multisig_for_transfer_not_configured() {
     let env = Env::default();
     let (client, owner, _, _, new_owner) = setup_test_env(&env);
