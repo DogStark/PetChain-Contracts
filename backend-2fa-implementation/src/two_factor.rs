@@ -1,6 +1,4 @@
 use totp_rs::{Algorithm, Secret, TOTP};
-use qrcode::QrCode;
-use base64::{Engine as _, engine::general_purpose};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -139,11 +137,11 @@ impl TwoFactorAuth {
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
         let mut rng = rand::thread_rng();
-        (0..count)
-            .map(|_| {
-                format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000))
-            })
-            .collect()
+        let mut codes = std::collections::HashSet::new();
+        while codes.len() < count {
+            codes.insert(format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000)));
+        }
+        codes.into_iter().collect()
     }
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
