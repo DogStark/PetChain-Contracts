@@ -1,3 +1,4 @@
+use totp_rs::{Algorithm, Secret, TOTP};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use rand::Rng;
@@ -182,6 +183,12 @@ impl TwoFactorAuth {
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
+        let mut rng = rand::thread_rng();
+        let mut codes = std::collections::HashSet::new();
+        while codes.len() < count {
+            codes.insert(format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000)));
+        }
+        codes.into_iter().collect()
         let mut rng = thread_rng();
         (0..count)
             .map(|_| {
