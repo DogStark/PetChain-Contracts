@@ -2,6 +2,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use rand::Rng;
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -184,7 +185,7 @@ impl TwoFactorAuth {
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {
         let mut rng = rand::thread_rng();
-        let mut codes = std::collections::HashSet::new();
+        let mut codes = HashSet::new();
         while codes.len() < count {
             codes.insert(format!("{:04}-{:04}", rng.gen_range(0..10000), rng.gen_range(0..10000)));
         }
