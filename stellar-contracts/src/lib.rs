@@ -1347,37 +1347,8 @@ impl PetChainContract {
         env.storage().persistent().set(&key, &logs);
     }
 
-    fn require_admin(env: &Env) {
-        if let Some(legacy_admin) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Admin)
-        {
-            legacy_admin.require_auth();
-            return;
-        }
-
-        let admins: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&SystemKey::Admins)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
-
-        if admins.is_empty() {
-            env.panic_with_error(ContractError::NoAdminsConfigured);
-        }
-
-        let admin = admins.get(0).unwrap_or_else(|| env.panic_with_error(ContractError::NoAdminsConfigured));
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
-
-        if admins.is_empty() {
-            panic_with_error!(env, ContractError::AdminNotInitialized);
-        }
-
-        let admin = admins
-            .get(0)
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
-        admin.require_auth();
+    fn require_admin(env: &Env, admin: &Address) {
+        Self::require_admin_auth(env, admin);
     }
 
     fn require_admin_auth(env: &Env, admin: &Address) {
@@ -4823,18 +4794,13 @@ impl PetChainContract {
             })
     }
 
-    pub fn upgrade_contract(env: Env, new_wasm_hash: BytesN<32>) {
-        // Only admin can upgrade
-        Self::require_admin(&env);
-
-        // Perform the upgrade
+    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     pub fn propose_upgrade(env: Env, proposer: Address, new_wasm_hash: BytesN<32>) -> u64 {
-        // Only admin can propose
-        Self::require_admin(&env);
-        proposer.require_auth();
+        Self::require_admin(&env, &proposer);
 
         let count: u64 = env
             .storage()
@@ -4862,8 +4828,8 @@ impl PetChainContract {
         proposal_id
     }
 
-    pub fn approve_upgrade(env: Env, proposal_id: u64) -> bool {
-        Self::require_admin(&env);
+    pub fn approve_upgrade(env: Env, admin: Address, proposal_id: u64) -> bool {
+        Self::require_admin(&env, &admin);
 
         if let Some(mut proposal) = env
             .storage()
@@ -4891,8 +4857,8 @@ impl PetChainContract {
             .get(&DataKey::UpgradeProposal(proposal_id))
     }
 
-    pub fn migrate_version(env: Env, major: u32, minor: u32, patch: u32) {
-        Self::require_admin(&env);
+    pub fn migrate_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        Self::require_admin(&env, &admin);
 
         let version = ContractVersion {
             major,
