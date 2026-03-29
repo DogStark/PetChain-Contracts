@@ -94,6 +94,8 @@ mod test_search_medical_records;
 mod test_statistics;
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_consent_pagination;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1345,37 +1347,8 @@ impl PetChainContract {
         env.storage().persistent().set(&key, &logs);
     }
 
-    fn require_admin(env: &Env) {
-        if let Some(legacy_admin) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Admin)
-        {
-            legacy_admin.require_auth();
-            return;
-        }
-
-        let admins: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&SystemKey::Admins)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
-
-        if admins.is_empty() {
-            env.panic_with_error(ContractError::NoAdminsConfigured);
-        }
-
-        let admin = admins.get(0).unwrap_or_else(|| env.panic_with_error(ContractError::NoAdminsConfigured));
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
-
-        if admins.is_empty() {
-            panic_with_error!(env, ContractError::AdminNotInitialized);
-        }
-
-        let admin = admins
-            .get(0)
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::AdminNotInitialized));
-        admin.require_auth();
+    fn require_admin(env: &Env, admin: &Address) {
+        Self::require_admin_auth(env, admin);
     }
 
     fn require_admin_auth(env: &Env, admin: &Address) {
@@ -2051,11 +2024,14 @@ impl PetChainContract {
 
         if let Some(idx) = remove_index {
             if idx != count {
-                let last_pet_id = env
+                let last_pet_id = match env
                     .storage()
                     .instance()
                     .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), count)))
-                    .unwrap_or_else(|| panic_with_error!(env.clone(), ContractError::PetNotFound));
+                {
+                    Some(id) => id,
+                    None => return, // index inconsistency — bail out safely
+                };
                 env.storage()
                     .instance()
                     .set(&DataKey::OwnerPetIndex((owner.clone(), idx)), &last_pet_id);
@@ -4542,6 +4518,11 @@ impl PetChainContract {
     }
     // --- CONSENT SYSTEM ---
 
+    /// Maximum number of consent records retained per pet.
+    /// Once this cap is reached, the oldest revoked record is pruned before
+    /// a new one is inserted, keeping storage bounded.
+    const MAX_CONSENTS_PER_PET: u64 = 50;
+
     pub fn grant_consent(
         env: Env,
         pet_id: u64,
@@ -4551,17 +4532,73 @@ impl PetChainContract {
     ) -> u64 {
         owner.require_auth();
 
-        // Verify owner owns the pet
         let pet: Pet = env
             .storage()
             .instance()
             .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
-        if pet.owner != owner {
-            env.panic_with_error(ContractError::NotPetOwner);
             .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
         if pet.owner != owner {
             panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        // --- pruning: remove the oldest revoked entry when at cap ---
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        if pet_count >= Self::MAX_CONSENTS_PER_PET {
+            // Find and remove the first (oldest) revoked record.
+            let mut pruned_slot: Option<u64> = None;
+            for i in 1..=pet_count {
+                if let Some(cid) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+                {
+                    if let Some(c) = env
+                        .storage()
+                        .instance()
+                        .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                    {
+                        if !c.is_active {
+                            // Remove the global consent record and compact the index.
+                            env.storage()
+                                .instance()
+                                .remove(&ConsentKey::Consent(cid));
+                            // Swap-remove: move the last slot into this position.
+                            if i < pet_count {
+                                if let Some(last_cid) = env
+                                    .storage()
+                                    .instance()
+                                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((
+                                        pet_id, pet_count,
+                                    )))
+                                {
+                                    env.storage().instance().set(
+                                        &ConsentKey::PetConsentIndex((pet_id, i)),
+                                        &last_cid,
+                                    );
+                                }
+                            }
+                            env.storage()
+                                .instance()
+                                .remove(&ConsentKey::PetConsentIndex((pet_id, pet_count)));
+                            env.storage().instance().set(
+                                &ConsentKey::PetConsentCount(pet_id),
+                                &(pet_count - 1),
+                            );
+                            pruned_slot = Some(i);
+                            break;
+                        }
+                    }
+                }
+            }
+            // If no revoked record exists to prune, all slots are active — hard cap.
+            if pruned_slot.is_none() {
+                panic_with_error!(&env, ContractError::TooManyItems);
+            }
         }
 
         let count: u64 = env
@@ -4590,13 +4627,12 @@ impl PetChainContract {
             .instance()
             .set(&ConsentKey::ConsentCount, &consent_id);
 
-        // Update pet consent index
-        let pet_count: u64 = env
+        let new_pet_count: u64 = env
             .storage()
             .instance()
             .get(&ConsentKey::PetConsentCount(pet_id))
-            .unwrap_or(0);
-        let new_pet_count = safe_increment(pet_count);
+            .unwrap_or(0)
+            + 1;
         env.storage()
             .instance()
             .set(&ConsentKey::PetConsentCount(pet_id), &new_pet_count);
@@ -4617,10 +4653,6 @@ impl PetChainContract {
             .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
         {
             if consent.owner != owner {
-                env.panic_with_error(ContractError::NotConsentOwner);
-            }
-            if !consent.is_active {
-                env.panic_with_error(ContractError::ConsentAlreadyRevoked);
                 panic_with_error!(&env, ContractError::Unauthorized);
             }
             if !consent.is_active {
@@ -4639,6 +4671,46 @@ impl PetChainContract {
         }
     }
 
+    /// Returns a page of consent history for a pet.
+    ///
+    /// `page` is 0-indexed; `page_size` must be between 1 and 50.
+    /// Returns an empty vec when `page` is beyond the available records.
+    pub fn get_consent_history_page(
+        env: Env,
+        pet_id: u64,
+        page: u64,
+        page_size: u64,
+    ) -> Vec<Consent> {
+        let page_size = if page_size == 0 || page_size > 50 { 50 } else { page_size };
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        let start = page * page_size + 1; // 1-based index
+        let mut history = Vec::new(&env);
+
+        for i in start..=(start + page_size - 1).min(count) {
+            if let Some(consent_id) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(consent) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+                {
+                    history.push_back(consent);
+                }
+            }
+        }
+        history
+    }
+
+    /// Returns all consent records for a pet (unpaginated, kept for compatibility).
+    /// Prefer `get_consent_history_page` for large histories.
     pub fn get_consent_history(env: Env, pet_id: u64) -> Vec<Consent> {
         let count: u64 = env
             .storage()
@@ -4722,18 +4794,13 @@ impl PetChainContract {
             })
     }
 
-    pub fn upgrade_contract(env: Env, new_wasm_hash: BytesN<32>) {
-        // Only admin can upgrade
-        Self::require_admin(&env);
-
-        // Perform the upgrade
+    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     pub fn propose_upgrade(env: Env, proposer: Address, new_wasm_hash: BytesN<32>) -> u64 {
-        // Only admin can propose
-        Self::require_admin(&env);
-        proposer.require_auth();
+        Self::require_admin(&env, &proposer);
 
         let count: u64 = env
             .storage()
@@ -4761,8 +4828,8 @@ impl PetChainContract {
         proposal_id
     }
 
-    pub fn approve_upgrade(env: Env, proposal_id: u64) -> bool {
-        Self::require_admin(&env);
+    pub fn approve_upgrade(env: Env, admin: Address, proposal_id: u64) -> bool {
+        Self::require_admin(&env, &admin);
 
         if let Some(mut proposal) = env
             .storage()
@@ -4790,8 +4857,8 @@ impl PetChainContract {
             .get(&DataKey::UpgradeProposal(proposal_id))
     }
 
-    pub fn migrate_version(env: Env, major: u32, minor: u32, patch: u32) {
-        Self::require_admin(&env);
+    pub fn migrate_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        Self::require_admin(&env, &admin);
 
         let version = ContractVersion {
             major,
