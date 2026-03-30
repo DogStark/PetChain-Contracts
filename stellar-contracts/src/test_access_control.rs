@@ -1,7 +1,7 @@
 use crate::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Env,
+    Env, Symbol, Vec,
 };
 
 #[test]
@@ -519,4 +519,102 @@ fn test_permanent_access() {
 
     let access_level = client.check_access(&pet_id, &grantee);
     assert_eq!(access_level, AccessLevel::Full);
+}
+
+#[test]
+fn test_access_logs_are_capped() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Bounded"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Retriever"),
+        &String::from_str(&env, "Gold"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let log_owner = Address::generate(&env);
+    let mut logs = Vec::new(&env);
+    for id in 0..MAX_LOG_ENTRIES {
+        logs.push_back(AccessLog {
+            id: id as u64,
+            pet_id,
+            user: log_owner.clone(),
+            action: AccessAction::Read,
+            timestamp: id as u64,
+            details: String::from_str(&env, "seed"),
+        });
+    }
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&(Symbol::new(&env, "access_logs"), pet_id), &logs);
+    });
+
+    let grantee = Address::generate(&env);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+    let logs = client.get_access_logs(&pet_id);
+    assert_eq!(logs.len(), MAX_LOG_ENTRIES);
+}
+
+#[test]
+fn test_access_logs_retain_newest_entries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Recent"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Shorthair"),
+        &String::from_str(&env, "Gray"),
+        &6u32,
+        &None,
+        &PrivacyLevel::Restricted,
+    );
+
+    let log_owner = Address::generate(&env);
+    let mut logs = Vec::new(&env);
+    for id in 0..MAX_LOG_ENTRIES {
+        logs.push_back(AccessLog {
+            id: id as u64,
+            pet_id,
+            user: log_owner.clone(),
+            action: AccessAction::Read,
+            timestamp: id as u64,
+            details: String::from_str(&env, "seed"),
+        });
+    }
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&(Symbol::new(&env, "access_logs"), pet_id), &logs);
+    });
+
+    let grantee = Address::generate(&env);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+
+    let logs = client.get_access_logs(&pet_id);
+    assert_eq!(logs.get(0).unwrap().id, 1);
+    assert_eq!(logs.get(logs.len() - 1).unwrap().id, MAX_LOG_ENTRIES as u64);
+    assert_eq!(logs.get(0).unwrap().action, AccessAction::Read);
+    assert_eq!(
+        logs.get(logs.len() - 1).unwrap().action,
+        AccessAction::Grant
+    );
 }

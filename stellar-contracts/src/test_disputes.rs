@@ -1,6 +1,5 @@
-
 use crate::{
-    DisputeStatus, PetChainContract, PetChainContractClient, PrivacyLevel, Species, Gender
+    DisputeStatus, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
 };
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
@@ -32,14 +31,8 @@ fn test_raise_and_get_dispute() {
     let reason = String::from_str(&env, "Pet not delivered");
     let evidence = String::from_str(&env, "ipfs://evidence_hash");
 
-    let dispute_id = client.raise_dispute(
-        &pet_id,
-        &owner,
-        &target,
-        &claim_amount,
-        &reason,
-        &evidence,
-    );
+    let dispute_id =
+        client.raise_dispute(&pet_id, &owner, &target, &claim_amount, &reason, &evidence);
 
     let dispute = client.get_dispute(&dispute_id).unwrap();
 
@@ -94,7 +87,10 @@ fn test_resolve_dispute_admin_only() {
     assert!(success);
 
     let resolved_dispute = client.get_dispute(&dispute_id).unwrap();
-    assert_eq!(resolved_dispute.status, DisputeStatus::ResolvedInFavorOfClaimer);
+    assert_eq!(
+        resolved_dispute.status,
+        DisputeStatus::ResolvedInFavorOfClaimer
+    );
     assert!(resolved_dispute.resolved_at.is_some());
 }
 
