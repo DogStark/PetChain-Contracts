@@ -5,6 +5,62 @@ use soroban_sdk::{
 };
 
 #[test]
+fn test_remove_pet_from_owner_index_missing_last_entry_does_not_panic() {
+    // Simulates index inconsistency: PetCountByOwner says 2 but the last
+    // index slot (index 2) is absent. remove_pet_from_owner_index must
+    // return early instead of panicking.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+
+    // Register two pets so the owner index has two entries.
+    let pet1 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "1000000"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    let _pet2 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Beta"),
+        &String::from_str(&env, "1000000"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "White"),
+        &5u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Corrupt the index: remove the last slot entry (index 2) directly from
+    // storage so the count says 2 but slot 2 is missing.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&DataKey::OwnerPetIndex((owner.clone(), 2u64)));
+    });
+
+    // Initiate a transfer of pet1 — this calls remove_pet_from_owner_index
+    // internally. With the fix it must complete without panicking.
+    client.transfer_pet_ownership(&pet1, &new_owner);
+    client.accept_pet_transfer(&pet1);
+
+    // pet1 now belongs to new_owner; the call did not panic.
+    assert_eq!(client.get_pet_owner(&pet1), Some(new_owner));
+}
+
+#[test]
 fn test_grant_access() {
     let env = Env::default();
     env.mock_all_auths();
