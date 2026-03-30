@@ -180,5 +180,4 @@ fn test_multisig_admin_methods_work_after_initialization() {
 
     // Approving with the other admin should work
     client.approve_proposal(&admin2, &proposal_id);
-
 }
