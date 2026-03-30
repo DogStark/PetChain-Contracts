@@ -1373,6 +1373,9 @@ impl PetChainContract {
         privacy_level: PrivacyLevel,
     ) -> u64 {
         owner.require_auth();
+        if let Err(err) = Self::parse_birthday_timestamp(&birthday) {
+            env.panic_with_error(err);
+        }
 
         let pet_count: u64 = env
             .storage()
@@ -1547,6 +1550,9 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
             pet.owner.require_auth();
+            if let Err(err) = Self::parse_birthday_timestamp(&birthday) {
+                env.panic_with_error(err);
+            }
 
             let key = Self::get_encryption_key(&env);
 
@@ -1679,6 +1685,9 @@ impl PetChainContract {
     pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
         if let Some(pet) = Self::get_pet(env.clone(), pet_id, env.current_contract_address()) {
             let current_time = env.ledger().timestamp();
+            let birthday_timestamp = match Self::parse_birthday_timestamp(&birthday) {
+                Ok(timestamp) => timestamp,
+                Err(_) => return (0, 0),
             let birthday_timestamp = match Self::parse_birthday_timestamp(&pet.birthday) {
                 Some(timestamp) => timestamp,
                 None => return (0, 0),
@@ -1700,25 +1709,92 @@ impl PetChainContract {
         (0, 0)
     }
 
-    fn parse_birthday_timestamp(birthday: &String) -> Option<u64> {
+    fn parse_birthday_timestamp(birthday: &String) -> Result<u64, ContractError> {
         let len = birthday.len() as usize;
         if len == 0 || len > 20 {
-            return None;
+            return Err(ContractError::InvalidInput);
         }
 
         let mut bytes = [0u8; 20];
         birthday.copy_into_slice(&mut bytes[..len]);
 
-        let mut timestamp = 0u64;
-        for b in bytes.iter().take(len) {
-            if !b.is_ascii_digit() {
-                return None;
+        if bytes.iter().take(len).all(u8::is_ascii_digit) {
+            let mut timestamp = 0u64;
+            for b in bytes.iter().take(len) {
+                let digit = (b - b'0') as u64;
+                timestamp = timestamp
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(digit))
+                    .ok_or(ContractError::InvalidInput)?;
             }
-            let digit = (b - b'0') as u64;
-            timestamp = timestamp.checked_mul(10)?.checked_add(digit)?;
+            return Ok(timestamp);
         }
 
-        Some(timestamp)
+        if len != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let year = Self::parse_fixed_digits(&bytes[0..4])?;
+        let month = Self::parse_fixed_digits(&bytes[5..7])?;
+        let day = Self::parse_fixed_digits(&bytes[8..10])?;
+
+        if !(1..=12).contains(&month) {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let max_day = Self::days_in_month(year, month);
+        if day == 0 || day > max_day {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let days_since_epoch = Self::days_from_civil(year as i32, month as i32, day as i32)?;
+        Ok(days_since_epoch * 86_400)
+    }
+
+    fn parse_fixed_digits(bytes: &[u8]) -> Result<u32, ContractError> {
+        let mut value = 0u32;
+        for b in bytes {
+            if !b.is_ascii_digit() {
+                return Err(ContractError::InvalidInput);
+            }
+            value = value
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((b - b'0') as u32))
+                .ok_or(ContractError::InvalidInput)?;
+        }
+        Ok(value)
+    }
+
+    fn is_leap_year(year: u32) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    }
+
+    fn days_in_month(year: u32, month: u32) -> u32 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if Self::is_leap_year(year) => 29,
+            2 => 28,
+            _ => 0,
+        }
+    }
+
+    fn days_from_civil(year: i32, month: i32, day: i32) -> Result<u64, ContractError> {
+        let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+        let era = if adjusted_year >= 0 {
+            adjusted_year / 400
+        } else {
+            (adjusted_year - 399) / 400
+        };
+        let year_of_era = adjusted_year - era * 400;
+        let month_of_year = month + if month > 2 { -3 } else { 9 };
+        let day_of_year = (153 * month_of_year + 2) / 5 + day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        let days = era * 146_097 + day_of_era - 719_468;
+        if days < 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        Ok(days as u64)
     }
 
     pub fn is_pet_active(env: Env, id: u64) -> bool {
@@ -2864,14 +2940,14 @@ impl PetChainContract {
             }
 
             return Ok(());
-    fn validate_ipfs_hash(hash: &String) {
-        let len = hash.len();
-        if !(32_u32..=128_u32).contains(&len) {
-            panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
 
         if !(2..=128).contains(&len) {
             return Err(ContractError::InvalidIpfsHash);
+    fn validate_ipfs_hash(hash: &String) {
+        let len = hash.len();
+        if !(32_u32..=128_u32).contains(&len) {
+            panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
 
         let mut bytes = [0u8; 128];
