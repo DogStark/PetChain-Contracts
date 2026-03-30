@@ -11,7 +11,14 @@ mod test_search_medical_records {
 
     // ---- helpers ----
 
-    fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, Address, u64) {
+    fn setup() -> (
+        Env,
+        PetChainContractClient<'static>,
+        Address,
+        Address,
+        Address,
+        u64,
+    ) {
         let env = Env::default();
         let admin = Address::generate(&env);
         env.mock_all_auths();
@@ -20,7 +27,6 @@ mod test_search_medical_records {
         let client = PetChainContractClient::new(&env, &contract_id);
 
         client.init_admin(&admin);
-
 
         let owner = Address::generate(&env);
         let vet = Address::generate(&env);
@@ -231,8 +237,10 @@ mod test_search_medical_records {
             add_record(&client, &env, pet_id, &vet, diag);
         }
 
-        let flu_results = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        let allergy_results = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Allergy"));
+        let flu_results =
+            client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
+        let allergy_results =
+            client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Allergy"));
 
         assert_eq!(flu_results.len(), 5);
         assert_eq!(allergy_results.len(), 5);
