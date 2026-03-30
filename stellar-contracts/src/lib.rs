@@ -1799,6 +1799,9 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
             pet.owner.require_auth();
+            if let Err(err) = Self::validate_ipfs_hash(&env, &photo_hash) {
+                env.panic_with_error(err);
+            }
             Self::validate_ipfs_hash(&photo_hash);
             pet.photo_hashes.push_back(photo_hash);
             pet.updated_at = env.ledger().timestamp();
@@ -2836,11 +2839,55 @@ impl PetChainContract {
         }
     }
 
+    fn validate_ipfs_hash(_env: &Env, hash: &String) -> Result<(), ContractError> {
+        let len = hash.len() as usize;
+        if len == 46 {
+            let mut bytes = [0u8; 46];
+            hash.copy_into_slice(&mut bytes);
+
+            if bytes[0] != b'Q' || bytes[1] != b'm' {
+                return Err(ContractError::InvalidIpfsHash);
+            }
+
+            for b in bytes.iter() {
+                if !matches!(
+                    b,
+                    b'1'..=b'9'
+                        | b'A'..=b'H'
+                        | b'J'..=b'N'
+                        | b'P'..=b'Z'
+                        | b'a'..=b'k'
+                        | b'm'..=b'z'
+                ) {
+                    return Err(ContractError::InvalidIpfsHash);
+                }
+            }
+
+            return Ok(());
     fn validate_ipfs_hash(hash: &String) {
         let len = hash.len();
         if !(32_u32..=128_u32).contains(&len) {
             panic!("Invalid IPFS hash: length must be 32-128 chars");
         }
+
+        if !(2..=128).contains(&len) {
+            return Err(ContractError::InvalidIpfsHash);
+        }
+
+        let mut bytes = [0u8; 128];
+        hash.copy_into_slice(&mut bytes[..len]);
+
+        if bytes[0] != b'b' {
+            return Err(ContractError::InvalidIpfsHash);
+        }
+
+        for b in bytes.iter().take(len).skip(1) {
+            if !matches!(b, b'a'..=b'z' | b'2'..=b'7') {
+                return Err(ContractError::InvalidIpfsHash);
+            }
+        }
+
+        Ok(())
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
@@ -3595,6 +3642,9 @@ impl PetChainContract {
         metadata: AttachmentMetadata,
     ) -> bool {
         // Validate IPFS hash format
+        if let Err(err) = Self::validate_ipfs_hash(&env, &ipfs_hash) {
+            env.panic_with_error(err);
+        }
         Self::validate_ipfs_hash(&ipfs_hash);
 
         // Get the medical record
