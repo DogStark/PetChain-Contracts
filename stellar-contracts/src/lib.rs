@@ -2051,11 +2051,14 @@ impl PetChainContract {
 
         if let Some(idx) = remove_index {
             if idx != count {
-                let last_pet_id = env
+                let last_pet_id = match env
                     .storage()
                     .instance()
                     .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), count)))
-                    .unwrap_or_else(|| panic_with_error!(env.clone(), ContractError::PetNotFound));
+                {
+                    Some(id) => id,
+                    None => return, // index inconsistency — bail out safely
+                };
                 env.storage()
                     .instance()
                     .set(&DataKey::OwnerPetIndex((owner.clone(), idx)), &last_pet_id);
