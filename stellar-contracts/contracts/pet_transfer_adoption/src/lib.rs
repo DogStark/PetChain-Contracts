@@ -86,6 +86,7 @@ pub enum ContractError {
     EmptyOwnershipHistory = 6,
     MissingOwnershipRecord = 7,
     TransferNotExpired = 8,
+    StaleCancellation = 9,
 }
 
 /// ======================================================

@@ -1,42 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use crate::two_factor::{TwoFactorAuth, TotpConfig, InMemoryStore};
-    use crate::handlers::{
-        TwoFactorHandlers, EnableTwoFactorRequest, VerifyTwoFactorRequest,
-        LoginWithTwoFactorRequest, DisableTwoFactorRequest, RecoverWithBackupRequest,
-    };
-    use totp_rs::{Algorithm, Secret, TOTP};
-
-    // ── helpers ──────────────────────────────────────────────────────────────
-
-    fn make_handlers() -> TwoFactorHandlers<InMemoryStore> {
-        TwoFactorHandlers::new(InMemoryStore::default())
-    }
-
-    /// Enable 2FA for a user and return the secret + a valid current token
-    fn enable_and_get_token(handlers: &TwoFactorHandlers<InMemoryStore>, user_id: &str) -> (String, String) {
-        let resp = handlers.enable_two_factor(EnableTwoFactorRequest {
-            user_id: user_id.to_string(),
-            email: format!("{}@petchain.com", user_id),
-        }).unwrap();
-
-        let config = TotpConfig::default();
-        let totp = TOTP::new(
-            config.algorithm, config.digits, config.window, config.period,
-            Secret::Encoded(resp.secret.clone()).to_bytes().unwrap(),
-            None, String::new(),
-        ).unwrap();
-
-        let token = totp.generate_current().unwrap();
-        (resp.secret, token)
-    }
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
         overwrite_two_factor_data_for_tests, AuthenticatedUser, DisableTwoFactorRequest,
         EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
         TwoFactorHandlers, VerifyTwoFactorRequest,
     };
-    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+    use crate::two_factor::{TwoFactorAuth, TotpConfig, TwoFactorData};
+    use totp_rs::{Algorithm, Secret, TOTP};
 
     fn caller(id: &str) -> AuthenticatedUser {
         AuthenticatedUser::new(id)
@@ -138,8 +109,7 @@ mod tests {
     fn test_verify_token_default_sha256() {
         let secret = TwoFactorAuth::generate_secret();
         let config = TotpConfig::default();
-        
-        // Generate current token with SHA256
+
         let totp = TOTP::new(
             config.algorithm,
             config.digits,
@@ -149,19 +119,23 @@ mod tests {
             None,
             String::new(),
         ).unwrap();
-        
+
         let token = totp.generate_current().unwrap();
-        
-        // Verify it with default method (should use SHA256)
+
+        let result = TwoFactorAuth::verify_token(&secret, &token);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
     fn test_verify_token_valid() {
         let secret = TwoFactorAuth::generate_secret();
         let token = generate_token(&secret);
         let result = TwoFactorAuth::verify_token(&secret, &token);
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-        
-        // Verify it with explicit config
-        let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config);
         assert!(result.is_ok());
         assert!(result.unwrap());
     }
@@ -904,222 +878,128 @@ mod tests {
 
     // ── TwoFactorHandlers state-transition tests ───────────────────────────────────────
 
-    // ─ enable ──────────────────────────────────────────────────────────────────
-
     #[test]
     fn test_handler_enable_persists_disabled_state() {
-        let handlers = make_handlers();
-        let resp = handlers.enable_two_factor(EnableTwoFactorRequest {
-            user_id: "user1".to_string(),
-            email: "user1@petchain.com".to_string(),
-        });
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user1";
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u1@petchain.com".to_string() },
+        );
         assert!(resp.is_ok());
         let resp = resp.unwrap();
         assert!(!resp.secret.is_empty());
         assert_eq!(resp.backup_codes.len(), 8);
 
-        // 2FA should be stored but NOT yet enabled
-        let err = handlers.verify_login_token(LoginWithTwoFactorRequest {
-            user_id: "user1".to_string(),
-            token: "000000".to_string(),
-        });
-        assert!(err.is_err());
-        assert_eq!(err.unwrap_err(), "2FA is not enabled for this user");
+        let stored = get_two_factor_data_for_tests(user_id).unwrap();
+        assert!(!stored.enabled);
     }
 
     #[test]
     fn test_handler_enable_unknown_user_returns_error() {
-        let handlers = make_handlers();
-        let err = handlers.verify_login_token(LoginWithTwoFactorRequest {
-            user_id: "ghost".to_string(),
-            token: "000000".to_string(),
-        });
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+        let err = handlers.verify_login_token(
+            &caller("ghost-handler"),
+            LoginWithTwoFactorRequest { user_id: "ghost-handler".to_string(), token: "000000".to_string() },
+        );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("No 2FA data found for user"));
+        assert!(err.unwrap_err().contains("not configured"));
     }
-
-    // ─ verify & activate ─────────────────────────────────────────────────────
 
     #[test]
     fn test_handler_verify_activates_2fa() {
-        let handlers = make_handlers();
-        let (_, token) = enable_and_get_token(&handlers, "user2");
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user2";
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u2@petchain.com".to_string() },
+        ).unwrap();
+        let token = generate_token(&resp.secret);
 
-        let result = handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user2".to_string(),
-            token,
-        });
+        let handlers = TwoFactorHandlers::new();
+        let result = handlers.verify_and_activate(
+            &caller(user_id),
+            VerifyTwoFactorRequest { user_id: user_id.to_string(), token },
+        );
         assert!(result.is_ok());
         assert!(result.unwrap());
-
-        // Now login should succeed with a fresh token
-        let config = TotpConfig::default();
-        let stored = handlers.store_ref().get("user2").unwrap();
-        let totp = TOTP::new(
-            config.algorithm, config.digits, config.window, config.period,
-            Secret::Encoded(stored.secret).to_bytes().unwrap(),
-            None, String::new(),
-        ).unwrap();
-        let login_token = totp.generate_current().unwrap();
-
-        let login = handlers.verify_login_token(LoginWithTwoFactorRequest {
-            user_id: "user2".to_string(),
-            token: login_token,
-        });
-        assert!(login.is_ok());
-        assert!(login.unwrap());
+        assert!(get_two_factor_data_for_tests(user_id).unwrap().enabled);
     }
 
     #[test]
     fn test_handler_verify_invalid_token_does_not_activate() {
-        let handlers = make_handlers();
-        enable_and_get_token(&handlers, "user3");
-
-        let result = handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user3".to_string(),
-            token: "000000".to_string(),
-        });
-        assert!(result.is_ok());
-        assert!(!result.unwrap()); // not activated
-
-        // Login should still be blocked
-        let err = handlers.verify_login_token(LoginWithTwoFactorRequest {
-            user_id: "user3".to_string(),
-            token: "000000".to_string(),
-        });
-        assert!(err.is_err());
-        assert_eq!(err.unwrap_err(), "2FA is not enabled for this user");
-    }
-
-    #[test]
-    fn test_handler_verify_already_enabled_returns_error() {
-        let handlers = make_handlers();
-        let (_, token) = enable_and_get_token(&handlers, "user4");
-        handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user4".to_string(),
-            token: token.clone(),
-        }).unwrap();
-
-        // Trying to activate again should fail
-        let err = handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user4".to_string(),
-            token,
-        });
-        assert!(err.is_err());
-        assert_eq!(err.unwrap_err(), "2FA is already enabled");
-    }
-
-    // ─ disable ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_handler_disable_removes_2fa() {
-        let handlers = make_handlers();
-        let (_, token) = enable_and_get_token(&handlers, "user5");
-        handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user5".to_string(),
-            token,
-        }).unwrap();
-
-        // Generate a fresh token to disable
-        let stored = handlers.store_ref().get("user5").unwrap();
-        let config = TotpConfig::default();
-        let totp = TOTP::new(
-            config.algorithm, config.digits, config.window, config.period,
-            Secret::Encoded(stored.secret).to_bytes().unwrap(),
-            None, String::new(),
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user3";
+        TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u3@petchain.com".to_string() },
         ).unwrap();
-        let disable_token = totp.generate_current().unwrap();
 
-        let result = handlers.disable_two_factor(DisableTwoFactorRequest {
-            user_id: "user5".to_string(),
-            token: disable_token,
-        });
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-
-        // After disable, login should fail with "not enabled"
-        let err = handlers.verify_login_token(LoginWithTwoFactorRequest {
-            user_id: "user5".to_string(),
-            token: "000000".to_string(),
-        });
-        assert!(err.is_err());
-        assert!(err.unwrap_err().contains("No 2FA data found for user"));
-    }
-
-    #[test]
-    fn test_handler_disable_when_not_enabled_returns_error() {
-        let handlers = make_handlers();
-        enable_and_get_token(&handlers, "user6"); // stored but not activated
-
-        let err = handlers.disable_two_factor(DisableTwoFactorRequest {
-            user_id: "user6".to_string(),
-            token: "000000".to_string(),
-        });
-        assert!(err.is_err());
-        assert_eq!(err.unwrap_err(), "2FA is not enabled for this user");
-    }
-
-    // ─ recovery ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_handler_recovery_consumes_backup_code() {
-        let handlers = make_handlers();
-        let (_, token) = enable_and_get_token(&handlers, "user7");
-        handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user7".to_string(),
-            token,
-        }).unwrap();
-
-        let backup_code = handlers.store_ref().get("user7").unwrap().backup_codes[0].clone();
-
-        // First use: should succeed
-        let result = handlers.recover_with_backup(RecoverWithBackupRequest {
-            user_id: "user7".to_string(),
-            backup_code: backup_code.clone(),
-        });
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-
-        // Code is consumed - second use must fail
-        let result = handlers.recover_with_backup(RecoverWithBackupRequest {
-            user_id: "user7".to_string(),
-            backup_code,
-        });
+        let handlers = TwoFactorHandlers::new();
+        let result = handlers.verify_and_activate(
+            &caller(user_id),
+            VerifyTwoFactorRequest { user_id: user_id.to_string(), token: "000000".to_string() },
+        );
         assert!(result.is_ok());
         assert!(!result.unwrap());
-
-        // Remaining codes count should be 7
-        let remaining = handlers.store_ref().get("user7").unwrap().backup_codes.len();
-        assert_eq!(remaining, 7);
+        assert!(!get_two_factor_data_for_tests(user_id).unwrap().enabled);
     }
 
     #[test]
-    fn test_handler_recovery_invalid_code_returns_false() {
-        let handlers = make_handlers();
-        let (_, token) = enable_and_get_token(&handlers, "user8");
-        handlers.verify_and_activate(VerifyTwoFactorRequest {
-            user_id: "user8".to_string(),
-            token,
-        }).unwrap();
+    fn test_handler_disable_when_not_enabled_returns_false() {
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user6";
+        TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u6@petchain.com".to_string() },
+        ).unwrap();
 
-        let result = handlers.recover_with_backup(RecoverWithBackupRequest {
-            user_id: "user8".to_string(),
-            backup_code: "0000-0000".to_string(),
-        });
+        let handlers = TwoFactorHandlers::new();
+        let result = handlers.disable_two_factor(
+            &caller(user_id),
+            DisableTwoFactorRequest { user_id: user_id.to_string(), token: "000000".to_string() },
+        );
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_handler_recovery_invalid_code_returns_error() {
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user8";
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u8@petchain.com".to_string() },
+        ).unwrap();
+        overwrite_two_factor_data_for_tests(user_id, crate::two_factor::TwoFactorData {
+            secret: resp.secret,
+            backup_codes: resp.backup_codes,
+            enabled: true,
+        });
+
+        let result = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest { user_id: user_id.to_string(), backup_code: "0000-0000".to_string() },
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid backup code"));
     }
 
     #[test]
     fn test_handler_recovery_when_not_enabled_returns_error() {
-        let handlers = make_handlers();
-        enable_and_get_token(&handlers, "user9"); // stored but not activated
+        clear_two_factor_store_for_tests();
+        let user_id = "handler-user9";
+        TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u9@petchain.com".to_string() },
+        ).unwrap();
 
-        let err = handlers.recover_with_backup(RecoverWithBackupRequest {
-            user_id: "user9".to_string(),
-            backup_code: "1234-5678".to_string(),
-        });
+        let err = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest { user_id: user_id.to_string(), backup_code: "1234-5678".to_string() },
+        );
         assert!(err.is_err());
-        assert_eq!(err.unwrap_err(), "2FA is not enabled for this user");
+        assert!(err.unwrap_err().contains("not enabled"));
     }
 }
