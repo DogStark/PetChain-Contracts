@@ -698,6 +698,7 @@ pub enum SystemKey {
     PetMultisigConfig(u64),
     PetTransferProposal(u64),
     PetTransferProposalCount,
+    EncryptionNonceCounter,
 }
 
 #[contracttype]
@@ -2947,8 +2948,37 @@ impl PetChainContract {
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
-        // Mock key
-        Bytes::from_array(env, &[0u8; 32])
+        // Derive a stable, contract-scoped key from contract identity + admin context.
+        // This avoids static hardcoded key material while remaining deterministic.
+        let mut preimage = Bytes::new(env);
+        for byte in b"petchain:encryption-key:v1" {
+            preimage.push_back(*byte);
+        }
+
+        let contract_xdr = env.current_contract_address().to_xdr(env);
+        for byte in contract_xdr.iter() {
+            preimage.push_back(byte);
+        }
+
+        if let Some(legacy_admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            let admin_xdr = legacy_admin.to_xdr(env);
+            for byte in admin_xdr.iter() {
+                preimage.push_back(byte);
+            }
+        } else if let Some(admins) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<Address>>(&SystemKey::Admins)
+        {
+            if let Some(primary_admin) = admins.get(0) {
+                let admin_xdr = primary_admin.to_xdr(env);
+                for byte in admin_xdr.iter() {
+                    preimage.push_back(byte);
+                }
+            }
+        }
+
+        env.crypto().sha256(&preimage).into()
     }
 
     fn log_ownership_change(
@@ -6171,19 +6201,74 @@ pub(crate) fn safe_increment(count: u64) -> u64 {
 }
 
 // --- ENCRYPTION HELPERS ---
-fn encrypt_sensitive_data(env: &Env, data: &Bytes, _key: &Bytes) -> (Bytes, Bytes) {
-    // Mock encryption for demonstration
-    let nonce = Bytes::from_array(env, &[0u8; 12]);
-    let ciphertext = data.clone();
+fn encrypt_sensitive_data(env: &Env, data: &Bytes, key: &Bytes) -> (Bytes, Bytes) {
+    let nonce = derive_encryption_nonce(env);
+    let ciphertext = xor_stream_crypt(env, data, key, &nonce);
     (nonce, ciphertext)
 }
 
 fn decrypt_sensitive_data(
-    _env: &Env,
+    env: &Env,
     ciphertext: &Bytes,
-    _nonce: &Bytes,
-    _key: &Bytes,
+    nonce: &Bytes,
+    key: &Bytes,
 ) -> Result<Bytes, ()> {
-    Ok(ciphertext.clone())
+    if nonce.len() != 12 {
+        return Err(());
+    }
+    Ok(xor_stream_crypt(env, ciphertext, key, nonce))
+}
+
+fn derive_encryption_nonce(env: &Env) -> Bytes {
+    let counter: u64 = env
+        .storage()
+        .instance()
+        .get(&SystemKey::EncryptionNonceCounter)
+        .unwrap_or(0);
+    let next_counter = safe_increment(counter);
+    env.storage()
+        .instance()
+        .set(&SystemKey::EncryptionNonceCounter, &next_counter);
+
+    let timestamp = env.ledger().timestamp();
+    let mut nonce = Bytes::new(env);
+    for byte in timestamp.to_be_bytes() {
+        nonce.push_back(byte);
+    }
+    for byte in (next_counter as u32).to_be_bytes() {
+        nonce.push_back(byte);
+    }
+    nonce
+}
+
+fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Bytes {
+    let mut output = Bytes::new(env);
+    let mut block_index: u32 = 0;
+
+    while output.len() < input.len() {
+        let mut seed = Bytes::new(env);
+        for byte in key.iter() {
+            seed.push_back(byte);
+        }
+        for byte in nonce.iter() {
+            seed.push_back(byte);
+        }
+        for byte in block_index.to_be_bytes() {
+            seed.push_back(byte);
+        }
+
+        let stream_block: Bytes = env.crypto().sha256(&seed).into();
+        let start = output.len();
+        let remaining = input.len() - start;
+        let take = if remaining < 32 { remaining } else { 32 };
+        for i in 0..take {
+            let src = input.get_unchecked(start + i);
+            let key_byte = stream_block.get_unchecked(i);
+            output.push_back(src ^ key_byte);
+        }
+        block_index = block_index.saturating_add(1);
+    }
+
+    output
 }
 
