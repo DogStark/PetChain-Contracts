@@ -618,3 +618,176 @@ fn test_access_logs_retain_newest_entries() {
         AccessAction::Grant
     );
 }
+
+#[test]
+fn test_get_vaccination_history_pagination_first_page() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Brown"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Set up a verified vet
+    let admin = Address::generate(&env);
+    let vet = Address::generate(&env);
+    let mut admins = soroban_sdk::Vec::new(&env);
+    admins.push_back(admin.clone());
+    client.init_multisig(&admin, &admins, &1u32);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Test"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    // Add multiple vaccinations
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &crate::VaccineType::Rabies,
+        &String::from_str(&env, "RabiesVax"),
+        &1000u64,
+        &2000u64,
+        &String::from_str(&env, "BATCH-001"),
+    );
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &crate::VaccineType::Parvovirus,
+        &String::from_str(&env, "ParvoVax"),
+        &1000u64,
+        &2000u64,
+        &String::from_str(&env, "BATCH-002"),
+    );
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &crate::VaccineType::Bordetella,
+        &String::from_str(&env, "BordetellaVax"),
+        &1000u64,
+        &2000u64,
+        &String::from_str(&env, "BATCH-003"),
+    );
+
+    // Test first page with limit 2
+    let history = client.get_vaccination_history(&pet_id, &0u64, &2u32);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().vaccine_type, crate::VaccineType::Rabies);
+    assert_eq!(history.get(1).unwrap().vaccine_type, crate::VaccineType::Parvovirus);
+}
+
+#[test]
+fn test_get_vaccination_history_pagination_out_of_bounds_offset() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Brown"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Set up a verified vet
+    let admin = Address::generate(&env);
+    let vet = Address::generate(&env);
+    let mut admins = soroban_sdk::Vec::new(&env);
+    admins.push_back(admin.clone());
+    client.init_multisig(&admin, &admins, &1u32);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Test"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    // Add one vaccination
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &crate::VaccineType::Rabies,
+        &String::from_str(&env, "RabiesVax"),
+        &1000u64,
+        &2000u64,
+        &String::from_str(&env, "BATCH-001"),
+    );
+
+    // Test out-of-bounds offset
+    let history = client.get_vaccination_history(&pet_id, &10u64, &5u32);
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_get_vaccination_history_pagination_limit_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Brown"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Set up a verified vet
+    let admin = Address::generate(&env);
+    let vet = Address::generate(&env);
+    let mut admins = soroban_sdk::Vec::new(&env);
+    admins.push_back(admin.clone());
+    client.init_multisig(&admin, &admins, &1u32);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Test"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    // Add vaccinations
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &crate::VaccineType::Rabies,
+        &String::from_str(&env, "RabiesVax"),
+        &1000u64,
+        &2000u64,
+        &String::from_str(&env, "BATCH-001"),
+    );
+
+    // Test limit of 0
+    let history = client.get_vaccination_history(&pet_id, &0u64, &0u32);
+    assert_eq!(history.len(), 0);
+}
