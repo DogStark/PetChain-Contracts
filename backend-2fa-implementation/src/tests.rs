@@ -16,7 +16,7 @@ mod tests {
     fn generate_token(secret: &str) -> String {
         use totp_rs::{Algorithm, Secret, TOTP};
         TOTP::new(
-            Algorithm::SHA1,
+            Algorithm::SHA256,
             6,
             1,
             30,
