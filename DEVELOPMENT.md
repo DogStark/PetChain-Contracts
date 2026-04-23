@@ -24,17 +24,16 @@ PetChain-Contracts/
    ```bash
    cp .env.example .env
    ```
-
 2. Fill in the required values in `.env`:
    - **STELLAR_NETWORK**: Set to `testnet` for development
    - **STELLAR_RPC_URL**: Use `https://soroban-testnet.stellar.org`
-   - **CONTRACT_ADDRESS**: Obtain from contract deployment
+   - **CONTRACT_ADDRESS**: Obtain from deployed contract
    - **JWT_SECRET**: Generate a secure random string
    - **TOTP_ISSUER**: Set to `PetChain`
    - **DATABASE_URL**: PostgreSQL connection string
 
 ### Stellar Testnet Faucet
-For development, you'll need test XLM:
+For development, get test XLM from the Stellar testnet faucet:
 1. Visit the [Stellar Testnet Faucet](https://laboratory.stellar.org/#account-creator?network=testnet)
 2. Generate a test account
 3. Fund it with test XLM
