@@ -2385,7 +2385,7 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_vaccination_history(env: Env, pet_id: u64) -> Vec<Vaccination> {
+    pub fn get_vaccination_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Vaccination> {
         if env
             .storage()
             .instance()
@@ -2410,7 +2410,11 @@ impl PetChainContract {
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
-        for i in 1..=count {
+        // Calculate the range to return based on offset and limit
+        let start_index = offset + 1; // Indices start from 1
+        let end_index = (offset + limit as u64).min(count);
+
+        for i in start_index..=end_index {
             if let Some(vid) = env
                 .storage()
                 .instance()
@@ -2431,7 +2435,7 @@ impl PetChainContract {
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
         let threshold = current_time + (days_threshold * 86400);
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
+        let history = Self::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
 
         for vax in history.iter() {
@@ -2444,7 +2448,7 @@ impl PetChainContract {
 
     pub fn is_vaccination_current(env: Env, pet_id: u64, vaccine_type: VaccineType) -> bool {
         let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env, pet_id);
+        let history = Self::get_vaccination_history(env, pet_id, 0, u32::MAX);
         let mut most_recent: Option<Vaccination> = None;
 
         for vax in history.iter() {
@@ -2469,7 +2473,7 @@ impl PetChainContract {
 
     pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType> {
         let current_time = env.ledger().timestamp();
-        let history = Self::get_vaccination_history(env.clone(), pet_id);
+        let history = Self::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut overdue = Vec::new(&env);
 
         for vax in history.iter() {
