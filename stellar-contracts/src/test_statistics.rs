@@ -80,3 +80,23 @@ fn test_get_active_pets_count() {
     client.activate_pet(&id2);
     assert_eq!(client.get_active_pets_count(), 1);
 }
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_activate_pet_requires_owner_auth() {
+    let env = Env::default();
+    env.mock_all_auths(); // Mock auth for registration
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let _non_owner = Address::generate(&env);
+
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    // Clear auth mocking so real auth checks apply
+    env.set_auths(&[]);
+
+    // Attempting to activate pet should panic due to missing auth
+    client.activate_pet(&pet_id);
+}
