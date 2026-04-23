@@ -8,6 +8,8 @@ This repo is specific for handling all smart contract-based contributions.
 ## Getting Started
 Check out the [main petchain repo](https://github.com/DogStark/petChain-Frontend) to get a clear overview of the entire PetChain project—its purpose, how it works
 
+For detailed development setup and contribution guidelines, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ### Build and Test Smart Contracts
 
 #### Prerequisites
