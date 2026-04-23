@@ -32,3 +32,15 @@ When contributing:
 - Follow principle of least privilege
 - Test edge cases and error conditions
 - Review code for potential vulnerabilities
+
+## Encryption Key Derivation
+
+Sensitive pet and owner fields use a deterministic key derived at runtime from:
+- a fixed domain separator (`petchain:encryption-key:v1`)
+- the current contract address
+- admin context (legacy single admin or first multisig admin when configured)
+
+This replaces the previous static all-zero key. As a result:
+- encrypted storage no longer mirrors plaintext by default
+- key material is contract-scoped and not hardcoded
+- rotating admin configuration can change derived key context, so migrations/rollouts should account for backward compatibility expectations
