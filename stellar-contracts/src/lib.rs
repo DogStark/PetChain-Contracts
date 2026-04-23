@@ -1819,6 +1819,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
+            pet.owner.require_auth();
             if !pet.active {
                 let active_count: u64 = env
                     .storage()
