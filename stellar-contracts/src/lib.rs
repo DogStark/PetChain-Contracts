@@ -69,6 +69,8 @@ mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 #[cfg(test)]
+mod test_medical_records_pagination;
+#[cfg(test)]
 mod test_multisig_transfer;
 #[cfg(test)]
 mod test_nutrition;
@@ -3652,14 +3654,31 @@ impl PetChainContract {
         record
     }
 
-    pub fn get_pet_medical_records(env: Env, pet_id: u64) -> Vec<MedicalRecord> {
+    pub fn get_pet_medical_records(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
         let count = env
             .storage()
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
         let mut records = Vec::new(&env);
-        for i in 1..=count {
+        if count == 0 || limit == 0 || offset >= count {
+            return records;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let requested_end = offset.saturating_add(limit as u64);
+        let end_index = if requested_end > count {
+            count
+        } else {
+            requested_end
+        };
+
+        for i in start_index..=end_index {
             if let Some(rid) = env
                 .storage()
                 .instance()

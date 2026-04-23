@@ -245,4 +245,28 @@ mod test_search_medical_records {
         assert_eq!(flu_results.len(), 5);
         assert_eq!(allergy_results.len(), 5);
     }
+
+    // ---- pagination ----
+
+    #[test]
+    fn test_get_pet_medical_records_pagination_window() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+        add_record(&client, &env, pet_id, &vet, "A");
+        add_record(&client, &env, pet_id, &vet, "B");
+        add_record(&client, &env, pet_id, &vet, "C");
+
+        let page = client.get_pet_medical_records(&pet_id, &1u64, &2u32);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0).unwrap().diagnosis, String::from_str(&env, "B"));
+        assert_eq!(page.get(1).unwrap().diagnosis, String::from_str(&env, "C"));
+    }
+
+    #[test]
+    fn test_get_pet_medical_records_pagination_out_of_bounds() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+        add_record(&client, &env, pet_id, &vet, "Only");
+
+        assert_eq!(client.get_pet_medical_records(&pet_id, &5u64, &2u32).len(), 0);
+        assert_eq!(client.get_pet_medical_records(&pet_id, &0u64, &0u32).len(), 0);
+    }
 }
