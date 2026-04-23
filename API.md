@@ -7,6 +7,17 @@ The PetChain smart contract manages pet registration, medical records, and owner
 
 ### Pet Management
 
+#### `get_pet_medical_records`
+Retrieves a paginated slice of medical records for a pet.
+
+**Parameters:**
+- `env: Env` - Contract environment
+- `pet_id: u64` - Pet identifier
+- `offset: u64` - Zero-based starting index into the pet's medical record history
+- `limit: u32` - Maximum number of records to return
+
+**Returns:** `Vec<MedicalRecord>` - Up to `limit` records starting at `offset`
+
 #### `register_pet`
 Registers a new pet on the blockchain.
 
