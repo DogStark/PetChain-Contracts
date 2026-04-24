@@ -388,6 +388,154 @@ fn test_get_authorized_users_excludes_expired() {
 }
 
 #[test]
+fn test_get_pets_by_owner_single_owner_returns_only_owned_pets() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let other_owner = Address::generate(&env);
+
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.register_pet(
+        &other_owner,
+        &String::from_str(&env, "Other"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "White"),
+        &5u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let pets = client.get_pets_by_owner(&owner, &0u64, &10u32);
+    assert_eq!(pets.len(), 1);
+    assert_eq!(pets.get(0).unwrap().name, String::from_str(&env, "Alpha"));
+}
+
+#[test]
+fn test_get_pets_by_owner_multiple_pets_returns_in_index_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Beta"),
+        &String::from_str(&env, "2020-02-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "White"),
+        &5u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Gamma"),
+        &String::from_str(&env, "2020-03-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Beagle"),
+        &String::from_str(&env, "Brown"),
+        &12u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let pets = client.get_pets_by_owner(&owner, &0u64, &10u32);
+    assert_eq!(pets.len(), 3);
+    assert_eq!(pets.get(0).unwrap().name, String::from_str(&env, "Alpha"));
+    assert_eq!(pets.get(1).unwrap().name, String::from_str(&env, "Beta"));
+    assert_eq!(pets.get(2).unwrap().name, String::from_str(&env, "Gamma"));
+}
+
+#[test]
+fn test_get_pets_by_owner_supports_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Beta"),
+        &String::from_str(&env, "2020-02-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "White"),
+        &5u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.register_pet(
+        &owner,
+        &String::from_str(&env, "Gamma"),
+        &String::from_str(&env, "2020-03-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Beagle"),
+        &String::from_str(&env, "Brown"),
+        &12u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let page = client.get_pets_by_owner(&owner, &1u64, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().name, String::from_str(&env, "Beta"));
+    assert_eq!(page.get(1).unwrap().name, String::from_str(&env, "Gamma"));
+
+    assert_eq!(client.get_pets_by_owner(&owner, &5u64, &2u32).len(), 0);
+    assert_eq!(client.get_pets_by_owner(&owner, &0u64, &0u32).len(), 0);
+}
+
+#[test]
 fn test_get_access_grant() {
     let env = Env::default();
     env.mock_all_auths();
