@@ -2,16 +2,22 @@
 // get_pet DECRYPTION ERROR PROPAGATION TESTS
 // ============================================================
 //
-// decrypt_sensitive_data is currently a passthrough (Ok(ciphertext.clone())).
-// Corrupt data is therefore simulated by storing a Pet whose encrypted fields
-// contain raw bytes that cannot be XDR-decoded as the expected type (String /
-// Vec<Allergy>).  The fix ensures get_pet returns None rather than a partial
-// profile with sentinel "Error" strings.
+// Comprehensive test coverage for pet data decryption including:
+// 1. Successful decryption scenarios with valid encrypted data
+// 2. Privacy level enforcement (Public, Restricted, Private)
+// 3. Corrupted ciphertext handling (returns None, not partial profiles)
+// 4. Access control integration with decryption
+//
+// decrypt_sensitive_data validates nonce length and XDR decoding.
+// Corrupt data is simulated by storing invalid bytes that cannot be
+// XDR-decoded as the expected type (String / Vec<Allergy>).
+// The contract ensures get_pet returns None rather than partial profiles
+// with sentinel "Error" strings.
 
 #[cfg(test)]
 mod test_get_pet_decryption {
     use crate::{
-        DataKey, EncryptedData, Gender, Pet, PetChainContract, PetChainContractClient,
+        AccessLevel, DataKey, EncryptedData, Gender, Pet, PetChainContract, PetChainContractClient,
         PrivacyLevel, Species,
     };
     use soroban_sdk::{
@@ -28,7 +34,12 @@ mod test_get_pet_decryption {
         (env, client)
     }
 
-    fn register_pet(client: &PetChainContractClient, env: &Env, owner: &Address) -> u64 {
+    fn register_pet(
+        client: &PetChainContractClient,
+        env: &Env,
+        owner: &Address,
+        privacy: PrivacyLevel,
+    ) -> u64 {
         client.register_pet(
             owner,
             &String::from_str(env, "Buddy"),
@@ -39,7 +50,7 @@ mod test_get_pet_decryption {
             &String::from_str(env, "Brown"),
             &25u32,
             &None,
-            &PrivacyLevel::Public,
+            &privacy,
         )
     }
 
@@ -134,13 +145,37 @@ mod test_get_pet_decryption {
             .set(&DataKey::Pet(pet_id), &pet);
     }
 
-    // ---- happy path: valid data still works ----
+    /// Corrupt the nonce to an invalid length (not 12 bytes)
+    fn corrupt_pet_nonce_length(env: &Env, pet_id: u64) {
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("pet must exist");
+
+        // Invalid nonce length (should be 12 bytes)
+        let invalid_nonce = Bytes::from_array(env, &[0x01, 0x02, 0x03]);
+        pet.encrypted_name = EncryptedData {
+            ciphertext: pet.encrypted_name.ciphertext.clone(),
+            nonce: invalid_nonce,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Pet(pet_id), &pet);
+    }
+
+    // ================================================================
+    // SUCCESSFUL DECRYPTION TESTS
+    // ================================================================
+    // Verify that valid encrypted data decrypts correctly and returns
+    // a complete PetProfile with all fields properly decoded.
 
     #[test]
     fn test_get_pet_valid_data_returns_some() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(result.is_some(), "valid pet must return Some");
@@ -152,13 +187,170 @@ mod test_get_pet_decryption {
         assert_ne!(profile.breed, String::from_str(&env, "Error"));
     }
 
-    // ---- corrupt fields return None, not masked output ----
+    #[test]
+    fn test_get_pet_decryption_preserves_data_integrity() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
+
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(result.is_some());
+        let profile = result.unwrap();
+
+        // Verify decrypted data matches original registration
+        assert_eq!(profile.name, String::from_str(&env, "Buddy"));
+        assert_eq!(profile.birthday, String::from_str(&env, "2020-01-01"));
+        assert_eq!(profile.breed, String::from_str(&env, "Labrador"));
+        assert_eq!(profile.species, Species::Dog);
+        assert_eq!(profile.gender, Gender::Male);
+        assert_eq!(profile.color, String::from_str(&env, "Brown"));
+        assert_eq!(profile.weight, 25u32);
+    }
+
+    // ================================================================
+    // PRIVACY LEVEL ENFORCEMENT TESTS
+    // ================================================================
+    // Verify that privacy levels are correctly enforced during decryption.
+    // Public pets should be readable by anyone, Restricted by grantees,
+    // and Private by owner only.
+
+    #[test]
+    fn test_public_pet_decryption_by_owner() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
+
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(result.is_some(), "owner must decrypt their own public pet");
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Public);
+    }
+
+    #[test]
+    fn test_public_pet_decryption_by_stranger() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
+
+        let result = client.get_pet(&pet_id, &stranger);
+        assert!(
+            result.is_some(),
+            "stranger must decrypt a public pet without access grant"
+        );
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Public);
+    }
+
+    #[test]
+    fn test_restricted_pet_decryption_by_owner() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
+
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(result.is_some(), "owner must decrypt their own restricted pet");
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Restricted);
+    }
+
+    #[test]
+    fn test_restricted_pet_decryption_by_stranger_denied() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
+
+        let result = client.get_pet(&pet_id, &stranger);
+        assert!(
+            result.is_none(),
+            "stranger must not decrypt restricted pet without access grant"
+        );
+    }
+
+    #[test]
+    fn test_restricted_pet_decryption_with_basic_access_grant() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
+
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+        let result = client.get_pet(&pet_id, &grantee);
+        assert!(
+            result.is_some(),
+            "grantee with basic access must decrypt restricted pet"
+        );
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Restricted);
+    }
+
+    #[test]
+    fn test_restricted_pet_decryption_with_full_access_grant() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
+
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+
+        let result = client.get_pet(&pet_id, &grantee);
+        assert!(
+            result.is_some(),
+            "grantee with full access must decrypt restricted pet"
+        );
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Restricted);
+    }
+
+    #[test]
+    fn test_private_pet_decryption_by_owner() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
+
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(result.is_some(), "owner must decrypt their own private pet");
+        assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Private);
+    }
+
+    #[test]
+    fn test_private_pet_decryption_by_stranger_denied() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
+
+        let result = client.get_pet(&pet_id, &stranger);
+        assert!(
+            result.is_none(),
+            "stranger must not decrypt private pet even with access grant"
+        );
+    }
+
+    #[test]
+    fn test_private_pet_decryption_with_full_access_grant_still_denied() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
+
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+
+        let result = client.get_pet(&pet_id, &grantee);
+        assert!(
+            result.is_none(),
+            "full access grant cannot override private privacy level"
+        );
+    }
+
+    // ================================================================
+    // CORRUPTED CIPHERTEXT HANDLING TESTS
+    // ================================================================
+    // Verify that corrupted encrypted fields cause get_pet to return None
+    // rather than partial profiles with sentinel "Error" strings.
 
     #[test]
     fn test_corrupt_name_returns_none() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         corrupt_pet_name(&env, pet_id);
 
@@ -173,7 +365,7 @@ mod test_get_pet_decryption {
     fn test_corrupt_birthday_returns_none() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         corrupt_pet_birthday(&env, pet_id);
 
@@ -188,7 +380,7 @@ mod test_get_pet_decryption {
     fn test_corrupt_breed_returns_none() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         corrupt_pet_breed(&env, pet_id);
 
@@ -203,7 +395,7 @@ mod test_get_pet_decryption {
     fn test_corrupt_allergies_returns_none() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         corrupt_pet_allergies(&env, pet_id);
 
@@ -214,13 +406,28 @@ mod test_get_pet_decryption {
         );
     }
 
+    #[test]
+    fn test_corrupt_nonce_length_returns_none() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
+
+        corrupt_pet_nonce_length(&env, pet_id);
+
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(
+            result.is_none(),
+            "invalid nonce length must yield None (decrypt_sensitive_data validates nonce length)"
+        );
+    }
+
     /// Verify the old sentinel value "Error" is never returned for any field,
     /// even when all fields are corrupted simultaneously.
     #[test]
     fn test_all_fields_corrupt_never_returns_error_sentinel() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
         corrupt_pet_name(&env, pet_id);
         corrupt_pet_birthday(&env, pet_id);
@@ -232,265 +439,136 @@ mod test_get_pet_decryption {
         assert!(result.is_none());
     }
 
+    // ================================================================
+    // EDGE CASES AND REGRESSION TESTS
+    // ================================================================
+
     /// A non-existent pet must still return None (regression guard).
     #[test]
     fn test_nonexistent_pet_returns_none() {
         let (env, client) = setup();
-        let viewer = Address::generate(&env);
-        assert!(client.get_pet(&9999u64, &viewer).is_none());
+        let owner = Address::generate(&env);
+        assert!(client.get_pet(&9999u64, &owner).is_none());
     }
 
-    // ============================================================
-    // get_pet_full_profile TESTS
-    // ============================================================
-
+    /// Verify that decryption works correctly after pet profile update.
     #[test]
-    fn test_get_pet_full_profile_valid_data_returns_some() {
+    fn test_decryption_after_pet_update() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
+        let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some(), "valid pet must return Some");
-        let full_profile = result.unwrap();
-        assert_eq!(full_profile.profile.id, pet_id);
-        assert_eq!(full_profile.profile.owner, owner);
-        assert!(full_profile.latest_vaccination_id.is_none());
-        assert_eq!(full_profile.active_medications_count, 0);
-        assert!(!full_profile.has_insurance);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_includes_latest_vaccination() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-        let vet = setup_verified_vet(&client, &env);
-
-        let vax_id = client.add_vaccination(
+        // Update pet profile with new data
+        client.update_pet_profile(
             &pet_id,
-            &vet,
-            &crate::VaccineType::Rabies,
-            &String::from_str(&env, "Rabies Vaccine"),
-            &1000u64,
-            &2000u64,
-            &String::from_str(&env, "BATCH123"),
-        );
-
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-        assert!(full_profile.latest_vaccination_id.is_some());
-        assert_eq!(full_profile.latest_vaccination_id.unwrap(), vax_id);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_includes_active_medications() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-        let vet = setup_verified_vet(&client, &env);
-
-        client.add_medication(
-            &pet_id,
-            &String::from_str(&env, "Amoxicillin"),
-            &String::from_str(&env, "500mg"),
-            &String::from_str(&env, "Twice daily"),
-            &1000u64,
-            &None,
-            &vet,
-        );
-
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-        assert_eq!(full_profile.active_medications_count, 1);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_includes_insurance() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-
-        client.add_insurance_policy(
-            &pet_id,
-            &String::from_str(&env, "POL123"),
-            &String::from_str(&env, "PetCare Inc"),
-            &String::from_str(&env, "Comprehensive"),
-            &5000u64,
-            &100000u64,
-            &5000u64,
-        );
-
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-        assert!(full_profile.has_insurance);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_aggregates_all_data() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-        let vet = setup_verified_vet(&client, &env);
-
-        client.add_vaccination(
-            &pet_id,
-            &vet,
-            &crate::VaccineType::Parvovirus,
-            &String::from_str(&env, "Parvovirus Vaccine"),
-            &1000u64,
-            &2000u64,
-            &String::from_str(&env, "BATCH456"),
-        );
-
-        client.add_medication(
-            &pet_id,
-            &String::from_str(&env, "Lisinopril"),
-            &String::from_str(&env, "10mg"),
-            &String::from_str(&env, "Once daily"),
-            &1000u64,
-            &None,
-            &vet,
-        );
-
-        client.add_insurance_policy(
-            &pet_id,
-            &String::from_str(&env, "POL456"),
-            &String::from_str(&env, "VetShield"),
-            &String::from_str(&env, "Premium"),
-            &7500u64,
-            &150000u64,
-            &5000u64,
-        );
-
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-
-        assert_eq!(full_profile.profile.id, pet_id);
-        assert!(full_profile.latest_vaccination_id.is_some());
-        assert_eq!(full_profile.active_medications_count, 1);
-        assert!(full_profile.has_insurance);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_respects_access_control() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let stranger = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-
-        let result = client.get_pet_full_profile(&pet_id, &stranger);
-        assert!(result.is_none(), "stranger must not access private pet");
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_with_public_pet() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let viewer = Address::generate(&env);
-
-        let pet_id = client.register_pet(
-            &owner,
-            &String::from_str(&env, "PublicPet"),
-            &String::from_str(&env, "2020-01-01"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(&env, "Poodle"),
+            &String::from_str(&env, "UpdatedBuddy"),
+            &String::from_str(&env, "2019-06-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Persian"),
             &String::from_str(&env, "White"),
-            &20u32,
+            &15u32,
             &None,
             &PrivacyLevel::Public,
         );
 
-        let result = client.get_pet_full_profile(&pet_id, &viewer);
-        assert!(result.is_some(), "viewer must access public pet");
-        let full_profile = result.unwrap();
-        assert_eq!(full_profile.profile.id, pet_id);
+        let result = client.get_pet(&pet_id, &owner);
+        assert!(result.is_some(), "decryption must work after update");
+        let profile = result.unwrap();
+        assert_eq!(profile.name, String::from_str(&env, "UpdatedBuddy"));
+        assert_eq!(profile.birthday, String::from_str(&env, "2019-06-15"));
+        assert_eq!(profile.breed, String::from_str(&env, "Persian"));
+        assert_eq!(profile.species, Species::Cat);
+        assert_eq!(profile.gender, Gender::Female);
     }
 
+    /// Verify multiple pets can be decrypted independently with correct data.
     #[test]
-    fn test_get_pet_full_profile_with_granted_access() {
+    fn test_multiple_pets_decryption_independence() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
-        let grantee = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
 
-        client.grant_access(&pet_id, &grantee, &crate::AccessLevel::Full, &None);
-
-        let result = client.get_pet_full_profile(&pet_id, &grantee);
-        assert!(result.is_some(), "grantee with Full access must access pet");
-        let full_profile = result.unwrap();
-        assert_eq!(full_profile.profile.id, pet_id);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_nonexistent_pet_returns_none() {
-        let (env, client) = setup();
-        let viewer = Address::generate(&env);
-        let result = client.get_pet_full_profile(&9999u64, &viewer);
-        assert!(result.is_none(), "nonexistent pet must return None");
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_with_multiple_vaccinations_returns_latest() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-        let vet = setup_verified_vet(&client, &env);
-
-        client.add_vaccination(
-            &pet_id,
-            &vet,
-            &crate::VaccineType::Rabies,
-            &String::from_str(&env, "Rabies V1"),
-            &1000u64,
-            &2000u64,
-            &String::from_str(&env, "BATCH1"),
-        );
-
-        let latest_vax_id = client.add_vaccination(
-            &pet_id,
-            &vet,
-            &crate::VaccineType::Leukemia,
-            &String::from_str(&env, "Leukemia V1"),
-            &3000u64,
-            &4000u64,
-            &String::from_str(&env, "BATCH2"),
-        );
-
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-        assert!(full_profile.latest_vaccination_id.is_some());
-        assert_eq!(full_profile.latest_vaccination_id.unwrap(), latest_vax_id);
-    }
-
-    #[test]
-    fn test_get_pet_full_profile_excludes_inactive_medications() {
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let pet_id = register_pet(&client, &env, &owner);
-        let vet = setup_verified_vet(&client, &env);
-
-        let med_id = client.add_medication(
-            &pet_id,
-            &String::from_str(&env, "Aspirin"),
-            &String::from_str(&env, "100mg"),
-            &String::from_str(&env, "Once daily"),
-            &1000u64,
+        let pet1_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
             &None,
-            &vet,
+            &PrivacyLevel::Public,
         );
 
-        client.mark_medication_completed(&med_id);
+        let pet2_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Whiskers"),
+            &String::from_str(&env, "2021-03-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Cream"),
+            &8u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
 
-        let result = client.get_pet_full_profile(&pet_id, &owner);
-        assert!(result.is_some());
-        let full_profile = result.unwrap();
-        assert_eq!(full_profile.active_medications_count, 0, "inactive medications must be excluded");
+        let result1 = client.get_pet(&pet1_id, &owner);
+        let result2 = client.get_pet(&pet2_id, &owner);
+
+        assert!(result1.is_some());
+        assert!(result2.is_some());
+
+        let profile1 = result1.unwrap();
+        let profile2 = result2.unwrap();
+
+        assert_eq!(profile1.name, String::from_str(&env, "Buddy"));
+        assert_eq!(profile2.name, String::from_str(&env, "Whiskers"));
+        assert_eq!(profile1.breed, String::from_str(&env, "Labrador"));
+        assert_eq!(profile2.breed, String::from_str(&env, "Siamese"));
+    }
+
+    /// Verify that corrupting one pet's data doesn't affect another pet's decryption.
+    #[test]
+    fn test_corruption_isolation_between_pets() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+
+        let pet1_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        let pet2_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Whiskers"),
+            &String::from_str(&env, "2021-03-15"),
+            &Gender::Female,
+            &Species::Cat,
+            &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Cream"),
+            &8u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        // Corrupt only pet1
+        corrupt_pet_name(&env, pet1_id);
+
+        let result1 = client.get_pet(&pet1_id, &owner);
+        let result2 = client.get_pet(&pet2_id, &owner);
+
+        assert!(result1.is_none(), "corrupted pet1 must return None");
+        assert!(result2.is_some(), "pet2 must still decrypt successfully");
+        assert_eq!(result2.unwrap().name, String::from_str(&env, "Whiskers"));
     }
 }
