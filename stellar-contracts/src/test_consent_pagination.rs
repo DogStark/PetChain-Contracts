@@ -138,3 +138,59 @@ fn test_get_consent_history_page_no_records() {
     let page = client.get_consent_history_page(&pet_id, &0, &10);
     assert_eq!(page.len(), 0);
 }
+
+#[test]
+fn test_get_active_consents_only_returns_active() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let _id3 = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee);
+
+    // Revoke two of the three
+    client.revoke_consent(&id1, &owner);
+    client.revoke_consent(&id2, &owner);
+
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert!(active.get(0).unwrap().is_active);
+}
+
+#[test]
+fn test_get_active_consents_empty_when_all_revoked() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+
+    client.revoke_consent(&id1, &owner);
+    client.revoke_consent(&id2, &owner);
+
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_active_consents_all_active() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    for _ in 0..3u32 {
+        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    }
+
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 3);
+    for i in 0..3u32 {
+        assert!(active.get(i).unwrap().is_active);
+    }
+}
+
+#[test]
+fn test_get_active_consents_no_consents() {
+    let (_env, client, pet_id, _owner) = setup();
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 0);
+}

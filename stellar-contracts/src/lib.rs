@@ -57,6 +57,8 @@ mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
 #[cfg(test)]
+mod test_consent_pagination;
+#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -1864,6 +1866,43 @@ impl PetChainContract {
         }
     }
 
+    pub fn archive_pet(env: Env, pet_id: u64) {
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        if pet.active {
+            let active_count: u64 = env
+                .storage()
+                .instance()
+                .get(&StatsKey::ActivePetsCount)
+                .unwrap_or(0);
+            if active_count > 0 {
+                env.storage()
+                    .instance()
+                    .set(&StatsKey::ActivePetsCount, &(active_count - 1));
+            }
+        }
+        pet.archived = true;
+        pet.active = false;
+        pet.updated_at = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+    }
+
+    pub fn unarchive_pet(env: Env, pet_id: u64) {
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        pet.archived = false;
+        pet.updated_at = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+    }
+
     pub fn add_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
         if let Some(mut pet) = env
             .storage()
@@ -3322,7 +3361,7 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, Pet>(&DataKey::Pet(id))
             {
-                if pet.active {
+                if pet.active && !pet.archived {
                     if let Some(profile) = Self::get_pet(env.clone(), id, env.current_contract_address()) {
                         pets.push_back(profile);
                     }
@@ -4370,7 +4409,6 @@ impl PetChainContract {
     ) -> u64 {
         owner.require_auth();
 
-        // Verify owner owns the pet
         let pet: Pet = env
             .storage()
             .instance()
@@ -4380,12 +4418,71 @@ impl PetChainContract {
             env.panic_with_error(ContractError::NotPetOwner);
         }
 
+        const MAX_CONSENTS_PER_PET: u64 = 50;
+
         let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        // Prune oldest revoked consent if at cap
+        if count >= MAX_CONSENTS_PER_PET {
+            let mut pruned = false;
+            for i in 1..=count {
+                if let Some(cid) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+                {
+                    if let Some(c) = env
+                        .storage()
+                        .instance()
+                        .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                    {
+                        if !c.is_active {
+                            // Shift remaining indices down
+                            for j in i..count {
+                                if let Some(next_cid) = env
+                                    .storage()
+                                    .instance()
+                                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, j + 1)))
+                                {
+                                    env.storage().instance().set(
+                                        &ConsentKey::PetConsentIndex((pet_id, j)),
+                                        &next_cid,
+                                    );
+                                }
+                            }
+                            env.storage()
+                                .instance()
+                                .remove(&ConsentKey::PetConsentIndex((pet_id, count)));
+                            env.storage()
+                                .instance()
+                                .set(&ConsentKey::PetConsentCount(pet_id), &(count - 1));
+                            pruned = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !pruned {
+                env.panic_with_error(ContractError::TooManyItems);
+            }
+        }
+
+        let new_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        let global_count: u64 = env
             .storage()
             .instance()
             .get(&ConsentKey::ConsentCount)
             .unwrap_or(0);
-        let consent_id = count + 1;
+        let consent_id = global_count + 1;
         let now = env.ledger().timestamp();
 
         let consent = Consent {
@@ -4406,13 +4503,7 @@ impl PetChainContract {
             .instance()
             .set(&ConsentKey::ConsentCount, &consent_id);
 
-        // Update pet consent index
-        let pet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&ConsentKey::PetConsentCount(pet_id))
-            .unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = new_count + 1;
         env.storage()
             .instance()
             .set(&ConsentKey::PetConsentCount(pet_id), &new_pet_count);
@@ -4476,6 +4567,31 @@ impl PetChainContract {
             }
         }
         history
+    }
+
+    pub fn get_active_consents(env: Env, pet_id: u64) -> Vec<Consent> {
+        let history = Self::get_consent_history(env.clone(), pet_id);
+        let mut active = Vec::new(&env);
+        for consent in history.iter() {
+            if consent.is_active {
+                active.push_back(consent);
+            }
+        }
+        active
+    }
+
+    pub fn get_consent_history_page(env: Env, pet_id: u64, page: u64, page_size: u32) -> Vec<Consent> {
+        let history = Self::get_consent_history(env.clone(), pet_id);
+        let size = if page_size == 0 { 50u32 } else { page_size };
+        let start = (page * size as u64) as u32;
+        let mut result = Vec::new(&env);
+        for i in start..start.saturating_add(size) {
+            match history.get(i) {
+                Some(c) => result.push_back(c),
+                None => break,
+            }
+        }
+        result
     }
 
     /// Book a slot (mark as unavailable)
