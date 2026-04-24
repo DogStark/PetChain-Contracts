@@ -3882,6 +3882,28 @@ impl PetChainContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    pub fn check_and_expire_access(env: Env, pet_id: u64, grantee: Address) {
+        let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+            if grant.is_active {
+                if let Some(expires_at) = grant.expires_at {
+                    if env.ledger().timestamp() >= expires_at {
+                        grant.is_active = false;
+                        env.storage().instance().set(&key, &grant);
+                        env.events().publish(
+                            (String::from_str(&env, "AccessExpired"), pet_id),
+                            AccessExpiredEvent {
+                                pet_id,
+                                grantee,
+                                expired_at: env.ledger().timestamp(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub fn check_access(env: Env, pet_id: u64, user: Address) -> AccessLevel {
         if let Some(pet) = env
             .storage()
@@ -3891,6 +3913,7 @@ impl PetChainContract {
             if pet.owner == user {
                 return AccessLevel::Full;
             }
+            Self::check_and_expire_access(env.clone(), pet_id, user.clone());
             if let Some(grant) = env
                 .storage()
                 .instance()
