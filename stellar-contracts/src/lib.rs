@@ -3250,6 +3250,29 @@ impl PetChainContract {
         }
     }
 
+    pub fn get_emergency_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyAccessLog> {
+        // Verify pet exists
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        {
+            // Require owner authorization
+            if caller != pet.owner {
+                panic!("Unauthorized: only pet owner can access emergency logs");
+            }
+            
+            // Retrieve logs from persistent storage
+            let log_key = DataKey::EmergencyAccessLogs(pet_id);
+            env.storage()
+                .persistent()
+                .get(&log_key)
+                .unwrap_or(Vec::new(&env))
+        } else {
+            panic!("Pet not found");
+        }
+    }
+
     // --- ACCESSIBLE PETS ---
     pub fn get_accessible_pets(env: Env, user: Address) -> Vec<u64> {
         user.require_auth();
