@@ -6328,6 +6328,39 @@ impl PetChainContract {
 
         (total_duration, total_distance)
     }
+
+    /// Returns the total duration (minutes) and total distance (meters) for all
+    /// activity records of a given pet whose `recorded_at` timestamp falls within
+    /// the inclusive range [from_date, to_date].
+    ///
+    /// Boundary behaviour:
+    ///   - Both endpoints are inclusive: `from_date <= recorded_at <= to_date`.
+    ///   - If `from_date > to_date` the range is considered invalid and (0, 0) is
+    ///     returned immediately without iterating any records.
+    ///   - If no records exist in the range, (0, 0) is returned.
+    ///
+    /// Arithmetic is performed with `saturating_add` to prevent overflow panics.
+    pub fn get_activity_summary(env: Env, pet_id: u64, from_date: u64, to_date: u64) -> (u32, u32) {
+        // Guard: invalid range → return early
+        if from_date > to_date {
+            return (0, 0);
+        }
+
+        let history = Self::get_activity_history(env, pet_id);
+
+        let mut total_duration = 0u32;
+        let mut total_distance = 0u32;
+
+        for record in history.iter() {
+            // Inclusive boundary check
+            if record.recorded_at >= from_date && record.recorded_at <= to_date {
+                total_duration = total_duration.saturating_add(record.duration_minutes);
+                total_distance = total_distance.saturating_add(record.distance_meters);
+            }
+        }
+
+        (total_duration, total_distance)
+    }
     // --- BREEDING RECORDS SYSTEM ---
     pub fn add_breeding_record(
         env: Env,
