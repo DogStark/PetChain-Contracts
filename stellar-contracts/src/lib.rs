@@ -5208,6 +5208,35 @@ impl PetChainContract {
         id
     }
 
+    pub fn get_medications(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Medication> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicationCount(pet_id))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+        let start_index = offset + 1; // indices are 1-based
+        let end_index = (offset + limit as u64).min(count);
+
+        for i in start_index..=end_index {
+            if let Some(med_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicationIndex((pet_id, i)))
+            {
+                if let Some(med) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, Medication>(&MedicalKey::GlobalMedication(med_id))
+                {
+                    result.push_back(med);
+                }
+            }
+        }
+        result
+    }
+
     pub fn get_active_medications(env: Env, pet_id: u64) -> Vec<Medication> {
         let count: u64 = env
             .storage()
