@@ -5879,19 +5879,50 @@ impl PetChainContract {
         milestones
     }
 
+    /// Returns all behavior records for a specific pet and behavior type,
+    /// sorted by `recorded_at` in ascending order (oldest → newest).
+    ///
+    /// This enables trend analysis: callers can inspect whether severity
+    /// decreases over time without this function computing the trend itself.
+    ///
+    /// Returns an empty Vec if the pet has no records or no records of the
+    /// requested type — never panics on missing data.
     pub fn get_behavior_improvements(
         env: Env,
         pet_id: u64,
         behavior_type: BehaviorType,
     ) -> Vec<BehaviorRecord> {
+        // Fetch all records for this pet; returns empty Vec if pet is unknown.
         let history = Self::get_behavior_history(env.clone(), pet_id);
-        let mut filtered = Vec::new(&env);
 
+        // Filter to the requested behavior type.
+        let mut filtered: soroban_sdk::Vec<BehaviorRecord> = Vec::new(&env);
         for record in history.iter() {
             if record.behavior_type == behavior_type {
                 filtered.push_back(record);
             }
         }
+
+        // Sort ascending by recorded_at using insertion sort.
+        // Soroban's no_std Vec doesn't expose a sort method, so we do it manually.
+        // Insertion sort is stable, giving deterministic ordering for equal timestamps.
+        let len = filtered.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 {
+                let a = filtered.get(j - 1).unwrap();
+                let b = filtered.get(j).unwrap();
+                if a.recorded_at > b.recorded_at {
+                    // Swap by rebuilding the vector segment.
+                    filtered.set(j - 1, b);
+                    filtered.set(j, a);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
         filtered
     }
 
