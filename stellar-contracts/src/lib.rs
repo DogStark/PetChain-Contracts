@@ -5655,6 +5655,58 @@ impl PetChainContract {
         true
     }
 
+    /// Update multi-signature signers and threshold for an existing pet config.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet to update
+    /// * `new_signers` - New list of authorized signers (must include owner)
+    /// * `new_threshold` - New minimum signatures required
+    ///
+    /// # Returns
+    /// `true` if the update was successful
+    ///
+    /// # Panics
+    /// * If pet not found
+    /// * If caller is not the pet owner
+    /// * If multisig is not configured for the pet
+    /// * If threshold is invalid (0 or > new_signers.len())
+    /// * If owner is not included in the new signers list
+    pub fn update_multisig_signers(
+        env: Env,
+        pet_id: u64,
+        new_signers: Vec<Address>,
+        new_threshold: u32,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let mut config: MultisigConfig = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::MultisigNotConfigured));
+
+        if new_threshold == 0 || new_threshold > new_signers.len() {
+            env.panic_with_error(ContractError::InvalidThreshold);
+        }
+
+        if !new_signers.contains(pet.owner.clone()) {
+            env.panic_with_error(ContractError::NotPetOwner);
+        }
+
+        config.signers = new_signers;
+        config.threshold = new_threshold;
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetMultisigConfig(pet_id), &config);
+        true
+    }
+
     /// Get the multi-signature configuration for a pet.
     ///
     /// # Arguments
