@@ -77,6 +77,8 @@ mod test_nutrition;
 #[cfg(test)]
 mod test_pet_age;
 #[cfg(test)]
+mod test_search_medical_records;
+#[cfg(test)]
 mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -905,6 +907,15 @@ pub struct MedicalRecordInput {
     pub treatment: String,
     pub medications: Vec<Medication>,
     pub notes: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordFilter {
+    pub vet_address: Option<Address>,
+    pub from_date: Option<u64>,
+    pub to_date: Option<u64>,
+    pub diagnosis_keyword: Option<String>,
 }
 
 #[contracttype]
@@ -2898,6 +2909,71 @@ impl PetChainContract {
             .unwrap_or(0)
     }
 
+    fn medical_record_matches_filter(
+        env: &Env,
+        record: &MedicalRecord,
+        filter: &MedicalRecordFilter,
+    ) -> bool {
+        if let Some(vet_address) = &filter.vet_address {
+            if record.vet_address != *vet_address {
+                return false;
+            }
+        }
+
+        if let Some(from_date) = filter.from_date {
+            if record.date < from_date {
+                return false;
+            }
+        }
+
+        if let Some(to_date) = filter.to_date {
+            if record.date > to_date {
+                return false;
+            }
+        }
+
+        if let Some(keyword) = &filter.diagnosis_keyword {
+            if !Self::string_contains(env, &record.diagnosis, keyword) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn string_contains(_env: &Env, haystack: &String, needle: &String) -> bool {
+        let haystack_len = haystack.len() as usize;
+        let needle_len = needle.len() as usize;
+
+        if needle_len == 0 {
+            return true;
+        }
+        if needle_len > haystack_len {
+            return false;
+        }
+
+        let mut haystack_bytes = [0u8; Self::MAX_STR_LONG as usize];
+        let mut needle_bytes = [0u8; Self::MAX_STR_LONG as usize];
+        haystack.copy_into_slice(&mut haystack_bytes[..haystack_len]);
+        needle.copy_into_slice(&mut needle_bytes[..needle_len]);
+
+        for start in 0..=(haystack_len - needle_len) {
+            let mut matches = true;
+            for offset in 0..needle_len {
+                if haystack_bytes[start + offset] != needle_bytes[offset] {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if matches {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn species_to_string(env: &Env, species: &Species) -> String {
         match species {
             Species::Other => String::from_str(env, "Other"),
@@ -3284,8 +3360,34 @@ impl PetChainContract {
         pets
     }
 
-    pub fn get_pets_by_owner(env: Env, owner: Address) -> Vec<PetProfile> {
-        Self::get_all_pets_by_owner(env, owner)
+    pub fn get_pets_by_owner(env: Env, owner: Address, offset: u64, limit: u32) -> Vec<PetProfile> {
+        let count = Self::get_owner_pet_count(&env, &owner);
+        let mut pets = Vec::new(&env);
+        if count == 0 || limit == 0 || offset >= count {
+            return pets;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let requested_end = offset.saturating_add(limit as u64);
+        let end_index = if requested_end > count {
+            count
+        } else {
+            requested_end
+        };
+
+        for i in start_index..=end_index {
+            if let Some(pid) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
+            {
+                if let Some(pet) = Self::get_pet(env.clone(), pid, env.current_contract_address()) {
+                    pets.push_back(pet);
+                }
+            }
+        }
+
+        pets
     }
 
     pub fn get_pets_by_species(env: Env, species: String) -> Vec<PetProfile> {
@@ -3731,6 +3833,63 @@ impl PetChainContract {
             AccessAction::Read,
             String::from_str(&env, "Pet medical records accessed"),
         );
+        records
+    }
+
+    pub fn search_medical_records(
+        env: Env,
+        pet_id: u64,
+        filter: MedicalRecordFilter,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        if count == 0 || limit == 0 {
+            return records;
+        }
+
+        let mut skipped = 0u64;
+        for i in 1..=count {
+            let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            else {
+                continue;
+            };
+
+            let Some(record) = Self::get_medical_record(env.clone(), record_id) else {
+                continue;
+            };
+
+            if !Self::medical_record_matches_filter(&env, &record, &filter) {
+                continue;
+            }
+
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+
+            records.push_back(record);
+            if records.len() >= limit {
+                break;
+            }
+        }
+
+        Self::log_access(
+            &env,
+            pet_id,
+            env.current_contract_address(),
+            AccessAction::Read,
+            String::from_str(&env, "Medical record search executed"),
+        );
+
         records
     }
 
@@ -6295,4 +6454,3 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
 
     output
 }
-
