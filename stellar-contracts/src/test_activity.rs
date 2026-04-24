@@ -283,3 +283,121 @@ fn test_activity_stats_empty() {
     assert_eq!(total_duration, 0);
     assert_eq!(total_distance, 0);
 }
+
+#[test]
+fn test_archive_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.activate_pet(&pet_id);
+    assert_eq!(client.get_active_pets_count(), 1);
+
+    client.archive_pet(&pet_id);
+
+    // Archived pet should not be active
+    assert!(!client.is_pet_active(&pet_id));
+    // Active count should decrease
+    assert_eq!(client.get_active_pets_count(), 0);
+    // Archived pet excluded from get_active_pets
+    let active = client.get_active_pets();
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_unarchive_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.archive_pet(&pet_id);
+    client.unarchive_pet(&pet_id);
+
+    // After unarchive, pet is no longer archived (active state unchanged)
+    assert!(!client.is_pet_active(&pet_id));
+    // Can re-activate after unarchiving
+    client.activate_pet(&pet_id);
+    assert!(client.is_pet_active(&pet_id));
+}
+
+#[test]
+fn test_archive_decrements_active_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2019-05-10"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "White"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.activate_pet(&pet_id);
+    assert_eq!(client.get_active_pets_count(), 1);
+
+    client.archive_pet(&pet_id);
+    assert_eq!(client.get_active_pets_count(), 0);
+}
+
+#[test]
+#[should_panic]
+fn test_archive_nonexistent_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    client.archive_pet(&999);
+}
