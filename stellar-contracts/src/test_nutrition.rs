@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String, Vec};
 
 #[test]
 fn test_set_and_get_diet_plan() {
