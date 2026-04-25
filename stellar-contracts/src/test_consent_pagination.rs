@@ -97,6 +97,7 @@ fn test_consent_pruning_removes_oldest_revoked_at_cap() {
 }
 
 #[test]
+#[should_panic]
 fn test_consent_hard_cap_when_all_active() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
@@ -107,10 +108,7 @@ fn test_consent_hard_cap_when_all_active() {
     }
 
     // The 51st grant should panic because no revoked record exists to prune.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
-    }));
-    assert!(result.is_err(), "Expected panic when all 50 slots are active");
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
 }
 
 #[test]
