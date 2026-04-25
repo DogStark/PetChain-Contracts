@@ -65,8 +65,6 @@ mod test_behavior;
 // #[cfg(test)]
 // mod test_disputes;  // Has compilation errors - missing DisputeStatus
 #[cfg(test)]
-mod test_consent_pagination;
-#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -1641,9 +1639,18 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
-            let _caller = caller;            // For now, we decrypt if Public, or we assume this function decrypts for the client to see.
-            // Real privacy requires off-chain key management.
-            // We will proceed with decryption to return the Profile.
+            // Enforce access control based on privacy level.
+            let allowed = match pet.privacy_level {
+                PrivacyLevel::Public => true,
+                PrivacyLevel::Restricted => {
+                    let access = Self::check_access(env.clone(), id, caller.clone());
+                    !matches!(access, AccessLevel::None)
+                }
+                PrivacyLevel::Private => pet.owner == caller,
+            };
+            if !allowed {
+                return None;
+            }
 
             let key = Self::get_encryption_key(&env);
 
