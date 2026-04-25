@@ -107,6 +107,92 @@ fn test_configure_multisig_owner_not_in_signers() {
 }
 
 #[test]
+fn test_update_multisig_signers_success() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut initial_signers = Vec::new(&env);
+    initial_signers.push_back(owner.clone());
+    initial_signers.push_back(signer1.clone());
+    initial_signers.push_back(signer2.clone());
+    client.configure_multisig(&pet_id, &initial_signers, &2);
+
+    let mut updated_signers = Vec::new(&env);
+    updated_signers.push_back(owner.clone());
+    updated_signers.push_back(new_owner.clone());
+
+    let result = client.update_multisig_signers(&pet_id, &updated_signers, &1);
+    assert!(result);
+
+    let config = client.get_multisig_config(&pet_id).unwrap();
+    assert_eq!(config.threshold, 1);
+    assert_eq!(config.signers.len(), 2);
+    assert!(config.signers.contains(owner.clone()));
+    assert!(config.signers.contains(new_owner.clone()));
+}
+
+#[test]
+#[should_panic]
+fn test_update_multisig_signers_requires_owner_auth() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, _) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    client.configure_multisig(&pet_id, &signers, &2);
+
+    env.set_auths(&[]);
+
+    let mut updated_signers = Vec::new(&env);
+    updated_signers.push_back(owner.clone());
+    updated_signers.push_back(signer1.clone());
+
+    client.update_multisig_signers(&pet_id, &updated_signers, &2);
+}
+
+#[test]
+#[should_panic]
+fn test_update_multisig_signers_owner_must_be_in_signers() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, _) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    client.configure_multisig(&pet_id, &signers, &2);
+
+    let mut updated_signers = Vec::new(&env);
+    updated_signers.push_back(signer1.clone());
+    updated_signers.push_back(signer2.clone());
+
+    client.update_multisig_signers(&pet_id, &updated_signers, &2);
+}
+
+#[test]
+#[should_panic]
+fn test_update_multisig_signers_invalid_threshold() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, _) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    client.configure_multisig(&pet_id, &signers, &2);
+
+    let mut updated_signers = Vec::new(&env);
+    updated_signers.push_back(owner.clone());
+    updated_signers.push_back(signer1.clone());
+
+    client.update_multisig_signers(&pet_id, &updated_signers, &3);
+}
+
+#[test]
 fn test_disable_multisig() {
     let env = Env::default();
     let (client, owner, signer1, signer2, _) = setup_test_env(&env);
