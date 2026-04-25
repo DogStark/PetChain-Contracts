@@ -2243,6 +2243,25 @@ impl PetChainContract {
         true
     }
 
+    pub fn update_vet_clinic_info(env: Env, vet_address: Address, clinic_info: String) {
+        vet_address.require_auth();
+
+        if clinic_info.len() > 500 {
+            panic!("clinic_info exceeds 500 characters");
+        }
+
+        let mut vet: Vet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Vet(vet_address.clone()))
+            .expect("Vet not found");
+
+        vet.clinic_info = Some(clinic_info);
+        env.storage()
+            .instance()
+            .set(&DataKey::Vet(vet_address), &vet);
+    }
+
     pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
         Self::require_admin_auth(&env, &admin);
         Self::_verify_vet_internal(&env, vet_address)
