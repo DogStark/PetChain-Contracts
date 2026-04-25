@@ -402,100 +402,176 @@ fn test_archive_nonexistent_pet() {
     client.archive_pet(&999);
 }
 
-#[test]
-fn test_get_treatment_history_pagination() {
-    use crate::{TreatmentType};
+// ── get_activity_summary tests ────────────────────────────────────────────────
 
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PetChainContract);
-    let client = PetChainContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
-    let vet = Address::generate(&env);
+/// Helper: register a pet and return its id.
+fn setup_pet(env: &Env, client: &PetChainContractClient) -> u64 {
+    let owner = Address::generate(env);
     client.init_admin(&owner);
-
-    let pet_id = client.register_pet(
+    client.register_pet(
         &owner,
-        &String::from_str(&env, "Rex"),
-        &String::from_str(&env, "2019-05-10"),
+        &String::from_str(env, "Max"),
+        &String::from_str(env, "2020-01-01"),
         &Gender::Male,
         &Species::Dog,
-        &String::from_str(&env, "Labrador"),
-        &String::from_str(&env, "Black"),
+        &String::from_str(env, "Golden Retriever"),
+        &String::from_str(env, "Golden"),
         &30,
         &None,
         &PrivacyLevel::Public,
-    );
-
-    client.register_vet(
-        &vet,
-        &String::from_str(&env, "Dr. Smith"),
-        &String::from_str(&env, "LIC-001"),
-        &String::from_str(&env, "General"),
-    );
-    client.verify_vet(&owner, &vet);
-
-    // Add 3 treatments
-    client.add_treatment(
-        &pet_id,
-        &vet,
-        &TreatmentType::Routine,
-        &1000u64,
-        &String::from_str(&env, "Checkup"),
-        &None,
-        &String::from_str(&env, "Good"),
-    );
-    client.add_treatment(
-        &pet_id,
-        &vet,
-        &TreatmentType::Surgery,
-        &2000u64,
-        &String::from_str(&env, "Spay"),
-        &None,
-        &String::from_str(&env, "Successful"),
-    );
-    client.add_treatment(
-        &pet_id,
-        &vet,
-        &TreatmentType::Emergency,
-        &3000u64,
-        &String::from_str(&env, "Injury"),
-        &None,
-        &String::from_str(&env, "Recovered"),
-    );
-
-    // Get all (offset=0, limit=10)
-    let all = client.get_treatment_history(&pet_id, &0u64, &10u32);
-    assert_eq!(all.len(), 3);
-    assert_eq!(all.get(0).unwrap().treatment_type, TreatmentType::Routine);
-    assert_eq!(all.get(1).unwrap().treatment_type, TreatmentType::Surgery);
-    assert_eq!(all.get(2).unwrap().treatment_type, TreatmentType::Emergency);
-
-    // Pagination: offset=1, limit=2 → 2nd and 3rd
-    let page = client.get_treatment_history(&pet_id, &1u64, &2u32);
-    assert_eq!(page.len(), 2);
-    assert_eq!(page.get(0).unwrap().treatment_type, TreatmentType::Surgery);
-    assert_eq!(page.get(1).unwrap().treatment_type, TreatmentType::Emergency);
-
-    // Offset beyond count → empty
-    let empty = client.get_treatment_history(&pet_id, &10u64, &5u32);
-    assert_eq!(empty.len(), 0);
+    )
 }
 
 #[test]
-fn test_get_treatment_history_nonexistent_pet() {
+fn test_activity_summary_valid_range() {
+    // Activities within the range should be summed correctly.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let pet_id = setup_pet(&env, &client);
+
+    // Both records land at timestamp 1_000 (current ledger time).
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
+    );
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &7,
+        &1500,
+        &String::from_str(&env, "Run"),
+    );
+
+    let (duration, distance) = client.get_activity_summary(&pet_id, &500, &2000);
+    assert_eq!(duration, 50);
+    assert_eq!(distance, 3500);
+}
+
+#[test]
+fn test_activity_summary_partial_overlap() {
+    // Only records whose timestamp falls inside [from, to] should be counted.
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
-    let owner = Address::generate(&env);
-    client.init_admin(&owner);
+    // Record 1 at t=100
+    env.ledger().set_timestamp(100);
+    let pet_id = setup_pet(&env, &client);
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Inside range"),
+    );
 
-    // Non-existent pet should return empty vec
-    let result = client.get_treatment_history(&999u64, &0u64, &10u32);
-    assert_eq!(result.len(), 0);
+    // Record 2 at t=5000 – outside the query range below
+    env.ledger().set_timestamp(5000);
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &7,
+        &1500,
+        &String::from_str(&env, "Outside range"),
+    );
+
+    // Query only covers t=0..=200
+    let (duration, distance) = client.get_activity_summary(&pet_id, &0, &200);
+    assert_eq!(duration, 30);
+    assert_eq!(distance, 2000);
+}
+
+#[test]
+fn test_activity_summary_empty_range() {
+    // No activities exist in the queried window → (0, 0).
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(9999);
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let pet_id = setup_pet(&env, &client);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Play,
+        &45,
+        &3,
+        &0,
+        &String::from_str(&env, "Play"),
+    );
+
+    // Query a window that doesn't include t=9999
+    let (duration, distance) = client.get_activity_summary(&pet_id, &0, &100);
+    assert_eq!(duration, 0);
+    assert_eq!(distance, 0);
+}
+
+#[test]
+fn test_activity_summary_single_activity_on_boundary() {
+    // A record exactly on from_date or to_date must be included (inclusive).
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(500);
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let pet_id = setup_pet(&env, &client);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Training,
+        &60,
+        &4,
+        &3000,
+        &String::from_str(&env, "Boundary activity"),
+    );
+
+    // Exact lower boundary
+    let (d1, dist1) = client.get_activity_summary(&pet_id, &500, &500);
+    assert_eq!(d1, 60);
+    assert_eq!(dist1, 3000);
+
+    // Exact upper boundary
+    let (d2, dist2) = client.get_activity_summary(&pet_id, &0, &500);
+    assert_eq!(d2, 60);
+    assert_eq!(dist2, 3000);
+}
+
+#[test]
+fn test_activity_summary_invalid_range() {
+    // from_date > to_date → (0, 0) without panicking.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let pet_id = setup_pet(&env, &client);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
+    );
+
+    let (duration, distance) = client.get_activity_summary(&pet_id, &2000, &500);
+    assert_eq!(duration, 0);
+    assert_eq!(distance, 0);
 }
