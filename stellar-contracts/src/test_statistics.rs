@@ -63,6 +63,25 @@ fn test_get_species_count() {
 }
 
 #[test]
+fn test_get_pets_by_species_pagination() {
+    let (env, client, _admin) = setup_env();
+    let owner = Address::generate(&env);
+
+    register_pet_with_species(&client, &env, &owner, Species::Dog);
+    register_pet_with_species(&client, &env, &owner, Species::Dog);
+    register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    let dogs_all = client.get_pets_by_species(&String::from_str(&env, "Dog"), &0u64, &10u32);
+    assert_eq!(dogs_all.len(), 3);
+
+    let dogs_page = client.get_pets_by_species(&String::from_str(&env, "Dog"), &1u64, &1u32);
+    assert_eq!(dogs_page.len(), 1);
+
+    let dogs_empty = client.get_pets_by_species(&String::from_str(&env, "Dog"), &5u64, &1u32);
+    assert_eq!(dogs_empty.len(), 0);
+}
+
+#[test]
 fn test_get_active_pets_count() {
     let (env, client, _admin) = setup_env();
     let owner = Address::generate(&env);
