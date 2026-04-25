@@ -210,6 +210,19 @@ impl VetRegistryContract {
         get_vet(&env, &vet_address)
     }
 
+    pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
+        let vet_address: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VetByLicense(license_number));
+
+        vet_address.and_then(|address| {
+            env.storage()
+                .persistent()
+                .get(&DataKey::VetByAddress(address))
+        })
+    }
+
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         let vet = get_vet(&env, &vet_address);
         vet.verified
@@ -225,7 +238,11 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env, String};
 
-    fn setup() -> (Env, soroban_sdk::Address, VetRegistryContractClient<'static>) {
+    fn setup() -> (
+        Env,
+        soroban_sdk::Address,
+        VetRegistryContractClient<'static>,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, VetRegistryContract);
@@ -333,5 +350,32 @@ mod tests {
     #[test]
     fn test_input_too_long_error_code() {
         assert_eq!(ContractError::InputTooLong as u32, 6);
+    }
+
+    #[test]
+    fn test_get_vet_by_license_returns_registered_vet() {
+        let (env, _, client) = setup();
+        let vet = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-LOOKUP-001");
+
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Lookup"),
+            &license,
+            &str(&env, "General"),
+        );
+
+        let found = client.get_vet_by_license(&license).unwrap();
+        assert_eq!(found.address, vet);
+        assert_eq!(found.license_number, license);
+        assert_eq!(found.name, str(&env, "Dr. Lookup"));
+        assert!(!found.verified);
+    }
+
+    #[test]
+    fn test_get_vet_by_license_returns_none_for_unknown_license() {
+        let (env, _, client) = setup();
+
+        assert_eq!(client.get_vet_by_license(&str(&env, "LIC-MISSING")), None);
     }
 }
