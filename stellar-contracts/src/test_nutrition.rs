@@ -1,5 +1,8 @@
 use crate::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String, Vec,
+};
 
 #[test]
 fn test_set_and_get_diet_plan() {
@@ -149,15 +152,30 @@ fn test_get_medications_pagination() {
     // Get all medications (offset=0, limit=10)
     let all = client.get_medications(&pet_id, &0u64, &10u32);
     assert_eq!(all.len(), 3);
-    assert_eq!(all.get(0).unwrap().name, String::from_str(&env, "Amoxicillin"));
-    assert_eq!(all.get(1).unwrap().name, String::from_str(&env, "Prednisone"));
-    assert_eq!(all.get(2).unwrap().name, String::from_str(&env, "Metronidazole"));
+    assert_eq!(
+        all.get(0).unwrap().name,
+        String::from_str(&env, "Amoxicillin")
+    );
+    assert_eq!(
+        all.get(1).unwrap().name,
+        String::from_str(&env, "Prednisone")
+    );
+    assert_eq!(
+        all.get(2).unwrap().name,
+        String::from_str(&env, "Metronidazole")
+    );
 
     // Pagination: offset=1, limit=2 → should return 2nd and 3rd
     let page = client.get_medications(&pet_id, &1u64, &2u32);
     assert_eq!(page.len(), 2);
-    assert_eq!(page.get(0).unwrap().name, String::from_str(&env, "Prednisone"));
-    assert_eq!(page.get(1).unwrap().name, String::from_str(&env, "Metronidazole"));
+    assert_eq!(
+        page.get(0).unwrap().name,
+        String::from_str(&env, "Prednisone")
+    );
+    assert_eq!(
+        page.get(1).unwrap().name,
+        String::from_str(&env, "Metronidazole")
+    );
 
     // Offset beyond count → empty
     let empty = client.get_medications(&pet_id, &10u64, &5u32);
@@ -229,7 +247,10 @@ fn test_get_active_medications_filter() {
     // Now only one should be active
     let active_after = client.get_active_medications(&pet_id);
     assert_eq!(active_after.len(), 1);
-    assert_eq!(active_after.get(0).unwrap().name, String::from_str(&env, "Furosemide"));
+    assert_eq!(
+        active_after.get(0).unwrap().name,
+        String::from_str(&env, "Furosemide")
+    );
     assert!(active_after.get(0).unwrap().active);
 
     // get_medications still returns all (including inactive)
