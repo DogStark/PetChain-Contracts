@@ -46,7 +46,9 @@ pub struct AuthenticatedUser {
 
 impl AuthenticatedUser {
     pub fn new(user_id: impl Into<String>) -> Self {
-        Self { user_id: user_id.into() }
+        Self {
+            user_id: user_id.into(),
+        }
     }
 
     pub fn authorize(&self, requested_user_id: &str) -> Result<(), String> {
@@ -107,7 +109,9 @@ pub struct TwoFactorHandlers {
 
 impl TwoFactorHandlers {
     pub fn new() -> Self {
-        Self { limiter: Arc::new(InMemoryRateLimiter::default()) }
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+        }
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
@@ -126,7 +130,10 @@ impl TwoFactorHandlers {
                 .map_err(|_| "2FA storage lock poisoned".to_string())?;
             if let Some(existing) = store.get(&req.user_id) {
                 if existing.enabled {
-                    return Err("2FA is already enabled. To re-enroll, you must first disable it.".to_string());
+                    return Err(
+                        "2FA is already enabled. To re-enroll, you must first disable it."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -158,7 +165,10 @@ impl TwoFactorHandlers {
 
         let key = format!("verify:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
         let result = store_get_mut_then(&req.user_id, |data| {
@@ -185,7 +195,10 @@ impl TwoFactorHandlers {
 
         let key = format!("login:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
         let data = store_get(&req.user_id)?;
@@ -211,7 +224,10 @@ impl TwoFactorHandlers {
 
         let key = format!("disable:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
         let result = store_get_mut_then(&req.user_id, |data| {
