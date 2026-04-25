@@ -452,6 +452,15 @@ pub struct PetProfile {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct PetFullProfile {
+    pub profile: PetProfile,
+    pub latest_vaccination_id: Option<u64>,
+    pub active_medications_count: u64,
+    pub has_insurance: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct PetOwner {
     pub owner_address: Address,
     pub privacy_level: PrivacyLevel,
@@ -515,7 +524,7 @@ pub enum VaccineType {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Vaccination {
     pub id: u64,
     pub pet_id: u64,
@@ -1739,6 +1748,81 @@ impl PetChainContract {
         }
 
         (0, 0)
+    }
+
+    pub fn get_pet_full_profile(env: Env, pet_id: u64, caller: Address) -> Option<PetFullProfile> {
+        // Check access control first
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            // Check if caller has access based on privacy level and access grants
+            let access_level = Self::check_access(env.clone(), pet_id, caller.clone());
+            
+            // Private pets can only be accessed by owner
+            if pet.privacy_level == PrivacyLevel::Private && pet.owner != caller {
+                return None;
+            }
+            
+            // Restricted pets require at least Basic access
+            if pet.privacy_level == PrivacyLevel::Restricted && access_level == AccessLevel::None {
+                return None;
+            }
+            
+            // Public pets are accessible to anyone
+            // Get the base pet profile
+            let profile = Self::get_pet(env.clone(), pet_id, caller.clone())?;
+
+            // Get latest vaccination ID (most recent by administered_at)
+            let vax_count: u64 = env
+                .storage()
+                .instance()
+                .get(&MedicalKey::PetVaccinationCount(pet_id))
+                .unwrap_or(0);
+            let mut latest_vaccination_id: Option<u64> = None;
+            let mut latest_timestamp: u64 = 0;
+            for i in 1..=vax_count {
+                if let Some(vax_id) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&MedicalKey::PetVaccinationByIndex((pet_id, i)))
+                {
+                    if let Some(vax) = Self::get_vaccinations(env.clone(), vax_id) {
+                        if vax.administered_at > latest_timestamp {
+                            latest_timestamp = vax.administered_at;
+                            latest_vaccination_id = Some(vax_id);
+                        }
+                    }
+                }
+            }
+
+            // Get active medications count
+            let active_medications = Self::get_active_medications(env.clone(), pet_id);
+            let active_medications_count = active_medications.len() as u64;
+
+            // Check if insurance exists
+            let insurance = Self::get_pet_insurance(env.clone(), pet_id);
+            let has_insurance = insurance.is_some();
+
+            // Log the full profile access
+            Self::log_access(
+                &env,
+                pet_id,
+                caller,
+                AccessAction::Read,
+                String::from_str(&env, "Full pet profile accessed"),
+            );
+
+            Some(PetFullProfile {
+                profile,
+                latest_vaccination_id,
+                active_medications_count,
+                has_insurance,
+            })
+        } else {
+            None
+        }
     }
 
     fn parse_birthday_timestamp(birthday: &String) -> Result<u64, ContractError> {
