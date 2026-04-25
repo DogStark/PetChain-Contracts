@@ -609,6 +609,8 @@ pub enum DataKey {
     // Vet verification keys
     Vet(Address),
     VetLicense(String),
+    VetCount,
+    VetIndex(u64),
     Admin,
 
     // Contract Upgrade keys
@@ -2240,7 +2242,59 @@ impl PetChainContract {
             .instance()
             .set(&DataKey::VetLicense(license_number), &vet_address);
 
+        let vet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::VetCount, &vet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::VetIndex(vet_count), &vet_address);
+
         true
+    }
+
+    pub fn get_verified_vets(env: Env, offset: u64, limit: u32) -> Vec<Vet> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0);
+        let mut result = Vec::new(&env);
+        if count == 0 || limit == 0 {
+            return result;
+        }
+        let mut skipped = 0u64;
+        for i in 1..=count {
+            if let Some(addr) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::VetIndex(i))
+            {
+                if let Some(vet) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Vet>(&DataKey::Vet(addr))
+                {
+                    if !vet.verified {
+                        continue;
+                    }
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+                    result.push_back(vet);
+                    if result.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
