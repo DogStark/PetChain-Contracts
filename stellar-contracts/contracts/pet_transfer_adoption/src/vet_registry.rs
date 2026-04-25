@@ -231,6 +231,19 @@ impl VetRegistryContract {
         get_vet(&env, &vet_address)
     }
 
+    pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
+        let vet_address: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VetByLicense(license_number));
+
+        vet_address.and_then(|address| {
+            env.storage()
+                .persistent()
+                .get(&DataKey::VetByAddress(address))
+        })
+    }
+
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         let vet = get_vet(&env, &vet_address);
         vet.verified
