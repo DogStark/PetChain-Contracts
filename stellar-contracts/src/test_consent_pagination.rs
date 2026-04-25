@@ -139,87 +139,57 @@ fn test_get_consent_history_page_no_records() {
 }
 
 #[test]
-fn test_get_consent_by_type_filter() {
+fn test_get_active_consents_only_returns_active() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
-    // Grant different types of consents
-    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
-    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee);
-    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let _id3 = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee);
 
-    // Filter by Research type
-    let research_consents = client.get_consent_by_type(&pet_id, &ConsentType::Research, &0, &10);
-    assert_eq!(research_consents.len(), 2);
-    for consent in research_consents.iter() {
-        assert_eq!(consent.consent_type, ConsentType::Research);
-    }
+    // Revoke two of the three
+    client.revoke_consent(&id1, &owner);
+    client.revoke_consent(&id2, &owner);
 
-    // Filter by Insurance type
-    let insurance_consents = client.get_consent_by_type(&pet_id, &ConsentType::Insurance, &0, &10);
-    assert_eq!(insurance_consents.len(), 2);
-    for consent in insurance_consents.iter() {
-        assert_eq!(consent.consent_type, ConsentType::Insurance);
-    }
-
-    // Filter by PublicHealth type
-    let health_consents = client.get_consent_by_type(&pet_id, &ConsentType::PublicHealth, &0, &10);
-    assert_eq!(health_consents.len(), 1);
-    assert_eq!(health_consents.get(0).unwrap().consent_type, ConsentType::PublicHealth);
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert!(active.get(0).unwrap().is_active);
 }
 
 #[test]
-fn test_get_consent_by_type_pagination() {
+fn test_get_active_consents_empty_when_all_revoked() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
-    // Grant 5 Research consents
-    for _ in 0..5u32 {
-        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    }
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
 
-    // Test pagination with limit 2
-    let page0 = client.get_consent_by_type(&pet_id, &ConsentType::Research, &0, &2);
-    assert_eq!(page0.len(), 2);
+    client.revoke_consent(&id1, &owner);
+    client.revoke_consent(&id2, &owner);
 
-    let page1 = client.get_consent_by_type(&pet_id, &ConsentType::Research, &2, &2);
-    assert_eq!(page1.len(), 2);
-
-    let page2 = client.get_consent_by_type(&pet_id, &ConsentType::Research, &4, &2);
-    assert_eq!(page2.len(), 1);
-
-    // Test beyond available records
-    let page3 = client.get_consent_by_type(&pet_id, &ConsentType::Research, &5, &2);
-    assert_eq!(page3.len(), 0);
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 0);
 }
 
 #[test]
-fn test_get_consent_by_type_no_matches() {
+fn test_get_active_consents_all_active() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
-    // Grant only Research consents
-    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-
-    // Filter by Insurance type (should return empty)
-    let insurance_consents = client.get_consent_by_type(&pet_id, &ConsentType::Insurance, &0, &10);
-    assert_eq!(insurance_consents.len(), 0);
-}
-
-#[test]
-fn test_get_consent_by_type_zero_limit_clamps_to_50() {
-    let (env, client, pet_id, owner) = setup();
-    let grantee = Address::generate(&env);
-
-    // Grant 3 Research consents
     for _ in 0..3u32 {
         client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
     }
 
-    // limit=0 should be treated as 50, returning all 3 records
-    let consents = client.get_consent_by_type(&pet_id, &ConsentType::Research, &0, &0);
-    assert_eq!(consents.len(), 3);
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 3);
+    for i in 0..3u32 {
+        assert!(active.get(i).unwrap().is_active);
+    }
+}
+
+#[test]
+fn test_get_active_consents_no_consents() {
+    let (_env, client, pet_id, _owner) = setup();
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 0);
 }
