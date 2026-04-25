@@ -54,6 +54,22 @@ mod test_get_pet_decryption {
         )
     }
 
+    fn setup_verified_vet(client: &PetChainContractClient, env: &Env) -> Address {
+        let admin = Address::generate(env);
+        let vet = Address::generate(env);
+        let mut admins = soroban_sdk::Vec::new(env);
+        admins.push_back(admin.clone());
+        client.init_multisig(&admin, &admins, &1u32);
+        client.register_vet(
+            &vet,
+            &String::from_str(env, "Dr. Test"),
+            &String::from_str(env, "LIC-001"),
+            &String::from_str(env, "General"),
+        );
+        client.verify_vet(&admin, &vet);
+        vet
+    }
+
     /// Overwrite a stored Pet's encrypted_name with bytes that are not valid
     /// XDR for a soroban String, then assert get_pet returns None.
     fn corrupt_pet_name(env: &Env, pet_id: u64) {

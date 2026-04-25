@@ -128,6 +128,28 @@ let client = PetChainContractClient::new(&env, &contract_id);
 let pet_id = client.register_pet(&owner, &name, &species);
 ```
 
+## Statistics
+
+#### `get_vet_stats`
+Returns the activity statistics for a given vet.
+
+**Parameters:**
+- `env: Env` - Contract environment
+- `vet_address: Address` - The vet's address
+
+**Returns:** `VetStats` - Stats struct with the following fields:
+- `total_records: u64` - Total medical records added by this vet
+- `total_vaccinations: u64` - Total vaccinations administered
+- `total_treatments: u64` - Total treatments recorded
+- `pets_treated: u64` - Number of unique pets treated
+
+Returns a zeroed `VetStats` if the vet has no recorded activity.
+
+**Example:**
+```rust
+let stats = client.get_vet_stats(&vet_address);
+```
+
 ## Future Enhancements
 
 See [ISSUES.md](ISSUES.md) for planned features:
