@@ -632,6 +632,10 @@ pub enum DataKey {
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
     TemporaryCustody(u64),        // pet_id -> temporary custody record
+    CustodyHistory(u64),          // record_id -> TemporaryCustody
+    CustodyRecordCount,           // global count of custody records
+    PetCustodyCount(u64),         // pet_id -> count of custody records
+    PetCustodyIndex((u64, u64)),  // (pet_id, index) -> record_id
 
     // Vet stats and tracking
     VetStats(Address),
@@ -3880,6 +3884,34 @@ impl PetChainContract {
             .instance()
             .set(&DataKey::TemporaryCustody(pet_id), &custody);
 
+        // Append to custody history
+        let global_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CustodyRecordCount)
+            .unwrap_or(0);
+        let record_id = global_count + 1;
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetCustodyCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CustodyHistory(record_id), &custody);
+        env.storage()
+            .instance()
+            .set(&DataKey::CustodyRecordCount, &record_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCustodyCount(pet_id), &new_pet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCustodyIndex((pet_id, new_pet_count)), &record_id);
+
         custody
     }
 
@@ -3897,6 +3929,34 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::TemporaryCustody(pet_id), &custody);
+
+        // Append revocation snapshot to custody history
+        let global_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CustodyRecordCount)
+            .unwrap_or(0);
+        let record_id = global_count + 1;
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetCustodyCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CustodyHistory(record_id), &custody);
+        env.storage()
+            .instance()
+            .set(&DataKey::CustodyRecordCount, &record_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCustodyCount(pet_id), &new_pet_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::PetCustodyIndex((pet_id, new_pet_count)), &record_id);
     }
 
     pub fn is_custody_valid(env: Env, pet_id: u64) -> bool {
@@ -3907,6 +3967,32 @@ impl PetChainContract {
             .unwrap_or_else(|| env.panic_with_error(ContractError::CustodyNotFound));
         let current_time = env.ledger().timestamp();
         custody.is_active && current_time <= custody.end_date
+    }
+
+    pub fn get_custody_history(env: Env, pet_id: u64) -> Vec<TemporaryCustody> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetCustodyCount(pet_id))
+            .unwrap_or(0);
+        let mut history = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::PetCustodyIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, TemporaryCustody>(&DataKey::CustodyHistory(record_id))
+                {
+                    history.push_back(record);
+                }
+            }
+        }
+        history
     }
 
     // --- MEDICAL RECORDS ---

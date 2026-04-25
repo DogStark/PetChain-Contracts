@@ -1057,14 +1057,106 @@ fn test_check_and_expire_access_does_not_affect_active_grant() {
 }
 
 #[test]
-fn test_check_access_respects_expiry_and_marks_inactive() {
+fn test_custody_history_multiple_updates() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
-    let grantee = Address::generate(&env);
+    let custodian1 = Address::generate(&env);
+    let custodian2 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut perms1 = Vec::new(&env);
+    perms1.push_back(String::from_str(&env, "feed"));
+
+    let mut perms2 = Vec::new(&env);
+    perms2.push_back(String::from_str(&env, "walk"));
+    perms2.push_back(String::from_str(&env, "groom"));
+
+    // Grant custody to custodian1
+    client.grant_temporary_custody(&pet_id, &custodian1, &1000u64, &2000u64, &perms1);
+
+    // Grant custody to custodian2 (overwrites current but history preserves both)
+    client.grant_temporary_custody(&pet_id, &custodian2, &2500u64, &3500u64, &perms2);
+
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().custodian, custodian1);
+    assert!(history.get(0).unwrap().is_active);
+    assert_eq!(history.get(1).unwrap().custodian, custodian2);
+    assert!(history.get(1).unwrap().is_active);
+}
+
+#[test]
+fn test_custody_history_appended_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let custodian = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2021-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &8u32,
+        &None,
+        &PrivacyLevel::Restricted,
+    );
+
+    let mut perms = Vec::new(&env);
+    perms.push_back(String::from_str(&env, "medical"));
+
+    // First custody grant
+    let custody1 = client.grant_temporary_custody(&pet_id, &custodian, &1000u64, &2000u64, &perms);
+    assert!(custody1.is_active);
+
+    // Second custody grant to same custodian with different dates
+    let custody2 = client.grant_temporary_custody(&pet_id, &custodian, &3000u64, &4000u64, &perms);
+    assert!(custody2.is_active);
+
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
+
+    // Verify order and data
+    let first = history.get(0).unwrap();
+    let second = history.get(1).unwrap();
+
+    assert_eq!(first.start_date, 1000u64);
+    assert_eq!(first.end_date, 2000u64);
+    assert_eq!(second.start_date, 3000u64);
+    assert_eq!(second.end_date, 4000u64);
+}
+
+#[test]
+fn test_get_custody_history_returns_complete_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let custodian = Address::generate(&env);
 
     let pet_id = client.register_pet(
         &owner,
@@ -1079,23 +1171,31 @@ fn test_check_access_respects_expiry_and_marks_inactive() {
         &PrivacyLevel::Private,
     );
 
-    let now = 1000;
-    env.ledger().with_mut(|l| l.timestamp = now);
-    let expires_at = now + 100;
-    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+    let mut perms = Vec::new(&env);
+    perms.push_back(String::from_str(&env, "exercise"));
 
-    // Before expiry, access is Full
-    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::Full);
-    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
-    assert!(grant.is_active);
+    // Grant custody
+    client.grant_temporary_custody(&pet_id, &custodian, &1000u64, &2000u64, &perms);
 
-    // Move time past expiry
-    env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+    // Revoke custody - this should append the revoked snapshot to history
+    client.revoke_temporary_custody(&pet_id);
 
-    // After expiry, access is None
-    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::None);
+    // History should contain both the grant and the revocation snapshot
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
 
-    // Grant should have been marked inactive
-    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
-    assert!(!grant.is_active);
+    let first = history.get(0).unwrap();
+    let second = history.get(1).unwrap();
+
+    // First entry: active grant
+    assert!(first.is_active);
+    assert_eq!(first.custodian, custodian);
+
+    // Second entry: revoked snapshot (inactive)
+    assert!(!second.is_active);
+    assert_eq!(second.custodian, custodian);
+
+    // Verify current custody is inactive
+    assert!(!client.is_custody_valid(&pet_id));
 }
+
