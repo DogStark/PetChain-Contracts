@@ -190,8 +190,14 @@ mod test_search_medical_records {
         );
 
         assert_eq!(page.len(), 2);
-        assert_eq!(page.get(0).unwrap().diagnosis, String::from_str(&env, "Flu B"));
-        assert_eq!(page.get(1).unwrap().diagnosis, String::from_str(&env, "Flu C"));
+        assert_eq!(
+            page.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Flu B")
+        );
+        assert_eq!(
+            page.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Flu C")
+        );
     }
 
     #[test]

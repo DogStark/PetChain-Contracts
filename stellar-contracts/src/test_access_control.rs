@@ -870,8 +870,14 @@ fn test_get_vaccination_history_pagination_first_page() {
     // Test first page with limit 2
     let history = client.get_vaccination_history(&pet_id, &0u64, &2u32);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(0).unwrap().vaccine_type, crate::VaccineType::Rabies);
-    assert_eq!(history.get(1).unwrap().vaccine_type, crate::VaccineType::Parvovirus);
+    assert_eq!(
+        history.get(0).unwrap().vaccine_type,
+        crate::VaccineType::Rabies
+    );
+    assert_eq!(
+        history.get(1).unwrap().vaccine_type,
+        crate::VaccineType::Parvovirus
+    );
 }
 
 #[test]
