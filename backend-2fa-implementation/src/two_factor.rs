@@ -1,11 +1,11 @@
-use totp_rs::{Algorithm, Secret, TOTP};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use rand::Rng;
-use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use totp_rs::{Algorithm, Secret, TOTP};
 
 /// Configuration for TOTP parameters to ensure cryptographic agility
 #[derive(Debug, Clone)]
@@ -29,11 +29,21 @@ impl Default for TotpConfig {
 
 impl TotpConfig {
     pub fn legacy_sha1() -> Self {
-        Self { algorithm: Algorithm::SHA1, digits: 6, period: 30, window: 1 }
+        Self {
+            algorithm: Algorithm::SHA1,
+            digits: 6,
+            period: 30,
+            window: 1,
+        }
     }
 
     pub fn high_security() -> Self {
-        Self { algorithm: Algorithm::SHA512, digits: 8, period: 30, window: 1 }
+        Self {
+            algorithm: Algorithm::SHA512,
+            digits: 8,
+            period: 30,
+            window: 1,
+        }
     }
 }
 
@@ -89,16 +99,26 @@ impl TwoFactorAuth {
             config.digits,
             config.window,
             config.period,
-            Secret::Encoded(secret.clone()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.clone())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             Some(issuer.to_string()),
             user_email.to_string(),
         )
         .map_err(|e| e.to_string())?;
 
-        let qr_code_base64 = format!("data:image/png;base64,{}", totp.get_qr_base64().map_err(|e| e.to_string())?);
+        let qr_code_base64 = format!(
+            "data:image/png;base64,{}",
+            totp.get_qr_base64().map_err(|e| e.to_string())?
+        );
         let backup_codes = Self::generate_backup_codes(8);
 
-        Ok(TwoFactorSetup { secret, qr_code_base64, backup_codes, config })
+        Ok(TwoFactorSetup {
+            secret,
+            qr_code_base64,
+            backup_codes,
+            config,
+        })
     }
 
     /// Verify token with default configuration (SHA256)
@@ -117,13 +137,15 @@ impl TwoFactorAuth {
             config.digits,
             config.window,
             config.period,
-            Secret::Encoded(secret.to_string()).to_bytes().map_err(|e| e.to_string())?,
+            Secret::Encoded(secret.to_string())
+                .to_bytes()
+                .map_err(|e| e.to_string())?,
             None,
             String::new(),
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(totp.check_current(token).map_err(|e| e.to_string())?)
+        totp.check_current(token).map_err(|e| e.to_string())
     }
 
     pub fn generate_backup_codes(count: usize) -> Vec<String> {

@@ -125,11 +125,17 @@ impl TwoFactorHandlers {
     ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
-        if let Ok(existing) = two_factor_store().get(&req.user_id) {
-            if existing.enabled {
-                return Err(
-                    "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
-                );
+        {
+            let store = two_factor_store()
+                .lock()
+                .map_err(|_| "2FA storage lock poisoned".to_string())?;
+            if let Some(existing) = store.get(&req.user_id) {
+                if existing.enabled {
+                    return Err(
+                        "2FA is already enabled. To re-enroll, you must first disable it."
+                            .to_string(),
+                    );
+                }
             }
         }
 
