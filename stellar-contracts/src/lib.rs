@@ -5986,19 +5986,50 @@ impl PetChainContract {
         milestones
     }
 
+    /// Returns all behavior records for a specific pet and behavior type,
+    /// sorted by `recorded_at` in ascending order (oldest → newest).
+    ///
+    /// This enables trend analysis: callers can inspect whether severity
+    /// decreases over time without this function computing the trend itself.
+    ///
+    /// Returns an empty Vec if the pet has no records or no records of the
+    /// requested type — never panics on missing data.
     pub fn get_behavior_improvements(
         env: Env,
         pet_id: u64,
         behavior_type: BehaviorType,
     ) -> Vec<BehaviorRecord> {
+        // Fetch all records for this pet; returns empty Vec if pet is unknown.
         let history = Self::get_behavior_history(env.clone(), pet_id);
-        let mut filtered = Vec::new(&env);
 
+        // Filter to the requested behavior type.
+        let mut filtered: soroban_sdk::Vec<BehaviorRecord> = Vec::new(&env);
         for record in history.iter() {
             if record.behavior_type == behavior_type {
                 filtered.push_back(record);
             }
         }
+
+        // Sort ascending by recorded_at using insertion sort.
+        // Soroban's no_std Vec doesn't expose a sort method, so we do it manually.
+        // Insertion sort is stable, giving deterministic ordering for equal timestamps.
+        let len = filtered.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 {
+                let a = filtered.get(j - 1).unwrap();
+                let b = filtered.get(j).unwrap();
+                if a.recorded_at > b.recorded_at {
+                    // Swap by rebuilding the vector segment.
+                    filtered.set(j - 1, b);
+                    filtered.set(j, a);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
         filtered
     }
 
@@ -6428,6 +6459,39 @@ impl PetChainContract {
 
         for record in history.iter() {
             if record.recorded_at >= cutoff_time {
+                total_duration = total_duration.saturating_add(record.duration_minutes);
+                total_distance = total_distance.saturating_add(record.distance_meters);
+            }
+        }
+
+        (total_duration, total_distance)
+    }
+
+    /// Returns the total duration (minutes) and total distance (meters) for all
+    /// activity records of a given pet whose `recorded_at` timestamp falls within
+    /// the inclusive range [from_date, to_date].
+    ///
+    /// Boundary behaviour:
+    ///   - Both endpoints are inclusive: `from_date <= recorded_at <= to_date`.
+    ///   - If `from_date > to_date` the range is considered invalid and (0, 0) is
+    ///     returned immediately without iterating any records.
+    ///   - If no records exist in the range, (0, 0) is returned.
+    ///
+    /// Arithmetic is performed with `saturating_add` to prevent overflow panics.
+    pub fn get_activity_summary(env: Env, pet_id: u64, from_date: u64, to_date: u64) -> (u32, u32) {
+        // Guard: invalid range → return early
+        if from_date > to_date {
+            return (0, 0);
+        }
+
+        let history = Self::get_activity_history(env, pet_id);
+
+        let mut total_duration = 0u32;
+        let mut total_distance = 0u32;
+
+        for record in history.iter() {
+            // Inclusive boundary check
+            if record.recorded_at >= from_date && record.recorded_at <= to_date {
                 total_duration = total_duration.saturating_add(record.duration_minutes);
                 total_distance = total_distance.saturating_add(record.distance_meters);
             }
