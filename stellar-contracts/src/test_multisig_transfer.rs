@@ -459,10 +459,45 @@ fn test_ownership_history_after_multisig_transfer() {
     client.sign_transfer_proposal(&proposal_id, &signer1);
     client.multisig_transfer_pet(&proposal_id);
 
-    let history = client.get_ownership_history(&pet_id);
+    let history = client.get_ownership_history(&pet_id, &0u64, &10u32);
     assert_eq!(history.len(), 2);
 
     let last_record = history.get(1).unwrap();
     assert_eq!(last_record.previous_owner, owner);
     assert_eq!(last_record.new_owner, new_owner);
+}
+
+#[test]
+fn test_ownership_history_pagination() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    
+    // Transfer 1
+    let proposal_id1 = client.require_multisig_for_transfer(&pet_id, &new_owner);
+    client.sign_transfer_proposal(&proposal_id1, &signer1);
+    client.multisig_transfer_pet(&proposal_id1);
+
+    // Transfer 2 (back to owner)
+    let proposal_id2 = client.require_multisig_for_transfer(&pet_id, &owner);
+    client.sign_transfer_proposal(&proposal_id2, &new_owner); // new_owner must sign now
+    client.multisig_transfer_pet(&proposal_id2);
+
+    // Total 3 records (initial registration + 2 transfers)
+    let history_all = client.get_ownership_history(&pet_id, &0u64, &10u32);
+    assert_eq!(history_all.len(), 3);
+
+    let history_paged = client.get_ownership_history(&pet_id, &1u64, &1u32);
+    assert_eq!(history_paged.len(), 1);
+    assert_eq!(history_paged.get(0).unwrap().new_owner, new_owner);
+
+    let history_empty = client.get_ownership_history(&pet_id, &5u64, &1u32);
+    assert_eq!(history_empty.len(), 0);
 }

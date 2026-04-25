@@ -3321,7 +3321,7 @@ impl PetChainContract {
         );
     }
 
-    pub fn get_ownership_history(env: Env, pet_id: u64) -> Vec<OwnershipRecord> {
+    pub fn get_ownership_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<OwnershipRecord> {
         let count: u64 = env
             .storage()
             .instance()
@@ -3329,7 +3329,19 @@ impl PetChainContract {
             .unwrap_or(0);
         let mut history = Vec::new(&env);
 
-        for i in 1..=count {
+        if count == 0 || limit == 0 || offset >= count {
+            return history;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let requested_end = offset.saturating_add(limit as u64);
+        let end_index = if requested_end > count {
+            count
+        } else {
+            requested_end
+        };
+
+        for i in start_index..=end_index {
             if let Some(record_id) = env
                 .storage()
                 .instance()
@@ -3630,14 +3642,27 @@ impl PetChainContract {
         pets
     }
 
-    pub fn get_pets_by_species(env: Env, species: String) -> Vec<PetProfile> {
+    pub fn get_pets_by_species(env: Env, species: String, offset: u64, limit: u32) -> Vec<PetProfile> {
         let count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::SpeciesPetCount(species.clone()))
             .unwrap_or(0);
         let mut pets = Vec::new(&env);
-        for i in 1..=count {
+        
+        if count == 0 || limit == 0 || offset >= count {
+            return pets;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let requested_end = offset.saturating_add(limit as u64);
+        let end_index = if requested_end > count {
+            count
+        } else {
+            requested_end
+        };
+
+        for i in start_index..=end_index {
             if let Some(pid) = env
                 .storage()
                 .instance()
@@ -3773,6 +3798,57 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn revoke_all_access(env: Env, pet_id: u64) {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        let granter = pet.owner.clone();
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
+            {
+                let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+                if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+                    if grant.is_active {
+                        grant.is_active = false;
+                        grant.access_level = AccessLevel::None;
+                        env.storage().instance().set(&key, &grant);
+                        
+                        env.events().publish(
+                            (String::from_str(&env, "AccessRevoked"), pet_id),
+                            AccessRevokedEvent {
+                                pet_id,
+                                granter: granter.clone(),
+                                grantee: grantee.clone(),
+                                timestamp: env.ledger().timestamp(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        
+        Self::log_access(
+            &env,
+            pet_id,
+            granter,
+            AccessAction::Revoke,
+            String::from_str(&env, "All access revoked"),
+        );
     }
 
     pub fn grant_temporary_custody(
@@ -4673,6 +4749,43 @@ impl PetChainContract {
             .instance()
             .get(&AlertKey::AlertSightings(alert_id))
             .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_sighting_count(env: Env, alert_id: u64) -> u64 {
+        let sightings: Vec<SightingReport> = env.storage()
+            .instance()
+            .get(&AlertKey::AlertSightings(alert_id))
+            .unwrap_or(Vec::new(&env));
+        sightings.len() as u64
+    }
+
+    pub fn get_sightings_paginated(env: Env, alert_id: u64, offset: u64, limit: u32) -> Vec<SightingReport> {
+        let sightings: Vec<SightingReport> = env.storage()
+            .instance()
+            .get(&AlertKey::AlertSightings(alert_id))
+            .unwrap_or(Vec::new(&env));
+        
+        let count = sightings.len() as u64;
+        let mut result = Vec::new(&env);
+        
+        if count == 0 || limit == 0 || offset >= count {
+            return result;
+        }
+
+        let start_index = offset;
+        let requested_end = offset.saturating_add(limit as u64);
+        let end_index = if requested_end > count {
+            count
+        } else {
+            requested_end
+        };
+
+        for i in start_index..end_index {
+            if let Some(sighting) = sightings.get(i as u32) {
+                result.push_back(sighting);
+            }
+        }
+        result
     }
 
     /// Get alerts for a specific pet
