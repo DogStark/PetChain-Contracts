@@ -939,3 +939,63 @@ fn test_get_vaccination_history_pagination_limit_zero() {
     let history = client.get_vaccination_history(&pet_id, &0u64, &0u32);
     assert_eq!(history.len(), 0);
 }
+
+#[test]
+fn test_update_vet_clinic_info_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Alice"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "Surgery"),
+    );
+
+    let info = String::from_str(&env, "123 Pet Lane, Clinic A");
+    client.update_vet_clinic_info(&vet, &info);
+
+    let stored: Vet = env
+        .as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::Vet(vet.clone()))
+                .unwrap()
+        });
+    assert_eq!(stored.clinic_info, Some(info));
+}
+
+#[test]
+#[should_panic(expected = "clinic_info exceeds 500 characters")]
+fn test_update_vet_clinic_info_too_long() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Bob"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "General"),
+    );
+
+    let long_info = String::from_str(&env, &"x".repeat(501));
+    client.update_vet_clinic_info(&vet, &long_info);
+}
+
+#[test]
+#[should_panic(expected = "Vet not found")]
+fn test_update_vet_clinic_info_unregistered_vet() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    client.update_vet_clinic_info(&vet, &String::from_str(&env, "Some Clinic"));
+}
