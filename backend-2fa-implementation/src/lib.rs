@@ -7,4 +7,7 @@ mod tests;
 
 pub use handlers::{AuthenticatedUser, TwoFactorHandlers};
 pub use rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
-pub use two_factor::{RecoveryResult, TwoFactorAuth, TwoFactorData, TwoFactorSetup, TotpConfig, TwoFactorStore, InMemoryStore};
+pub use two_factor::{
+    InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorSetup,
+    TwoFactorStore,
+};
