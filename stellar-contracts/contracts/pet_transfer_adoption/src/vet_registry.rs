@@ -124,6 +124,11 @@ impl VetRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        require_admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    }
+
     /// ----------------------------------
     /// REGISTRATION
     /// ----------------------------------
@@ -223,16 +228,27 @@ impl VetRegistryContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-    fn setup() -> (Env, soroban_sdk::Address, VetRegistryContractClient<'static>) {
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        VetRegistryContractClient<'static>,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, VetRegistryContract);
         let client = VetRegistryContractClient::new(&env, &contract_id);
-        let admin = soroban_sdk::Address::generate(&env);
+        let admin = Address::generate(&env);
         client.init(&admin);
-        (env, admin, client)
+        (env, contract_id, admin, client)
+    }
+
+    fn stored_admin(env: &Env, contract_id: &Address) -> Address {
+        env.as_contract(contract_id, || {
+            env.storage().instance().get(&DataKey::Admin).unwrap()
+        })
     }
 
     fn str(env: &Env, s: &str) -> String {
@@ -251,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_name_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -264,7 +280,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_name_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -278,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_license_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -291,7 +307,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_license_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -305,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_specialization_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -318,7 +334,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_specialization_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -333,5 +349,50 @@ mod tests {
     #[test]
     fn test_input_too_long_error_code() {
         assert_eq!(ContractError::InputTooLong as u32, 6);
+    }
+
+    #[test]
+    fn test_admin_can_transfer_admin_rights() {
+        let (env, contract_id, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        let vet = soroban_sdk::Address::generate(&env);
+
+        assert_eq!(stored_admin(&env, &contract_id), admin);
+        client.transfer_admin(&new_admin);
+        assert_eq!(stored_admin(&env, &contract_id), new_admin);
+
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Admin Transfer"),
+            &str(&env, "LIC-TRANSFER"),
+            &str(&env, "General"),
+        );
+        client.verify_vet(&vet);
+
+        assert!(client.is_verified_vet(&vet));
+    }
+
+    #[test]
+    fn test_old_admin_loses_privileges_after_transfer() {
+        let (env, contract_id, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+
+        client.transfer_admin(&new_admin);
+        assert_ne!(stored_admin(&env, &contract_id), admin);
+        assert_eq!(stored_admin(&env, &contract_id), new_admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_requires_current_admin_auth() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, VetRegistryContract);
+        let client = VetRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.init(&admin);
+
+        assert!(client.try_transfer_admin(&new_admin).is_err());
+        assert_eq!(stored_admin(&env, &contract_id), admin);
     }
 }
