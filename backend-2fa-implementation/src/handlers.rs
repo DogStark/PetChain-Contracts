@@ -1,42 +1,43 @@
+#[cfg(not(test))]
+use crate::db::PostgresTwoFactorStore;
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
-use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
-fn two_factor_store() -> &'static Mutex<HashMap<String, TwoFactorData>> {
-    static STORE: OnceLock<Mutex<HashMap<String, TwoFactorData>>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+#[cfg(test)]
+fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
+    static STORE: OnceLock<Arc<InMemoryStore>> = OnceLock::new();
+    STORE.get_or_init(|| Arc::new(InMemoryStore::default()))
+}
+
+#[cfg(test)]
+fn two_factor_store() -> Arc<dyn TwoFactorStore> {
+    test_two_factor_store().clone()
+}
+
+#[cfg(not(test))]
+fn two_factor_store() -> Arc<dyn TwoFactorStore> {
+    static STORE: OnceLock<Arc<dyn TwoFactorStore>> = OnceLock::new();
+    STORE
+        .get_or_init(|| match std::env::var("DATABASE_URL") {
+            Ok(database_url) => match PostgresTwoFactorStore::connect(&database_url) {
+                Ok(store) => Arc::new(store),
+                Err(_) => Arc::new(InMemoryStore::default()),
+            },
+            Err(_) => Arc::new(InMemoryStore::default()),
+        })
+        .clone()
 }
 
 fn store_insert(user_id: &str, data: TwoFactorData) -> Result<(), String> {
-    two_factor_store()
-        .lock()
-        .map_err(|_| "2FA storage lock poisoned".to_string())?
-        .insert(user_id.to_string(), data);
-    Ok(())
+    two_factor_store().save(user_id, data)
 }
 
 fn store_get(user_id: &str) -> Result<TwoFactorData, String> {
     two_factor_store()
-        .lock()
-        .map_err(|_| "2FA storage lock poisoned".to_string())?
         .get(user_id)
-        .cloned()
-        .ok_or_else(|| format!("2FA not configured for user {}", user_id))
-}
-
-fn store_get_mut_then<F, T>(user_id: &str, f: F) -> Result<T, String>
-where
-    F: FnOnce(&mut TwoFactorData) -> Result<T, String>,
-{
-    let mut guard = two_factor_store()
-        .lock()
-        .map_err(|_| "2FA storage lock poisoned".to_string())?;
-    let data = guard
-        .get_mut(user_id)
-        .ok_or_else(|| format!("2FA not configured for user {}", user_id))?;
-    f(data)
+        .map_err(|_| format!("2FA not configured for user {}", user_id))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +47,9 @@ pub struct AuthenticatedUser {
 
 impl AuthenticatedUser {
     pub fn new(user_id: impl Into<String>) -> Self {
-        Self { user_id: user_id.into() }
+        Self {
+            user_id: user_id.into(),
+        }
     }
 
     pub fn authorize(&self, requested_user_id: &str) -> Result<(), String> {
@@ -107,7 +110,9 @@ pub struct TwoFactorHandlers {
 
 impl TwoFactorHandlers {
     pub fn new() -> Self {
-        Self { limiter: Arc::new(InMemoryRateLimiter::default()) }
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+        }
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
@@ -126,7 +131,10 @@ impl TwoFactorHandlers {
                 .map_err(|_| "2FA storage lock poisoned".to_string())?;
             if let Some(existing) = store.get(&req.user_id) {
                 if existing.enabled {
-                    return Err("2FA is already enabled. To re-enroll, you must first disable it.".to_string());
+                    return Err(
+                        "2FA is already enabled. To re-enroll, you must first disable it."
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -158,16 +166,17 @@ impl TwoFactorHandlers {
 
         let key = format!("verify:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
-        let result = store_get_mut_then(&req.user_id, |data| {
-            let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
-            if is_valid {
-                data.enabled = true;
-            }
-            Ok(is_valid)
-        })?;
+        let data = store_get(&req.user_id)?;
+        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        if result {
+            two_factor_store().update_enabled(&req.user_id, true)?;
+        }
 
         if result {
             self.limiter.record_success(&key);
@@ -185,7 +194,10 @@ impl TwoFactorHandlers {
 
         let key = format!("login:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
         let data = store_get(&req.user_id)?;
@@ -211,19 +223,21 @@ impl TwoFactorHandlers {
 
         let key = format!("disable:{}", req.user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs));
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
-        let result = store_get_mut_then(&req.user_id, |data| {
-            if !data.enabled {
-                return Ok(false);
-            }
-            let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
-            if is_valid {
-                data.enabled = false;
-            }
-            Ok(is_valid)
-        })?;
+        let data = store_get(&req.user_id)?;
+        if !data.enabled {
+            return Ok(false);
+        }
+
+        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        if result {
+            two_factor_store().update_enabled(&req.user_id, false)?;
+        }
 
         if result {
             self.limiter.record_success(&key);
@@ -276,22 +290,15 @@ impl Default for TwoFactorHandlers {
 
 #[cfg(test)]
 pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
-    two_factor_store()
-        .lock()
-        .ok()
-        .and_then(|store| store.get(user_id).cloned())
+    two_factor_store().get(user_id).ok()
 }
 
 #[cfg(test)]
 pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactorData) {
-    if let Ok(mut store) = two_factor_store().lock() {
-        store.insert(user_id.to_string(), data);
-    }
+    let _ = two_factor_store().save(user_id, data);
 }
 
 #[cfg(test)]
 pub(crate) fn clear_two_factor_store_for_tests() {
-    if let Ok(mut store) = two_factor_store().lock() {
-        store.clear();
-    }
+    test_two_factor_store().clear();
 }
