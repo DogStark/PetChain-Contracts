@@ -20,9 +20,7 @@ mod test_get_pet_decryption {
         AccessLevel, DataKey, EncryptedData, Gender, Pet, PetChainContract, PetChainContractClient,
         PrivacyLevel, Species,
     };
-    use soroban_sdk::{
-        testutils::Address as _, Address, Bytes, Env, String, Vec,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String, Vec};
 
     // ---- helpers ----
 
@@ -54,6 +52,22 @@ mod test_get_pet_decryption {
         )
     }
 
+    fn setup_verified_vet(client: &PetChainContractClient, env: &Env) -> Address {
+        let admin = Address::generate(env);
+        let vet = Address::generate(env);
+        let mut admins = soroban_sdk::Vec::new(env);
+        admins.push_back(admin.clone());
+        client.init_multisig(&admin, &admins, &1u32);
+        client.register_vet(
+            &vet,
+            &String::from_str(env, "Dr. Test"),
+            &String::from_str(env, "LIC-001"),
+            &String::from_str(env, "General"),
+        );
+        client.verify_vet(&admin, &vet);
+        vet
+    }
+
     /// Overwrite a stored Pet's encrypted_name with bytes that are not valid
     /// XDR for a soroban String, then assert get_pet returns None.
     fn corrupt_pet_name(env: &Env, pet_id: u64) {
@@ -70,9 +84,7 @@ mod test_get_pet_decryption {
             nonce: garbage,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Pet(pet_id), &pet);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
     }
 
     fn corrupt_pet_birthday(env: &Env, pet_id: u64) {
@@ -88,9 +100,7 @@ mod test_get_pet_decryption {
             nonce: garbage,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Pet(pet_id), &pet);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
     }
 
     fn corrupt_pet_breed(env: &Env, pet_id: u64) {
@@ -106,9 +116,7 @@ mod test_get_pet_decryption {
             nonce: garbage,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Pet(pet_id), &pet);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
     }
 
     fn corrupt_pet_allergies(env: &Env, pet_id: u64) {
@@ -124,9 +132,7 @@ mod test_get_pet_decryption {
             nonce: garbage,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Pet(pet_id), &pet);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
     }
 
     /// Corrupt the nonce to an invalid length (not 12 bytes)
@@ -144,9 +150,7 @@ mod test_get_pet_decryption {
             nonce: invalid_nonce,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Pet(pet_id), &pet);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
     }
 
     // ================================================================
@@ -231,7 +235,10 @@ mod test_get_pet_decryption {
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
 
         let result = client.get_pet(&pet_id, &owner);
-        assert!(result.is_some(), "owner must decrypt their own restricted pet");
+        assert!(
+            result.is_some(),
+            "owner must decrypt their own restricted pet"
+        );
         assert_eq!(result.unwrap().privacy_level, PrivacyLevel::Restricted);
     }
 
@@ -369,10 +376,7 @@ mod test_get_pet_decryption {
         corrupt_pet_breed(&env, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
-        assert!(
-            result.is_none(),
-            "corrupt breed ciphertext must yield None"
-        );
+        assert!(result.is_none(), "corrupt breed ciphertext must yield None");
     }
 
     #[test]

@@ -349,6 +349,42 @@ fn test_get_authorized_users_excludes_revoked() {
 }
 
 #[test]
+fn test_revoke_all_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee1 = Address::generate(&env);
+    let grantee2 = Address::generate(&env);
+    let grantee3 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "BulkRevoke"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Color"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.grant_access(&pet_id, &grantee1, &AccessLevel::Basic, &None);
+    client.grant_access(&pet_id, &grantee2, &AccessLevel::Full, &None);
+    client.grant_access(&pet_id, &grantee3, &AccessLevel::Basic, &None);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 3);
+
+    client.revoke_all_access(&pet_id);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 0);
+}
+
+#[test]
 fn test_get_authorized_users_excludes_expired() {
     let env = Env::default();
     env.mock_all_auths();
@@ -834,8 +870,14 @@ fn test_get_vaccination_history_pagination_first_page() {
     // Test first page with limit 2
     let history = client.get_vaccination_history(&pet_id, &0u64, &2u32);
     assert_eq!(history.len(), 2);
-    assert_eq!(history.get(0).unwrap().vaccine_type, crate::VaccineType::Rabies);
-    assert_eq!(history.get(1).unwrap().vaccine_type, crate::VaccineType::Parvovirus);
+    assert_eq!(
+        history.get(0).unwrap().vaccine_type,
+        crate::VaccineType::Rabies
+    );
+    assert_eq!(
+        history.get(1).unwrap().vaccine_type,
+        crate::VaccineType::Parvovirus
+    );
 }
 
 #[test]
@@ -939,3 +981,293 @@ fn test_get_vaccination_history_pagination_limit_zero() {
     let history = client.get_vaccination_history(&pet_id, &0u64, &0u32);
     assert_eq!(history.len(), 0);
 }
+
+#[test]
+fn test_get_verified_vets_only_returns_verified() {
+fn test_check_and_expire_access_marks_expired_grant_inactive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet1 = Address::generate(&env);
+    let vet2 = Address::generate(&env);
+
+    client.register_vet(
+        &vet1,
+        &String::from_str(&env, "Dr. Alice"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "Surgery"),
+    );
+    client.register_vet(
+        &vet2,
+        &String::from_str(&env, "Dr. Bob"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "Dentistry"),
+    );
+
+    // Only verify vet1
+    client.verify_vet(&admin, &vet1);
+
+    let vets = client.get_verified_vets(&0u64, &10u32);
+    assert_eq!(vets.len(), 1);
+    assert_eq!(vets.get(0).unwrap().address, vet1);
+}
+
+#[test]
+fn test_get_verified_vets_pagination() {
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    let expires_at = now + 100;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // Before expiry, grant is active
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(grant.is_active);
+
+    // Move time past expiry
+    env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+
+    // Call check_and_expire_access
+    client.check_and_expire_access(&pet_id, &grantee);
+
+    // Grant should now be inactive
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(!grant.is_active);
+}
+
+#[test]
+fn test_check_and_expire_access_does_not_affect_active_grant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let licenses = ["LIC-P1", "LIC-P2", "LIC-P3"];
+    for lic in licenses.iter() {
+        let vet = Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Vet"),
+            &String::from_str(&env, lic),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&admin, &vet);
+    }
+
+    // Page 1: offset=0, limit=2
+    let page1 = client.get_verified_vets(&0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    // Page 2: offset=2, limit=2
+    let page2 = client.get_verified_vets(&2u64, &2u32);
+    assert_eq!(page2.len(), 1);
+}
+
+#[test]
+fn test_get_verified_vets_empty_when_none_verified() {
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    let expires_at = now + 1000; // Far in the future
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // Call check_and_expire_access before expiry
+    client.check_and_expire_access(&pet_id, &grantee);
+
+    // Grant should still be active
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(grant.is_active);
+    assert_eq!(grant.access_level, AccessLevel::Full);
+}
+
+#[test]
+fn test_custody_history_multiple_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Unverified"),
+        &String::from_str(&env, "LIC-UNVER"),
+        &String::from_str(&env, "General"),
+    );
+
+    let vets = client.get_verified_vets(&0u64, &10u32);
+    assert_eq!(vets.len(), 0);
+    let owner = Address::generate(&env);
+    let custodian1 = Address::generate(&env);
+    let custodian2 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut perms1 = Vec::new(&env);
+    perms1.push_back(String::from_str(&env, "feed"));
+
+    let mut perms2 = Vec::new(&env);
+    perms2.push_back(String::from_str(&env, "walk"));
+    perms2.push_back(String::from_str(&env, "groom"));
+
+    // Grant custody to custodian1
+    client.grant_temporary_custody(&pet_id, &custodian1, &1000u64, &2000u64, &perms1);
+
+    // Grant custody to custodian2 (overwrites current but history preserves both)
+    client.grant_temporary_custody(&pet_id, &custodian2, &2500u64, &3500u64, &perms2);
+
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().custodian, custodian1);
+    assert!(history.get(0).unwrap().is_active);
+    assert_eq!(history.get(1).unwrap().custodian, custodian2);
+    assert!(history.get(1).unwrap().is_active);
+}
+
+#[test]
+fn test_custody_history_appended_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let custodian = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2021-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &8u32,
+        &None,
+        &PrivacyLevel::Restricted,
+    );
+
+    let mut perms = Vec::new(&env);
+    perms.push_back(String::from_str(&env, "medical"));
+
+    // First custody grant
+    let custody1 = client.grant_temporary_custody(&pet_id, &custodian, &1000u64, &2000u64, &perms);
+    assert!(custody1.is_active);
+
+    // Second custody grant to same custodian with different dates
+    let custody2 = client.grant_temporary_custody(&pet_id, &custodian, &3000u64, &4000u64, &perms);
+    assert!(custody2.is_active);
+
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
+
+    // Verify order and data
+    let first = history.get(0).unwrap();
+    let second = history.get(1).unwrap();
+
+    assert_eq!(first.start_date, 1000u64);
+    assert_eq!(first.end_date, 2000u64);
+    assert_eq!(second.start_date, 3000u64);
+    assert_eq!(second.end_date, 4000u64);
+}
+
+#[test]
+fn test_get_custody_history_returns_complete_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let custodian = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let mut perms = Vec::new(&env);
+    perms.push_back(String::from_str(&env, "exercise"));
+
+    // Grant custody
+    client.grant_temporary_custody(&pet_id, &custodian, &1000u64, &2000u64, &perms);
+
+    // Revoke custody - this should append the revoked snapshot to history
+    client.revoke_temporary_custody(&pet_id);
+
+    // History should contain both the grant and the revocation snapshot
+    let history = client.get_custody_history(&pet_id);
+    assert_eq!(history.len(), 2);
+
+    let first = history.get(0).unwrap();
+    let second = history.get(1).unwrap();
+
+    // First entry: active grant
+    assert!(first.is_active);
+    assert_eq!(first.custodian, custodian);
+
+    // Second entry: revoked snapshot (inactive)
+    assert!(!second.is_active);
+    assert_eq!(second.custodian, custodian);
+
+    // Verify current custody is inactive
+    assert!(!client.is_custody_valid(&pet_id));
+}
+
