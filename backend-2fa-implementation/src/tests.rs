@@ -6,7 +6,7 @@ mod tests {
         EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
         TwoFactorHandlers, VerifyTwoFactorRequest,
     };
-    use crate::two_factor::{TwoFactorAuth, TotpConfig, TwoFactorData};
+    use crate::two_factor::{TotpConfig, TwoFactorAuth, TwoFactorData};
     use totp_rs::{Algorithm, Secret, TOTP};
 
     fn caller(id: &str) -> AuthenticatedUser {
@@ -81,9 +81,10 @@ mod tests {
     #[test]
     fn test_setup_two_factor_with_sha1_config() {
         let config = TotpConfig::legacy_sha1();
-        let result = TwoFactorAuth::setup_with_config("test@petchain.com", "PetChain", config.clone());
+        let result =
+            TwoFactorAuth::setup_with_config("test@petchain.com", "PetChain", config.clone());
         assert!(result.is_ok());
-        
+
         let setup = result.unwrap();
         assert!(!setup.secret.is_empty());
         assert!(setup.qr_code_base64.starts_with("data:image/png;base64,"));
@@ -94,9 +95,10 @@ mod tests {
     #[test]
     fn test_setup_two_factor_with_sha512_config() {
         let config = TotpConfig::high_security();
-        let result = TwoFactorAuth::setup_with_config("test@petchain.com", "PetChain", config.clone());
+        let result =
+            TwoFactorAuth::setup_with_config("test@petchain.com", "PetChain", config.clone());
         assert!(result.is_ok());
-        
+
         let setup = result.unwrap();
         assert!(!setup.secret.is_empty());
         assert!(setup.qr_code_base64.starts_with("data:image/png;base64,"));
@@ -118,7 +120,8 @@ mod tests {
             Secret::Encoded(secret.clone()).to_bytes().unwrap(),
             None,
             String::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let token = totp.generate_current().unwrap();
 
@@ -144,7 +147,7 @@ mod tests {
     fn test_verify_token_sha1_config() {
         let secret = TwoFactorAuth::generate_secret();
         let config = TotpConfig::legacy_sha1();
-        
+
         // Generate current token with SHA1
         let totp = TOTP::new(
             config.algorithm,
@@ -154,10 +157,11 @@ mod tests {
             Secret::Encoded(secret.clone()).to_bytes().unwrap(),
             None,
             String::new(),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let token = totp.generate_current().unwrap();
-        
+
         // Verify it with SHA1 config
         let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config);
         assert!(result.is_ok());
@@ -168,7 +172,7 @@ mod tests {
     fn test_verify_token_sha512_config() {
         let secret = TwoFactorAuth::generate_secret();
         let config = TotpConfig::high_security();
-        
+
         // Generate current token with SHA512 and 8 digits
         let totp = TOTP::new(
             config.algorithm,
@@ -178,11 +182,12 @@ mod tests {
             Secret::Encoded(secret.clone()).to_bytes().unwrap(),
             None,
             String::new(),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let token = totp.generate_current().unwrap();
         assert_eq!(token.len(), 8); // Should be 8 digits
-        
+
         // Verify it with SHA512 config
         let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config);
         assert!(result.is_ok());
@@ -222,7 +227,7 @@ mod tests {
         let secret = TwoFactorAuth::generate_secret();
         let sha1_config = TotpConfig::legacy_sha1();
         let sha256_config = TotpConfig::default();
-        
+
         // Generate token with SHA1
         let totp_sha1 = TOTP::new(
             sha1_config.algorithm,
@@ -232,15 +237,16 @@ mod tests {
             Secret::Encoded(secret.clone()).to_bytes().unwrap(),
             None,
             String::new(),
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let token = totp_sha1.generate_current().unwrap();
-        
+
         // Should work with SHA1 config
         let result = TwoFactorAuth::verify_token_with_config(&secret, &token, sha1_config);
         assert!(result.is_ok());
         assert!(result.unwrap());
-        
+
         // Should NOT work with SHA256 config (different algorithm)
         let result = TwoFactorAuth::verify_token_with_config(&secret, &token, sha256_config);
         assert!(result.is_ok());
@@ -261,11 +267,11 @@ mod tests {
 
     #[test]
     fn test_verify_backup_code() {
-        let codes = vec![
-            "1234-5678".to_string(),
-            "2345-6789".to_string(),
-        ];
-        assert_eq!(TwoFactorAuth::verify_backup_code(&codes, "2345-6789"), Some(1));
+        let codes = vec!["1234-5678".to_string(), "2345-6789".to_string()];
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&codes, "2345-6789"),
+            Some(1)
+        );
         assert_eq!(TwoFactorAuth::verify_backup_code(&codes, "9999-9999"), None);
     }
 
@@ -452,14 +458,21 @@ mod tests {
 
         overwrite_two_factor_data_for_tests(
             user_id,
-            TwoFactorData { secret, backup_codes: vec![], enabled: false },
+            TwoFactorData {
+                secret,
+                backup_codes: vec![],
+                enabled: false,
+            },
         );
 
         let handlers = TwoFactorHandlers::new();
         let result = handlers
             .verify_login_token(
                 &caller(user_id),
-                LoginWithTwoFactorRequest { user_id: user_id.to_string(), token },
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
             )
             .unwrap();
 
@@ -536,7 +549,10 @@ mod tests {
             )
             .unwrap();
 
-        assert!(!result, "placeholder token must not validate against the stored secret");
+        assert!(
+            !result,
+            "placeholder token must not validate against the stored secret"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -560,7 +576,9 @@ mod tests {
         struct AlwaysBlockedLimiter;
         impl RateLimiter for AlwaysBlockedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
-                RateLimitResult::Blocked { retry_after_secs: 300 }
+                RateLimitResult::Blocked {
+                    retry_after_secs: 300,
+                }
             }
             fn record_success(&self, _key: &str) {}
         }
@@ -591,7 +609,11 @@ mod tests {
                 limiter.record_failure("user:lockout");
             }
             match limiter.record_failure("user:lockout") {
-                RateLimitResult::Blocked { retry_after_secs } => assert!(retry_after_secs >= 299 && retry_after_secs <= 300, "retry_after_secs was {}", retry_after_secs),
+                RateLimitResult::Blocked { retry_after_secs } => assert!(
+                    retry_after_secs >= 299 && retry_after_secs <= 300,
+                    "retry_after_secs was {}",
+                    retry_after_secs
+                ),
                 RateLimitResult::Allowed { .. } => panic!("should be blocked after max failures"),
             }
         }
@@ -638,7 +660,10 @@ mod tests {
             let handlers = TwoFactorHandlers::with_limiter(Arc::new(AlwaysBlockedLimiter));
             let result = handlers.verify_and_activate(
                 &caller("user1"),
-                VerifyTwoFactorRequest { user_id: "user1".to_string(), token: "123456".to_string() },
+                VerifyTwoFactorRequest {
+                    user_id: "user1".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Too many failed attempts"));
@@ -650,7 +675,10 @@ mod tests {
             let handlers = TwoFactorHandlers::with_limiter(Arc::new(AlwaysBlockedLimiter));
             let result = handlers.verify_login_token(
                 &caller("user1"),
-                LoginWithTwoFactorRequest { user_id: "user1".to_string(), token: "123456".to_string() },
+                LoginWithTwoFactorRequest {
+                    user_id: "user1".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Too many failed attempts"));
@@ -662,7 +690,10 @@ mod tests {
             let handlers = TwoFactorHandlers::with_limiter(Arc::new(AlwaysBlockedLimiter));
             let result = handlers.disable_two_factor(
                 &caller("user1"),
-                DisableTwoFactorRequest { user_id: "user1".to_string(), token: "123456".to_string() },
+                DisableTwoFactorRequest {
+                    user_id: "user1".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Too many failed attempts"));
@@ -679,33 +710,53 @@ mod tests {
             handlers
                 .verify_login_token(
                     &caller("user1"),
-                    LoginWithTwoFactorRequest { user_id: "user1".to_string(), token: "bad".to_string() },
+                    LoginWithTwoFactorRequest {
+                        user_id: "user1".to_string(),
+                        token: "bad".to_string(),
+                    },
                 )
                 .ok();
             handlers
                 .verify_login_token(
                     &caller("user1"),
-                    LoginWithTwoFactorRequest { user_id: "user1".to_string(), token: "bad".to_string() },
+                    LoginWithTwoFactorRequest {
+                        user_id: "user1".to_string(),
+                        token: "bad".to_string(),
+                    },
                 )
                 .ok();
 
             let login_result = handlers.verify_login_token(
                 &caller("user1"),
-                LoginWithTwoFactorRequest { user_id: "user1".to_string(), token: "bad".to_string() },
+                LoginWithTwoFactorRequest {
+                    user_id: "user1".to_string(),
+                    token: "bad".to_string(),
+                },
             );
             assert!(login_result.is_err(), "login should be blocked");
 
             // disable endpoint uses a different key — should not be rate-limited
             overwrite_two_factor_data_for_tests(
                 "user1",
-                TwoFactorData { secret: "AAAA".to_string(), backup_codes: vec![], enabled: true },
+                TwoFactorData {
+                    secret: "AAAA".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                },
             );
             let disable_result = handlers.disable_two_factor(
                 &caller("user1"),
-                DisableTwoFactorRequest { user_id: "user1".to_string(), token: "bad".to_string() },
+                DisableTwoFactorRequest {
+                    user_id: "user1".to_string(),
+                    token: "bad".to_string(),
+                },
             );
             assert!(
-                !disable_result.as_ref().err().map(|e| e.contains("Too many")).unwrap_or(false),
+                !disable_result
+                    .as_ref()
+                    .err()
+                    .map(|e| e.contains("Too many"))
+                    .unwrap_or(false),
                 "disable endpoint should not be blocked by login failures"
             );
         }
@@ -750,7 +801,10 @@ mod tests {
                     email: "user1@petchain.com".to_string(),
                 },
             );
-            assert!(result.is_ok(), "Owner should be able to enable their own 2FA");
+            assert!(
+                result.is_ok(),
+                "Owner should be able to enable their own 2FA"
+            );
         }
 
         #[test]
@@ -771,7 +825,10 @@ mod tests {
             let handlers = TwoFactorHandlers::new();
             let result = handlers.verify_and_activate(
                 &caller("user-1"),
-                VerifyTwoFactorRequest { user_id: "user-99".to_string(), token: "123456".to_string() },
+                VerifyTwoFactorRequest {
+                    user_id: "user-99".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Forbidden"));
@@ -782,7 +839,10 @@ mod tests {
             let handlers = TwoFactorHandlers::new();
             let result = handlers.verify_login_token(
                 &caller("user-1"),
-                LoginWithTwoFactorRequest { user_id: "user-99".to_string(), token: "123456".to_string() },
+                LoginWithTwoFactorRequest {
+                    user_id: "user-99".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Forbidden"));
@@ -793,7 +853,10 @@ mod tests {
             let handlers = TwoFactorHandlers::new();
             let result = handlers.disable_two_factor(
                 &caller("user-1"),
-                DisableTwoFactorRequest { user_id: "user-99".to_string(), token: "123456".to_string() },
+                DisableTwoFactorRequest {
+                    user_id: "user-99".to_string(),
+                    token: "123456".to_string(),
+                },
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Forbidden"));
@@ -872,8 +935,11 @@ mod tests {
         let first = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
         let second = TwoFactorAuth::consume_backup_code(&mut codes, "7777-8888");
 
-        assert!(first,  "first recovery attempt must succeed");
-        assert!(!second, "second recovery attempt must fail — code already consumed");
+        assert!(first, "first recovery attempt must succeed");
+        assert!(
+            !second,
+            "second recovery attempt must fail — code already consumed"
+        );
     }
 
     // ── TwoFactorHandlers state-transition tests ───────────────────────────────────────
@@ -884,7 +950,10 @@ mod tests {
         let user_id = "handler-user1";
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u1@petchain.com".to_string() },
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u1@petchain.com".to_string(),
+            },
         );
         assert!(resp.is_ok());
         let resp = resp.unwrap();
@@ -901,7 +970,10 @@ mod tests {
         let handlers = TwoFactorHandlers::new();
         let err = handlers.verify_login_token(
             &caller("ghost-handler"),
-            LoginWithTwoFactorRequest { user_id: "ghost-handler".to_string(), token: "000000".to_string() },
+            LoginWithTwoFactorRequest {
+                user_id: "ghost-handler".to_string(),
+                token: "000000".to_string(),
+            },
         );
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("not configured"));
@@ -913,14 +985,21 @@ mod tests {
         let user_id = "handler-user2";
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u2@petchain.com".to_string() },
-        ).unwrap();
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u2@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
         let token = generate_token(&resp.secret);
 
         let handlers = TwoFactorHandlers::new();
         let result = handlers.verify_and_activate(
             &caller(user_id),
-            VerifyTwoFactorRequest { user_id: user_id.to_string(), token },
+            VerifyTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token,
+            },
         );
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -933,13 +1012,20 @@ mod tests {
         let user_id = "handler-user3";
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u3@petchain.com".to_string() },
-        ).unwrap();
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u3@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
 
         let handlers = TwoFactorHandlers::new();
         let result = handlers.verify_and_activate(
             &caller(user_id),
-            VerifyTwoFactorRequest { user_id: user_id.to_string(), token: "000000".to_string() },
+            VerifyTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token: "000000".to_string(),
+            },
         );
         assert!(result.is_ok());
         assert!(!result.unwrap());
@@ -952,13 +1038,20 @@ mod tests {
         let user_id = "handler-user6";
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u6@petchain.com".to_string() },
-        ).unwrap();
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u6@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
 
         let handlers = TwoFactorHandlers::new();
         let result = handlers.disable_two_factor(
             &caller(user_id),
-            DisableTwoFactorRequest { user_id: user_id.to_string(), token: "000000".to_string() },
+            DisableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token: "000000".to_string(),
+            },
         );
         assert!(result.is_ok());
         assert!(!result.unwrap());
@@ -970,17 +1063,27 @@ mod tests {
         let user_id = "handler-user8";
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u8@petchain.com".to_string() },
-        ).unwrap();
-        overwrite_two_factor_data_for_tests(user_id, crate::two_factor::TwoFactorData {
-            secret: resp.secret,
-            backup_codes: resp.backup_codes,
-            enabled: true,
-        });
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u8@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            crate::two_factor::TwoFactorData {
+                secret: resp.secret,
+                backup_codes: resp.backup_codes,
+                enabled: true,
+            },
+        );
 
         let result = TwoFactorHandlers::recover_with_backup(
             &caller(user_id),
-            RecoverWithBackupRequest { user_id: user_id.to_string(), backup_code: "0000-0000".to_string() },
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: "0000-0000".to_string(),
+            },
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid backup code"));
@@ -992,14 +1095,422 @@ mod tests {
         let user_id = "handler-user9";
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
-            EnableTwoFactorRequest { user_id: user_id.to_string(), email: "u9@petchain.com".to_string() },
-        ).unwrap();
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "u9@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
 
         let err = TwoFactorHandlers::recover_with_backup(
             &caller(user_id),
-            RecoverWithBackupRequest { user_id: user_id.to_string(), backup_code: "1234-5678".to_string() },
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: "1234-5678".to_string(),
+            },
         );
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("not enabled"));
+    }
+}
+
+// ============================================================================
+// Integration tests — full end-to-end flows
+// ============================================================================
+
+#[cfg(test)]
+mod integration_tests {
+    use crate::handlers::{
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
+        overwrite_two_factor_data_for_tests, AuthenticatedUser, DisableTwoFactorRequest,
+        EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
+        TwoFactorHandlers, VerifyTwoFactorRequest,
+    };
+    use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
+    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+    use std::sync::Arc;
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    fn caller(id: &str) -> AuthenticatedUser {
+        AuthenticatedUser::new(id)
+    }
+
+    fn generate_token(secret: &str) -> String {
+        TOTP::new(
+            Algorithm::SHA256,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap()
+        .generate_current()
+        .unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Flow 1: enable → verify → login → disable
+    // -----------------------------------------------------------------------
+
+    /// Full happy-path: a user enables 2FA, activates it with a valid TOTP
+    /// token, logs in successfully, then disables it with another valid token.
+    #[test]
+    fn test_full_enable_verify_login_disable_flow() {
+        let user_id = "integration-enable-verify-login-disable-user";
+        let handlers = TwoFactorHandlers::new();
+
+        // Step 1: enable — returns secret + backup codes, 2FA not yet active
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user1@petchain.com".to_string(),
+            },
+        )
+        .expect("enable should succeed");
+
+        assert!(!enable_resp.secret.is_empty());
+        assert_eq!(enable_resp.backup_codes.len(), 8);
+        assert!(!get_two_factor_data_for_tests(user_id).unwrap().enabled);
+
+        // Step 2: verify & activate with a live TOTP token
+        let activated = handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("verify_and_activate should succeed");
+
+        assert!(activated, "activation must return true on valid token");
+        assert!(get_two_factor_data_for_tests(user_id).unwrap().enabled);
+
+        // Step 3: login with a fresh TOTP token
+        let logged_in = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("login should succeed");
+
+        assert!(logged_in, "login must succeed with valid token");
+
+        // Step 4: disable with another valid token
+        let disabled = handlers
+            .disable_two_factor(
+                &caller(user_id),
+                DisableTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("disable should succeed");
+
+        assert!(disabled, "disable must return true on valid token");
+        assert!(!get_two_factor_data_for_tests(user_id).unwrap().enabled);
+
+        // Step 5: login after disable returns false (2FA inactive)
+        let post_disable_login = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("login call should not error after disable");
+
+        assert!(
+            !post_disable_login,
+            "login must return false when 2FA is disabled"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Flow 2: enable → recover with backup code → login with new secret
+    // -----------------------------------------------------------------------
+
+    /// A user loses their authenticator app. They recover using a backup code,
+    /// which issues a new secret. They can then log in with the new secret.
+    #[test]
+    fn test_full_enable_recover_login_flow() {
+        let user_id = "integration-recover-flow-user";
+        let handlers = TwoFactorHandlers::new();
+
+        // Enable 2FA
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "recover@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Activate via verify_and_activate (no overwrite needed)
+        let activated = handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .unwrap();
+        assert!(activated);
+
+        // Pick the first backup code
+        let backup_code = enable_resp.backup_codes[0].clone();
+
+        // Recover — should issue a brand-new secret and backup codes
+        let recovery_resp = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: backup_code.clone(),
+            },
+        )
+        .expect("recovery should succeed with valid backup code");
+
+        assert!(
+            recovery_resp.enabled,
+            "2FA must remain enabled after recovery"
+        );
+        assert_ne!(
+            recovery_resp.new_secret, enable_resp.secret,
+            "recovery must issue a new secret"
+        );
+        assert_eq!(recovery_resp.new_backup_codes.len(), 8);
+
+        // The consumed backup code must no longer work
+        let second_recovery = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+        );
+        assert!(
+            second_recovery.is_err(),
+            "consumed backup code must not be reusable"
+        );
+
+        // Login with the new secret must succeed
+        let logged_in = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&recovery_resp.new_secret),
+                },
+            )
+            .expect("login with new secret should not error");
+
+        assert!(
+            logged_in,
+            "login must succeed with the new secret after recovery"
+        );
+
+        // Login with the OLD secret must fail
+        let old_login = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("login call with old secret should not error");
+
+        assert!(
+            !old_login,
+            "old secret must no longer be valid after recovery"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Flow 3: rate limit exhaustion on login
+    // -----------------------------------------------------------------------
+
+    /// After exhausting the allowed failures the endpoint must be locked out,
+    /// and a subsequent correct token must also be rejected until the lockout
+    /// expires (or the limiter is replaced).
+    #[test]
+    fn test_rate_limit_exhaustion_blocks_login() {
+        let user_id = "integration-rate-limit-login-user";
+
+        // Use a tight limiter: 3 failures → 300 s lockout
+        let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(3, 60, 300));
+        let handlers = TwoFactorHandlers::with_limiter(Arc::clone(&limiter));
+
+        // Enable and activate via normal flow — no overwrite
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "rate-limit-login@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .unwrap();
+        let secret = enable_resp.secret;
+
+        // Exhaust the limit with bad tokens
+        for _ in 0..3 {
+            let _ = handlers.verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: "000000".to_string(),
+                },
+            );
+        }
+
+        // Even a correct token must be rejected while locked out
+        let blocked = handlers.verify_login_token(
+            &caller(user_id),
+            LoginWithTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token: generate_token(&secret),
+            },
+        );
+
+        assert!(blocked.is_err(), "locked-out user must receive an error");
+        let err = blocked.unwrap_err();
+        assert!(
+            err.contains("Too many failed attempts"),
+            "error must mention rate limiting, got: {}",
+            err
+        );
+    }
+
+    /// Rate limit on verify_and_activate is independent from login.
+    #[test]
+    fn test_rate_limit_exhaustion_blocks_activation() {
+        let user_id = "integration-rate-limit-activation-user";
+
+        let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(3, 60, 300));
+        let handlers = TwoFactorHandlers::with_limiter(Arc::clone(&limiter));
+
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user4@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Exhaust verify limit
+        for _ in 0..3 {
+            let _ = handlers.verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: "000000".to_string(),
+                },
+            );
+        }
+
+        // Correct token is still blocked
+        let blocked = handlers.verify_and_activate(
+            &caller(user_id),
+            VerifyTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token: generate_token(&enable_resp.secret),
+            },
+        );
+
+        assert!(blocked.is_err());
+        assert!(blocked.unwrap_err().contains("Too many failed attempts"));
+    }
+
+    /// A successful login resets the failure counter so the user is not
+    /// permanently penalised for earlier mistakes.
+    #[test]
+    fn test_successful_login_resets_rate_limit() {
+        // Use a unique user ID and a fresh limiter — no shared global state
+        let user_id = "integration-reset-rate-limit-user";
+
+        // 6 failures allowed before lockout — gives room for 4 bad + 1 good
+        let limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::new(6, 60, 300));
+        let handlers = TwoFactorHandlers::with_limiter(Arc::clone(&limiter));
+
+        // Set up 2FA via the normal enable → activate flow so the record
+        // is written immediately before we start hammering the limiter.
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "reset-rate@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Activate with a valid token
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .unwrap();
+
+        assert!(get_two_factor_data_for_tests(user_id).unwrap().enabled);
+
+        // 4 bad login attempts
+        for _ in 0..4 {
+            let _ = handlers.verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: "000000".to_string(),
+                },
+            );
+        }
+
+        // One good login — resets the counter
+        let ok = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .expect("login should succeed");
+        assert!(ok);
+
+        // Counter is reset: 4 more bad attempts should still be allowed
+        for _ in 0..4 {
+            let result = handlers.verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: "000000".to_string(),
+                },
+            );
+            assert!(
+                result.is_ok(),
+                "should not be blocked yet after counter reset"
+            );
+        }
     }
 }

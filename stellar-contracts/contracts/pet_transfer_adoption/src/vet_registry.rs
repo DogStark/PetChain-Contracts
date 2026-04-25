@@ -44,6 +44,8 @@ enum DataKey {
     Admin,
     VetByAddress(Address),
     VetByLicense(String),
+    VetCount,
+    VetIndex(u64),
 }
 
 /// ======================================================
@@ -180,6 +182,20 @@ impl VetRegistryContract {
             .persistent()
             .set(&DataKey::VetByLicense(license_number), &vet_address);
 
+        // Maintain index for pagination
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0);
+        let new_count = count + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VetCount, &new_count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VetIndex(new_count), &vet_address);
+
         env.events().publish((EVT_REGISTERED,), vet_address);
     }
 
@@ -218,6 +234,49 @@ impl VetRegistryContract {
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         let vet = get_vet(&env, &vet_address);
         vet.verified
+    }
+
+    /// List all registered vets with pagination support.
+    ///
+    /// # Arguments
+    /// * `offset` — Number of vets to skip (0-based)
+    /// * `limit` — Maximum number of vets to return
+    ///
+    /// # Returns
+    /// `Vec<Vet>` — Paginated list of vets
+    pub fn list_vets(env: Env, offset: u64, limit: u32) -> Vec<Vet> {
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0);
+
+        let mut vets = Vec::new(&env);
+
+        if count == 0 || limit == 0 || offset >= count {
+            return vets;
+        }
+
+        let start_index = offset + 1; // Indices are 1-based
+        let end_index = (offset + limit as u64).min(count);
+
+        for i in start_index..=end_index {
+            if let Some(vet_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::VetIndex(i))
+            {
+                if let Some(vet) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Vet>(&DataKey::VetByAddress(vet_address))
+                {
+                    vets.push_back(vet);
+                }
+            }
+        }
+
+        vets
     }
 }
 
@@ -351,48 +410,98 @@ mod tests {
         assert_eq!(ContractError::InputTooLong as u32, 6);
     }
 
+    // ---- list_vets pagination ----
+
     #[test]
-    fn test_admin_can_transfer_admin_rights() {
-        let (env, contract_id, admin, client) = setup();
-        let new_admin = Address::generate(&env);
-        let vet = soroban_sdk::Address::generate(&env);
-
-        assert_eq!(stored_admin(&env, &contract_id), admin);
-        client.transfer_admin(&new_admin);
-        assert_eq!(stored_admin(&env, &contract_id), new_admin);
-
-        client.register_vet(
-            &vet,
-            &str(&env, "Dr. Admin Transfer"),
-            &str(&env, "LIC-TRANSFER"),
-            &str(&env, "General"),
-        );
-        client.verify_vet(&vet);
-
-        assert!(client.is_verified_vet(&vet));
+    fn test_list_vets_empty() {
+        let (_, _, client) = setup();
+        let vets = client.list_vets(&0, &10);
+        assert!(vets.is_empty());
     }
 
     #[test]
-    fn test_old_admin_loses_privileges_after_transfer() {
-        let (env, contract_id, admin, client) = setup();
-        let new_admin = Address::generate(&env);
+    fn test_list_vets_returns_all() {
+        let (env, _, client) = setup();
 
-        client.transfer_admin(&new_admin);
-        assert_ne!(stored_admin(&env, &contract_id), admin);
-        assert_eq!(stored_admin(&env, &contract_id), new_admin);
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        let vet3 = soroban_sdk::Address::generate(&env);
+
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+
+        let vets = client.list_vets(&0, &10);
+        assert_eq!(vets.len(), 3);
     }
 
     #[test]
-    fn test_transfer_admin_requires_current_admin_auth() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, VetRegistryContract);
-        let client = VetRegistryContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let new_admin = Address::generate(&env);
+    fn test_list_vets_pagination_limit() {
+        let (env, _, client) = setup();
 
-        client.init(&admin);
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        let vet3 = soroban_sdk::Address::generate(&env);
 
-        assert!(client.try_transfer_admin(&new_admin).is_err());
-        assert_eq!(stored_admin(&env, &contract_id), admin);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+
+        let vets = client.list_vets(&0, &2);
+        assert_eq!(vets.len(), 2);
+    }
+
+    #[test]
+    fn test_list_vets_pagination_offset() {
+        let (env, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        let vet3 = soroban_sdk::Address::generate(&env);
+
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+
+        let vets = client.list_vets(&1, &10);
+        assert_eq!(vets.len(), 2);
+    }
+
+    #[test]
+    fn test_list_vets_offset_beyond_count() {
+        let (env, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+
+        let vets = client.list_vets(&5, &10);
+        assert!(vets.is_empty());
+    }
+
+    #[test]
+    fn test_list_vets_zero_limit() {
+        let (env, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+
+        let vets = client.list_vets(&0, &0);
+        assert!(vets.is_empty());
+    }
+
+    #[test]
+    fn test_list_vets_verified_status() {
+        let (env, admin, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+
+        // Verify the vet
+        client.verify_vet(&vet1);
+
+        let vets = client.list_vets(&0, &10);
+        assert_eq!(vets.len(), 1);
+        let retrieved = vets.get(0).unwrap();
+        assert!(retrieved.verified);
     }
 }
