@@ -2660,6 +2660,21 @@ impl PetChainContract {
         history
     }
 
+    pub fn get_current_diet_plan(env: Env, pet_id: u64) -> Option<DietPlan> {
+        let history = Self::get_diet_history(env, pet_id);
+        let mut current: Option<DietPlan> = None;
+        for plan in history.iter() {
+            let replace = match current {
+                None => true,
+                Some(ref c) => plan.created_at > c.created_at,
+            };
+            if replace {
+                current = Some(plan);
+            }
+        }
+        current
+    }
+
     pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool {
         let mut pet: Pet = env
             .storage()
