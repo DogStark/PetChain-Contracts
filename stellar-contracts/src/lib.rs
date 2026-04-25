@@ -67,6 +67,8 @@ mod test_behavior;
 #[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
+mod test_consent_pagination;
+#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -1234,6 +1236,20 @@ impl PetChainContract {
             .instance()
             .get(&StatsKey::ActivePetsCount)
             .unwrap_or(0)
+    }
+
+    /// Returns the statistics for a given vet address.
+    /// Returns a zeroed `VetStats` if the vet has no recorded activity.
+    pub fn get_vet_stats(env: Env, vet_address: Address) -> VetStats {
+        env.storage()
+            .instance()
+            .get::<_, VetStats>(&VetKey::VetStats(vet_address))
+            .unwrap_or(VetStats {
+                total_records: 0,
+                total_vaccinations: 0,
+                total_treatments: 0,
+                pets_treated: 0,
+            })
     }
 
     fn log_access(env: &Env, pet_id: u64, user: Address, action: AccessAction, details: String) {
@@ -3930,18 +3946,6 @@ impl PetChainContract {
         } else {
             false
         }
-    }
-
-    pub fn get_vet_stats(env: Env, vet: Address) -> VetStats {
-        env.storage()
-            .instance()
-            .get::<_, VetStats>(&VetKey::VetStats(vet))
-            .unwrap_or(VetStats {
-                total_records: 0,
-                total_vaccinations: 0,
-                total_treatments: 0,
-                pets_treated: 0,
-            })
     }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
