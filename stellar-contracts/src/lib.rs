@@ -1339,6 +1339,32 @@ impl PetChainContract {
             .set(&SystemKey::AdminThreshold, &threshold);
     }
 
+    pub fn get_admins(env: Env) -> Vec<Address> {
+        if let Some(admin) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
+            let mut admins = Vec::new(&env);
+            admins.push_back(admin);
+            return admins;
+        }
+        env.storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn get_admin_threshold(env: Env) -> u32 {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return 1u32;
+        }
+        env.storage()
+            .instance()
+            .get(&SystemKey::AdminThreshold)
+            .unwrap_or(1u32)
+    }
+
     fn update_vet_stats(
         env: &Env,
         vet: &Address,
