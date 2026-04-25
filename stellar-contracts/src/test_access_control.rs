@@ -349,6 +349,42 @@ fn test_get_authorized_users_excludes_revoked() {
 }
 
 #[test]
+fn test_revoke_all_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee1 = Address::generate(&env);
+    let grantee2 = Address::generate(&env);
+    let grantee3 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "BulkRevoke"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Color"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.grant_access(&pet_id, &grantee1, &AccessLevel::Basic, &None);
+    client.grant_access(&pet_id, &grantee2, &AccessLevel::Full, &None);
+    client.grant_access(&pet_id, &grantee3, &AccessLevel::Basic, &None);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 3);
+
+    client.revoke_all_access(&pet_id);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 0);
+}
+
+#[test]
 fn test_get_authorized_users_excludes_expired() {
     let env = Env::default();
     env.mock_all_auths();
