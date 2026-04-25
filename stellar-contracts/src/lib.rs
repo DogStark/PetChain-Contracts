@@ -6958,6 +6958,7 @@ impl PetChainContract {
         record_id
     }
 
+
     pub fn get_breeding_history(env: Env, pet_id: u64) -> Vec<BreedingRecord> {
         let count: u64 = env
             .storage()
@@ -6981,6 +6982,10 @@ impl PetChainContract {
             }
         }
         history
+    }
+
+    pub fn get_breeding_record(env: Env, record_id: u64) -> Option<BreedingRecord> {
+        env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
