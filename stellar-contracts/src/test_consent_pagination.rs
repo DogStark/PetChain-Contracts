@@ -97,6 +97,7 @@ fn test_consent_pruning_removes_oldest_revoked_at_cap() {
 }
 
 #[test]
+#[should_panic]
 fn test_consent_hard_cap_when_all_active() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
