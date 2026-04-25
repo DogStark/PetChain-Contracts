@@ -114,11 +114,7 @@ fn test_sightings_pagination() {
         &PrivacyLevel::Public,
     );
 
-    let alert_id = client.report_lost(
-        &pet_id,
-        &String::from_str(&env, "Park"),
-        &None,
-    );
+    let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
 
     // Add 5 sightings
     for _i in 0..5 {

@@ -334,7 +334,10 @@ fn test_improvements_filters_by_behavior_type() {
     let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Aggression);
     assert_eq!(results.len(), 2);
     for i in 0..results.len() {
-        assert_eq!(results.get(i).unwrap().behavior_type, BehaviorType::Aggression);
+        assert_eq!(
+            results.get(i).unwrap().behavior_type,
+            BehaviorType::Aggression
+        );
     }
 
     let anxiety_results = client.get_behavior_improvements(&pet_id, &BehaviorType::Anxiety);
@@ -463,7 +466,10 @@ fn test_improvements_single_record() {
 
     let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Socialization);
     assert_eq!(results.len(), 1);
-    assert_eq!(results.get(0).unwrap().behavior_type, BehaviorType::Socialization);
+    assert_eq!(
+        results.get(0).unwrap().behavior_type,
+        BehaviorType::Socialization
+    );
     assert_eq!(results.get(0).unwrap().severity, 4);
 }
 
