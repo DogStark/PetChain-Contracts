@@ -479,7 +479,7 @@ fn test_ownership_history_pagination() {
     signers.push_back(signer2.clone());
 
     client.configure_multisig(&pet_id, &signers, &2);
-    
+
     // Transfer 1
     let proposal_id1 = client.require_multisig_for_transfer(&pet_id, &new_owner);
     client.sign_transfer_proposal(&proposal_id1, &signer1);

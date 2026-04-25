@@ -67,8 +67,6 @@ mod test_behavior;
 #[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
-mod test_consent_pagination;
-#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -227,7 +225,6 @@ pub struct BreedingRecord {
     pub breeder: Address,
     pub notes: String,
 }
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -646,8 +643,8 @@ pub enum DataKey {
 
     // Medication keys
     // Lost Pet Alert System keys
-    EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64),     // pet_id -> Vec<Address>
+    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
+    EmergencyResponders(u64), // pet_id -> Vec<Address>
 }
 
 #[contracttype]
@@ -1327,7 +1324,7 @@ impl PetChainContract {
             .get(&SystemKey::Admins)
             .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
 
-        if !admins.contains(admin.clone()) {
+        if !admins.contains(admin) {
             panic_with_error!(env, ContractError::Unauthorized);
         }
         admin.require_auth();
@@ -1421,9 +1418,6 @@ impl PetChainContract {
             .total_treatments
             .checked_add(treatment_increment)
             .unwrap_or_else(|| panic_with_error!(env.clone(), ContractError::CounterOverflow));
-        stats.total_records += record_increment;
-        stats.total_vaccinations += vaccination_increment;
-        stats.total_treatments += treatment_increment;
 
         // Unique pet tracking
         if !env
@@ -1795,7 +1789,7 @@ impl PetChainContract {
             let remaining_days = elapsed_days % 365;
             let months = remaining_days / 30;
 
-            return (years, months);
+            (years, months)
         }
 
         (0, 0)
@@ -1810,17 +1804,17 @@ impl PetChainContract {
         {
             // Check if caller has access based on privacy level and access grants
             let access_level = Self::check_access(env.clone(), pet_id, caller.clone());
-            
+
             // Private pets can only be accessed by owner
             if pet.privacy_level == PrivacyLevel::Private && pet.owner != caller {
                 return None;
             }
-            
+
             // Restricted pets require at least Basic access
             if pet.privacy_level == PrivacyLevel::Restricted && access_level == AccessLevel::None {
                 return None;
             }
-            
+
             // Public pets are accessible to anyone
             // Get the base pet profile
             let profile = Self::get_pet(env.clone(), pet_id, caller.clone())?;
@@ -2597,7 +2591,12 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_vaccination_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Vaccination> {
+    pub fn get_vaccination_history(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<Vaccination> {
         if env
             .storage()
             .instance()
@@ -3256,7 +3255,11 @@ impl PetChainContract {
             preimage.push_back(byte);
         }
 
-        if let Some(legacy_admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+        if let Some(legacy_admin) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
             let admin_xdr = legacy_admin.to_xdr(env);
             for byte in admin_xdr.iter() {
                 preimage.push_back(byte);
@@ -3321,7 +3324,12 @@ impl PetChainContract {
         );
     }
 
-    pub fn get_ownership_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<OwnershipRecord> {
+    pub fn get_ownership_history(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<OwnershipRecord> {
         let count: u64 = env
             .storage()
             .instance()
@@ -3416,8 +3424,9 @@ impl PetChainContract {
             .unwrap_or_else(|| panic!("Pet not found"));
         pet.owner.require_auth();
         let key = DataKey::EmergencyResponders(pet_id);
-        let mut responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
-        if !responders.contains(responder.clone()) {
+        let mut responders: Vec<Address> =
+            env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
+        if !responders.contains(&responder) {
             responders.push_back(responder);
         }
         env.storage().instance().set(&key, &responders);
@@ -3447,7 +3456,7 @@ impl PetChainContract {
         }
         let key = DataKey::EmergencyResponders(pet_id);
         let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
-        responders.contains(caller.clone())
+        responders.contains(&caller)
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
@@ -3555,7 +3564,11 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_emergency_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyAccessLog> {
+    pub fn get_emergency_access_logs(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+    ) -> Vec<EmergencyAccessLog> {
         // Verify pet exists
         if let Some(pet) = env
             .storage()
@@ -3566,7 +3579,7 @@ impl PetChainContract {
             if caller != pet.owner {
                 panic!("Unauthorized: only pet owner can access emergency logs");
             }
-            
+
             // Retrieve logs from persistent storage
             let log_key = DataKey::EmergencyAccessLogs(pet_id);
             env.storage()
@@ -3642,14 +3655,19 @@ impl PetChainContract {
         pets
     }
 
-    pub fn get_pets_by_species(env: Env, species: String, offset: u64, limit: u32) -> Vec<PetProfile> {
+    pub fn get_pets_by_species(
+        env: Env,
+        species: String,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<PetProfile> {
         let count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::SpeciesPetCount(species.clone()))
             .unwrap_or(0);
         let mut pets = Vec::new(&env);
-        
+
         if count == 0 || limit == 0 || offset >= count {
             return pets;
         }
@@ -3690,7 +3708,9 @@ impl PetChainContract {
                 .get::<DataKey, Pet>(&DataKey::Pet(id))
             {
                 if pet.active && !pet.archived {
-                    if let Some(profile) = Self::get_pet(env.clone(), id, env.current_contract_address()) {
+                    if let Some(profile) =
+                        Self::get_pet(env.clone(), id, env.current_contract_address())
+                    {
                         pets.push_back(profile);
                     }
                 }
@@ -3822,12 +3842,13 @@ impl PetChainContract {
                 .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
             {
                 let key = DataKey::AccessGrant((pet_id, grantee.clone()));
-                if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+                if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key)
+                {
                     if grant.is_active {
                         grant.is_active = false;
                         grant.access_level = AccessLevel::None;
                         env.storage().instance().set(&key, &grant);
-                        
+
                         env.events().publish(
                             (String::from_str(&env, "AccessRevoked"), pet_id),
                             AccessRevokedEvent {
@@ -3841,7 +3862,7 @@ impl PetChainContract {
                 }
             }
         }
-        
+
         Self::log_access(
             &env,
             pet_id,
@@ -4752,22 +4773,29 @@ impl PetChainContract {
     }
 
     pub fn get_sighting_count(env: Env, alert_id: u64) -> u64 {
-        let sightings: Vec<SightingReport> = env.storage()
+        let sightings: Vec<SightingReport> = env
+            .storage()
             .instance()
             .get(&AlertKey::AlertSightings(alert_id))
             .unwrap_or(Vec::new(&env));
         sightings.len() as u64
     }
 
-    pub fn get_sightings_paginated(env: Env, alert_id: u64, offset: u64, limit: u32) -> Vec<SightingReport> {
-        let sightings: Vec<SightingReport> = env.storage()
+    pub fn get_sightings_paginated(
+        env: Env,
+        alert_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<SightingReport> {
+        let sightings: Vec<SightingReport> = env
+            .storage()
             .instance()
             .get(&AlertKey::AlertSightings(alert_id))
             .unwrap_or(Vec::new(&env));
-        
+
         let count = sightings.len() as u64;
         let mut result = Vec::new(&env);
-        
+
         if count == 0 || limit == 0 || offset >= count {
             return result;
         }
@@ -4927,15 +4955,14 @@ impl PetChainContract {
                         if !c.is_active {
                             // Shift remaining indices down
                             for j in i..count {
-                                if let Some(next_cid) = env
-                                    .storage()
-                                    .instance()
-                                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, j + 1)))
+                                if let Some(next_cid) =
+                                    env.storage().instance().get::<ConsentKey, u64>(
+                                        &ConsentKey::PetConsentIndex((pet_id, j + 1)),
+                                    )
                                 {
-                                    env.storage().instance().set(
-                                        &ConsentKey::PetConsentIndex((pet_id, j)),
-                                        &next_cid,
-                                    );
+                                    env.storage()
+                                        .instance()
+                                        .set(&ConsentKey::PetConsentIndex((pet_id, j)), &next_cid);
                                 }
                             }
                             env.storage()
@@ -5064,7 +5091,12 @@ impl PetChainContract {
         active
     }
 
-    pub fn get_consent_history_page(env: Env, pet_id: u64, page: u64, page_size: u32) -> Vec<Consent> {
+    pub fn get_consent_history_page(
+        env: Env,
+        pet_id: u64,
+        page: u64,
+        page_size: u32,
+    ) -> Vec<Consent> {
         let history = Self::get_consent_history(env.clone(), pet_id);
         let size = if page_size == 0 { 50u32 } else { page_size };
         let start = (page * size as u64) as u32;
@@ -5265,7 +5297,7 @@ impl PetChainContract {
             env.panic_with_error(ContractError::ProposalExpired);
         }
 
-        if proposal.approvals.contains(admin.clone()) {
+        if proposal.approvals.contains(&admin) {
             env.panic_with_error(ContractError::AdminAlreadyApproved);
         }
 
@@ -6300,7 +6332,7 @@ impl PetChainContract {
             env.panic_with_error(ContractError::InvalidThreshold);
         }
 
-        if !signers.contains(pet.owner.clone()) {
+        if !signers.contains(&pet.owner) {
             env.panic_with_error(ContractError::NotPetOwner);
         }
 
@@ -6356,7 +6388,7 @@ impl PetChainContract {
             env.panic_with_error(ContractError::InvalidThreshold);
         }
 
-        if !new_signers.contains(pet.owner.clone()) {
+        if !new_signers.contains(&pet.owner) {
             env.panic_with_error(ContractError::NotPetOwner);
         }
 
@@ -6519,11 +6551,11 @@ impl PetChainContract {
             .get(&SystemKey::PetMultisigConfig(proposal.pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::MultisigNotConfigured));
 
-        if !config.signers.contains(signer.clone()) {
+        if !config.signers.contains(&signer) {
             env.panic_with_error(ContractError::NotAuthorizedSigner);
         }
 
-        if proposal.signatures.contains(signer.clone()) {
+        if proposal.signatures.contains(&signer) {
             env.panic_with_error(ContractError::AlreadySigned);
         }
 
@@ -6790,7 +6822,11 @@ impl PetChainContract {
             .get(&DataKey::Pet(sire_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::SireNotFound));
         sire.owner.require_auth();
-        let count: u64 = env.storage().instance().get(&BreedingKey::BreedingRecordCount).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::BreedingRecordCount)
+            .unwrap_or(0);
         let record_id = count + 1;
         let record = BreedingRecord {
             id: record_id,
@@ -6801,25 +6837,59 @@ impl PetChainContract {
             breeder: sire.owner.clone(),
             notes,
         };
-        env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
-        env.storage().instance().set(&BreedingKey::BreedingRecordCount, &record_id);
-        let sire_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(sire_id)).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::BreedingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::BreedingRecordCount, &record_id);
+        let sire_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(sire_id))
+            .unwrap_or(0);
         let new_sire_count = sire_count + 1;
-        env.storage().instance().set(&BreedingKey::PetBreedingCount(sire_id), &new_sire_count);
-        env.storage().instance().set(&BreedingKey::PetBreedingIndex((sire_id, new_sire_count)), &record_id);
-        let dam_count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(dam_id)).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::PetBreedingCount(sire_id), &new_sire_count);
+        env.storage().instance().set(
+            &BreedingKey::PetBreedingIndex((sire_id, new_sire_count)),
+            &record_id,
+        );
+        let dam_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(dam_id))
+            .unwrap_or(0);
         let new_dam_count = dam_count + 1;
-        env.storage().instance().set(&BreedingKey::PetBreedingCount(dam_id), &new_dam_count);
-        env.storage().instance().set(&BreedingKey::PetBreedingIndex((dam_id, new_dam_count)), &record_id);
+        env.storage()
+            .instance()
+            .set(&BreedingKey::PetBreedingCount(dam_id), &new_dam_count);
+        env.storage().instance().set(
+            &BreedingKey::PetBreedingIndex((dam_id, new_dam_count)),
+            &record_id,
+        );
         record_id
     }
 
     pub fn get_breeding_history(env: Env, pet_id: u64) -> Vec<BreedingRecord> {
-        let count: u64 = env.storage().instance().get(&BreedingKey::PetBreedingCount(pet_id)).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(pet_id))
+            .unwrap_or(0);
         let mut history = Vec::new(&env);
         for i in 1..=count {
-            if let Some(record_id) = env.storage().instance().get::<BreedingKey, u64>(&BreedingKey::PetBreedingIndex((pet_id, i))) {
-                if let Some(record) = env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id)) {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::PetBreedingIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+                {
                     history.push_back(record);
                 }
             }
@@ -6828,14 +6898,30 @@ impl PetChainContract {
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
-        if let Some(mut record) = env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id)) {
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+        {
             record.breeder.require_auth();
             record.offspring_ids.push_back(offspring_id);
-            env.storage().instance().set(&BreedingKey::BreedingRecord(record_id), &record);
-            let off_count: u64 = env.storage().instance().get(&BreedingKey::PetOffspringCount(record.sire_id)).unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&BreedingKey::BreedingRecord(record_id), &record);
+            let off_count: u64 = env
+                .storage()
+                .instance()
+                .get(&BreedingKey::PetOffspringCount(record.sire_id))
+                .unwrap_or(0);
             let new_off_count = off_count + 1;
-            env.storage().instance().set(&BreedingKey::PetOffspringCount(record.sire_id), &new_off_count);
-            env.storage().instance().set(&BreedingKey::PetOffspringIndex((record.sire_id, new_off_count)), &offspring_id);
+            env.storage().instance().set(
+                &BreedingKey::PetOffspringCount(record.sire_id),
+                &new_off_count,
+            );
+            env.storage().instance().set(
+                &BreedingKey::PetOffspringIndex((record.sire_id, new_off_count)),
+                &offspring_id,
+            );
             true
         } else {
             false
@@ -6843,10 +6929,18 @@ impl PetChainContract {
     }
 
     pub fn get_offspring(env: Env, pet_id: u64) -> Vec<u64> {
-        let count: u64 = env.storage().instance().get(&BreedingKey::PetOffspringCount(pet_id)).unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::PetOffspringCount(pet_id))
+            .unwrap_or(0);
         let mut offspring = Vec::new(&env);
         for i in 1..=count {
-            if let Some(offspring_id) = env.storage().instance().get::<BreedingKey, u64>(&BreedingKey::PetOffspringIndex((pet_id, i))) {
+            if let Some(offspring_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::PetOffspringIndex((pet_id, i)))
+            {
                 offspring.push_back(offspring_id);
             }
         }
