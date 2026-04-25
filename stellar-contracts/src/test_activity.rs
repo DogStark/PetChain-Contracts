@@ -401,3 +401,101 @@ fn test_archive_nonexistent_pet() {
 
     client.archive_pet(&999);
 }
+
+#[test]
+fn test_get_treatment_history_pagination() {
+    use crate::{TreatmentType};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-05-10"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&owner, &vet);
+
+    // Add 3 treatments
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Routine,
+        &1000u64,
+        &String::from_str(&env, "Checkup"),
+        &None,
+        &String::from_str(&env, "Good"),
+    );
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Surgery,
+        &2000u64,
+        &String::from_str(&env, "Spay"),
+        &None,
+        &String::from_str(&env, "Successful"),
+    );
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Emergency,
+        &3000u64,
+        &String::from_str(&env, "Injury"),
+        &None,
+        &String::from_str(&env, "Recovered"),
+    );
+
+    // Get all (offset=0, limit=10)
+    let all = client.get_treatment_history(&pet_id, &0u64, &10u32);
+    assert_eq!(all.len(), 3);
+    assert_eq!(all.get(0).unwrap().treatment_type, TreatmentType::Routine);
+    assert_eq!(all.get(1).unwrap().treatment_type, TreatmentType::Surgery);
+    assert_eq!(all.get(2).unwrap().treatment_type, TreatmentType::Emergency);
+
+    // Pagination: offset=1, limit=2 → 2nd and 3rd
+    let page = client.get_treatment_history(&pet_id, &1u64, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().treatment_type, TreatmentType::Surgery);
+    assert_eq!(page.get(1).unwrap().treatment_type, TreatmentType::Emergency);
+
+    // Offset beyond count → empty
+    let empty = client.get_treatment_history(&pet_id, &10u64, &5u32);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_get_treatment_history_nonexistent_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    // Non-existent pet should return empty vec
+    let result = client.get_treatment_history(&999u64, &0u64, &10u32);
+    assert_eq!(result.len(), 0);
+}

@@ -5372,7 +5372,7 @@ impl PetChainContract {
             .get::<TreatmentKey, Treatment>(&TreatmentKey::Treatment(treatment_id))
     }
 
-    pub fn get_treatment_history(env: Env, pet_id: u64) -> Vec<Treatment> {
+    pub fn get_treatment_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Treatment> {
         if env
             .storage()
             .instance()
@@ -5389,8 +5389,10 @@ impl PetChainContract {
             .unwrap_or(0);
 
         let mut history = Vec::new(&env);
+        let start_index = offset + 1; // indices are 1-based
+        let end_index = (offset + limit as u64).min(count);
 
-        for i in 1..=count {
+        for i in start_index..=end_index {
             if let Some(tid) = env
                 .storage()
                 .instance()
@@ -5414,7 +5416,7 @@ impl PetChainContract {
         pet_id: u64,
         treatment_type: TreatmentType,
     ) -> Vec<Treatment> {
-        let history = Self::get_treatment_history(env.clone(), pet_id);
+        let history = Self::get_treatment_history(env.clone(), pet_id, 0, u32::MAX);
         let mut filtered = Vec::new(&env);
 
         for treatment in history.iter() {
