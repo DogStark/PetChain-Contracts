@@ -126,6 +126,11 @@ impl VetRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        require_admin(&env);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    }
+
     /// ----------------------------------
     /// REGISTRATION
     /// ----------------------------------
@@ -226,6 +231,19 @@ impl VetRegistryContract {
         get_vet(&env, &vet_address)
     }
 
+    pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet> {
+        let vet_address: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VetByLicense(license_number));
+
+        vet_address.and_then(|address| {
+            env.storage()
+                .persistent()
+                .get(&DataKey::VetByAddress(address))
+        })
+    }
+
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         let vet = get_vet(&env, &vet_address);
         vet.verified
@@ -282,16 +300,27 @@ impl VetRegistryContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-    fn setup() -> (Env, soroban_sdk::Address, VetRegistryContractClient<'static>) {
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        VetRegistryContractClient<'static>,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, VetRegistryContract);
         let client = VetRegistryContractClient::new(&env, &contract_id);
-        let admin = soroban_sdk::Address::generate(&env);
+        let admin = Address::generate(&env);
         client.init(&admin);
-        (env, admin, client)
+        (env, contract_id, admin, client)
+    }
+
+    fn stored_admin(env: &Env, contract_id: &Address) -> Address {
+        env.as_contract(contract_id, || {
+            env.storage().instance().get(&DataKey::Admin).unwrap()
+        })
     }
 
     fn str(env: &Env, s: &str) -> String {
@@ -310,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_name_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -323,7 +352,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_name_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -337,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_license_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -350,7 +379,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_license_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -364,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_specialization_at_max_length_accepted() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,
@@ -377,7 +406,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_specialization_over_max_length_rejected() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
         let vet = soroban_sdk::Address::generate(&env);
         client.register_vet(
             &vet,

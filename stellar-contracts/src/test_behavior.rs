@@ -334,7 +334,10 @@ fn test_improvements_filters_by_behavior_type() {
     let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Aggression);
     assert_eq!(results.len(), 2);
     for i in 0..results.len() {
-        assert_eq!(results.get(i).unwrap().behavior_type, BehaviorType::Aggression);
+        assert_eq!(
+            results.get(i).unwrap().behavior_type,
+            BehaviorType::Aggression
+        );
     }
 
     let anxiety_results = client.get_behavior_improvements(&pet_id, &BehaviorType::Anxiety);
@@ -463,7 +466,10 @@ fn test_improvements_single_record() {
 
     let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Socialization);
     assert_eq!(results.len(), 1);
-    assert_eq!(results.get(0).unwrap().behavior_type, BehaviorType::Socialization);
+    assert_eq!(
+        results.get(0).unwrap().behavior_type,
+        BehaviorType::Socialization
+    );
     assert_eq!(results.get(0).unwrap().severity, 4);
 }
 
@@ -510,3 +516,49 @@ fn test_all_behavior_types() {
     let history = client.get_behavior_history(&pet_id);
     assert_eq!(history.len(), 5);
 }
+
+#[test]
+fn test_get_breeding_record_valid() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    env.mock_all_auths();
+    let record_id = client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &1000,
+        &String::from_str(&env, "First litter"),
+    );
+
+    let record = client.get_breeding_record(&record_id);
+    assert!(record.is_some());
+    let r = record.unwrap();
+    assert_eq!(r.id, record_id);
+    assert_eq!(r.sire_id, sire_id);
+    assert_eq!(r.dam_id, dam_id);
+    assert_eq!(r.breeding_date, 1000);
+    assert_eq!(r.notes, String::from_str(&env, "First litter"));
+}
+
+#[test]
+fn test_get_breeding_record_nonexistent() {
+    let (env, _owner, _admin, _pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let record = client.get_breeding_record(&999);
+    assert!(!record.is_some());
+}
+
