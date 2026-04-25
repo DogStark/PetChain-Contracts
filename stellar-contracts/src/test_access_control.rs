@@ -939,3 +939,87 @@ fn test_get_vaccination_history_pagination_limit_zero() {
     let history = client.get_vaccination_history(&pet_id, &0u64, &0u32);
     assert_eq!(history.len(), 0);
 }
+
+#[test]
+fn test_get_verified_vets_only_returns_verified() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet1 = Address::generate(&env);
+    let vet2 = Address::generate(&env);
+
+    client.register_vet(
+        &vet1,
+        &String::from_str(&env, "Dr. Alice"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "Surgery"),
+    );
+    client.register_vet(
+        &vet2,
+        &String::from_str(&env, "Dr. Bob"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "Dentistry"),
+    );
+
+    // Only verify vet1
+    client.verify_vet(&admin, &vet1);
+
+    let vets = client.get_verified_vets(&0u64, &10u32);
+    assert_eq!(vets.len(), 1);
+    assert_eq!(vets.get(0).unwrap().address, vet1);
+}
+
+#[test]
+fn test_get_verified_vets_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let licenses = ["LIC-P1", "LIC-P2", "LIC-P3"];
+    for lic in licenses.iter() {
+        let vet = Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Vet"),
+            &String::from_str(&env, lic),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&admin, &vet);
+    }
+
+    // Page 1: offset=0, limit=2
+    let page1 = client.get_verified_vets(&0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    // Page 2: offset=2, limit=2
+    let page2 = client.get_verified_vets(&2u64, &2u32);
+    assert_eq!(page2.len(), 1);
+}
+
+#[test]
+fn test_get_verified_vets_empty_when_none_verified() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Unverified"),
+        &String::from_str(&env, "LIC-UNVER"),
+        &String::from_str(&env, "General"),
+    );
+
+    let vets = client.get_verified_vets(&0u64, &10u32);
+    assert_eq!(vets.len(), 0);
+}
