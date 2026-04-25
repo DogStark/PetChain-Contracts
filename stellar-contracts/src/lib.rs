@@ -6514,6 +6514,38 @@ impl PetChainContract {
         }
         total
     }
+
+    pub fn update_grooming_record(
+        env: Env,
+        record_id: u64,
+        cost: u64,
+        notes: String,
+        next_due: u64,
+    ) -> bool {
+        let mut record: GroomingRecord = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecord(record_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(record.pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        pet.owner.require_auth();
+
+        record.cost = cost;
+        record.notes = notes;
+        record.next_due = next_due;
+
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecord(record_id), &record);
+
+        true
+    }
 }
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
