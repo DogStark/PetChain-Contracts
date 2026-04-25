@@ -349,6 +349,42 @@ fn test_get_authorized_users_excludes_revoked() {
 }
 
 #[test]
+fn test_revoke_all_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee1 = Address::generate(&env);
+    let grantee2 = Address::generate(&env);
+    let grantee3 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "BulkRevoke"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Color"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.grant_access(&pet_id, &grantee1, &AccessLevel::Basic, &None);
+    client.grant_access(&pet_id, &grantee2, &AccessLevel::Full, &None);
+    client.grant_access(&pet_id, &grantee3, &AccessLevel::Basic, &None);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 3);
+
+    client.revoke_all_access(&pet_id);
+
+    assert_eq!(client.get_authorized_users(&pet_id).len(), 0);
+}
+
+#[test]
 fn test_get_authorized_users_excludes_expired() {
     let env = Env::default();
     env.mock_all_auths();
@@ -942,6 +978,7 @@ fn test_get_vaccination_history_pagination_limit_zero() {
 
 #[test]
 fn test_update_vet_clinic_info_success() {
+fn test_check_and_expire_access_marks_expired_grant_inactive() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, PetChainContract);
@@ -971,6 +1008,44 @@ fn test_update_vet_clinic_info_success() {
 #[test]
 #[should_panic(expected = "clinic_info exceeds 500 characters")]
 fn test_update_vet_clinic_info_too_long() {
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    let expires_at = now + 100;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // Before expiry, grant is active
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(grant.is_active);
+
+    // Move time past expiry
+    env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+
+    // Call check_and_expire_access
+    client.check_and_expire_access(&pet_id, &grantee);
+
+    // Grant should now be inactive
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(!grant.is_active);
+}
+
+#[test]
+fn test_check_and_expire_access_does_not_affect_active_grant() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, PetChainContract);
@@ -991,6 +1066,38 @@ fn test_update_vet_clinic_info_too_long() {
 #[test]
 #[should_panic(expected = "Vet not found")]
 fn test_update_vet_clinic_info_unregistered_vet() {
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    let expires_at = now + 1000; // Far in the future
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // Call check_and_expire_access before expiry
+    client.check_and_expire_access(&pet_id, &grantee);
+
+    // Grant should still be active
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(grant.is_active);
+    assert_eq!(grant.access_level, AccessLevel::Full);
+}
+
+#[test]
+fn test_check_access_respects_expiry_and_marks_inactive() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, PetChainContract);
@@ -998,4 +1105,39 @@ fn test_update_vet_clinic_info_unregistered_vet() {
 
     let vet = Address::generate(&env);
     client.update_vet_clinic_info(&vet, &String::from_str(&env, "Some Clinic"));
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    let expires_at = now + 100;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // Before expiry, access is Full
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::Full);
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(grant.is_active);
+
+    // Move time past expiry
+    env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+
+    // After expiry, access is None
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::None);
+
+    // Grant should have been marked inactive
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert!(!grant.is_active);
 }
