@@ -240,7 +240,7 @@ fn test_empty_grooming_history() {
 }
 
 #[test]
-fn test_update_grooming_record() {
+fn test_get_grooming_record() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -275,34 +275,21 @@ fn test_update_grooming_record() {
         &String::from_str(&env, "Haircut and bath"),
     );
 
-    let ok = client.update_grooming_record(
-        &record_id,
-        &7500,
-        &String::from_str(&env, "Haircut, bath and nail trim"),
-        &(env.ledger().timestamp() + 1296000),
-    );
-    assert!(ok);
-
-    let history = client.get_grooming_history(&pet_id);
-    let updated = history.get(0).unwrap();
-    assert_eq!(updated.cost, 7500);
-    assert_eq!(updated.notes, String::from_str(&env, "Haircut, bath and nail trim"));
-    assert_eq!(updated.service_type, String::from_str(&env, "Full Grooming"));
+    let record = client.get_grooming_record(&record_id).unwrap();
+    assert_eq!(record.id, record_id);
+    assert_eq!(record.pet_id, pet_id);
+    assert_eq!(record.cost, 5000);
+    assert_eq!(record.service_type, String::from_str(&env, "Full Grooming"));
 }
 
 #[test]
-#[should_panic]
-fn test_update_grooming_record_nonexistent() {
+fn test_get_grooming_record_nonexistent() {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
-    client.update_grooming_record(
-        &999u64,
-        &1000,
-        &String::from_str(&env, "Some notes"),
-        &1234567890,
-    );
+    let result = client.get_grooming_record(&999u64);
+    assert!(result.is_none());
 }
