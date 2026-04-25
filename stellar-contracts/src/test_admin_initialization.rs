@@ -181,3 +181,50 @@ fn test_multisig_admin_methods_work_after_initialization() {
     // Approving with the other admin should work
     client.approve_proposal(&admin2, &proposal_id);
 }
+
+#[test]
+fn test_get_admins_single_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 1);
+    assert_eq!(admins.get(0).unwrap(), admin);
+    assert_eq!(client.get_admin_threshold(), 1u32);
+}
+
+#[test]
+fn test_get_admins_multisig() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let mut admins_vec = soroban_sdk::Vec::new(&env);
+    admins_vec.push_back(admin1.clone());
+    admins_vec.push_back(admin2.clone());
+
+    client.init_multisig(&admin1, &admins_vec, &2u32);
+
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 2);
+    assert_eq!(client.get_admin_threshold(), 2u32);
+}
+
+#[test]
+fn test_get_admins_no_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 0);
+}
