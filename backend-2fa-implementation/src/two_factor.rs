@@ -169,6 +169,12 @@ pub struct InMemoryStore {
     data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
 }
 
+impl InMemoryStore {
+    pub fn clear(&self) {
+        self.data.lock().unwrap().clear();
+    }
+}
+
 impl TwoFactorStore for InMemoryStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         self.data.lock().unwrap().insert(user_id.to_string(), data);
