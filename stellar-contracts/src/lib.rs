@@ -6834,6 +6834,12 @@ impl PetChainContract {
         }
         total
     }
+
+    pub fn get_grooming_record(env: Env, record_id: u64) -> Option<GroomingRecord> {
+        env.storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecord(record_id))
+    }
 }
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
