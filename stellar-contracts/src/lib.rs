@@ -70,6 +70,10 @@ mod test_nutrition;
 mod test_pet_age;
 #[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
+mod test_admin_initialization;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -3980,6 +3984,39 @@ impl PetChainContract {
         slot_index
     }
 
+    /// Get available slots for a vet across a date range [from_date, to_date] (inclusive, day units)
+    pub fn get_availability_range(
+        env: Env,
+        vet_address: Address,
+        from_date: u64,
+        to_date: u64,
+    ) -> Vec<AvailabilitySlot> {
+        if from_date > to_date {
+            return Vec::new(&env);
+        }
+        let mut all_slots = Vec::new(&env);
+        let mut day = from_date;
+        while day <= to_date {
+            let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), day));
+            let slot_indices: Vec<u64> = env
+                .storage()
+                .instance()
+                .get(&date_key)
+                .unwrap_or(Vec::new(&env));
+            for index in slot_indices.iter() {
+                if let Some(slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(
+                    &SystemKey::VetAvailability((vet_address.clone(), index)),
+                ) {
+                    if slot.available {
+                        all_slots.push_back(slot);
+                    }
+                }
+            }
+            day += 1;
+        }
+        all_slots
+    }
+
     /// Get available slots for a vet on a specific date
     pub fn get_available_slots(env: Env, vet_address: Address, date: u64) -> Vec<AvailabilitySlot> {
         let date_key = SystemKey::VetAvailabilityByDate((vet_address.clone(), date));
@@ -4374,6 +4411,20 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::Proposal(proposal_id))
+    }
+
+    pub fn get_admins(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_admin_threshold(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::AdminThreshold)
+            .unwrap_or(0)
     }
 
     // --- VET REVIEWS ---
