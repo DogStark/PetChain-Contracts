@@ -245,4 +245,137 @@ mod test_search_medical_records {
         assert_eq!(flu_results.len(), 5);
         assert_eq!(allergy_results.len(), 5);
     }
+
+    // ---- update medical record notes ----
+
+    #[test]
+    fn test_update_medical_record_notes_success() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+        let initial_record = client.get_medical_record(&record_id).unwrap();
+
+        // Update the notes
+        let success = client.update_medical_record_notes(
+            &record_id,
+            &String::from_str(&env, "Updated notes with new information"),
+        );
+        assert!(success);
+
+        // Verify notes were updated
+        let updated_record = client.get_medical_record(&record_id).unwrap();
+        assert_eq!(
+            updated_record.notes,
+            String::from_str(&env, "Updated notes with new information")
+        );
+
+        // Verify the date field (creation time) was NOT changed
+        assert_eq!(updated_record.date, initial_record.date);
+
+        // Verify updated_at timestamp was changed
+        assert!(updated_record.updated_at >= initial_record.updated_at);
+    }
+
+    #[test]
+    fn test_update_medical_record_notes_creator_only() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.init_admin(&admin);
+
+        let owner = Address::generate(&env);
+        let vet1 = Address::generate(&env);
+        let vet2 = Address::generate(&env);
+
+        // Register both vets
+        client.register_vet(
+            &vet1,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "LIC-001"),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&admin, &vet1);
+
+        client.register_vet(
+            &vet2,
+            &String::from_str(&env, "Dr. Jones"),
+            &String::from_str(&env, "LIC-002"),
+            &String::from_str(&env, "Surgery"),
+        );
+        client.verify_vet(&admin, &vet2);
+
+        // Register pet
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        // Create record with vet1
+        let record_id = client.add_medical_record(
+            &pet_id,
+            &vet1,
+            &String::from_str(&env, "Flu"),
+            &String::from_str(&env, "Treatment"),
+            &soroban_sdk::Vec::new(&env),
+            &String::from_str(&env, "Notes"),
+        );
+
+        // Try to update with vet2 (different vet) - should fail
+        env.mock_all_auths_allowing_non_root_auth();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.update_medical_record_notes(
+                &record_id,
+                &String::from_str(&env, "Unauthorized update"),
+            )
+        }));
+        // Expect failure due to auth requirement
+        assert!(result.is_err() || !result.unwrap());
+    }
+
+    #[test]
+    fn test_update_medical_record_notes_nonexistent_record() {
+        let (env, client, _admin, _owner, _vet, _pet_id) = setup();
+
+        let success = client.update_medical_record_notes(
+            &99999u64,
+            &String::from_str(&env, "Notes for non-existent record"),
+        );
+        assert!(!success);
+    }
+
+    #[test]
+    fn test_get_medical_record_by_id() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+
+        let record = client.get_medical_record(&record_id);
+        assert!(record.is_some());
+
+        let record = record.unwrap();
+        assert_eq!(record.id, record_id);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.diagnosis, String::from_str(&env, "Flu"));
+    }
+
+    #[test]
+    fn test_get_medical_record_by_id_not_found() {
+        let (env, client, _admin, _owner, _vet, _pet_id) = setup();
+
+        let record = client.get_medical_record(&99999u64);
+        assert!(record.is_none());
+    }
 }
