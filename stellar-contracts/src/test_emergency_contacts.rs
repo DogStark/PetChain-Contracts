@@ -342,7 +342,6 @@ fn test_set_emergency_contacts_unauthorized() {
     let owner = Address::generate(&env);
     let _stranger = Address::generate(&env);
     let (pet_id, contacts) = setup_pet_with_contacts(&env, &client, &owner);
-
     env.as_contract(&contract_id, || {
         client.set_emergency_contacts(
             &pet_id,

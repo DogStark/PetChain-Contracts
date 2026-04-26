@@ -10,7 +10,10 @@ mod test_get_pet_access_control {
     use crate::{
         AccessLevel, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
     };
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Address, Env, String,
+    };
 
     // ---- helpers ----
 
@@ -53,7 +56,10 @@ mod test_get_pet_access_control {
         let pet_id = register(&client, &env, &owner, PrivacyLevel::Public);
 
         let result = client.get_pet(&pet_id, &owner);
-        assert!(result.is_some(), "owner must always read their own public pet");
+        assert!(
+            result.is_some(),
+            "owner must always read their own public pet"
+        );
     }
 
     #[test]
@@ -95,7 +101,10 @@ mod test_get_pet_access_control {
         let pet_id = register(&client, &env, &owner, PrivacyLevel::Restricted);
 
         let result = client.get_pet(&pet_id, &owner);
-        assert!(result.is_some(), "owner must always read their own restricted pet");
+        assert!(
+            result.is_some(),
+            "owner must always read their own restricted pet"
+        );
     }
 
     #[test]
@@ -122,7 +131,10 @@ mod test_get_pet_access_control {
         client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
 
         let result = client.get_pet(&pet_id, &grantee);
-        assert!(result.is_some(), "Basic grant on Restricted pet must allow read");
+        assert!(
+            result.is_some(),
+            "Basic grant on Restricted pet must allow read"
+        );
     }
 
     #[test]
@@ -135,7 +147,10 @@ mod test_get_pet_access_control {
         client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
 
         let result = client.get_pet(&pet_id, &grantee);
-        assert!(result.is_some(), "Full grant on Restricted pet must allow read");
+        assert!(
+            result.is_some(),
+            "Full grant on Restricted pet must allow read"
+        );
     }
 
     #[test]
@@ -145,13 +160,35 @@ mod test_get_pet_access_control {
         let grantee = Address::generate(&env);
         let pet_id = register(&client, &env, &owner, PrivacyLevel::Restricted);
 
-        // Grant that expired in the past (timestamp 1 = far in the past).
-        client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(1u64));
+        // Grant with expiry at timestamp 100.
+        let expires_at: u64 = 100;
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+        // Advance ledger past the expiry so the grant is expired.
+        env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
 
         let result = client.get_pet(&pet_id, &grantee);
         assert!(
             result.is_none(),
             "expired grant must not allow access to a Restricted pet"
+        );
+    }
+
+    #[test]
+    fn test_restricted_pet_revoked_grant_cannot_read() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let grantee = Address::generate(&env);
+        let pet_id = register(&client, &env, &owner, PrivacyLevel::Restricted);
+
+        // Grant and then immediately revoke access.
+        client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+        client.revoke_access(&pet_id, &grantee);
+
+        let result = client.get_pet(&pet_id, &grantee);
+        assert!(
+            result.is_none(),
+            "revoked grant must not allow access to a Restricted pet"
         );
     }
 
@@ -166,7 +203,10 @@ mod test_get_pet_access_control {
         let pet_id = register(&client, &env, &owner, PrivacyLevel::Private);
 
         let result = client.get_pet(&pet_id, &owner);
-        assert!(result.is_some(), "owner must always read their own private pet");
+        assert!(
+            result.is_some(),
+            "owner must always read their own private pet"
+        );
     }
 
     #[test]
@@ -177,10 +217,7 @@ mod test_get_pet_access_control {
         let pet_id = register(&client, &env, &owner, PrivacyLevel::Private);
 
         let result = client.get_pet(&pet_id, &stranger);
-        assert!(
-            result.is_none(),
-            "stranger must not read a Private pet"
-        );
+        assert!(result.is_none(), "stranger must not read a Private pet");
     }
 
     #[test]
