@@ -66,3 +66,64 @@ fn test_upgrade_proposal_threshold_not_met() {
     // Only 1 of 2 required approvals — must panic
     client.execute_proposal(&proposal_id);
 }
+
+// --- Tests verifying admins[1] can perform upgrade/migration ---
+
+#[test]
+fn test_admin2_can_propose_upgrade() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+
+    // admin2 (index 1) proposes
+    let proposal_id = client.propose_action(&admin2, &action, &3600);
+    assert_eq!(proposal_id, 1);
+
+    // admin1 approves to meet threshold of 2
+    client.approve_proposal(&admin1, &proposal_id);
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
+
+#[test]
+fn test_admin2_can_migrate_version() {
+    let env = Env::default();
+    let (client, _admin1, admin2) = setup(&env);
+
+    // admin2 (index 1) calls migrate_version directly
+    client.migrate_version(&admin2, &2, &0, &0);
+
+    let version = client.get_version();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+fn test_admin2_can_approve_upgrade_proposal() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // admin2 (index 1) approves
+    client.approve_proposal(&admin2, &proposal_id);
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
+
+#[test]
+#[should_panic]
+fn test_non_admin_cannot_migrate_version() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    client.migrate_version(&non_admin, &2, &0, &0);
+}

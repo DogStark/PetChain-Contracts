@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short,
-    panic_with_error, Address, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -12,9 +12,9 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
-mod vet_registry;
 #[cfg(test)]
 mod test;
+mod vet_registry;
 
 /// ======================================================
 /// CONTRACT
@@ -60,6 +60,7 @@ enum DataKey {
     Pet(u64),
     PendingTransfer(u64),
     OwnershipHistory(u64),
+    OwnerPets(Address),
 }
 
 /// ======================================================
@@ -86,6 +87,7 @@ pub enum ContractError {
     EmptyOwnershipHistory = 6,
     MissingOwnershipRecord = 7,
     TransferNotExpired = 8,
+    StaleCancellation = 9,
 }
 
 /// ======================================================
@@ -118,6 +120,44 @@ fn save_history(env: &Env, pet_id: u64, history: &Vec<OwnershipRecord>) {
         .set(&DataKey::OwnershipHistory(pet_id), history);
 }
 
+fn get_owner_pet_ids(env: &Env, owner: &Address) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OwnerPets(owner.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_owner_pet_ids(env: &Env, owner: &Address, pet_ids: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OwnerPets(owner.clone()), pet_ids);
+}
+
+fn add_pet_to_owner(env: &Env, owner: &Address, pet_id: u64) {
+    let mut pet_ids = get_owner_pet_ids(env, owner);
+    for existing_pet_id in pet_ids.iter() {
+        if existing_pet_id == pet_id {
+            return;
+        }
+    }
+
+    pet_ids.push_back(pet_id);
+    save_owner_pet_ids(env, owner, &pet_ids);
+}
+
+fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
+    let pet_ids = get_owner_pet_ids(env, owner);
+    let mut updated_pet_ids = Vec::new(env);
+
+    for existing_pet_id in pet_ids.iter() {
+        if existing_pet_id != pet_id {
+            updated_pet_ids.push_back(existing_pet_id);
+        }
+    }
+
+    save_owner_pet_ids(env, owner, &updated_pet_ids);
+}
+
 /// ======================================================
 /// CONTRACT IMPLEMENTATION
 /// ======================================================
@@ -138,13 +178,14 @@ impl PetOwnershipContract {
 
         let mut history = Vec::new(&env);
         history.push_back(OwnershipRecord {
-            owner,
+            owner: owner.clone(),
             acquired_at: env.ledger().timestamp(),
             relinquished_at: None,
         });
 
         save_pet(&env, &pet);
         save_history(&env, pet_id, &history);
+        add_pet_to_owner(&env, &owner, pet_id);
     }
 
     /// ----------------------------------
@@ -216,6 +257,9 @@ impl PetOwnershipContract {
             acquired_at: now,
             relinquished_at: None,
         });
+
+        remove_pet_from_owner(&env, &transfer.from, pet_id);
+        add_pet_to_owner(&env, &transfer.to, pet_id);
 
         pet.current_owner = transfer.to.clone();
 
@@ -314,6 +358,10 @@ impl PetOwnershipContract {
         get_history(&env, pet_id)
     }
 
+    pub fn get_owner_pets(env: Env, owner: Address) -> Vec<u64> {
+        get_owner_pet_ids(&env, &owner)
+    }
+
     pub fn has_pending_transfer(env: Env, pet_id: u64) -> bool {
         env.storage()
             .persistent()
@@ -327,4 +375,3 @@ impl PetOwnershipContract {
             .get(&DataKey::PendingTransfer(pet_id))
     }
 }
-
