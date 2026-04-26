@@ -523,3 +523,161 @@ fn test_attachment_timestamp_tracking() {
     assert_eq!(attachments.get(0).unwrap().metadata.uploaded_date, 1000);
     assert_eq!(attachments.get(1).unwrap().metadata.uploaded_date, 2000);
 }
+
+// ---- get_attachment_by_index tests ----
+
+#[test]
+fn test_get_attachment_by_index_first() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Add attachments
+    let metadata1 = create_test_metadata(&env, "file1.jpg", "image/jpeg", 1024000);
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"),
+        &metadata1,
+    );
+
+    let metadata2 = create_test_metadata(&env, "file2.pdf", "application/pdf", 512000);
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX"),
+        &metadata2,
+    );
+
+    // Get first attachment by index
+    let attachment = client.get_attachment_by_index(&record_id, &0u32);
+    assert!(attachment.is_some());
+
+    let att = attachment.unwrap();
+    assert_eq!(att.metadata.filename, String::from_str(&env, "file1.jpg"));
+    assert_eq!(
+        att.ipfs_hash,
+        String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
+    );
+}
+
+#[test]
+fn test_get_attachment_by_index_last() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Add multiple attachments
+    for i in 0..3 {
+        let filename = if i == 0 {
+            "file1.jpg"
+        } else if i == 1 {
+            "file2.pdf"
+        } else {
+            "file3.png"
+        };
+        let hash_str = if i == 0 {
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+        } else if i == 1 {
+            "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX"
+        } else {
+            "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"
+        };
+
+        let metadata = create_test_metadata(&env, filename, "type/type", 1024000);
+        client.add_attachment(&record_id, &String::from_str(&env, hash_str), &metadata);
+    }
+
+    // Get last attachment (index 2)
+    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    assert!(attachment.is_some());
+
+    let att = attachment.unwrap();
+    assert_eq!(att.metadata.filename, String::from_str(&env, "file3.png"));
+}
+
+#[test]
+fn test_get_attachment_by_index_out_of_bounds() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Add one attachment
+    let metadata = create_test_metadata(&env, "file1.jpg", "image/jpeg", 1024000);
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"),
+        &metadata,
+    );
+
+    // Try to get index that's out of bounds
+    let attachment = client.get_attachment_by_index(&record_id, &5u32);
+    assert!(attachment.is_none());
+}
+
+#[test]
+fn test_get_attachment_by_index_empty_attachments() {
+    let (_env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Try to get from empty record
+    let attachment = client.get_attachment_by_index(&record_id, &0u32);
+    assert!(attachment.is_none());
+}
+
+#[test]
+fn test_get_attachment_by_index_nonexistent_record() {
+    let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
+
+    // Try to get from non-existent record
+    let attachment = client.get_attachment_by_index(&999u64, &0u32);
+    assert!(attachment.is_none());
+}
+
+#[test]
+fn test_get_attachment_by_index_middle() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Add 5 attachments
+    for i in 0..5 {
+        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
+        let hash = format!(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
+            (71 + i) as u8 as char
+        );
+        client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
+    }
+
+    // Get middle attachment (index 2)
+    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    assert!(attachment.is_some());
+
+    let att = attachment.unwrap();
+    assert_eq!(att.metadata.filename, String::from_str(&env, "file2.jpg"));
+}
+
+#[test]
+fn test_get_attachment_by_index_after_removal() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+
+    // Add 3 attachments
+    for i in 0..3 {
+        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
+        let hash = format!(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
+            (71 + i) as u8 as char
+        );
+        client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
+    }
+
+    // Verify we have 3 attachments
+    assert_eq!(client.get_attachment_count(&record_id), 3);
+
+    // Remove middle attachment (index 1)
+    client.remove_attachment(&record_id, &1u32);
+
+    // Verify we have 2 attachments
+    assert_eq!(client.get_attachment_count(&record_id), 2);
+
+    // Old index 1 should now return what was at index 2
+    let attachment = client.get_attachment_by_index(&record_id, &1u32);
+    assert!(attachment.is_some());
+
+    let att = attachment.unwrap();
+    assert_eq!(att.metadata.filename, String::from_str(&env, "file2.jpg"));
+
+    // Old index 2 should now be out of bounds
+    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    assert!(attachment.is_none());
+}
