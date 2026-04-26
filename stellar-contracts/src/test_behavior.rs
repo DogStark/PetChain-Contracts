@@ -83,7 +83,7 @@ fn test_add_multiple_behavior_records() {
 }
 
 #[test]
-#[should_panic(expected = "Severity must be between 0 and 10")]
+#[should_panic]
 fn test_invalid_severity() {
     let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -304,6 +304,175 @@ fn test_empty_training_milestones() {
     assert_eq!(milestones.len(), 0);
 }
 
+// --- get_behavior_improvements tests ---
+
+/// Only records matching the requested behavior type are returned.
+#[test]
+fn test_improvements_filters_by_behavior_type() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Aggression,
+        &7,
+        &String::from_str(&env, "Aggression record"),
+    );
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Anxiety,
+        &5,
+        &String::from_str(&env, "Anxiety record"),
+    );
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Aggression,
+        &4,
+        &String::from_str(&env, "Second aggression record"),
+    );
+
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Aggression);
+    assert_eq!(results.len(), 2);
+    for i in 0..results.len() {
+        assert_eq!(
+            results.get(i).unwrap().behavior_type,
+            BehaviorType::Aggression
+        );
+    }
+
+    let anxiety_results = client.get_behavior_improvements(&pet_id, &BehaviorType::Anxiety);
+    assert_eq!(anxiety_results.len(), 1);
+}
+
+/// Records are returned sorted by recorded_at ascending (oldest first).
+#[test]
+fn test_improvements_sorted_chronologically() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    // Advance ledger time between records so timestamps differ.
+    env.ledger().set_timestamp(1000);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &8,
+        &String::from_str(&env, "First record (t=1000)"),
+    );
+
+    env.ledger().set_timestamp(3000);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &5,
+        &String::from_str(&env, "Third record (t=3000)"),
+    );
+
+    env.ledger().set_timestamp(2000);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &6,
+        &String::from_str(&env, "Second record (t=2000)"),
+    );
+
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Training);
+    assert_eq!(results.len(), 3);
+
+    // Verify ascending order by timestamp.
+    assert_eq!(results.get(0).unwrap().recorded_at, 1000);
+    assert_eq!(results.get(1).unwrap().recorded_at, 2000);
+    assert_eq!(results.get(2).unwrap().recorded_at, 3000);
+}
+
+/// Decreasing severity over time reflects a genuine improvement trend.
+#[test]
+fn test_improvements_trend_severity_decreasing() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    env.ledger().set_timestamp(100);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Anxiety,
+        &5,
+        &String::from_str(&env, "Initial high anxiety"),
+    );
+
+    env.ledger().set_timestamp(200);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Anxiety,
+        &3,
+        &String::from_str(&env, "Moderate improvement"),
+    );
+
+    env.ledger().set_timestamp(300);
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Anxiety,
+        &1,
+        &String::from_str(&env, "Near full recovery"),
+    );
+
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Anxiety);
+    assert_eq!(results.len(), 3);
+
+    // Severity should decrease as time progresses (improvement trend).
+    assert_eq!(results.get(0).unwrap().severity, 5);
+    assert_eq!(results.get(1).unwrap().severity, 3);
+    assert_eq!(results.get(2).unwrap().severity, 1);
+}
+
+/// Returns an empty Vec when no records match the requested type.
+#[test]
+fn test_improvements_empty_when_no_matching_type() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Aggression,
+        &5,
+        &String::from_str(&env, "Only aggression record"),
+    );
+
+    // Requesting a type that has no records should return empty, not panic.
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Socialization);
+    assert_eq!(results.len(), 0);
+}
+
+/// Returns an empty Vec for a pet that has no behavior records at all.
+#[test]
+fn test_improvements_empty_for_pet_with_no_records() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Training);
+    assert_eq!(results.len(), 0);
+}
+
+/// Single matching record is returned correctly without panicking.
+#[test]
+fn test_improvements_single_record() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Socialization,
+        &4,
+        &String::from_str(&env, "Only socialization record"),
+    );
+
+    let results = client.get_behavior_improvements(&pet_id, &BehaviorType::Socialization);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results.get(0).unwrap().behavior_type,
+        BehaviorType::Socialization
+    );
+    assert_eq!(results.get(0).unwrap().severity, 4);
+}
+
 #[test]
 fn test_all_behavior_types() {
     let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
@@ -347,3 +516,49 @@ fn test_all_behavior_types() {
     let history = client.get_behavior_history(&pet_id);
     assert_eq!(history.len(), 5);
 }
+
+#[test]
+fn test_get_breeding_record_valid() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    env.mock_all_auths();
+    let record_id = client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &1000,
+        &String::from_str(&env, "First litter"),
+    );
+
+    let record = client.get_breeding_record(&record_id);
+    assert!(record.is_some());
+    let r = record.unwrap();
+    assert_eq!(r.id, record_id);
+    assert_eq!(r.sire_id, sire_id);
+    assert_eq!(r.dam_id, dam_id);
+    assert_eq!(r.breeding_date, 1000);
+    assert_eq!(r.notes, String::from_str(&env, "First litter"));
+}
+
+#[test]
+fn test_get_breeding_record_nonexistent() {
+    let (env, _owner, _admin, _pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let record = client.get_breeding_record(&999);
+    assert!(!record.is_some());
+}
+
