@@ -3,7 +3,7 @@ use crate::db::PostgresTwoFactorStore;
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
 use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(test)]
 fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
@@ -12,9 +12,12 @@ fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
 }
 
 #[cfg(test)]
-fn two_factor_store() -> Arc<dyn TwoFactorStore> {
+fn two_factor_store() -> Arc<Mutex<dyn TwoFactorStore>> {
     test_two_factor_store().clone()
+
+    Arc::new(Mutex::new(InMemoryStore::default()))
 }
+
 
 #[cfg(not(test))]
 fn two_factor_store() -> Arc<dyn TwoFactorStore> {
