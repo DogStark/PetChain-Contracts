@@ -630,13 +630,22 @@ fn test_get_attachment_by_index_middle() {
     let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add 5 attachments
+    let filenames = ["file0.jpg", "file1.jpg", "file2.jpg", "file3.jpg", "file4.jpg"];
+    let hashes = [
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdJ",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdK",
+    ];
+
     for i in 0..5 {
-        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
-        let hash = format!(
-            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
-            (71 + i) as u8 as char
+        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
         );
-        client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
     }
 
     // Get middle attachment (index 2)
@@ -652,13 +661,20 @@ fn test_get_attachment_by_index_after_removal() {
     let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add 3 attachments
+    let filenames = ["file0.jpg", "file1.jpg", "file2.jpg"];
+    let hashes = [
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI",
+    ];
+
     for i in 0..3 {
-        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
-        let hash = format!(
-            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
-            (71 + i) as u8 as char
+        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
         );
-        client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
     }
 
     // Verify we have 3 attachments
