@@ -121,7 +121,10 @@ mod test_book_slot {
         // A legitimate owner can still book the untouched slot
         let owner = register_pet_owner(&env, &client);
         let booked = client.book_slot(&owner, &vet, &slot_index);
-        assert!(booked, "Legitimate owner should be able to book the available slot");
+        assert!(
+            booked,
+            "Legitimate owner should be able to book the available slot"
+        );
 
         // Now the slot must be gone from available list
         let slots_after = client.get_available_slots(&vet, &date);
