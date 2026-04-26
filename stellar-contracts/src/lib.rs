@@ -1289,6 +1289,7 @@ impl PetChainContract {
         env.storage().persistent().set(&key, &logs);
     }
 
+
     fn require_admin(env: &Env) {
         if let Some(legacy_admin) = env
             .storage()
@@ -4506,7 +4507,21 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_access_logs(env: Env, pet_id: u64) -> Vec<AccessLog> {
+    pub fn get_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<AccessLog> {
+        caller.require_auth();
+
+        // Verify pet exists
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        // Require owner or admin auth
+        if pet.owner != caller {
+            Self::require_admin_auth(&env, &caller);
+        }
+
         let key = (Symbol::new(&env, "access_logs"), pet_id);
         env.storage()
             .persistent()
@@ -4785,6 +4800,33 @@ impl PetChainContract {
             .set(&AlertKey::ActiveLostPetAlerts, &active_alerts);
 
         alert_id
+    }
+
+    /// Update a lost pet alert's location and reward
+    pub fn update_lost_alert(
+        env: Env,
+        alert_id: u64,
+        new_location: String,
+        new_reward: Option<u64>,
+    ) {
+        let mut alert: LostPetAlert = env
+            .storage()
+            .instance()
+            .get(&AlertKey::LostPetAlert(alert_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::AlertNotFound));
+
+        alert.reported_by.require_auth();
+
+        if alert.status != AlertStatus::Active {
+            env.panic_with_error(ContractError::AlertNotActive);
+        }
+
+        alert.last_seen_location = new_location;
+        alert.reward_amount = new_reward;
+
+        env.storage()
+            .instance()
+            .set(&AlertKey::LostPetAlert(alert_id), &alert);
     }
 
     /// Report a sighting of a lost pet
@@ -5734,6 +5776,26 @@ impl PetChainContract {
             .set(&MedicalKey::PetMedicationIndex((pet_id, new_count)), &id);
 
         id
+    }
+
+    pub fn discontinue_medication(env: Env, medication_id: u64, end_date: u64, vet: Address) {
+        vet.require_auth();
+        if !Self::is_verified_vet(env.clone(), vet.clone()) {
+            panic!("Veterinarian not verified");
+        }
+
+        let mut med: Medication = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::GlobalMedication(medication_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::MedicationNotFound));
+
+        med.active = false;
+        med.end_date = Some(end_date);
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::GlobalMedication(medication_id), &med);
     }
 
     pub fn get_medications(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Medication> {
@@ -6759,6 +6821,36 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
         true
+    }
+
+    /// Cancel a pending transfer proposal.
+    /// Only the current pet owner can cancel a proposal.
+    pub fn cancel_transfer_proposal(env: Env, proposal_id: u64) {
+        let mut proposal: PetTransferProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetTransferProposal(proposal_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::ProposalNotFound));
+
+        // Require pet owner auth
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(proposal.pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        pet.owner.require_auth();
+
+        if proposal.executed {
+            env.panic_with_error(ContractError::ProposalAlreadyExecuted);
+        }
+
+        // Mark as executed to prevent further use (effectively cancelling it)
+        proposal.executed = true;
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
     }
 
     /// Execute a multi-signature pet transfer.
