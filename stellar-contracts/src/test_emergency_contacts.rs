@@ -265,3 +265,140 @@ fn test_contact_with_empty_phone_rejected() {
 
     PetChainContract::validate_emergency_contacts(&env, &contacts);
 }
+
+#[test]
+fn test_emergency_contacts_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let (pet_id, _) = setup_pet_with_contacts(&env, &client, &owner);
+
+    let mut new_contacts = soroban_sdk::Vec::new(&env);
+    new_contacts.push_back(valid_contact(
+        &env,
+        "John Smith",
+        "555-9999",
+        "john@example.com",
+        "Brother",
+        true,
+    ));
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &new_contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, "Updated notes"),
+    );
+
+    let retrieved = client.get_emergency_contacts(&pet_id, &owner);
+    assert_eq!(retrieved.len(), 1);
+    assert_eq!(
+        retrieved.get(0).unwrap().name,
+        String::from_str(&env, "John Smith")
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_emergency_contacts_empty_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &soroban_sdk::Vec::new(&env),
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_set_emergency_contacts_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let _stranger = Address::generate(&env);
+    let (pet_id, contacts) = setup_pet_with_contacts(&env, &client, &owner);
+
+    env.as_contract(&contract_id, || {
+        client.set_emergency_contacts(
+            &pet_id,
+            &contacts,
+            &soroban_sdk::Vec::new(&env),
+            &String::from_str(&env, "Hacked!"),
+        );
+    });
+}
+
+#[test]
+fn test_get_emergency_info_authorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let (pet_id, _) = setup_pet_with_contacts(&env, &client, &owner);
+
+    let mut allergies = soroban_sdk::Vec::new(&env);
+    allergies.push_back(Allergy {
+        name: String::from_str(&env, "Peanuts"),
+        severity: String::from_str(&env, "High"),
+        is_critical: true,
+    });
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &client.get_emergency_contacts(&pet_id, &owner),
+        &allergies,
+        &String::from_str(&env, "Critical medical history"),
+    );
+
+    let info = client.get_emergency_info(&pet_id, &owner);
+    assert_eq!(info.pet_id, pet_id);
+    assert_eq!(info.allergies.len(), 1);
+    assert_eq!(info.critical_alerts.len(), 1);
+    assert_eq!(
+        info.critical_alerts.get(0).unwrap(),
+        String::from_str(&env, "Critical medical history")
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_set_emergency_contacts_pet_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    client.set_emergency_contacts(
+        &999u64,
+        &soroban_sdk::Vec::new(&env),
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+}
