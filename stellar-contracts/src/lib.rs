@@ -3433,6 +3433,70 @@ impl PetChainContract {
         }
         history
     }
+    // --- EMERGENCY RESPONDER ALLOWLIST ---
+
+    /// Grant a responder address access to read emergency data for a pet.
+    /// Only the pet owner can call this.
+    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyResponder((pet_id, responder)), &true);
+    }
+
+    /// Revoke a responder's access to emergency data for a pet.
+    /// Only the pet owner can call this.
+    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::EmergencyResponder((pet_id, responder)));
+    }
+
+    /// Returns true if `caller` is the pet owner or an approved emergency responder.
+    fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address) -> bool {
+        let pet: Pet = match env.storage().instance().get(&DataKey::Pet(pet_id)) {
+            Some(p) => p,
+            None => return false,
+        };
+        if &pet.owner == caller {
+            return true;
+        }
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::EmergencyResponder((pet_id, caller.clone())))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
+        if contacts.is_empty() {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        let mut has_primary = false;
+        for contact in contacts.iter() {
+            if contact.name.is_empty() || contact.phone.is_empty() {
+                panic_with_error!(env, ContractError::InvalidInput);
+            }
+            if contact.is_primary {
+                has_primary = true;
+            }
+        }
+
+        if !has_primary {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+    }
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
         env: Env,
@@ -3446,11 +3510,8 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
+            Self::validate_emergency_contacts(&env, &contacts);
             pet.owner.require_auth();
-
-            if contacts.is_empty() {
-                panic!("Emergency contacts cannot be empty");
-            }
 
             let key = Self::get_encryption_key(&env);
 
@@ -7433,6 +7494,5 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
         }
         block_index = block_index.saturating_add(1);
     }
-
     output
 }
