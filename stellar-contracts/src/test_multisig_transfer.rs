@@ -487,7 +487,7 @@ fn test_ownership_history_pagination() {
 
     // Transfer 2 (back to owner)
     let proposal_id2 = client.require_multisig_for_transfer(&pet_id, &owner);
-    client.sign_transfer_proposal(&proposal_id2, &new_owner); // new_owner must sign now
+    client.sign_transfer_proposal(&proposal_id2, &signer1); // signer1 is a configured signer
     client.multisig_transfer_pet(&proposal_id2);
 
     // Total 3 records (initial registration + 2 transfers)

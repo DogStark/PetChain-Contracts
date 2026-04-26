@@ -1119,6 +1119,13 @@ fn test_get_verified_vets_pagination() {
 
 #[test]
 fn test_check_and_expire_access_does_not_affect_active_grant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
     let owner = Address::generate(&env);
     let grantee = Address::generate(&env);
 
@@ -1301,4 +1308,3 @@ fn test_get_custody_history_returns_complete_history() {
     // Verify current custody is inactive
     assert!(!client.is_custody_valid(&pet_id));
 }
-

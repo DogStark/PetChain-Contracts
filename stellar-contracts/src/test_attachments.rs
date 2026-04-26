@@ -1,4 +1,5 @@
 use crate::*;
+extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, String,
@@ -631,10 +632,19 @@ fn test_get_attachment_by_index_middle() {
 
     // Add 5 attachments
     for i in 0..5 {
-        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
-        let hash = format!(
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        // Use valid base58 characters (skip 'I' which is invalid in base58)
+        let suffix_char = match i {
+            0 => 'G',
+            1 => 'H',
+            2 => 'J',
+            3 => 'K',
+            _ => 'L',
+        };
+        let hash = std::format!(
             "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
-            (71 + i) as u8 as char
+            suffix_char
         );
         client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
     }
@@ -653,10 +663,16 @@ fn test_get_attachment_by_index_after_removal() {
 
     // Add 3 attachments
     for i in 0..3 {
-        let metadata = create_test_metadata(&env, &format!("file{}.jpg", i), "image/jpeg", 1024000);
-        let hash = format!(
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        let suffix_char = match i {
+            0 => 'G',
+            1 => 'H',
+            _ => 'J',
+        };
+        let hash = std::format!(
             "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
-            (71 + i) as u8 as char
+            suffix_char
         );
         client.add_attachment(&record_id, &String::from_str(&env, &hash), &metadata);
     }

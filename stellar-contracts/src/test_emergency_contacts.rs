@@ -209,14 +209,14 @@ fn test_revoked_responder_cannot_read_contacts() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_empty_emergency_contacts_rejected() {
     let env = Env::default();
     PetChainContract::validate_emergency_contacts(&env, &soroban_sdk::Vec::new(&env));
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_contact_without_primary_rejected() {
     let env = Env::default();
     let mut contacts = soroban_sdk::Vec::new(&env);
@@ -233,7 +233,7 @@ fn test_contact_without_primary_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_contact_with_empty_name_rejected() {
     let env = Env::default();
     let mut contacts = soroban_sdk::Vec::new(&env);
@@ -250,7 +250,7 @@ fn test_contact_with_empty_name_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_contact_with_empty_phone_rejected() {
     let env = Env::default();
     let mut contacts = soroban_sdk::Vec::new(&env);
@@ -302,7 +302,7 @@ fn test_emergency_contacts_update() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_emergency_contacts_empty_rejection() {
     let env = Env::default();
     env.mock_all_auths();
