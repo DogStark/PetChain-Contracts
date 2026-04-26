@@ -5,11 +5,13 @@
 #[cfg(test)]
 mod test_search_medical_records {
     use crate::{
-        Gender, Medication, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
+        Gender, MedicalRecordFilter, PetChainContract, PetChainContractClient, PrivacyLevel,
+        Species,
     };
-    use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
-
-    // ---- helpers ----
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Address, Env, String,
+    };
 
     fn setup() -> (
         Env,
@@ -20,17 +22,15 @@ mod test_search_medical_records {
         u64,
     ) {
         let env = Env::default();
-        let admin = Address::generate(&env);
         env.mock_all_auths();
 
+        let admin = Address::generate(&env);
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
-
         client.init_admin(&admin);
 
         let owner = Address::generate(&env);
         let vet = Address::generate(&env);
-
         let pet_id = client.register_pet(
             &owner,
             &String::from_str(&env, "Buddy"),
@@ -55,13 +55,15 @@ mod test_search_medical_records {
         (env, client, admin, owner, vet, pet_id)
     }
 
-    fn add_record(
+    fn add_record_at(
         client: &PetChainContractClient,
         env: &Env,
         pet_id: u64,
         vet: &Address,
         diagnosis: &str,
+        timestamp: u64,
     ) -> u64 {
+        env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
         client.add_medical_record(
             &pet_id,
             vet,
@@ -72,89 +74,47 @@ mod test_search_medical_records {
         )
     }
 
-    // ---- search by diagnosis ----
-
-    #[test]
-    fn test_search_by_diagnosis_returns_matching_records() {
-        let (env, client, _admin, _owner, vet, pet_id) = setup();
-
-        add_record(&client, &env, pet_id, &vet, "Flu");
-        add_record(&client, &env, pet_id, &vet, "Flu");
-        add_record(&client, &env, pet_id, &vet, "Allergy");
-
-        let results = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        assert_eq!(results.len(), 2);
-        for r in results.iter() {
-            assert_eq!(r.diagnosis, String::from_str(&env, "Flu"));
+    fn empty_filter() -> MedicalRecordFilter {
+        MedicalRecordFilter {
+            vet_address: None,
+            from_date: None,
+            to_date: None,
+            diagnosis_keyword: None,
         }
     }
 
     #[test]
-    fn test_search_by_diagnosis_no_match_returns_empty() {
+    fn test_search_medical_records_filters_by_diagnosis_keyword() {
         let (env, client, _admin, _owner, vet, pet_id) = setup();
 
-        add_record(&client, &env, pet_id, &vet, "Allergy");
+        add_record_at(&client, &env, pet_id, &vet, "Canine Flu", 10);
+        add_record_at(&client, &env, pet_id, &vet, "Skin Allergy", 20);
+        add_record_at(&client, &env, pet_id, &vet, "Flu Booster Follow-up", 30);
 
-        let results = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn test_search_by_diagnosis_empty_history_returns_empty() {
-        let (env, client, _admin, _owner, _vet, pet_id) = setup();
-
-        let results = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        assert_eq!(results.len(), 0);
-    }
-
-    // ---- search by date range ----
-
-    #[test]
-    fn test_search_by_date_range_returns_records_in_range() {
-        let (env, client, _admin, _owner, vet, pet_id) = setup();
-
-        // Ledger timestamp advances with each record; we bracket around all of them
-        let start = env.ledger().timestamp();
-        add_record(&client, &env, pet_id, &vet, "Flu");
-        add_record(&client, &env, pet_id, &vet, "Allergy");
-        let end = env.ledger().timestamp();
-
-        let results = client.search_records_by_date_range(&pet_id, &start, &end);
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                diagnosis_keyword: Some(String::from_str(&env, "Flu")),
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
 
         assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Canine Flu")
+        );
+        assert_eq!(
+            results.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Flu Booster Follow-up")
+        );
     }
 
     #[test]
-    fn test_search_by_date_range_excludes_out_of_range() {
-        let (env, client, _admin, _owner, vet, pet_id) = setup();
-
-        add_record(&client, &env, pet_id, &vet, "Flu");
-
-        // Range in the far future — should match nothing
-        let results = client.search_records_by_date_range(&pet_id, &(u64::MAX - 100), &u64::MAX);
-        assert_eq!(results.len(), 0);
-    }
-
-    #[test]
-    fn test_search_by_date_range_inclusive_boundaries() {
-        let (env, client, _admin, _owner, vet, pet_id) = setup();
-
-        add_record(&client, &env, pet_id, &vet, "Flu");
-        let ts = env.ledger().timestamp();
-
-        // Exact timestamp as both start and end should still match
-        let results = client.search_records_by_date_range(&pet_id, &ts, &ts);
-
-        // At least one record should fall within the boundary
-        assert!(results.len() >= 0); // boundary check — no panic
-    }
-
-    // ---- search by vet ----
-
-    #[test]
-    fn test_search_by_vet_returns_only_that_vets_records() {
+    fn test_search_medical_records_filters_by_vet_and_date_range() {
         let (env, client, admin, _owner, vet1, pet_id) = setup();
-
         let vet2 = Address::generate(&env);
         client.register_vet(
             &vet2,
@@ -164,86 +124,112 @@ mod test_search_medical_records {
         );
         client.verify_vet(&admin, &vet2);
 
-        add_record(&client, &env, pet_id, &vet1, "Flu");
-        add_record(&client, &env, pet_id, &vet2, "Allergy");
-        add_record(&client, &env, pet_id, &vet1, "Infection");
+        add_record_at(&client, &env, pet_id, &vet1, "Flu", 10);
+        add_record_at(&client, &env, pet_id, &vet2, "Flu", 20);
+        add_record_at(&client, &env, pet_id, &vet1, "Flu Recheck", 30);
 
-        let results = client.search_records_by_vet(&pet_id, &vet1);
-        assert_eq!(results.len(), 2);
-        for r in results.iter() {
-            assert_eq!(r.vet_address, vet1);
-        }
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                vet_address: Some(vet1.clone()),
+                from_date: Some(15),
+                to_date: Some(35),
+                diagnosis_keyword: Some(String::from_str(&env, "Flu")),
+            },
+            &0u64,
+            &10u32,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get(0).unwrap().vet_address, vet1);
+        assert_eq!(
+            results.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Flu Recheck")
+        );
+        assert_eq!(results.get(0).unwrap().date, 30);
     }
 
     #[test]
-    fn test_search_by_vet_no_records_returns_empty() {
+    fn test_search_medical_records_date_range_is_inclusive() {
         let (env, client, _admin, _owner, vet, pet_id) = setup();
 
-        let other_vet = Address::generate(&env);
-        add_record(&client, &env, pet_id, &vet, "Flu");
+        add_record_at(&client, &env, pet_id, &vet, "Checkup", 50);
 
-        let results = client.search_records_by_vet(&pet_id, &other_vet);
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                from_date: Some(50),
+                to_date: Some(50),
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get(0).unwrap().date, 50);
+    }
+
+    #[test]
+    fn test_search_medical_records_paginates_filtered_results() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Flu A", 10);
+        add_record_at(&client, &env, pet_id, &vet, "Allergy", 20);
+        add_record_at(&client, &env, pet_id, &vet, "Flu B", 30);
+        add_record_at(&client, &env, pet_id, &vet, "Flu C", 40);
+
+        let page = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                diagnosis_keyword: Some(String::from_str(&env, "Flu")),
+                ..empty_filter()
+            },
+            &1u64,
+            &2u32,
+        );
+
+        assert_eq!(page.len(), 2);
+        assert_eq!(
+            page.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Flu B")
+        );
+        assert_eq!(
+            page.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Flu C")
+        );
+    }
+
+    #[test]
+    fn test_search_medical_records_returns_empty_when_no_match() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Allergy", 10);
+
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                diagnosis_keyword: Some(String::from_str(&env, "Flu")),
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+
         assert_eq!(results.len(), 0);
     }
 
-    // ---- combined filter simulation ----
-
     #[test]
-    fn test_combined_diagnosis_and_vet_filter() {
-        let (env, client, admin, _owner, vet1, pet_id) = setup();
-
-        let vet2 = Address::generate(&env);
-        client.register_vet(
-            &vet2,
-            &String::from_str(&env, "Dr. Lee"),
-            &String::from_str(&env, "LIC-003"),
-            &String::from_str(&env, "Dermatology"),
-        );
-        client.verify_vet(&admin, &vet2);
-
-        add_record(&client, &env, pet_id, &vet1, "Flu");
-        add_record(&client, &env, pet_id, &vet2, "Flu");
-        add_record(&client, &env, pet_id, &vet1, "Allergy");
-
-        // Simulate combined filter: diagnosis=Flu AND vet=vet1
-        let by_diag = client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        let combined: Vec<_> = {
-            let mut v = soroban_sdk::Vec::new(&env);
-            for r in by_diag.iter() {
-                if r.vet_address == vet1 {
-                    v.push_back(r);
-                }
-            }
-            v
-        };
-
-        assert_eq!(combined.len(), 1);
-        assert_eq!(combined.get(0).unwrap().vet_address, vet1);
-        assert_eq!(
-            combined.get(0).unwrap().diagnosis,
-            String::from_str(&env, "Flu")
-        );
-    }
-
-    // ---- performance: large record set ----
-
-    #[test]
-    fn test_search_performance_many_records() {
+    fn test_search_medical_records_returns_empty_for_zero_limit_or_large_offset() {
         let (env, client, _admin, _owner, vet, pet_id) = setup();
 
-        // Add 10 records with alternating diagnoses
-        for i in 0..10u32 {
-            let diag = if i % 2 == 0 { "Flu" } else { "Allergy" };
-            add_record(&client, &env, pet_id, &vet, diag);
-        }
+        add_record_at(&client, &env, pet_id, &vet, "Flu", 10);
 
-        let flu_results =
-            client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Flu"));
-        let allergy_results =
-            client.search_records_by_diagnosis(&pet_id, &String::from_str(&env, "Allergy"));
+        let zero_limit = client.search_medical_records(&pet_id, &empty_filter(), &0u64, &0u32);
+        let large_offset = client.search_medical_records(&pet_id, &empty_filter(), &5u64, &2u32);
 
-        assert_eq!(flu_results.len(), 5);
-        assert_eq!(allergy_results.len(), 5);
+        assert_eq!(zero_limit.len(), 0);
+        assert_eq!(large_offset.len(), 0);
     }
 
     // ---- update medical record notes ----
