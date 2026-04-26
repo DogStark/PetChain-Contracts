@@ -9,6 +9,19 @@ on:
 permissions: read-all
 
 jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run cargo audit
+        working-directory: backend-2fa-implementation
+        run: cargo audit --deny warnings
+
   fmt:
     runs-on: ubuntu-latest
     steps:
