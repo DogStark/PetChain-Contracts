@@ -257,3 +257,57 @@ fn test_get_active_medications_filter() {
     let all = client.get_medications(&pet_id, &0u64, &10u32);
     assert_eq!(all.len(), 2);
 }
+
+#[test]
+fn test_discontinue_medication() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.init_admin(&admin);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-05-10"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let med_id = client.add_medication(
+        &pet_id,
+        &String::from_str(&env, "Amoxicillin"),
+        &String::from_str(&env, "250mg"),
+        &String::from_str(&env, "Twice daily"),
+        &1000u64,
+        &None,
+        &vet,
+    );
+
+    let end_date = 5000u64;
+    client.discontinue_medication(&med_id, &end_date, &vet);
+
+    let all = client.get_medications(&pet_id, &0, &1);
+    let med = all.get(0).unwrap();
+    assert!(!med.active);
+    assert_eq!(med.end_date, Some(end_date));
+}
