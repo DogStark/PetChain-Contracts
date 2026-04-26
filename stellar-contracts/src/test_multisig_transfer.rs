@@ -501,3 +501,43 @@ fn test_ownership_history_pagination() {
     let history_empty = client.get_ownership_history(&pet_id, &5u64, &1u32);
     assert_eq!(history_empty.len(), 0);
 }
+
+#[test]
+fn test_cancel_transfer_proposal() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    client.cancel_transfer_proposal(&proposal_id);
+
+    let proposal = client.get_transfer_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed); // Executed is used for cancelled too
+}
+
+#[test]
+#[should_panic]
+fn test_sign_cancelled_proposal() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    client.cancel_transfer_proposal(&proposal_id);
+
+    client.sign_transfer_proposal(&proposal_id, &signer1);
+}
