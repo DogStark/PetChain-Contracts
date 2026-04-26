@@ -94,8 +94,8 @@ mod test_medical_records_pagination;
 mod test_multisig_transfer;
 #[cfg(test)]
 mod test_nutrition;
-// #[cfg(test)]
-// mod test_overflow;
+#[cfg(test)]
+mod test_overflow;
 #[cfg(test)]
 mod test_pet_age;
 // #[cfg(test)]
@@ -1472,7 +1472,9 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCount)
             .unwrap_or(0);
-        let pet_id = pet_count + 1;
+        let pet_id = pet_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         let timestamp = env.ledger().timestamp();
 
         let key = Self::get_encryption_key(&env);
@@ -2545,7 +2547,9 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::VaccinationCount)
             .unwrap_or(0);
-        let vaccine_id = vaccine_count + 1;
+        let vaccine_id = vaccine_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         let now = env.ledger().timestamp();
         let key = Self::get_encryption_key(&env);
 
@@ -7245,10 +7249,12 @@ impl PetChainContract {
     }
 
     pub fn get_grooming_expenses(env: Env, pet_id: u64) -> u64 {
-        let history = Self::get_grooming_history(env, pet_id);
+        let history = Self::get_grooming_history(env.clone(), pet_id);
         let mut total = 0u64;
         for record in history.iter() {
-            total += record.cost;
+            total = total
+                .checked_add(record.cost)
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
         }
         total
     }
