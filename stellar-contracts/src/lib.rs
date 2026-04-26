@@ -2226,6 +2226,18 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
+        if name.len() > MAX_STR_SHORT as usize {
+            panic!("Owner name exceeds maximum length");
+        }
+
+        if email.len() > MAX_STR_SHORT as usize {
+            panic!("Email exceeds maximum length");
+        }
+
+        if emergency_contact.len() > MAX_STR_SHORT as usize {
+            panic!("Emergency contact exceeds maximum length");
+        }
+
         let key = Self::get_encryption_key(&env);
         let timestamp = env.ledger().timestamp();
 
@@ -2349,6 +2361,18 @@ impl PetChainContract {
         specialization: String,
     ) -> bool {
         vet_address.require_auth();
+
+        if name.len() > MAX_VET_NAME_LEN as usize {
+            panic!("Vet name exceeds maximum length");
+        }
+
+        if license_number.len() > MAX_VET_LICENSE_LEN as usize {
+            panic!("License number exceeds maximum length");
+        }
+
+        if specialization.len() > MAX_VET_SPEC_LEN as usize {
+            panic!("Specialization exceeds maximum length");
+        }
 
         if env
             .storage()
@@ -4498,6 +4522,10 @@ impl PetChainContract {
             // Require authentication from the vet who created the record
             record.vet_address.require_auth();
 
+            if record.attachment_hashes.len() >= MAX_VEC_ATTACHMENTS as usize {
+                env.panic_with_error(ContractError::TooManyItems);
+            }
+
             // Validate metadata
             if metadata.filename.is_empty() {
                 env.panic_with_error(ContractError::FilenameEmpty);
@@ -5749,6 +5777,10 @@ impl PetChainContract {
 
         if !(1..=5).contains(&rating) {
             panic!("Rating must be between 1 and 5");
+        }
+
+        if comment.len() > MAX_REVIEW_COMMENT_LEN as usize {
+            panic!("Review comment exceeds maximum length");
         }
 
         // Check duplicate
