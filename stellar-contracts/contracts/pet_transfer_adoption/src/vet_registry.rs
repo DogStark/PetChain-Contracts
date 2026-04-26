@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, String, Symbol,
+    Env, String, Symbol, Vec,
 };
 
 /// ======================================================
@@ -302,12 +302,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-    fn setup() -> (
-        Env,
-        Address,
-        Address,
-        VetRegistryContractClient<'static>,
-    ) {
+    fn setup() -> (Env, Address, Address, VetRegistryContractClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, VetRegistryContract);
@@ -315,12 +310,6 @@ mod tests {
         let admin = Address::generate(&env);
         client.init(&admin);
         (env, contract_id, admin, client)
-    }
-
-    fn stored_admin(env: &Env, contract_id: &Address) -> Address {
-        env.as_contract(contract_id, || {
-            env.storage().instance().get(&DataKey::Admin).unwrap()
-        })
     }
 
     fn str(env: &Env, s: &str) -> String {
@@ -427,22 +416,37 @@ mod tests {
 
     #[test]
     fn test_list_vets_empty() {
-        let (_, _, client) = setup();
+        let (_, _, _, client) = setup();
         let vets = client.list_vets(&0, &10);
         assert!(vets.is_empty());
     }
 
     #[test]
     fn test_list_vets_returns_all() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
         let vet2 = soroban_sdk::Address::generate(&env);
         let vet3 = soroban_sdk::Address::generate(&env);
 
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
-        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
+        client.register_vet(
+            &vet3,
+            &str(&env, "Dr. Three"),
+            &str(&env, "LIC-003"),
+            &str(&env, "Dermatology"),
+        );
 
         let vets = client.list_vets(&0, &10);
         assert_eq!(vets.len(), 3);
@@ -450,15 +454,30 @@ mod tests {
 
     #[test]
     fn test_list_vets_pagination_limit() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
         let vet2 = soroban_sdk::Address::generate(&env);
         let vet3 = soroban_sdk::Address::generate(&env);
 
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
-        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
+        client.register_vet(
+            &vet3,
+            &str(&env, "Dr. Three"),
+            &str(&env, "LIC-003"),
+            &str(&env, "Dermatology"),
+        );
 
         let vets = client.list_vets(&0, &2);
         assert_eq!(vets.len(), 2);
@@ -466,15 +485,30 @@ mod tests {
 
     #[test]
     fn test_list_vets_pagination_offset() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
         let vet2 = soroban_sdk::Address::generate(&env);
         let vet3 = soroban_sdk::Address::generate(&env);
 
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
-        client.register_vet(&vet3, &str(&env, "Dr. Three"), &str(&env, "LIC-003"), &str(&env, "Dermatology"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
+        client.register_vet(
+            &vet3,
+            &str(&env, "Dr. Three"),
+            &str(&env, "LIC-003"),
+            &str(&env, "Dermatology"),
+        );
 
         let vets = client.list_vets(&1, &10);
         assert_eq!(vets.len(), 2);
@@ -482,10 +516,15 @@ mod tests {
 
     #[test]
     fn test_list_vets_offset_beyond_count() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
 
         let vets = client.list_vets(&5, &10);
         assert!(vets.is_empty());
@@ -493,10 +532,15 @@ mod tests {
 
     #[test]
     fn test_list_vets_zero_limit() {
-        let (env, _, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
 
         let vets = client.list_vets(&0, &0);
         assert!(vets.is_empty());
@@ -504,10 +548,15 @@ mod tests {
 
     #[test]
     fn test_list_vets_verified_status() {
-        let (env, admin, client) = setup();
+        let (env, _, _, client) = setup();
 
         let vet1 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
 
         // Verify the vet
         client.verify_vet(&vet1);
