@@ -4309,6 +4309,52 @@ impl PetChainContract {
         }
     }
 
+    /// Update only the notes field of a medical record
+    /// Only the creating vet can update notes
+    pub fn update_medical_record_notes(env: Env, record_id: u64, notes: String) -> bool {
+        if notes.len() > Self::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            // Require authentication from the vet who created the record
+            record.vet_address.require_auth();
+
+            // Update only the notes and updated_at timestamp
+            record.notes = notes;
+            record.updated_at = env.ledger().timestamp();
+
+            env.storage()
+                .instance()
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
+            Self::log_access(
+                &env,
+                record.pet_id,
+                record.vet_address,
+                AccessAction::Write,
+                String::from_str(&env, "Medical record notes updated"),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_vet_stats(env: Env, vet: Address) -> VetStats {
+        env.storage()
+            .instance()
+            .get::<_, VetStats>(&VetKey::VetStats(vet))
+            .unwrap_or(VetStats {
+                total_records: 0,
+                total_vaccinations: 0,
+                total_treatments: 0,
+                pets_treated: 0,
+            })
+    }
+
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
         let record: Option<MedicalRecord> = env
             .storage()
@@ -4512,6 +4558,34 @@ impl PetChainContract {
             record.attachment_hashes
         } else {
             Vec::new(&env)
+        }
+    }
+
+    /// Get a single attachment by index
+    /// Returns None if the record is not found or index is out of bounds
+    pub fn get_attachment_by_index(env: Env, record_id: u64, index: u32) -> Option<Attachment> {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            // Log access
+            Self::log_access(
+                &env,
+                record.pet_id,
+                env.current_contract_address(),
+                AccessAction::Read,
+                String::from_str(&env, "Medical record attachment accessed by index"),
+            );
+
+            // Bounds check and return attachment if valid
+            if index < record.attachment_hashes.len() {
+                record.attachment_hashes.get(index)
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 
