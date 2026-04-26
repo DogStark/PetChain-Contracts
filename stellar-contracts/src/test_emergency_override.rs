@@ -1,6 +1,18 @@
 use crate::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
+fn valid_contacts(env: &Env) -> Vec<EmergencyContact> {
+    let mut contacts = Vec::new(env);
+    contacts.push_back(EmergencyContact {
+        name: String::from_str(env, "Emergency Contact"),
+        phone: String::from_str(env, "555-1111"),
+        email: String::from_str(env, "emergency@test.com"),
+        relationship: String::from_str(env, "Owner"),
+        is_primary: true,
+    });
+    contacts
+}
+
 #[test]
 fn test_owner_can_read_emergency_info() {
     let env = Env::default();
@@ -105,6 +117,7 @@ fn test_unauthorized_address_cannot_read_emergency_info() {
 
     let owner = Address::generate(&env);
     let stranger = Address::generate(&env);
+    let contacts = valid_contacts(&env);
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Luna"),
@@ -120,7 +133,7 @@ fn test_unauthorized_address_cannot_read_emergency_info() {
 
     client.set_emergency_contacts(
         &pet_id,
-        &Vec::new(&env),
+        &contacts,
         &Vec::new(&env),
         &String::from_str(&env, ""),
     );
@@ -139,6 +152,7 @@ fn test_revoked_responder_cannot_read_emergency_info() {
 
     let owner = Address::generate(&env);
     let responder = Address::generate(&env);
+    let contacts = valid_contacts(&env);
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Buddy"),
@@ -154,7 +168,7 @@ fn test_revoked_responder_cannot_read_emergency_info() {
 
     client.set_emergency_contacts(
         &pet_id,
-        &Vec::new(&env),
+        &contacts,
         &Vec::new(&env),
         &String::from_str(&env, ""),
     );
@@ -174,6 +188,7 @@ fn test_emergency_data_filtering() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
+    let contacts = valid_contacts(&env);
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Rex"),
@@ -201,7 +216,7 @@ fn test_emergency_data_filtering() {
 
     client.set_emergency_contacts(
         &pet_id,
-        &Vec::new(&env),
+        &contacts,
         &allergies,
         &String::from_str(&env, "Needs daily medication"),
     );

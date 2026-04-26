@@ -3132,6 +3132,26 @@ impl PetChainContract {
             .unwrap_or(false)
     }
 
+    pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
+        if contacts.is_empty() {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        let mut has_primary = false;
+        for contact in contacts.iter() {
+            if contact.name.is_empty() || contact.phone.is_empty() {
+                panic_with_error!(env, ContractError::InvalidInput);
+            }
+            if contact.is_primary {
+                has_primary = true;
+            }
+        }
+
+        if !has_primary {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+    }
+
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
         env: Env,
@@ -3145,6 +3165,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
+            Self::validate_emergency_contacts(&env, &contacts);
             pet.owner.require_auth();
 
             let key = Self::get_encryption_key(&env);
@@ -6640,9 +6661,6 @@ fn decrypt_sensitive_data(
     // For demonstration, verify nonce is used (non-None) and decrypt with it
     Ok(ciphertext.clone())
 }
-
-
-
 
 
 
