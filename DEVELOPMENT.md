@@ -4,12 +4,30 @@
 
 ```
 PetChain-Contracts/
-├── stellar-contracts/     # Stellar smart contracts
-│   ├── src/lib.rs        # Main contract code
-│   └── Cargo.toml        # Dependencies
-├── .github/              # CI/CD and templates
-├── ISSUES.md            # Development roadmap
-└── API.md               # Contract documentation
+├── stellar-contracts/                         # Soroban/Stellar contract workspace
+│   ├── Cargo.toml                            # Main PetChain contract package
+│   ├── src/
+│   │   ├── lib.rs                            # Main PetChain contract implementation
+│   │   └── test_*.rs                         # Unit and workflow test modules
+│   └── contracts/
+│       └── pet_transfer_adoption/            # Pet transfer/adoption contract package
+│           ├── Cargo.toml
+│           └── src/
+│               ├── lib.rs                    # Ownership transfer and history contract
+│               ├── test.rs                   # Transfer/adoption tests
+│               └── vet_registry.rs           # Vet registry contract helpers
+├── backend-2fa-implementation/               # Rust 2FA backend support service
+│   ├── Cargo.toml
+│   ├── schema.sql
+│   └── src/
+│       ├── db.rs
+│       ├── handlers.rs
+│       ├── rate_limiter.rs
+│       ├── tests.rs
+│       └── two_factor.rs
+├── .github/                                  # CI/CD workflows and templates
+├── API.md                                    # Contract documentation
+└── README.md                                 # Project overview
 ```
 
 ## Environment Setup
@@ -41,20 +59,20 @@ For development, get test XLM from the Stellar testnet faucet:
 ## Smart Contract Structure
 
 ### Core Components
-- **Pet Registration**: Basic pet data storage
-- **Authentication**: Owner-based access control
-- **Storage**: Efficient on-chain data management
+- **Main PetChain contract**: Pet registration, owner access control, encrypted pet data, medical records, vaccinations, grooming, insurance, activity, behavior, nutrition, emergency contacts, and multisig transfer flows in `stellar-contracts/src/lib.rs`.
+- **Transfer/adoption contract**: Dedicated ownership transfer, pending transfer, ownership history, and vet registry support under `stellar-contracts/contracts/pet_transfer_adoption`.
+- **2FA backend**: Rust backend support for TOTP, handlers, database access, and rate limiting under `backend-2fa-implementation`.
+- **Testing**: Multiple focused Rust test modules in `stellar-contracts/src/test_*.rs`, plus `pet_transfer_adoption/src/test.rs` and backend tests.
 
-### Future Components (See ISSUES.md)
-- Medical records system
-- Vaccination tracking
-- Vet verification
-- Access control
+### Future Components
+- Deployment and release automation for contract artifacts.
+- Production API integration around the existing contracts and 2FA backend.
+- Expanded audit, performance, and monitoring tooling.
 
 ## Development Workflow
 
 ### 1. Issue Selection
-- Browse [ISSUES.md](ISSUES.md)
+- Browse the repository's GitHub issues
 - Start with `good-first-issue` labels
 - Comment to claim an issue
 
