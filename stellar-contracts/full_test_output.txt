@@ -1,0 +1,12 @@
+warning: /home/edohwares/Desktop/Room/drips/ceejay/PetChain-Contracts/stellar-contracts/Cargo.toml: `panic` setting is ignored for `test` profile
+   Compiling petchain-stellar v0.1.0 (/home/edohwares/Desktop/Room/drips/ceejay/PetChain-Contracts/stellar-contracts)
+error: this file contains an unclosed delimiter
+    --> src/test_access_control.rs:1300:2
+     |
+1013 | fn test_get_verified_vets_only_returns_verified() {
+     |                                                   - unclosed delimiter
+...
+1300 |
+     | ^
+
+error: could not compile `petchain-stellar` (lib test) due to 1 previous error
