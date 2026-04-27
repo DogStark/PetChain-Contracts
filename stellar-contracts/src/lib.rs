@@ -6661,6 +6661,33 @@ impl PetChainContract {
         policies
     }
 
+    /// Retrieves all insurance policies for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// Vector of all insurance policies for the pet (empty if none)
+    pub fn get_all_pet_policies(env: Env, pet_id: u64) -> Vec<InsurancePolicy> {
+        let mut policies = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, i)))
+            {
+                policies.push_back(policy);
+            }
+        }
+        policies
+    }
+
     /// Updates the active status of a specific insurance policy by ID.
     ///
     /// # Arguments
