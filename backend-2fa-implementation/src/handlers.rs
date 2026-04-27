@@ -134,6 +134,12 @@ impl TwoFactorHandlers {
                             .to_string(),
                     );
                 }
+        if let Ok(existing) = store_get(&req.user_id) {
+            if existing.enabled {
+                return Err(
+                    "2FA is already enabled. To re-enroll, you must first disable it."
+                        .to_string(),
+                );
             }
         }
 
