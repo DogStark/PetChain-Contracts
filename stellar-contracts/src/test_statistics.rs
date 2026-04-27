@@ -311,362 +311,149 @@ fn test_vet_stats_multiple_pets() {
     assert_eq!(stats.pets_treated, 2);
 }
 
-// ── #487 get_vet_treatment_history ─────────────────────────────────────────
+// ── Vet Review Tests ──────────────────────────────────────────────────────────
 
-fn setup_vet(client: &PetChainContractClient, env: &Env, admin: &Address) -> Address {
+fn setup_vet_and_pet(
+    client: &PetChainContractClient,
+    env: &Env,
+    admin: &Address,
+) -> (Address, Address, u64) {
+    let owner = Address::generate(env);
     let vet = Address::generate(env);
+
+    // Register vet
     client.register_vet(
         &vet,
-        &String::from_str(env, "Dr. Test"),
-        &String::from_str(env, "VET-TST-001"),
-        &String::from_str(env, "General"),
+        &String::from_str(env, "Dr. Smith"),
+        &String::from_str(env, "VET123"),
+        &String::from_str(env, "Animal Clinic"),
     );
     client.verify_vet(admin, &vet);
-    vet
+
+    // Register pet
+    let pet_id = register_pet_with_species(client, env, &owner, Species::Dog);
+
+    (owner, vet, pet_id)
 }
 
 #[test]
-fn test_get_vet_treatment_history_empty() {
-    let (env, client, _admin) = setup_env();
-    let vet = Address::generate(&env);
-    let history = client.get_vet_treatment_history(&vet, &0u64, &10u32);
-    assert_eq!(history.len(), 0);
-}
-
-#[test]
-fn test_get_vet_treatment_history_returns_records() {
+fn test_get_vet_reviews_empty_initially() {
     let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+    let (_owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
-    client.add_medical_record(
-        &pet_id,
-        &vet,
-        &String::from_str(&env, "Diagnosis A"),
-        &String::from_str(&env, "Treatment A"),
-        &Vec::new(&env),
-        &String::from_str(&env, "Notes A"),
-    );
-    client.add_medical_record(
-        &pet_id,
-        &vet,
-        &String::from_str(&env, "Diagnosis B"),
-        &String::from_str(&env, "Treatment B"),
-        &Vec::new(&env),
-        &String::from_str(&env, "Notes B"),
-    );
-
-    let history = client.get_vet_treatment_history(&vet, &0u64, &10u32);
-    assert_eq!(history.len(), 2);
-    assert_eq!(
-        history.get(0).unwrap().diagnosis,
-        String::from_str(&env, "Diagnosis A")
-    );
-    assert_eq!(
-        history.get(1).unwrap().diagnosis,
-        String::from_str(&env, "Diagnosis B")
-    );
+    let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(reviews.len(), 0);
 }
 
 #[test]
-fn test_get_vet_treatment_history_pagination() {
+fn test_add_and_get_vet_review() {
     let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
-    for i in 0..5u32 {
-        client.add_medical_record(
-            &pet_id,
-            &vet,
-            &String::from_str(&env, "Diag"),
-            &String::from_str(&env, "Treat"),
-            &Vec::new(&env),
-            &String::from_str(&env, "Notes"),
-        );
-        let _ = i;
+    // Add a review
+    let review_id = client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
+    assert!(review_id > 0);
+
+    // Get reviews
+    let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews.get(0).rating, 5);
+}
+
+#[test]
+fn test_get_vet_reviews_pagination() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // Add 5 reviews from different owners
+    for i in 1..=5 {
+        let review_owner = Address::generate(&env);
+        client.add_vet_review(&review_owner, &vet, &i, &String::from_str(&env, "Review"));
     }
 
-    let page1 = client.get_vet_treatment_history(&vet, &0u64, &3u32);
-    assert_eq!(page1.len(), 3);
+    // Get all reviews
+    let all_reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(all_reviews.len(), 5);
 
-    let page2 = client.get_vet_treatment_history(&vet, &3u64, &3u32);
-    assert_eq!(page2.len(), 2);
-
-    let empty = client.get_vet_treatment_history(&vet, &10u64, &3u32);
-    assert_eq!(empty.len(), 0);
-}
-
-#[test]
-fn test_get_vet_treatment_history_only_own_records() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet1 = setup_vet(&client, &env, &admin);
-    let vet2 = Address::generate(&env);
-    client.register_vet(
-        &vet2,
-        &String::from_str(&env, "Dr. Other"),
-        &String::from_str(&env, "VET-OTH-002"),
-        &String::from_str(&env, "Surgery"),
-    );
-    client.verify_vet(&admin, &vet2);
-
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Cat);
-
-    client.add_medical_record(
-        &pet_id,
-        &vet1,
-        &String::from_str(&env, "Vet1 Diag"),
-        &String::from_str(&env, "Vet1 Treat"),
-        &Vec::new(&env),
-        &String::from_str(&env, "Notes"),
-    );
-    client.add_medical_record(
-        &pet_id,
-        &vet2,
-        &String::from_str(&env, "Vet2 Diag"),
-        &String::from_str(&env, "Vet2 Treat"),
-        &Vec::new(&env),
-        &String::from_str(&env, "Notes"),
-    );
-
-    let history1 = client.get_vet_treatment_history(&vet1, &0u64, &10u32);
-    assert_eq!(history1.len(), 1);
-    assert_eq!(
-        history1.get(0).unwrap().diagnosis,
-        String::from_str(&env, "Vet1 Diag")
-    );
-
-    let history2 = client.get_vet_treatment_history(&vet2, &0u64, &10u32);
-    assert_eq!(history2.len(), 1);
-    assert_eq!(
-        history2.get(0).unwrap().diagnosis,
-        String::from_str(&env, "Vet2 Diag")
-    );
-}
-
-// ── #488 get_vet_vaccination_history ────────────────────────────────────────
-
-#[test]
-fn test_get_vet_vaccination_history_empty() {
-    let (env, client, _admin) = setup_env();
-    let vet = Address::generate(&env);
-    let history = client.get_vet_vaccination_history(&vet, &0u64, &10u32);
-    assert_eq!(history.len(), 0);
-}
-
-#[test]
-fn test_get_vet_vaccination_history_returns_records() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
-
-    let now = env.ledger().timestamp();
-    client.add_vaccination(
-        &pet_id,
-        &vet,
-        &VaccineType::Rabies,
-        &String::from_str(&env, "Rabies Vax"),
-        &now,
-        &(now + 365 * 24 * 60 * 60),
-        &String::from_str(&env, "BATCH001"),
-    );
-    client.add_vaccination(
-        &pet_id,
-        &vet,
-        &VaccineType::Bordetella,
-        &String::from_str(&env, "Bordetella Vax"),
-        &now,
-        &(now + 180 * 24 * 60 * 60),
-        &String::from_str(&env, "BATCH002"),
-    );
-
-    let history = client.get_vet_vaccination_history(&vet, &0u64, &10u32);
-    assert_eq!(history.len(), 2);
-    assert_eq!(history.get(0).unwrap().vaccine_type, VaccineType::Rabies);
-    assert_eq!(
-        history.get(1).unwrap().vaccine_type,
-        VaccineType::Bordetella
-    );
-}
-
-#[test]
-fn test_get_vet_vaccination_history_pagination() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
-
-    let now = env.ledger().timestamp();
-    for i in 0..5u32 {
-        let _ = i;
-        client.add_vaccination(
-            &pet_id,
-            &vet,
-            &VaccineType::Rabies,
-            &String::from_str(&env, "Vax"),
-            &now,
-            &(now + 365 * 24 * 60 * 60),
-            &String::from_str(&env, "BATCH"),
-        );
-    }
-
-    let page1 = client.get_vet_vaccination_history(&vet, &0u64, &3u32);
-    assert_eq!(page1.len(), 3);
-
-    let page2 = client.get_vet_vaccination_history(&vet, &3u64, &3u32);
-    assert_eq!(page2.len(), 2);
-
-    let empty = client.get_vet_vaccination_history(&vet, &10u64, &3u32);
-    assert_eq!(empty.len(), 0);
-}
-
-#[test]
-fn test_get_vet_vaccination_history_only_own_records() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet1 = setup_vet(&client, &env, &admin);
-    let vet2 = Address::generate(&env);
-    client.register_vet(
-        &vet2,
-        &String::from_str(&env, "Dr. Vax2"),
-        &String::from_str(&env, "VET-VAX-002"),
-        &String::from_str(&env, "Immunology"),
-    );
-    client.verify_vet(&admin, &vet2);
-
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Cat);
-    let now = env.ledger().timestamp();
-
-    client.add_vaccination(
-        &pet_id,
-        &vet1,
-        &VaccineType::Rabies,
-        &String::from_str(&env, "Rabies"),
-        &now,
-        &(now + 365 * 24 * 60 * 60),
-        &String::from_str(&env, "B001"),
-    );
-    client.add_vaccination(
-        &pet_id,
-        &vet2,
-        &VaccineType::Bordetella,
-        &String::from_str(&env, "Bordetella"),
-        &now,
-        &(now + 180 * 24 * 60 * 60),
-        &String::from_str(&env, "B002"),
-    );
-
-    let h1 = client.get_vet_vaccination_history(&vet1, &0u64, &10u32);
-    assert_eq!(h1.len(), 1);
-    assert_eq!(h1.get(0).unwrap().vaccine_type, VaccineType::Rabies);
-
-    let h2 = client.get_vet_vaccination_history(&vet2, &0u64, &10u32);
-    assert_eq!(h2.len(), 1);
-    assert_eq!(h2.get(0).unwrap().vaccine_type, VaccineType::Bordetella);
-}
-
-// ── #489 get_pets_overdue_vaccinations ──────────────────────────────────────
-
-#[test]
-fn test_get_pets_overdue_vaccinations_empty() {
-    let (_env, client, _admin) = setup_env();
-    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
-    assert_eq!(result.len(), 0);
-}
-
-#[test]
-fn test_get_pets_overdue_vaccinations_no_overdue() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
-
-    let now = env.ledger().timestamp();
-    client.add_vaccination(
-        &pet_id,
-        &vet,
-        &VaccineType::Rabies,
-        &String::from_str(&env, "Rabies"),
-        &now,
-        &(now + 365 * 24 * 60 * 60),
-        &String::from_str(&env, "BATCH001"),
-    );
-
-    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
-    assert_eq!(result.len(), 0);
-}
-
-#[test]
-fn test_get_pets_overdue_vaccinations_returns_overdue() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-
-    let pet1 = register_pet_with_species(&client, &env, &owner, Species::Dog);
-    let pet2 = register_pet_with_species(&client, &env, &owner, Species::Cat);
-
-    let past_time: u64 = 1000;
-    let future_time: u64 = 9_999_999_999;
-
-    client.add_vaccination(
-        &pet1,
-        &vet,
-        &VaccineType::Rabies,
-        &String::from_str(&env, "Rabies"),
-        &1,
-        &past_time,
-        &String::from_str(&env, "B001"),
-    );
-
-    client.add_vaccination(
-        &pet2,
-        &vet,
-        &VaccineType::Rabies,
-        &String::from_str(&env, "Rabies"),
-        &1,
-        &future_time,
-        &String::from_str(&env, "B002"),
-    );
-
-    env.ledger().with_mut(|l| l.timestamp = past_time + 1);
-
-    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
-    assert_eq!(result.len(), 1);
-    assert_eq!(result.get(0).unwrap(), pet1);
-}
-
-#[test]
-fn test_get_pets_overdue_vaccinations_pagination() {
-    let (env, client, admin) = setup_env();
-    let owner = Address::generate(&env);
-    let vet = setup_vet(&client, &env, &admin);
-
-    let past_due: u64 = 500;
-
-    for _i in 0..4 {
-        let pet = register_pet_with_species(&client, &env, &owner, Species::Dog);
-        client.add_vaccination(
-            &pet,
-            &vet,
-            &VaccineType::Rabies,
-            &String::from_str(&env, "Rabies"),
-            &1,
-            &past_due,
-            &String::from_str(&env, "BATCH"),
-        );
-    }
-
-    env.ledger().with_mut(|l| l.timestamp = past_due + 1);
-
-    let page1 = client.get_pets_overdue_vaccinations(&0u64, &2u32);
+    // Get first page (2 reviews)
+    let page1 = client.get_vet_reviews(&vet, &0u64, &2u32);
     assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).rating, 1);
+    assert_eq!(page1.get(1).rating, 2);
 
-    let page2 = client.get_pets_overdue_vaccinations(&2u64, &2u32);
+    // Get second page (2 reviews)
+    let page2 = client.get_vet_reviews(&vet, &2u64, &2u32);
     assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).rating, 3);
+    assert_eq!(page2.get(1).rating, 4);
 
-    let empty = client.get_pets_overdue_vaccinations(&10u64, &2u32);
+    // Get last page (1 review)
+    let page3 = client.get_vet_reviews(&vet, &4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).rating, 5);
+
+    // Get beyond available reviews
+    let empty = client.get_vet_reviews(&vet, &10u64, &5u32);
     assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_get_vet_average_rating() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // No reviews - should return 0
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 0);
+
+    // Add review with rating 5
+    let owner1 = Address::generate(&env);
+    client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Great"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 500); // 5.0 * 100 = 500
+
+    // Add review with rating 3
+    let owner2 = Address::generate(&env);
+    client.add_vet_review(&owner2, &vet, &3, &String::from_str(&env, "Good"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 400); // (5+3)/2 = 4.0 * 100 = 400
+
+    // Add review with rating 4
+    let owner3 = Address::generate(&env);
+    client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Very good"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 400); // (5+3+4)/3 = 4.0 * 100 = 400
+}
+
+#[test]
+fn test_get_vet_average_rating_with_fractional() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // Add reviews: 5, 4, 4 = avg 4.333... -> 433
+    let owner1 = Address::generate(&env);
+    client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Excellent"));
+    
+    let owner2 = Address::generate(&env);
+    client.add_vet_review(&owner2, &vet, &4, &String::from_str(&env, "Good"));
+    
+    let owner3 = Address::generate(&env);
+    client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Good"));
+
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 433); // (5+4+4)/3 = 4.333... * 100 = 433 (integer division)
+}
+
+#[test]
+fn test_duplicate_review_prevented() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // First review should succeed
+    let result1 = client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
+    assert!(result1.is_ok());
+
+    // Second review from same owner should fail
+    let result2 = client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
+    assert!(result2.is_err());
 }

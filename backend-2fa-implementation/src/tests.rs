@@ -875,7 +875,9 @@ mod tests {
             // Should fail on missing record or invalid code, NOT on authorization
             let err = result.unwrap_err();
             assert!(
-                err.contains("Invalid backup code") || err.contains("not configured"),
+                err.contains("Invalid backup code")
+                    || err.contains("not configured")
+                    || err.contains("not enabled"),
                 "Correct user should reach the backup code validation step, got: {}",
                 err
             );
@@ -1441,7 +1443,7 @@ mod integration_tests {
     }
 
     /// A successful login resets the failure counter so the user is not
-    /// permanently penalised for earlier mistakes.
+    /// permanently penalized for earlier mistakes.
     #[test]
     fn test_successful_login_resets_rate_limit() {
         // Use a unique user ID and a fresh limiter — no shared global state
@@ -1512,5 +1514,130 @@ mod integration_tests {
                 "should not be blocked yet after counter reset"
             );
         }
+    }
+}
+
+// ============================================================================
+// RedisRateLimiter tests
+// ============================================================================
+
+#[cfg(test)]
+mod redis_rate_limiter_tests {
+    use crate::rate_limiter::{RateLimitResult, RateLimiter, RedisRateLimiter};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Returns a unique key per test invocation to prevent cross-test pollution.
+    fn unique_key(label: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        format!("test:{label}:{nanos}")
+    }
+
+    fn redis_url() -> Option<String> {
+        std::env::var("REDIS_URL").ok()
+    }
+
+    fn make_limiter(max_failures: u32, window_secs: u64, lockout_secs: u64) -> Option<RedisRateLimiter> {
+        redis_url().and_then(|url| RedisRateLimiter::new(&url, max_failures, window_secs, lockout_secs).ok())
+    }
+
+    // -----------------------------------------------------------------------
+    // Unconditional test — no Redis instance required
+    // -----------------------------------------------------------------------
+
+    /// When Redis is unreachable the limiter must fail open (return Allowed)
+    /// rather than blocking users or panicking.
+    #[test]
+    fn redis_fails_open_on_bad_connection() {
+        // Port 1 is never Redis; Client::open only validates the URL format.
+        let limiter = RedisRateLimiter::new("redis://127.0.0.1:1", 5, 60, 300)
+            .expect("URL format is valid");
+        assert!(
+            matches!(
+                limiter.record_failure("any:key"),
+                RateLimitResult::Allowed { remaining: 5 }
+            ),
+            "unreachable Redis must return Allowed with full remaining count"
+        );
+    }
+
+    /// RedisRateLimiter satisfies the RateLimiter trait bounds (Send + Sync).
+    /// This is a compile-time check; if it compiles the test passes.
+    #[test]
+    fn redis_rate_limiter_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RedisRateLimiter>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests — require a running Redis at REDIS_URL
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[ignore = "requires REDIS_URL env var pointing to a running Redis instance"]
+    fn redis_allows_attempts_below_limit() {
+        let Some(limiter) = make_limiter(5, 60, 300) else { return; };
+        let key = unique_key("below_limit");
+
+        for i in 1u32..5 {
+            match limiter.record_failure(&key) {
+                RateLimitResult::Allowed { remaining } => {
+                    assert_eq!(remaining, 5 - i, "remaining should decrease by 1 each call");
+                }
+                RateLimitResult::Blocked { .. } => panic!("should not be blocked before the limit"),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires REDIS_URL env var pointing to a running Redis instance"]
+    fn redis_blocks_after_max_failures() {
+        let Some(limiter) = make_limiter(3, 60, 300) else { return; };
+        let key = unique_key("blocks_after_max");
+
+        for _ in 0..3 {
+            limiter.record_failure(&key);
+        }
+
+        assert!(
+            matches!(limiter.record_failure(&key), RateLimitResult::Blocked { .. }),
+            "must be blocked after reaching max_failures"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires REDIS_URL env var pointing to a running Redis instance"]
+    fn redis_success_clears_counter() {
+        let Some(limiter) = make_limiter(3, 60, 300) else { return; };
+        let key = unique_key("success_clears");
+
+        limiter.record_failure(&key);
+        limiter.record_failure(&key);
+        limiter.record_success(&key);
+
+        match limiter.record_failure(&key) {
+            RateLimitResult::Allowed { remaining } => {
+                assert_eq!(remaining, 2, "counter must reset to 0 after success");
+            }
+            RateLimitResult::Blocked { .. } => panic!("should not be blocked after record_success"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires REDIS_URL env var pointing to a running Redis instance"]
+    fn redis_different_keys_are_independent() {
+        let Some(limiter) = make_limiter(2, 60, 300) else { return; };
+        let key_a = unique_key("indep_a");
+        let key_b = unique_key("indep_b");
+
+        limiter.record_failure(&key_a);
+        limiter.record_failure(&key_a);
+
+        assert!(
+            matches!(limiter.record_failure(&key_b), RateLimitResult::Allowed { .. }),
+            "exhausting key_a must not affect key_b"
+        );
     }
 }

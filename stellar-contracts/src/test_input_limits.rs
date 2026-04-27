@@ -636,3 +636,157 @@ fn test_review_empty_comment_accepted() {
     let id = client.add_vet_review(&owner, &vet, &3, &String::from_str(&env, ""));
     assert!(id > 0);
 }
+
+// ── register_vet ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_vet_name_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    let result = client.register_vet(
+        &vet,
+        &repeat(&env, b'n', 100),
+        &String::from_str(&env, "LIC-VN-001"),
+        &String::from_str(&env, "General"),
+    );
+    assert!(result);
+}
+
+#[test]
+#[should_panic]
+fn test_vet_name_over_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &repeat(&env, b'n', 101),
+        &String::from_str(&env, "LIC-VN-002"),
+        &String::from_str(&env, "General"),
+    );
+}
+
+#[test]
+fn test_vet_license_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    let result = client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Valid"),
+        &repeat(&env, b'L', 50),
+        &String::from_str(&env, "General"),
+    );
+    assert!(result);
+}
+
+#[test]
+#[should_panic]
+fn test_vet_license_over_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Over"),
+        &repeat(&env, b'L', 51),
+        &String::from_str(&env, "General"),
+    );
+}
+
+#[test]
+fn test_vet_specialization_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    let result = client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Spec"),
+        &String::from_str(&env, "LIC-SP-001"),
+        &repeat(&env, b's', 100),
+    );
+    assert!(result);
+}
+
+#[test]
+#[should_panic]
+fn test_vet_specialization_over_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. OverSpec"),
+        &String::from_str(&env, "LIC-SP-002"),
+        &repeat(&env, b's', 101),
+    );
+}
+
+// ── add_lab_result (individual at-limit for results / reference_ranges) ───────
+
+#[test]
+fn test_lab_result_results_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _owner, vet, pet_id) = setup_with_vet(&env);
+
+    let id = client.add_lab_result(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "CBC"),
+        &repeat(&env, b'r', 1000),
+        &String::from_str(&env, "ranges"),
+        &None,
+        &None,
+    );
+    assert!(id > 0);
+}
+
+#[test]
+fn test_lab_result_reference_ranges_at_limit_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _owner, vet, pet_id) = setup_with_vet(&env);
+
+    let id = client.add_lab_result(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "CBC"),
+        &String::from_str(&env, "results"),
+        &repeat(&env, b'f', 1000),
+        &None,
+        &None,
+    );
+    assert!(id > 0);
+}

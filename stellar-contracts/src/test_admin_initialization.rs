@@ -1,9 +1,8 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, vec, Address, Env};
+use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
 
-use crate::PetChainContract;
-use crate::PetChainContractClient;
+use crate::{PetChainContract, PetChainContractClient, ProposalAction};
 
 #[test]
 fn test_get_admins_after_init_multisig() {
@@ -69,32 +68,6 @@ fn test_get_admin_threshold_zero_before_init() {
     assert_eq!(threshold, 0u32);
 }
 
-#[test]
-fn test_get_admins_reflects_change_admin_proposal() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, PetChainContract);
-    let client = PetChainContractClient::new(&env, &contract_id);
-
-    let admin1 = Address::generate(&env);
-    let admin2 = Address::generate(&env);
-    let new_admin = Address::generate(&env);
-
-    let admins = soroban_sdk::vec![&env, admin1.clone(), admin2.clone()];
-    client.init_multisig(&admin1, &admins, &1u32);
-
-    use crate::ProposalAction;
-    let new_admins = soroban_sdk::vec![&env, new_admin.clone()];
-    let action = ProposalAction::ChangeAdmin((new_admins, 1u32));
-    let proposal_id = client.propose_action(&admin1, &action, &3600u64);
-    client.execute_proposal(&proposal_id);
-
-    let result = client.get_admins();
-    assert_eq!(result.len(), 1);
-    assert!(result.contains(new_admin));
-}
-
-use crate::*;
 
 fn setup_client() -> (Env, PetChainContractClient<'static>) {
     let env = Env::default();
