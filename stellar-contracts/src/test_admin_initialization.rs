@@ -68,7 +68,6 @@ fn test_get_admin_threshold_zero_before_init() {
     assert_eq!(threshold, 0u32);
 }
 
-<<<<<<< feature/multi-policy-insurance
 #[test]
 fn test_get_admins_reflects_change_admin_proposal() {
     let env = Env::default();
@@ -78,8 +77,7 @@ fn test_get_admins_reflects_change_admin_proposal() {
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
     let new_admin = Address::generate(&env);
-=======
->>>>>>> main
+
 
     let admins = vec![&env, admin1.clone(), admin2.clone()];
     client.init_multisig(&admin1, &admins, &1u32);
