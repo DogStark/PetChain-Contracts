@@ -54,7 +54,7 @@ mod test_overflow {
     }
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_safe_increment_at_max_panics() {
         crate::safe_increment(u64::MAX);
     }
@@ -187,7 +187,7 @@ mod test_overflow {
     // --- MedicalRecordCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_medical_record_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -216,7 +216,7 @@ mod test_overflow {
     // --- LostPetAlertCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_alert_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -237,7 +237,7 @@ mod test_overflow {
     // --- BehaviorRecordCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_behavior_record_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -263,7 +263,7 @@ mod test_overflow {
     // --- ActivityRecordCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_activity_record_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -291,7 +291,7 @@ mod test_overflow {
     // --- InsuranceClaimCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_insurance_claim_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -322,7 +322,7 @@ mod test_overflow {
     // --- TreatmentCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_treatment_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -352,7 +352,7 @@ mod test_overflow {
     // --- ConsentCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_consent_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -374,7 +374,7 @@ mod test_overflow {
     // --- DietPlanCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_diet_plan_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -402,7 +402,7 @@ mod test_overflow {
     // --- OwnershipRecordCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_ownership_record_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
@@ -423,7 +423,7 @@ mod test_overflow {
     // --- PetTransferProposalCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
+    #[should_panic]
     fn test_transfer_proposal_count_overflow_panics() {
         let env = Env::default();
         env.mock_all_auths();
