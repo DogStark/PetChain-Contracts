@@ -2350,6 +2350,16 @@ impl PetChainContract {
     ) -> bool {
         vet_address.require_auth();
 
+        if name.len() > Self::MAX_VET_NAME_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if license_number.len() > Self::MAX_VET_LICENSE_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if specialization.len() > Self::MAX_VET_SPEC_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
         if env
             .storage()
             .instance()
