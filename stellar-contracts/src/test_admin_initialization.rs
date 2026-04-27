@@ -6,6 +6,17 @@ fn setup_client(env: &Env) -> PetChainContractClient<'static> {
     let contract_id = env.register_contract(None, PetChainContract);
     PetChainContractClient::new(env, &contract_id)
 }
+use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
+
+use crate::PetChainContract;
+use crate::PetChainContractClient;
+use crate::ProposalAction;
+
+fn setup_client(env: &Env) -> PetChainContractClient {
+    let contract_id = env.register_contract(None, PetChainContract);
+    PetChainContractClient::new(env, &contract_id)
+}
+use crate::{PetChainContract, PetChainContractClient, ProposalAction};
 
 #[test]
 fn test_get_admins_after_init_multisig() {
@@ -49,6 +60,8 @@ fn test_get_admins_empty_before_init() {
     let client = setup_client(&env);
 
     assert_eq!(client.get_admins().len(), 0);
+    let result = client.get_admins();
+    assert_eq!(result.len(), 0);
 }
 
 #[test]
@@ -57,7 +70,8 @@ fn test_get_admin_threshold_zero_before_init() {
     env.mock_all_auths();
     let client = setup_client(&env);
 
-    assert_eq!(client.get_admin_threshold(), 0u32);
+    let threshold = client.get_admin_threshold();
+    assert_eq!(threshold, 0u32);
 }
 
 #[test]
@@ -69,6 +83,7 @@ fn test_get_admins_reflects_change_admin_proposal() {
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
     let new_admin = Address::generate(&env);
+
 
     let admins = vec![&env, admin1.clone(), admin2.clone()];
     client.init_multisig(&admin1, &admins, &1u32);
@@ -255,6 +270,7 @@ fn test_verify_vet_without_admin_initialization() {
         &String::from_str(&env, "LIC-001"),
         &String::from_str(&env, "Surgery"),
     );
+
     client.verify_vet(&admin, &vet);
 }
 
@@ -274,6 +290,7 @@ fn test_revoke_vet_license_without_admin_initialization() {
         &String::from_str(&env, "LIC-002"),
         &String::from_str(&env, "Dentistry"),
     );
+
     client.revoke_vet_license(&admin, &vet);
 }
 
@@ -368,7 +385,9 @@ fn test_get_admins_multisig() {
     let result = client.get_admins();
     assert_eq!(result.len(), 1);
     assert!(result.contains(new_admin));
-    assert_eq!(client.get_admin_threshold(), 1u32);
+
+    let threshold = client.get_admin_threshold();
+    assert_eq!(threshold, 1u32);
 }
 
 #[test]

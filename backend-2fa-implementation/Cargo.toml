@@ -17,3 +17,4 @@ actix-web = { version = "4" }
 [[example]]
 name = "example_integration"
 path = "example_integration.rs"
+redis = "0.27"

@@ -103,6 +103,26 @@ mod test_book_slot {
         let slots = client.get_available_slots(&vet, &date);
         assert_eq!(slots.len(), 1);
         assert!(slots.get(0).unwrap().available);
+        assert!(
+            !slots.is_empty(),
+            "Slot should be available before any booking"
+        );
+        assert_eq!(slots.get(0).unwrap().available, true);
+
+        // A legitimate owner can still book the untouched slot
+        let owner = register_pet_owner(&env, &client);
+        let booked = client.book_slot(&owner, &vet, &slot_index);
+        assert!(
+            booked,
+            "Legitimate owner should be able to book the available slot"
+        );
+
+        // Now the slot must be gone from available list
+        let slots_after = client.get_available_slots(&vet, &date);
+        assert!(
+            slots_after.is_empty(),
+            "Slot should be unavailable after legitimate booking"
+        );
     }
 
     // -------------------------------------------------------
