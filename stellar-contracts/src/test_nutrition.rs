@@ -311,3 +311,57 @@ fn test_discontinue_medication() {
     assert!(!med.active);
     assert_eq!(med.end_date, Some(end_date));
 }
+
+#[test]
+fn test_get_diet_plan_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Initially zero
+    assert_eq!(client.get_diet_plan_count(&pet_id), 0);
+
+    let restrictions = Vec::new(&env);
+    let allergies = Vec::new(&env);
+
+    // Add first diet plan
+    client.set_diet_plan(
+        &pet_id,
+        &String::from_str(&env, "Dry Kibble"),
+        &String::from_str(&env, "200g"),
+        &String::from_str(&env, "Twice daily"),
+        &restrictions,
+        &allergies,
+    );
+    assert_eq!(client.get_diet_plan_count(&pet_id), 1);
+
+    // Add second diet plan
+    client.set_diet_plan(
+        &pet_id,
+        &String::from_str(&env, "Wet Food"),
+        &String::from_str(&env, "150g"),
+        &String::from_str(&env, "Three times daily"),
+        &restrictions,
+        &allergies,
+    );
+    assert_eq!(client.get_diet_plan_count(&pet_id), 2);
+
+    // Count for a non-existent pet returns 0
+    assert_eq!(client.get_diet_plan_count(&9999u64), 0);
+}
