@@ -99,6 +99,8 @@ mod test_pet_age;
 #[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_get_lab_results;
@@ -6686,6 +6688,23 @@ impl PetChainContract {
         if pet.owner != owner {
             env.panic_with_error(ContractError::Unauthorized);
         }
+    pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
+        let key = InsuranceKey::PetPolicyIndex((pet_id, count));
+        if let Some(mut policy) = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&key)
+        {
+            policy.active = active;
+            env.storage().instance().set(&key, &policy);
 
         let count: u64 = env
             .storage()
