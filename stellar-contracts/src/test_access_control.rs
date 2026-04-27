@@ -1301,4 +1301,3 @@ fn test_get_custody_history_returns_complete_history() {
     // Verify current custody is inactive
     assert!(!client.is_custody_valid(&pet_id));
 }
-
