@@ -7,11 +7,11 @@
 #[cfg(test)]
 mod test_overflow {
     use crate::{
-        ActivityKey, AlertKey, BehaviorKey, ConsentKey, DataKey, Gender, InsuranceKey, MedicalKey,
-        NutritionKey, PetChainContract, PetChainContractClient, PrivacyLevel, Species, SystemKey,
-        TreatmentKey,
+        ActivityKey, AlertKey, BehaviorKey, ConsentKey, ContractError, DataKey, Gender,
+        InsuranceKey, MedicalKey, NutritionKey, PetChainContract, PetChainContractClient,
+        PrivacyLevel, Species, SystemKey, TreatmentKey,
     };
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    use soroban_sdk::{testutils::Address as _, Address, Env, Error, String};
 
     fn register_pet(client: &PetChainContractClient, env: &Env, owner: &Address) -> u64 {
         client.register_pet(
@@ -76,8 +76,7 @@ mod test_overflow {
     }
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
-    fn test_pet_count_overflow_panics() {
+    fn test_pet_count_overflow_returns_counter_overflow() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
@@ -88,14 +87,31 @@ mod test_overflow {
             env.storage().instance().set(&DataKey::PetCount, &u64::MAX);
         });
 
-        register_pet(&client, &env, &owner);
+        let result = client.try_register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "1609459200"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        assert_eq!(
+            result,
+            Err(Ok(Error::from_contract_error(
+                ContractError::CounterOverflow as u32,
+            )))
+        );
     }
 
     // --- VaccinationCount overflow ---
 
     #[test]
-    #[should_panic(expected = "counter overflow")]
-    fn test_vaccination_count_overflow_panics() {
+    fn test_vaccination_count_overflow_returns_counter_overflow() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
@@ -110,7 +126,7 @@ mod test_overflow {
                 .set(&MedicalKey::VaccinationCount, &u64::MAX);
         });
 
-        client.add_vaccination(
+        let result = client.try_add_vaccination(
             &pet_id,
             &vet,
             &crate::VaccineType::Rabies,
@@ -118,6 +134,53 @@ mod test_overflow {
             &1000u64,
             &2000u64,
             &String::from_str(&env, "BATCH-001"),
+        );
+
+        assert_eq!(
+            result,
+            Err(Ok(Error::from_contract_error(
+                ContractError::CounterOverflow as u32,
+            )))
+        );
+    }
+
+    // --- Cost overflow ---
+
+    #[test]
+    fn test_cost_overflow_returns_counter_overflow() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let pet_id = register_pet(&client, &env, &owner);
+
+        client.add_grooming_record(
+            &pet_id,
+            &String::from_str(&env, "Full Grooming"),
+            &String::from_str(&env, "Test Groomer"),
+            &1000u64,
+            &2000u64,
+            &u64::MAX,
+            &String::from_str(&env, "First grooming"),
+        );
+        client.add_grooming_record(
+            &pet_id,
+            &String::from_str(&env, "Nail Trim"),
+            &String::from_str(&env, "Test Groomer"),
+            &3000u64,
+            &4000u64,
+            &1u64,
+            &String::from_str(&env, "Second grooming"),
+        );
+
+        let result = client.try_get_grooming_expenses(&pet_id);
+
+        assert_eq!(
+            result,
+            Err(Ok(Error::from_contract_error(
+                ContractError::CounterOverflow as u32,
+            )))
         );
     }
 
