@@ -127,3 +127,72 @@ fn test_non_admin_cannot_migrate_version() {
     let non_admin = Address::generate(&env);
     client.migrate_version(&non_admin, &2, &0, &0);
 }
+
+#[test]
+fn test_get_upgrade_proposal_returns_correct_data() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.id, proposal_id);
+    assert_eq!(proposal.new_wasm_hash, hash);
+    assert!(!proposal.approved);
+    assert!(!proposal.executed);
+}
+
+#[test]
+fn test_get_upgrade_proposal_nonexistent_returns_none() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    assert!(client.get_upgrade_proposal(&999u64).is_none());
+}
+
+#[test]
+fn test_list_upgrade_proposals_returns_all() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[1u8; 32]));
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[2u8; 32]));
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[3u8; 32]));
+
+    let list = client.list_upgrade_proposals(&0u64, &10u32);
+    assert_eq!(list.len(), 3);
+    assert_eq!(list.get(0).unwrap().id, 1);
+    assert_eq!(list.get(2).unwrap().id, 3);
+}
+
+#[test]
+fn test_list_upgrade_proposals_pagination() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    for i in 1u8..=5 {
+        client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[i; 32]));
+    }
+
+    let page1 = client.list_upgrade_proposals(&0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().id, 1);
+
+    let page2 = client.list_upgrade_proposals(&2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().id, 3);
+
+    let page3 = client.list_upgrade_proposals(&4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().id, 5);
+}
+
+#[test]
+fn test_list_upgrade_proposals_empty() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let list = client.list_upgrade_proposals(&0u64, &10u32);
+    assert_eq!(list.len(), 0);
+}
