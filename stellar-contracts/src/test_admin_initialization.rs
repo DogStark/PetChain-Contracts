@@ -1,5 +1,11 @@
-#![cfg(test)]
+use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
 
+use crate::{PetChainContract, PetChainContractClient, ProposalAction};
+
+fn setup_client(env: &Env) -> PetChainContractClient<'static> {
+    let contract_id = env.register_contract(None, PetChainContract);
+    PetChainContractClient::new(env, &contract_id)
+}
 use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
 
 use crate::PetChainContract;
@@ -44,8 +50,7 @@ fn test_get_admin_threshold_after_init_multisig() {
     let admins = vec![&env, admin1.clone(), admin2.clone()];
     client.init_multisig(&admin1, &admins, &2u32);
 
-    let threshold = client.get_admin_threshold();
-    assert_eq!(threshold, 2u32);
+    assert_eq!(client.get_admin_threshold(), 2u32);
 }
 
 #[test]
@@ -54,6 +59,7 @@ fn test_get_admins_empty_before_init() {
     env.mock_all_auths();
     let client = setup_client(&env);
 
+    assert_eq!(client.get_admins().len(), 0);
     let result = client.get_admins();
     assert_eq!(result.len(), 0);
 }
@@ -244,7 +250,8 @@ fn test_migrate_version_without_admin_initialization() {
     env.mock_all_auths();
     let client = setup_client(&env);
 
-    client.migrate_version(&1u32, &0u32, &0u32);
+    let caller = Address::generate(&env);
+    client.migrate_version(&caller, &1u32, &0u32, &0u32);
 }
 
 #[test]
@@ -317,8 +324,7 @@ fn test_admin_methods_work_after_initialization() {
         &String::from_str(&env, "General"),
     );
 
-    let result = client.verify_vet(&admin, &vet);
-    assert!(result);
+    assert!(client.verify_vet(&admin, &vet));
     assert!(client.is_verified_vet(&vet));
 }
 
@@ -390,6 +396,5 @@ fn test_get_admins_no_admin() {
     env.mock_all_auths();
     let client = setup_client(&env);
 
-    let admins = client.get_admins();
-    assert_eq!(admins.len(), 0);
+    assert_eq!(client.get_admins().len(), 0);
 }
