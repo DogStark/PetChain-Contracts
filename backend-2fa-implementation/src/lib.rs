@@ -8,7 +8,7 @@ mod tests;
 
 pub use db::PostgresTwoFactorStore;
 pub use handlers::{AuthenticatedUser, TwoFactorHandlers};
-pub use rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
+pub use rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, RedisRateLimiter};
 pub use two_factor::{
     InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorSetup,
     TwoFactorStore,
