@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 #[test]
 fn test_validate_ipfs_hash_v0_success() {
