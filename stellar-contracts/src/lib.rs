@@ -107,7 +107,7 @@ mod test_statistics;
 #[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
-mod test_admin_initialization;
+
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 
@@ -1784,6 +1784,67 @@ impl PetChainContract {
         }
     }
 
+    pub fn get_pet_data(env: Env, id: u64, caller: Address) -> Option<PetData> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(id))
+        {
+            let allowed = match pet.privacy_level {
+                PrivacyLevel::Public => true,
+                PrivacyLevel::Restricted => {
+                    let access = Self::check_access(env.clone(), id, caller.clone());
+                    !matches!(access, AccessLevel::None)
+                }
+                PrivacyLevel::Private => {
+                    caller.require_auth();
+                    pet.owner == caller
+                }
+            };
+
+            if !allowed {
+                return None;
+            }
+
+            let key = Self::get_encryption_key(&env);
+
+            let decrypted_name = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_name.ciphertext,
+                &pet.encrypted_name.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let name =
+                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
+
+            let decrypted_breed = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_breed.ciphertext,
+                &pet.encrypted_breed.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let breed =
+                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
+
+            let species_str = match pet.species {
+                Species::Dog => "Dog",
+                Species::Cat => "Cat",
+                Species::Bird => "Bird",
+                Species::Other => "Other",
+            };
+
+            Some(PetData {
+                name,
+                species: String::from_str(&env, species_str),
+                breed,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
         if let Some(pet) = Self::get_pet(env.clone(), pet_id, env.current_contract_address()) {
             let current_time = env.ledger().timestamp();
@@ -1802,7 +1863,7 @@ impl PetChainContract {
             let remaining_days = elapsed_days % 365;
             let months = remaining_days / 30;
 
-            (years, months)
+            return (years, months);
         }
 
         (0, 0)
@@ -2503,6 +2564,12 @@ impl PetChainContract {
         }
     }
 
+    pub fn is_vet_registered(env: Env, vet_address: Address) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::Vet(vet_address))
+    }
+
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         env.storage()
             .instance()
@@ -2784,6 +2851,17 @@ impl PetChainContract {
             }
         }
         overdue
+    }
+
+    pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
+        let overdue_types = Self::get_overdue_vaccinations(env.clone(), pet_id);
+        let upcoming = Self::get_upcoming_vaccinations(env.clone(), pet_id, 30);
+        
+        VaccinationSummary {
+            is_fully_current: overdue_types.is_empty(),
+            overdue_types,
+            upcoming_count: upcoming.len() as u64,
+        }
     }
 
     // --- NUTRITION / DIET FUNCTIONS ---
@@ -3461,47 +3539,6 @@ impl PetChainContract {
 
     /// Grant a responder address access to read emergency data for a pet.
     /// Only the pet owner can call this.
-    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
-        pet.owner.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::EmergencyResponder((pet_id, responder)), &true);
-    }
-
-    /// Revoke a responder's access to emergency data for a pet.
-    /// Only the pet owner can call this.
-    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
-        pet.owner.require_auth();
-        env.storage()
-            .instance()
-            .remove(&DataKey::EmergencyResponder((pet_id, responder)));
-    }
-
-    /// Returns true if `caller` is the pet owner or an approved emergency responder.
-    fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address) -> bool {
-        let pet: Pet = match env.storage().instance().get(&DataKey::Pet(pet_id)) {
-            Some(p) => p,
-            None => return false,
-        };
-        if &pet.owner == caller {
-            return true;
-        }
-        env.storage()
-            .instance()
-            .get::<DataKey, bool>(&DataKey::EmergencyResponder((pet_id, caller.clone())))
-            .unwrap_or(false)
-    }
-
     pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
         if contacts.is_empty() {
             panic_with_error!(env, ContractError::InvalidInput);
@@ -3608,7 +3645,7 @@ impl PetChainContract {
         }
         let key = DataKey::EmergencyResponders(pet_id);
         let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
-        responders.contains(&caller)
+        responders.contains(caller)
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
@@ -4365,18 +4402,6 @@ impl PetChainContract {
         } else {
             false
         }
-    }
-
-    pub fn get_vet_stats(env: Env, vet: Address) -> VetStats {
-        env.storage()
-            .instance()
-            .get::<_, VetStats>(&VetKey::VetStats(vet))
-            .unwrap_or(VetStats {
-                total_records: 0,
-                total_vaccinations: 0,
-                total_treatments: 0,
-                pets_treated: 0,
-            })
     }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
@@ -5497,7 +5522,12 @@ impl PetChainContract {
     }
 
     /// Book a slot (mark as unavailable)
-    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+    pub fn book_slot(env: Env, caller: Address, vet_address: Address, slot_index: u64) -> bool {
+        caller.require_auth();
+        if !env.storage().instance().has(&DataKey::PetOwner(caller.clone())) {
+            panic!("Unauthorized: only registered pet owners can book slots");
+        }
+        
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
 
         if let Some(mut slot) = env
@@ -5509,8 +5539,6 @@ impl PetChainContract {
                 panic!("Slot already booked");
             }
 
-            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
-            // In real implementation, you'd check if caller is a registered pet owner
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
@@ -5748,20 +5776,6 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::Proposal(proposal_id))
-    }
-
-    pub fn get_admins(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&SystemKey::Admins)
-            .unwrap_or(Vec::new(&env))
-    }
-
-    pub fn get_admin_threshold(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&SystemKey::AdminThreshold)
-            .unwrap_or(0)
     }
 
     // --- VET REVIEWS ---
