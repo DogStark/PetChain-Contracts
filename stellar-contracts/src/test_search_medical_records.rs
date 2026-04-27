@@ -55,6 +55,23 @@ mod test_search_medical_records {
         (env, client, admin, owner, vet, pet_id)
     }
 
+    fn add_record(
+        client: &PetChainContractClient,
+        env: &Env,
+        pet_id: u64,
+        vet: &Address,
+        diagnosis: &str,
+    ) -> u64 {
+        client.add_medical_record(
+            &pet_id,
+            vet,
+            &String::from_str(env, diagnosis),
+            &String::from_str(env, "Treatment"),
+            &soroban_sdk::Vec::new(env),
+            &String::from_str(env, "Notes"),
+        )
+    }
+
     fn add_record_at(
         client: &PetChainContractClient,
         env: &Env,
@@ -64,14 +81,7 @@ mod test_search_medical_records {
         timestamp: u64,
     ) -> u64 {
         env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
-        client.add_medical_record(
-            &pet_id,
-            vet,
-            &String::from_str(env, diagnosis),
-            &String::from_str(env, "Treatment"),
-            &soroban_sdk::Vec::new(env),
-            &String::from_str(env, "Notes"),
-        )
+        add_record(client, env, pet_id, vet, diagnosis)
     }
 
     fn empty_filter() -> MedicalRecordFilter {
@@ -263,6 +273,7 @@ mod test_search_medical_records {
     }
 
     #[test]
+    #[should_panic]
     fn test_update_medical_record_notes_creator_only() {
         let env = Env::default();
         let admin = Address::generate(&env);
@@ -318,16 +329,12 @@ mod test_search_medical_records {
             &String::from_str(&env, "Notes"),
         );
 
-        // Try to update with vet2 (different vet) - should fail
+        // Try to update with vet2 (different vet) - should panic due to auth requirement
         env.mock_all_auths_allowing_non_root_auth();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.update_medical_record_notes(
-                &record_id,
-                &String::from_str(&env, "Unauthorized update"),
-            )
-        }));
-        // Expect failure due to auth requirement
-        assert!(result.is_err() || !result.unwrap());
+        client.update_medical_record_notes(
+            &record_id,
+            &String::from_str(&env, "Unauthorized update"),
+        );
     }
 
     #[test]

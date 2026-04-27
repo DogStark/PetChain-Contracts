@@ -105,7 +105,13 @@ mod test_book_slot;
 #[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
+mod test_get_lab_results;
+#[cfg(test)]
 mod test_statistics;
+#[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
+
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 
@@ -744,6 +750,7 @@ pub enum SystemKey {
     PetMultisigConfig(u64),
     PetTransferProposal(u64),
     PetTransferProposalCount,
+    PetActiveProposals(u64), // pet_id -> Vec<u64> of active proposal IDs
     EncryptionNonceCounter,
 }
 
@@ -1896,6 +1903,67 @@ impl PetChainContract {
         }
     }
 
+    pub fn get_pet_data(env: Env, id: u64, caller: Address) -> Option<PetData> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(id))
+        {
+            let allowed = match pet.privacy_level {
+                PrivacyLevel::Public => true,
+                PrivacyLevel::Restricted => {
+                    let access = Self::check_access(env.clone(), id, caller.clone());
+                    !matches!(access, AccessLevel::None)
+                }
+                PrivacyLevel::Private => {
+                    caller.require_auth();
+                    pet.owner == caller
+                }
+            };
+
+            if !allowed {
+                return None;
+            }
+
+            let key = Self::get_encryption_key(&env);
+
+            let decrypted_name = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_name.ciphertext,
+                &pet.encrypted_name.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let name =
+                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
+
+            let decrypted_breed = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_breed.ciphertext,
+                &pet.encrypted_breed.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let breed =
+                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
+
+            let species_str = match pet.species {
+                Species::Dog => "Dog",
+                Species::Cat => "Cat",
+                Species::Bird => "Bird",
+                Species::Other => "Other",
+            };
+
+            Some(PetData {
+                name,
+                species: String::from_str(&env, species_str),
+                breed,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
         if let Some(pet) = Self::get_pet(env.clone(), pet_id, env.current_contract_address()) {
             let current_time = env.ledger().timestamp();
@@ -2220,6 +2288,37 @@ impl PetChainContract {
             pet.photo_hashes
         } else {
             Vec::new(&env)
+        }
+    }
+
+    pub fn remove_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+
+            // Find the photo in the vector
+            let mut index_to_remove: Option<u32> = None;
+            for (i, hash) in pet.photo_hashes.iter().enumerate() {
+                if hash == photo_hash {
+                    index_to_remove = Some(i);
+                    break;
+                }
+            }
+
+            // If found, remove it and update the pet
+            if let Some(idx) = index_to_remove {
+                pet.photo_hashes.remove(idx);
+                pet.updated_at = env.ledger().timestamp();
+                env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 
@@ -2613,6 +2712,12 @@ impl PetChainContract {
         }
     }
 
+    pub fn is_vet_registered(env: Env, vet_address: Address) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::Vet(vet_address))
+    }
+
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
         env.storage()
             .instance()
@@ -2910,6 +3015,17 @@ impl PetChainContract {
             }
         }
         overdue
+    }
+
+    pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
+        let overdue_types = Self::get_overdue_vaccinations(env.clone(), pet_id);
+        let upcoming = Self::get_upcoming_vaccinations(env.clone(), pet_id, 30);
+        
+        VaccinationSummary {
+            is_fully_current: overdue_types.is_empty(),
+            overdue_types,
+            upcoming_count: upcoming.len() as u64,
+        }
     }
 
     // --- NUTRITION / DIET FUNCTIONS ---
@@ -3585,6 +3701,8 @@ impl PetChainContract {
     }
     // --- EMERGENCY RESPONDER ALLOWLIST ---
 
+    /// Grant a responder address access to read emergency data for a pet.
+    /// Only the pet owner can call this.
     pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
         if contacts.is_empty() {
             panic_with_error!(env, ContractError::InvalidInput);
@@ -4924,14 +5042,23 @@ impl PetChainContract {
             .get(&MedicalKey::LabResult(lab_result_id))
     }
 
-    pub fn get_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
+    pub fn get_lab_results(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<LabResult> {
         let count = env
             .storage()
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
         let mut res = Vec::new(&env);
-        for i in 1..=count {
+        if limit == 0 || offset >= count {
+            return res;
+        }
+        let start = offset + 1;
+        let end = if offset + limit as u64 < count {
+            offset + limit as u64
+        } else {
+            count
+        };
+        for i in start..=end {
             if let Some(lid) = env
                 .storage()
                 .instance()
@@ -5586,7 +5713,12 @@ impl PetChainContract {
     }
 
     /// Book a slot (mark as unavailable)
-    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+    pub fn book_slot(env: Env, caller: Address, vet_address: Address, slot_index: u64) -> bool {
+        caller.require_auth();
+        if !env.storage().instance().has(&DataKey::PetOwner(caller.clone())) {
+            panic!("Unauthorized: only registered pet owners can book slots");
+        }
+        
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
 
         if let Some(mut slot) = env
@@ -5598,8 +5730,6 @@ impl PetChainContract {
                 panic!("Slot already booked");
             }
 
-            // Require auth from either vet or pet owner (simplified - just require vet auth for now)
-            // In real implementation, you'd check if caller is a registered pet owner
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
@@ -5916,14 +6046,19 @@ impl PetChainContract {
         id
     }
 
-    pub fn get_vet_reviews(env: Env, vet: Address) -> Vec<VetReview> {
+    pub fn get_vet_reviews(env: Env, vet: Address, offset: u64, limit: u32) -> Vec<VetReview> {
         let count: u64 = env
             .storage()
             .instance()
             .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let mut reviews = Vec::new(&env);
-        for i in 1..=count {
+        let start = offset + 1;
+        let end = start + (limit as u64) - 1;
+        for i in start..=end {
+            if i > count {
+                break;
+            }
             if let Some(review_id) = env
                 .storage()
                 .instance()
@@ -5942,18 +6077,32 @@ impl PetChainContract {
     }
 
     pub fn get_vet_average_rating(env: Env, vet: Address) -> u32 {
-        let reviews = Self::get_vet_reviews(env.clone(), vet);
-        if reviews.is_empty() {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
+            .unwrap_or(0);
+        if count == 0 {
             return 0;
         }
-        let mut total = 0u32;
-        for review in reviews.iter() {
-            total = total
-                .checked_add(1)
-                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-            total += review.rating;
+        let mut total_rating: u64 = 0;
+        for i in 1..=count {
+            if let Some(review_id) = env
+                .storage()
+                .instance()
+                .get::<ReviewKey, u64>(&ReviewKey::VetReviewByVetIndex((vet.clone(), i)))
+            {
+                if let Some(review) = env
+                    .storage()
+                    .instance()
+                    .get::<ReviewKey, VetReview>(&ReviewKey::VetReview(review_id))
+                {
+                    total_rating += review.rating as u64;
+                }
+            }
         }
-        total / reviews.len()
+        // Return average as 0-500 scale (0.0-5.0 stars * 100)
+        ((total_rating * 100) / count) as u32
     }
 
     // --- MEDICATION TRACKING ---
@@ -7009,6 +7158,17 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::PetTransferProposalCount, &proposal_id);
 
+        // Add to active proposals index for this pet
+        let mut active_proposals: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetActiveProposals(pet_id))
+            .unwrap_or(Vec::new(&env));
+        active_proposals.push_back(proposal_id);
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetActiveProposals(pet_id), &active_proposals);
+
         proposal_id
     }
 
@@ -7093,6 +7253,9 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+
+        // Remove from active proposals index
+        Self::remove_from_active_proposals(&env, proposal_id, proposal.pet_id);
     }
 
     /// Execute a multi-signature pet transfer.
@@ -7178,6 +7341,9 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
 
+        // Remove from active proposals index
+        Self::remove_from_active_proposals(&env, proposal_id, proposal.pet_id);
+
         true
     }
 
@@ -7192,6 +7358,62 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::PetTransferProposal(proposal_id))
+    }
+
+    /// Remove a proposal ID from the active proposals index for a pet.
+    /// This is a helper function used when proposals are executed or cancelled.
+    fn remove_from_active_proposals(env: &Env, proposal_id: u64, pet_id: u64) {
+        if let Some(mut active_proposals) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<u64>>(&SystemKey::PetActiveProposals(pet_id))
+        {
+            let mut i = 0;
+            while i < active_proposals.len() {
+                if active_proposals.get(i) == proposal_id {
+                    active_proposals.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .instance()
+                .set(&SystemKey::PetActiveProposals(pet_id), &active_proposals);
+        }
+    }
+
+    /// Get all active (non-executed, non-expired) transfer proposals for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet ID to query
+    ///
+    /// # Returns
+    /// Vec of PetTransferProposal that are active (not executed and not expired)
+    pub fn get_active_transfer_proposals(env: Env, pet_id: u64) -> Vec<PetTransferProposal> {
+        let now = env.ledger().timestamp();
+        let mut result = Vec::new(&env);
+
+        let active_proposal_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetActiveProposals(pet_id))
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..active_proposal_ids.len() {
+            let proposal_id = active_proposal_ids.get(i);
+            if let Some(proposal) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, PetTransferProposal>(&SystemKey::PetTransferProposal(proposal_id))
+            {
+                // Only include non-executed, non-expired proposals
+                if !proposal.executed && now <= proposal.expires_at {
+                    result.push_back(proposal);
+                }
+            }
+        }
+
+        result
     }
 
     // --- ACTIVITY TRACKING SYSTEM ---
