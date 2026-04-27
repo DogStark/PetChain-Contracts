@@ -641,6 +641,19 @@ fn test_get_attachment_by_index_middle() {
     ];
 
     for i in 0..5 {
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        // Use valid base58 characters (skip 'I' which is invalid in base58)
+        let suffix_char = match i {
+            0 => 'G',
+            1 => 'H',
+            2 => 'J',
+            3 => 'K',
+            _ => 'L',
+        };
+        let hash = std::format!(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
+            suffix_char
         let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
         client.add_attachment(
             &record_id,
@@ -670,6 +683,16 @@ fn test_get_attachment_by_index_after_removal() {
     ];
 
     for i in 0..3 {
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        let suffix_char = match i {
+            0 => 'G',
+            1 => 'H',
+            _ => 'J',
+        };
+        let hash = std::format!(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbd{}",
+            suffix_char
         let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
         client.add_attachment(
             &record_id,

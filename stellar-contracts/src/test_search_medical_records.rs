@@ -63,6 +63,23 @@ mod test_search_medical_records {
         vet: &Address,
         diagnosis: &str,
     ) -> u64 {
+        add_record_at(
+            client,
+            env,
+            pet_id,
+            vet,
+            diagnosis,
+            env.ledger().timestamp(),
+        )
+    }
+
+    fn add_record_at(
+        client: &PetChainContractClient,
+        env: &Env,
+        pet_id: u64,
+        vet: &Address,
+        diagnosis: &str,
+    ) -> u64 {
         client.add_medical_record(
             &pet_id,
             vet,
