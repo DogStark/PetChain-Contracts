@@ -746,6 +746,7 @@ pub enum SystemKey {
     PetMultisigConfig(u64),
     PetTransferProposal(u64),
     PetTransferProposalCount,
+    PetActiveProposals(u64), // pet_id -> Vec<u64> of active proposal IDs
     EncryptionNonceCounter,
 }
 
@@ -6777,6 +6778,17 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::PetTransferProposalCount, &proposal_id);
 
+        // Add to active proposals index for this pet
+        let mut active_proposals: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetActiveProposals(pet_id))
+            .unwrap_or(Vec::new(&env));
+        active_proposals.push_back(proposal_id);
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetActiveProposals(pet_id), &active_proposals);
+
         proposal_id
     }
 
@@ -6861,6 +6873,9 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+
+        // Remove from active proposals index
+        Self::remove_from_active_proposals(&env, proposal_id, proposal.pet_id);
     }
 
     /// Execute a multi-signature pet transfer.
@@ -6946,6 +6961,9 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
 
+        // Remove from active proposals index
+        Self::remove_from_active_proposals(&env, proposal_id, proposal.pet_id);
+
         true
     }
 
@@ -6960,6 +6978,62 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::PetTransferProposal(proposal_id))
+    }
+
+    /// Remove a proposal ID from the active proposals index for a pet.
+    /// This is a helper function used when proposals are executed or cancelled.
+    fn remove_from_active_proposals(env: &Env, proposal_id: u64, pet_id: u64) {
+        if let Some(mut active_proposals) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<u64>>(&SystemKey::PetActiveProposals(pet_id))
+        {
+            let mut i = 0;
+            while i < active_proposals.len() {
+                if active_proposals.get(i) == proposal_id {
+                    active_proposals.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .instance()
+                .set(&SystemKey::PetActiveProposals(pet_id), &active_proposals);
+        }
+    }
+
+    /// Get all active (non-executed, non-expired) transfer proposals for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The pet ID to query
+    ///
+    /// # Returns
+    /// Vec of PetTransferProposal that are active (not executed and not expired)
+    pub fn get_active_transfer_proposals(env: Env, pet_id: u64) -> Vec<PetTransferProposal> {
+        let now = env.ledger().timestamp();
+        let mut result = Vec::new(&env);
+
+        let active_proposal_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PetActiveProposals(pet_id))
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..active_proposal_ids.len() {
+            let proposal_id = active_proposal_ids.get(i);
+            if let Some(proposal) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, PetTransferProposal>(&SystemKey::PetTransferProposal(proposal_id))
+            {
+                // Only include non-executed, non-expired proposals
+                if !proposal.executed && now <= proposal.expires_at {
+                    result.push_back(proposal);
+                }
+            }
+        }
+
+        result
     }
 
     // --- ACTIVITY TRACKING SYSTEM ---
