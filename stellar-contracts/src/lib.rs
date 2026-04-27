@@ -8180,6 +8180,16 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::GroomingRecord(record_id))
     }
+
+    /// Returns the total number of grooming records for a given pet.
+    /// Returns 0 if the pet has no grooming records.
+    /// Useful for pagination UI to determine total pages.
+    pub fn get_grooming_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0)
+    }
 }
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
