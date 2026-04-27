@@ -120,18 +120,37 @@ fn test_update_insurance_status() {
     );
 
     // Deactivate insurance
-    let result = client.update_insurance_status(&pet_id, &false);
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "DOG-2024-456"),
+        &false,
+    );
     assert_eq!(result, true);
 
     let policy = client.get_pet_insurance(&pet_id).unwrap();
     assert_eq!(policy.active, false);
 
     // Reactivate insurance
-    let result = client.update_insurance_status(&pet_id, &true);
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "DOG-2024-456"),
+        &true,
+    );
     assert_eq!(result, true);
 
     let policy = client.get_pet_insurance(&pet_id).unwrap();
     assert_eq!(policy.active, true);
+
+    // Wrong policy ID returns false
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "NONEXISTENT-ID"),
+        &false,
+    );
+    assert_eq!(result, false);
 }
 
 #[test]
@@ -206,7 +225,12 @@ fn test_update_nonexistent_insurance() {
         &PrivacyLevel::Public,
     );
 
-    let result = client.update_insurance_status(&pet_id, &false);
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "FAKE-POLICY"),
+        &false,
+    );
     assert_eq!(result, false);
 }
 
@@ -503,4 +527,137 @@ fn test_policies_independent_across_pets() {
         pet2_policies.get(0).unwrap().policy_id,
         String::from_str(&env, "CAT-POL-1")
     );
+}
+
+#[test]
+fn test_update_insurance_status_targets_specific_policy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Spot"),
+        &String::from_str(&env, "2021-04-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "White"),
+        &String::from_str(&env, "Dalmatian"),
+        &22,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let expiry = env.ledger().timestamp() + 31536000;
+
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "POL-A"),
+        &String::from_str(&env, "Provider A"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "POL-B"),
+        &String::from_str(&env, "Provider B"),
+        &String::from_str(&env, "Premium"),
+        &2000,
+        &100000,
+        &expiry,
+    );
+
+    // Deactivate only POL-A; POL-B should remain active
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "POL-A"),
+        &false,
+    );
+    assert_eq!(result, true);
+
+    let all = client.get_all_pet_policies(&pet_id);
+    let pol_a = all.get(0).unwrap();
+    let pol_b = all.get(1).unwrap();
+    assert_eq!(pol_a.active, false);
+    assert_eq!(pol_b.active, true);
+
+    // Deactivate POL-B independently
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "POL-B"),
+        &false,
+    );
+    assert_eq!(result, true);
+
+    let all = client.get_all_pet_policies(&pet_id);
+    assert_eq!(all.get(0).unwrap().active, false);
+    assert_eq!(all.get(1).unwrap().active, false);
+
+    // Reactivate POL-A only
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "POL-A"),
+        &true,
+    );
+    assert_eq!(result, true);
+
+    let all = client.get_all_pet_policies(&pet_id);
+    assert_eq!(all.get(0).unwrap().active, true);
+    assert_eq!(all.get(1).unwrap().active, false);
+}
+
+#[test]
+fn test_update_insurance_status_unknown_policy_id_returns_false() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Fido"),
+        &String::from_str(&env, "2020-06-15"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Brown"),
+        &String::from_str(&env, "Mutt"),
+        &15,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "REAL-POL"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let result = client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "WRONG-ID"),
+        &false,
+    );
+    assert_eq!(result, false);
+
+    // Original policy untouched
+    let policy = client.get_pet_insurance(&pet_id).unwrap();
+    assert_eq!(policy.active, true);
 }

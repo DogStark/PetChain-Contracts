@@ -6294,46 +6294,63 @@ impl PetChainContract {
         policies
     }
 
-    /// Updates the active status of an insurance policy.
+    /// Updates the active status of a specific insurance policy by ID.
     ///
     /// # Arguments
+    /// * `owner` - The pet owner (must be authenticated)
     /// * `pet_id` - The ID of the pet
+    /// * `policy_id` - The ID of the policy to update
     /// * `active` - New status (true = active, false = inactive)
     ///
     /// # Returns
     /// * `true` if status was updated successfully
-    /// * `false` if policy doesn't exist
+    /// * `false` if the policy with the given ID doesn't exist
+    ///
+    /// # Panics
+    /// Panics if the pet doesn't exist or the caller is not the owner.
     ///
     /// # Events
     /// Emits `InsuranceUpdatedEvent` on success
-    pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
+    pub fn update_insurance_status(env: Env, owner: Address, pet_id: u64, policy_id: String, active: bool) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        if pet.owner != owner {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
             .get(&InsuranceKey::PetPolicyCount(pet_id))
             .unwrap_or(0);
-        if count == 0 {
-            return false;
-        }
-        let key = InsuranceKey::PetPolicyIndex((pet_id, count));
-        if let Some(mut policy) = env
-            .storage()
-            .instance()
-            .get::<InsuranceKey, InsurancePolicy>(&key)
-        {
-            policy.active = active;
-            env.storage().instance().set(&key, &policy);
 
-            env.events().publish(
-                (String::from_str(&env, "InsuranceUpdated"), pet_id),
-                InsuranceUpdatedEvent {
-                    pet_id,
-                    policy_id: policy.policy_id,
-                    active,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
-            return true;
+        for i in 1..=count {
+            let key = InsuranceKey::PetPolicyIndex((pet_id, i));
+            if let Some(mut policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&key)
+            {
+                if policy.policy_id == policy_id {
+                    policy.active = active;
+                    env.storage().instance().set(&key, &policy);
+
+                    env.events().publish(
+                        (String::from_str(&env, "InsuranceUpdated"), pet_id),
+                        InsuranceUpdatedEvent {
+                            pet_id,
+                            policy_id: policy.policy_id,
+                            active,
+                            timestamp: env.ledger().timestamp(),
+                        },
+                    );
+                    return true;
+                }
+            }
         }
         false
     }

@@ -88,7 +88,12 @@ fn test_submit_claim_inactive_policy() {
         &expiry,
     );
 
-    client.update_insurance_status(&pet_id, &false);
+    client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "POL-INACTIVE"),
+        &false,
+    );
 
     let result = client.submit_insurance_claim(
         &pet_id,
