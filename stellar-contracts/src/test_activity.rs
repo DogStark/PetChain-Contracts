@@ -1,10 +1,7 @@
 use crate::{
     ActivityType, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
 };
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env, String,
-};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 
 #[test]
 fn test_add_activity_record() {
@@ -430,7 +427,7 @@ fn test_activity_summary_valid_range() {
     // Activities within the range should be summed correctly.
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -469,7 +466,7 @@ fn test_activity_summary_partial_overlap() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     // Record 1 at t=100
-    env.ledger().set_timestamp(100);
+    env.ledger().with_mut(|l| l.timestamp = 100);
     let pet_id = setup_pet(&env, &client);
     client.add_activity_record(
         &pet_id,
@@ -481,7 +478,7 @@ fn test_activity_summary_partial_overlap() {
     );
 
     // Record 2 at t=5000 – outside the query range below
-    env.ledger().set_timestamp(5000);
+    env.ledger().with_mut(|l| l.timestamp = 5000);
     client.add_activity_record(
         &pet_id,
         &ActivityType::Run,
@@ -502,7 +499,7 @@ fn test_activity_summary_empty_range() {
     // No activities exist in the queried window → (0, 0).
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(9999);
+    env.ledger().with_mut(|l| l.timestamp = 9999);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -528,7 +525,7 @@ fn test_activity_summary_single_activity_on_boundary() {
     // A record exactly on from_date or to_date must be included (inclusive).
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(500);
+    env.ledger().with_mut(|l| l.timestamp = 500);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -559,7 +556,7 @@ fn test_activity_summary_invalid_range() {
     // from_date > to_date → (0, 0) without panicking.
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(1000);
+    env.ledger().with_mut(|l| l.timestamp = 1000);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);

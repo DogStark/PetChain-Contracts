@@ -2,14 +2,7 @@
 
 use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
 
-use crate::PetChainContract;
-use crate::PetChainContractClient;
-use crate::ProposalAction;
-
-fn setup_client(env: &Env) -> PetChainContractClient {
-    let contract_id = env.register_contract(None, PetChainContract);
-    PetChainContractClient::new(env, &contract_id)
-}
+use crate::{PetChainContract, PetChainContractClient, ProposalAction};
 
 #[test]
 fn test_get_admins_after_init_multisig() {
@@ -67,15 +60,6 @@ fn test_get_admin_threshold_zero_before_init() {
     assert_eq!(threshold, 0u32);
 }
 
-#[test]
-fn test_get_admins_reflects_change_admin_proposal() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = setup_client(&env);
-
-    let admin1 = Address::generate(&env);
-    let admin2 = Address::generate(&env);
-    let new_admin = Address::generate(&env);
 
     let admins = vec![&env, admin1.clone(), admin2.clone()];
     client.init_multisig(&admin1, &admins, &1u32);

@@ -63,13 +63,13 @@ mod test_search_medical_records {
         vet: &Address,
         diagnosis: &str,
     ) -> u64 {
-        add_record_at(
-            client,
-            env,
-            pet_id,
+        client.add_medical_record(
+            &pet_id,
             vet,
-            diagnosis,
-            env.ledger().timestamp(),
+            &String::from_str(env, diagnosis),
+            &String::from_str(env, "Treatment"),
+            &soroban_sdk::Vec::new(env),
+            &String::from_str(env, "Notes"),
         )
     }
 
@@ -82,14 +82,7 @@ mod test_search_medical_records {
         timestamp: u64,
     ) -> u64 {
         env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
-        client.add_medical_record(
-            &pet_id,
-            vet,
-            &String::from_str(env, diagnosis),
-            &String::from_str(env, "Treatment"),
-            &soroban_sdk::Vec::new(env),
-            &String::from_str(env, "Notes"),
-        )
+        add_record(client, env, pet_id, vet, diagnosis)
     }
 
     fn empty_filter() -> MedicalRecordFilter {
@@ -281,6 +274,7 @@ mod test_search_medical_records {
     }
 
     #[test]
+    #[should_panic]
     fn test_update_medical_record_notes_creator_only() {
         let env = Env::default();
         let admin = Address::generate(&env);
@@ -340,6 +334,9 @@ mod test_search_medical_records {
         // With mock_all_auths the auth passes, but the record was created by vet1
         // so the update should still succeed (auth is mocked). Just verify it doesn't panic.
         let _result = client.update_medical_record_notes(
+        // Try to update with vet2 (different vet) - should panic due to auth requirement
+        env.mock_all_auths_allowing_non_root_auth();
+        client.update_medical_record_notes(
             &record_id,
             &String::from_str(&env, "Unauthorized update"),
         );
