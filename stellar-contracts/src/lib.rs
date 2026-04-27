@@ -112,6 +112,8 @@ mod test_book_slot;
 
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
+#[cfg(test)]
+mod test_upgrade_proposal;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -5847,6 +5849,27 @@ impl PetChainContract {
         }
     }
 
+    /// Cancel a booking (restore slot availability). Only the vet who owns the slot can cancel.
+    pub fn cancel_booking(env: Env, vet_address: Address, slot_index: u64) -> bool {
+        vet_address.require_auth();
+        let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
+
+        if let Some(mut slot) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, AvailabilitySlot>(&key)
+        {
+            if slot.available {
+                panic!("Slot is not booked");
+            }
+            slot.available = true;
+            env.storage().instance().set(&key, &slot);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Helper: Extract date from timestamp (yyyyMMdd format)
     fn get_date_from_timestamp(timestamp: u64) -> u64 {
         // Simple conversion: timestamp / 86400 gives days since epoch
@@ -5933,8 +5956,26 @@ impl PetChainContract {
             .get(&DataKey::UpgradeProposal(proposal_id))
     }
 
-    pub fn migrate_version(env: Env, major: u32, minor: u32, patch: u32) {
-        Self::require_admin(&env);
+    pub fn migrate_version(env: Env, caller: Address, major: u32, minor: u32, patch: u32) {
+        caller.require_auth();
+        // Verify caller is actually an admin
+        let is_admin = if let Some(legacy_admin) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
+            caller == legacy_admin
+        } else {
+            let admins: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&SystemKey::Admins)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
+            admins.contains(&caller)
+        };
+        if !is_admin {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
 
         let version = ContractVersion {
             major,
@@ -5944,6 +5985,30 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn list_upgrade_proposals(env: Env, offset: u64, limit: u32) -> Vec<UpgradeProposal> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeProposalCount)
+            .unwrap_or(0);
+
+        let limit = if limit == 0 { 50u32 } else { limit };
+        let mut result = Vec::new(&env);
+        let start = offset + 1;
+        let end = (start + limit as u64).min(count + 1);
+
+        for id in start..end {
+            if let Some(proposal) = env
+                .storage()
+                .instance()
+                .get::<DataKey, UpgradeProposal>(&DataKey::UpgradeProposal(id))
+            {
+                result.push_back(proposal);
+            }
+        }
+        result
     }
 
     // --- MULTISIG OPERATIONS ---
