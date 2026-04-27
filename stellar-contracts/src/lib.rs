@@ -3,11 +3,13 @@
 
 #[contracttype]
 pub enum InsuranceKey {
-    Policy(u64),
+    Policy(u64),               // (pet_id) -> InsurancePolicy [deprecated, kept for migration]
     Claim(u64),                // claim_id -> InsuranceClaim
     ClaimCount,                // Global count of claims
     PetClaimCount(u64),        // pet_id -> count of claims
     PetClaimIndex((u64, u64)), // (pet_id, index) -> claim_id
+    PetPolicyCount(u64),       // pet_id -> count of policies
+    PetPolicyIndex((u64, u64)), // (pet_id, index) -> InsurancePolicy
 }
 
 #[contracttype]
@@ -59,6 +61,8 @@ mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
 #[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
 mod test_emergency_contacts;
@@ -92,8 +96,6 @@ mod test_nutrition;
 mod test_overflow;
 #[cfg(test)]
 mod test_pet_age;
-#[cfg(test)]
-mod test_book_slot;
 #[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
@@ -6215,9 +6217,20 @@ impl PetChainContract {
             active: true,
         };
 
+        // Append to per-pet policy list
+        let policy_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0)
+            + 1;
         env.storage()
             .instance()
-            .set(&InsuranceKey::Policy(pet_id), &policy);
+            .set(&InsuranceKey::PetPolicyCount(pet_id), &policy_count);
+        env.storage().instance().set(
+            &InsuranceKey::PetPolicyIndex((pet_id, policy_count)),
+            &policy,
+        );
 
         env.events().publish(
             (String::from_str(&env, "InsuranceAdded"), pet_id),
@@ -6241,9 +6254,44 @@ impl PetChainContract {
     /// * `Some(InsurancePolicy)` if policy exists
     /// * `None` if no policy found
     pub fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return None;
+        }
         env.storage()
             .instance()
-            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))
+    }
+
+    /// Retrieves all insurance policies for a pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// Vector of all insurance policies for the pet (empty if none)
+    pub fn get_all_pet_policies(env: Env, pet_id: u64) -> Vec<InsurancePolicy> {
+        let mut policies = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, i)))
+            {
+                policies.push_back(policy);
+            }
+        }
+        policies
     }
 
     /// Updates the active status of an insurance policy.
@@ -6259,15 +6307,22 @@ impl PetChainContract {
     /// # Events
     /// Emits `InsuranceUpdatedEvent` on success
     pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
+        let key = InsuranceKey::PetPolicyIndex((pet_id, count));
         if let Some(mut policy) = env
             .storage()
             .instance()
-            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))
+            .get::<InsuranceKey, InsurancePolicy>(&key)
         {
             policy.active = active;
-            env.storage()
-                .instance()
-                .set(&InsuranceKey::Policy(pet_id), &policy);
+            env.storage().instance().set(&key, &policy);
 
             env.events().publish(
                 (String::from_str(&env, "InsuranceUpdated"), pet_id),
@@ -6302,10 +6357,18 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return None;
+        }
         let policy = env
             .storage()
             .instance()
-            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::Policy(pet_id))?;
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))?;
 
         if !policy.active {
             return None;
