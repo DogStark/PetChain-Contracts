@@ -3,6 +3,7 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, String,
 };
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 
 fn setup_test_env() -> (Env, Address, Address, u64, soroban_sdk::Address) {
     let env = Env::default();
@@ -354,7 +355,7 @@ fn test_improvements_sorted_chronologically() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     // Advance ledger time between records so timestamps differ.
-    env.ledger().set_timestamp(1000);
+    env.ledger().with_mut(|l| l.timestamp = 1000);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Training,
@@ -362,7 +363,7 @@ fn test_improvements_sorted_chronologically() {
         &String::from_str(&env, "First record (t=1000)"),
     );
 
-    env.ledger().set_timestamp(3000);
+    env.ledger().with_mut(|l| l.timestamp = 3000);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Training,
@@ -370,7 +371,7 @@ fn test_improvements_sorted_chronologically() {
         &String::from_str(&env, "Third record (t=3000)"),
     );
 
-    env.ledger().set_timestamp(2000);
+    env.ledger().with_mut(|l| l.timestamp = 2000);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Training,
@@ -393,7 +394,7 @@ fn test_improvements_trend_severity_decreasing() {
     let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
     let client = PetChainContractClient::new(&env, &contract_id);
 
-    env.ledger().set_timestamp(100);
+    env.ledger().with_mut(|l| l.timestamp = 100);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Anxiety,
@@ -401,7 +402,7 @@ fn test_improvements_trend_severity_decreasing() {
         &String::from_str(&env, "Initial high anxiety"),
     );
 
-    env.ledger().set_timestamp(200);
+    env.ledger().with_mut(|l| l.timestamp = 200);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Anxiety,
@@ -409,7 +410,7 @@ fn test_improvements_trend_severity_decreasing() {
         &String::from_str(&env, "Moderate improvement"),
     );
 
-    env.ledger().set_timestamp(300);
+    env.ledger().with_mut(|l| l.timestamp = 300);
     client.add_behavior_record(
         &pet_id,
         &BehaviorType::Anxiety,
