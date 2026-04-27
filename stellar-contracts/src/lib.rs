@@ -5887,14 +5887,19 @@ impl PetChainContract {
         id
     }
 
-    pub fn get_vet_reviews(env: Env, vet: Address) -> Vec<VetReview> {
+    pub fn get_vet_reviews(env: Env, vet: Address, offset: u64, limit: u32) -> Vec<VetReview> {
         let count: u64 = env
             .storage()
             .instance()
             .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
             .unwrap_or(0);
         let mut reviews = Vec::new(&env);
-        for i in 1..=count {
+        let start = offset + 1;
+        let end = start + (limit as u64) - 1;
+        for i in start..=end {
+            if i > count {
+                break;
+            }
             if let Some(review_id) = env
                 .storage()
                 .instance()
@@ -5913,18 +5918,32 @@ impl PetChainContract {
     }
 
     pub fn get_vet_average_rating(env: Env, vet: Address) -> u32 {
-        let reviews = Self::get_vet_reviews(env.clone(), vet);
-        if reviews.is_empty() {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ReviewKey::VetReviewCountByVet(vet.clone()))
+            .unwrap_or(0);
+        if count == 0 {
             return 0;
         }
-        let mut total = 0u32;
-        for review in reviews.iter() {
-            total = total
-                .checked_add(1)
-                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-            total += review.rating;
+        let mut total_rating: u64 = 0;
+        for i in 1..=count {
+            if let Some(review_id) = env
+                .storage()
+                .instance()
+                .get::<ReviewKey, u64>(&ReviewKey::VetReviewByVetIndex((vet.clone(), i)))
+            {
+                if let Some(review) = env
+                    .storage()
+                    .instance()
+                    .get::<ReviewKey, VetReview>(&ReviewKey::VetReview(review_id))
+                {
+                    total_rating += review.rating as u64;
+                }
+            }
         }
-        total / reviews.len()
+        // Return average as 0-500 scale (0.0-5.0 stars * 100)
+        ((total_rating * 100) / count) as u32
     }
 
     // --- MEDICATION TRACKING ---
