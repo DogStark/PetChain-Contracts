@@ -2172,6 +2172,37 @@ impl PetChainContract {
         }
     }
 
+    pub fn remove_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+
+            // Find the photo in the vector
+            let mut index_to_remove: Option<u32> = None;
+            for (i, hash) in pet.photo_hashes.iter().enumerate() {
+                if hash == photo_hash {
+                    index_to_remove = Some(i);
+                    break;
+                }
+            }
+
+            // If found, remove it and update the pet
+            if let Some(idx) = index_to_remove {
+                pet.photo_hashes.remove(idx);
+                pet.updated_at = env.ledger().timestamp();
+                env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
         if let Some(mut pet) = env
             .storage()

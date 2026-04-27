@@ -91,6 +91,12 @@ fn test_validate_ipfs_hash_v0_boundary_length() {
     );
 }
 
+// ---- Pet Photo Tests ----
+
+fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+
 #[test]
 fn test_sightings_pagination() {
     let env = Env::default();
@@ -99,6 +105,16 @@ fn test_sightings_pagination() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Brown"),
+        &25u32,
     client.init_admin(&owner);
 
     let pet_id = client.register_pet(
@@ -114,6 +130,156 @@ fn test_sightings_pagination() {
         &PrivacyLevel::Public,
     );
 
+    (env, client, owner, pet_id)
+}
+
+#[test]
+fn test_add_pet_photo_success() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let result = client.add_pet_photo(&pet_id, &photo_hash);
+    assert!(result);
+
+    let photos = client.get_pet_photos(&pet_id);
+    assert_eq!(photos.len(), 1);
+    assert_eq!(photos.get(0).unwrap(), photo_hash);
+}
+
+#[test]
+fn test_add_multiple_pet_photos() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let photo2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
+    let photo3 = String::from_str(&env, "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB");
+
+    assert!(client.add_pet_photo(&pet_id, &photo1));
+    assert!(client.add_pet_photo(&pet_id, &photo2));
+    assert!(client.add_pet_photo(&pet_id, &photo3));
+
+    let photos = client.get_pet_photos(&pet_id);
+    assert_eq!(photos.len(), 3);
+    assert_eq!(photos.get(0).unwrap(), photo1);
+    assert_eq!(photos.get(1).unwrap(), photo2);
+    assert_eq!(photos.get(2).unwrap(), photo3);
+}
+
+#[test]
+fn test_remove_pet_photo_success() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let photo2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
+
+    client.add_pet_photo(&pet_id, &photo1);
+    client.add_pet_photo(&pet_id, &photo2);
+
+    // Verify both photos exist
+    let photos_before = client.get_pet_photos(&pet_id);
+    assert_eq!(photos_before.len(), 2);
+
+    // Remove first photo
+    let result = client.remove_pet_photo(&pet_id, &photo1);
+    assert!(result);
+
+    // Verify only second photo remains
+    let photos_after = client.get_pet_photos(&pet_id);
+    assert_eq!(photos_after.len(), 1);
+    assert_eq!(photos_after.get(0).unwrap(), photo2);
+}
+
+#[test]
+fn test_remove_pet_photo_nonexistent_hash() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let nonexistent = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
+
+    client.add_pet_photo(&pet_id, &photo);
+
+    // Try to remove non-existent photo
+    let result = client.remove_pet_photo(&pet_id, &nonexistent);
+    assert!(!result);
+
+    // Verify original photo still exists
+    let photos = client.get_pet_photos(&pet_id);
+    assert_eq!(photos.len(), 1);
+    assert_eq!(photos.get(0).unwrap(), photo);
+}
+
+#[test]
+fn test_remove_pet_photo_nonexistent_pet() {
+    let (env, client, _owner, _pet_id) = setup_pet_test_env();
+
+    let photo = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let result = client.remove_pet_photo(&9999u64, &photo);
+    assert!(!result);
+}
+
+#[test]
+fn test_remove_pet_photo_from_multiple() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let photo2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
+    let photo3 = String::from_str(&env, "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB");
+
+    client.add_pet_photo(&pet_id, &photo1);
+    client.add_pet_photo(&pet_id, &photo2);
+    client.add_pet_photo(&pet_id, &photo3);
+
+    // Remove middle photo
+    let result = client.remove_pet_photo(&pet_id, &photo2);
+    assert!(result);
+
+    // Verify order is preserved
+    let photos = client.get_pet_photos(&pet_id);
+    assert_eq!(photos.len(), 2);
+    assert_eq!(photos.get(0).unwrap(), photo1);
+    assert_eq!(photos.get(1).unwrap(), photo3);
+}
+
+#[test]
+fn test_remove_pet_photo_all_photos() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let photo2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
+
+    client.add_pet_photo(&pet_id, &photo1);
+    client.add_pet_photo(&pet_id, &photo2);
+
+    // Remove both photos
+    assert!(client.remove_pet_photo(&pet_id, &photo1));
+    assert!(client.remove_pet_photo(&pet_id, &photo2));
+
+    // Verify no photos remain
+    let photos = client.get_pet_photos(&pet_id);
+    assert_eq!(photos.len(), 0);
+}
+
+#[test]
+fn test_remove_pet_photo_updates_timestamp() {
+    let (env, client, owner, pet_id) = setup_pet_test_env();
+
+    let photo = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+
+    // Add photo and get initial timestamp
+    client.add_pet_photo(&pet_id, &photo);
+    let pet_after_add = client.get_pet(&pet_id).unwrap();
+    let timestamp_after_add = pet_after_add.updated_at;
+
+    // Advance time
+    env.ledger().with_mut(|l| l.timestamp = l.timestamp + 1000);
+
+    // Remove photo
+    client.remove_pet_photo(&pet_id, &photo);
+    let pet_after_remove = client.get_pet(&pet_id).unwrap();
+    let timestamp_after_remove = pet_after_remove.updated_at;
+
+    // Verify timestamp was updated
+    assert!(timestamp_after_remove > timestamp_after_add);
     let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
 
     // Add 5 sightings
