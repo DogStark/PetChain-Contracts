@@ -7041,6 +7041,20 @@ impl PetChainContract {
         claims
     }
 
+    /// Returns the total number of insurance claims submitted for a given pet.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    ///
+    /// # Returns
+    /// The count of insurance claims for the pet (0 if none)
+    pub fn get_insurance_claim_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0)
+    }
+
     // --- BEHAVIORAL TRACKING SYSTEM ---
 
     pub fn add_behavior_record(
