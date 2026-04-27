@@ -101,6 +101,8 @@ mod test_pet_age;
 // #[cfg(test)]
 // mod test_search_medical_records;  // Has compilation errors - missing methods
 #[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_get_lab_results;
@@ -757,6 +759,10 @@ pub enum VetKey {
     VetStats(Address),
     VetPetTreated((Address, u64)),
     VetPetCount(Address),
+    VetTreatmentIndex((Address, u64)), // (vet, index) -> record_id
+    VetTreatmentCount(Address),        // vet -> count of treatments
+    VetVaccinationIndex((Address, u64)), // (vet, index) -> vaccine_id
+    VetVaccinationCount(Address),      // vet -> count of vaccinations
 }
 
 #[contracttype]
@@ -1262,6 +1268,117 @@ impl PetChainContract {
             })
     }
 
+    /// Returns a paginated list of medical records (treatments) created by a specific vet.
+    pub fn get_vet_treatment_history(
+        env: Env,
+        vet_address: Address,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetTreatmentCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        let mut results = Vec::new(&env);
+        if count == 0 || limit == 0 || offset >= count {
+            return results;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let end_index = (offset.saturating_add(limit as u64)).min(count);
+
+        for i in start_index..=end_index {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<VetKey, u64>(&VetKey::VetTreatmentIndex((vet_address.clone(), i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+                {
+                    results.push_back(record);
+                }
+            }
+        }
+        results
+    }
+
+    /// Returns a paginated list of vaccinations administered by a specific vet.
+    pub fn get_vet_vaccination_history(
+        env: Env,
+        vet_address: Address,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<Vaccination> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetVaccinationCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        let mut results = Vec::new(&env);
+        if count == 0 || limit == 0 || offset >= count {
+            return results;
+        }
+
+        let start_index = offset.saturating_add(1);
+        let end_index = (offset.saturating_add(limit as u64)).min(count);
+
+        for i in start_index..=end_index {
+            if let Some(vaccine_id) = env
+                .storage()
+                .instance()
+                .get::<VetKey, u64>(&VetKey::VetVaccinationIndex((vet_address.clone(), i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccine_id))
+                {
+                    results.push_back(record);
+                }
+            }
+        }
+        results
+    }
+
+    /// Returns a paginated list of pet IDs that have at least one overdue vaccination.
+    pub fn get_pets_overdue_vaccinations(env: Env, offset: u64, limit: u32) -> Vec<u64> {
+        let pet_count = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetCount)
+            .unwrap_or(0);
+
+        let mut overdue_pets = Vec::new(&env);
+        if pet_count == 0 || limit == 0 {
+            return overdue_pets;
+        }
+
+        let mut found: u64 = 0;
+        let mut skipped: u64 = 0;
+
+        for pet_id in 1..=pet_count {
+            if overdue_pets.len() >= limit {
+                break;
+            }
+            let overdue = Self::get_overdue_vaccinations(env.clone(), pet_id);
+            if !overdue.is_empty() {
+                if skipped < offset {
+                    skipped = skipped.saturating_add(1);
+                } else {
+                    overdue_pets.push_back(pet_id);
+                    found = found.saturating_add(1);
+                }
+            }
+        }
+        overdue_pets
+    }
+
     fn log_access(env: &Env, pet_id: u64, user: Address, action: AccessAction, details: String) {
         let key = (Symbol::new(env, "access_logs"), pet_id);
         let mut logs: Vec<AccessLog> = env
@@ -1291,7 +1408,6 @@ impl PetChainContract {
         logs.push_back(log);
         env.storage().persistent().set(&key, &logs);
     }
-
 
     fn require_admin(env: &Env) {
         if let Some(legacy_admin) = env
@@ -2321,15 +2437,15 @@ impl PetChainContract {
     ) {
         owner.require_auth();
 
-        if name.len() > MAX_STR_SHORT as usize {
+        if name.len() > Self::MAX_STR_SHORT {
             panic!("Owner name exceeds maximum length");
         }
 
-        if email.len() > MAX_STR_SHORT as usize {
+        if email.len() > Self::MAX_STR_SHORT {
             panic!("Email exceeds maximum length");
         }
 
-        if emergency_contact.len() > MAX_STR_SHORT as usize {
+        if emergency_contact.len() > Self::MAX_STR_SHORT {
             panic!("Emergency contact exceeds maximum length");
         }
 
@@ -2457,15 +2573,15 @@ impl PetChainContract {
     ) -> bool {
         vet_address.require_auth();
 
-        if name.len() > MAX_VET_NAME_LEN as usize {
+        if name.len() > Self::MAX_VET_NAME_LEN {
             panic!("Vet name exceeds maximum length");
         }
 
-        if license_number.len() > MAX_VET_LICENSE_LEN as usize {
+        if license_number.len() > Self::MAX_VET_LICENSE_LEN {
             panic!("License number exceeds maximum length");
         }
 
-        if specialization.len() > MAX_VET_SPEC_LEN as usize {
+        if specialization.len() > Self::MAX_VET_SPEC_LEN {
             panic!("Specialization exceeds maximum length");
         }
 
@@ -2507,9 +2623,7 @@ impl PetChainContract {
             .get(&DataKey::VetCount)
             .unwrap_or(0)
             + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::VetCount, &vet_count);
+        env.storage().instance().set(&DataKey::VetCount, &vet_count);
         env.storage()
             .instance()
             .set(&DataKey::VetIndex(vet_count), &vet_address);
@@ -2728,6 +2842,22 @@ impl PetChainContract {
             .set(&MedicalKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
         env.storage().instance().set(
             &MedicalKey::PetVaccinationByIndex((pet_id, new_pet_vax_count)),
+            &vaccine_id,
+        );
+
+        // Update vet vaccination index
+        let vet_vax_count = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetVaccinationCount(veterinarian.clone()))
+            .unwrap_or(0);
+        let new_vet_vax_count = safe_increment(vet_vax_count);
+        env.storage().instance().set(
+            &VetKey::VetVaccinationCount(veterinarian.clone()),
+            &new_vet_vax_count,
+        );
+        env.storage().instance().set(
+            &VetKey::VetVaccinationIndex((veterinarian.clone(), new_vet_vax_count)),
             &vaccine_id,
         );
 
@@ -4148,9 +4278,10 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::PetCustodyCount(pet_id), &new_pet_count);
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCustodyIndex((pet_id, new_pet_count)), &record_id);
+        env.storage().instance().set(
+            &DataKey::PetCustodyIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
 
         custody
     }
@@ -4194,9 +4325,10 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::PetCustodyCount(pet_id), &new_pet_count);
-        env.storage()
-            .instance()
-            .set(&DataKey::PetCustodyIndex((pet_id, new_pet_count)), &record_id);
+        env.storage().instance().set(
+            &DataKey::PetCustodyIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
     }
 
     pub fn is_custody_valid(env: Env, pet_id: u64) -> bool {
@@ -4346,6 +4478,22 @@ impl PetChainContract {
         );
 
         Self::update_vet_stats(&env, &vet_address, pet_id, 1, 0, 1);
+
+        // Update vet treatment index
+        let vet_treatment_count = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetTreatmentCount(vet_address.clone()))
+            .unwrap_or(0);
+        let new_vet_treatment_count = safe_increment(vet_treatment_count);
+        env.storage().instance().set(
+            &VetKey::VetTreatmentCount(vet_address.clone()),
+            &new_vet_treatment_count,
+        );
+        env.storage().instance().set(
+            &VetKey::VetTreatmentIndex((vet_address.clone(), new_vet_treatment_count)),
+            &id,
+        );
 
         // Publish event
         env.events().publish(
@@ -4581,7 +4729,7 @@ impl PetChainContract {
             // Require authentication from the vet who created the record
             record.vet_address.require_auth();
 
-            if record.attachment_hashes.len() >= MAX_VEC_ATTACHMENTS as usize {
+            if record.attachment_hashes.len() >= Self::MAX_VEC_ATTACHMENTS {
                 env.panic_with_error(ContractError::TooManyItems);
             }
 
@@ -5836,7 +5984,7 @@ impl PetChainContract {
             panic!("Rating must be between 1 and 5");
         }
 
-        if comment.len() > MAX_REVIEW_COMMENT_LEN as usize {
+        if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
             panic!("Review comment exceeds maximum length");
         }
 
@@ -7475,7 +7623,6 @@ impl PetChainContract {
         record_id
     }
 
-
     pub fn get_breeding_history(env: Env, pet_id: u64) -> Vec<BreedingRecord> {
         let count: u64 = env
             .storage()
@@ -7502,7 +7649,9 @@ impl PetChainContract {
     }
 
     pub fn get_breeding_record(env: Env, record_id: u64) -> Option<BreedingRecord> {
-        env.storage().instance().get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+        env.storage()
+            .instance()
+            .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
