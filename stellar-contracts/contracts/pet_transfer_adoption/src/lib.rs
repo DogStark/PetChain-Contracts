@@ -88,6 +88,8 @@ pub enum ContractError {
     MissingOwnershipRecord = 7,
     TransferNotExpired = 8,
     StaleCancellation = 9,
+    EmptyBatch = 10,
+    BatchOwnerMismatch = 11,
 }
 
 /// ======================================================
@@ -344,6 +346,73 @@ impl PetOwnershipContract {
             (EVT_TRANSFER_CANCELLED, pet_id),
             (transfer.from, transfer.to),
         );
+    }
+
+    /// ----------------------------------
+    /// BATCH INITIATE TRANSFER
+    /// ----------------------------------
+
+    /// Atomically initiates ownership transfers for multiple pets to the same recipient.
+    ///
+    /// All pets must be owned by a single address. The function validates every pet
+    /// before writing anything, so any error rolls back the entire batch cleanly.
+    ///
+    /// # Errors
+    /// - [`ContractError::EmptyBatch`] – `pet_ids` is empty.
+    /// - [`ContractError::PetNotFound`] – any pet in the batch does not exist.
+    /// - [`ContractError::BatchOwnerMismatch`] – not all pets share the same owner.
+    /// - [`ContractError::TransferAlreadyPending`] – any pet already has a pending transfer.
+    pub fn batch_initiate_transfer(env: Env, pet_ids: Vec<u64>, to: Address) {
+        if pet_ids.is_empty() {
+            panic_with_error!(env, ContractError::EmptyBatch);
+        }
+
+        // Phase 1: read-only validation — discover owner, ensure all pets are eligible.
+        let mut expected_owner: Option<Address> = None;
+        for pet_id in pet_ids.iter() {
+            let pet = get_pet(&env, pet_id);
+
+            match expected_owner {
+                None => expected_owner = Some(pet.current_owner.clone()),
+                Some(ref owner) => {
+                    if &pet.current_owner != owner {
+                        panic_with_error!(env, ContractError::BatchOwnerMismatch);
+                    }
+                }
+            }
+
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::PendingTransfer(pet_id))
+            {
+                panic_with_error!(env, ContractError::TransferAlreadyPending);
+            }
+        }
+
+        // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
+        let owner = expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
+
+        // Phase 2: authenticate the single owner once for the entire batch.
+        owner.require_auth();
+
+        // Phase 3: write all pending transfers.
+        let now = env.ledger().timestamp();
+        for pet_id in pet_ids.iter() {
+            let transfer = PendingTransfer {
+                pet_id,
+                from: owner.clone(),
+                to: to.clone(),
+                initiated_at: now,
+            };
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::PendingTransfer(pet_id), &transfer);
+
+            env.events()
+                .publish((EVT_TRANSFER_INITIATED, pet_id), (owner.clone(), to.clone()));
+        }
     }
 
     /// ----------------------------------
