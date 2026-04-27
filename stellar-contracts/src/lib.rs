@@ -99,6 +99,8 @@ mod test_pet_age;
 #[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
+mod test_book_slot;
+#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_get_lab_results;
