@@ -174,8 +174,8 @@ fn test_vet_stats_update_after_vaccination() {
 
     // Check stats after vaccination
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 2);
-    assert_eq!(stats.total_vaccinations, 2); // Actual value from test output
+    assert_eq!(stats.total_records, 1);
+    assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 0);
     assert_eq!(stats.pets_treated, 1);
 }
@@ -210,7 +210,7 @@ fn test_vet_stats_update_after_medical_record() {
 
     // Check stats after medical record
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 2); // Actual value from test output
+    assert_eq!(stats.total_records, 1);
     assert_eq!(stats.total_vaccinations, 0);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 1);
@@ -257,7 +257,7 @@ fn test_vet_stats_multiple_operations_same_pet() {
 
     // Check stats - pets_treated should still be 1 (same pet)
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 4); // Actual value from test output
+    assert_eq!(stats.total_records, 2);
     assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 1);
@@ -305,7 +305,7 @@ fn test_vet_stats_multiple_pets() {
 
     // Check stats - should have 2 pets treated
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 4); // Actual value from test output
+    assert_eq!(stats.total_records, 2);
     assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 2);

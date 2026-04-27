@@ -58,12 +58,6 @@ mod test_admin_initialization;
 mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
-// #[cfg(test)]
-// mod test_book_slot;  // Has compilation errors - method signature mismatch
-// #[cfg(test)]
-// mod test_consent_pagination;  // Has compilation errors - std::panic not available
-// #[cfg(test)]
-// mod test_disputes;  // Has compilation errors - missing DisputeStatus
 #[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
@@ -98,8 +92,8 @@ mod test_nutrition;
 mod test_overflow;
 #[cfg(test)]
 mod test_pet_age;
-// #[cfg(test)]
-// mod test_search_medical_records;  // Has compilation errors - missing methods
+#[cfg(test)]
+mod test_book_slot;
 #[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
@@ -1514,7 +1508,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::AdminThreshold)
-            .unwrap_or(1u32)
+            .unwrap_or(0u32)
     }
 
     fn update_vet_stats(
@@ -1678,7 +1672,7 @@ impl PetChainContract {
             species: species.clone(),
             gender,
             color,
-            weight: weight.into(),
+            weight,
             microchip_id,
             photo_hashes: Vec::new(&env),
         };
@@ -1833,43 +1827,57 @@ impl PetChainContract {
 
             let key = Self::get_encryption_key(&env);
 
-            let decrypted_name = decrypt_sensitive_data(
+            let decrypted_name = match decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_name.ciphertext,
                 &pet.encrypted_name.nonce,
                 &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let name =
-                String::from_xdr(&env, &decrypted_name).unwrap_or(String::from_str(&env, "Error"));
+            ) {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
+            let name = match String::from_xdr(&env, &decrypted_name) {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
 
-            let decrypted_birthday = decrypt_sensitive_data(
+            let decrypted_birthday = match decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_birthday.ciphertext,
                 &pet.encrypted_birthday.nonce,
                 &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let birthday = String::from_xdr(&env, &decrypted_birthday)
-                .unwrap_or(String::from_str(&env, "Error"));
+            ) {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
+            let birthday = match String::from_xdr(&env, &decrypted_birthday) {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
 
-            let decrypted_breed = decrypt_sensitive_data(
+            let decrypted_breed = match decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_breed.ciphertext,
                 &pet.encrypted_breed.nonce,
                 &key,
-            )
-            .unwrap_or(Bytes::new(&env));
-            let breed =
-                String::from_xdr(&env, &decrypted_breed).unwrap_or(String::from_str(&env, "Error"));
+            ) {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
+            let breed = match String::from_xdr(&env, &decrypted_breed) {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
 
-            let a_bytes = decrypt_sensitive_data(
+            let a_bytes = match decrypt_sensitive_data(
                 &env,
                 &pet.encrypted_allergies.ciphertext,
                 &pet.encrypted_allergies.nonce,
                 &key,
-            )
-            .unwrap_or(Bytes::new(&env));
+            ) {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             let allergies = Vec::<Allergy>::from_xdr(&env, &a_bytes).unwrap_or(Vec::new(&env));
 
             let profile = PetProfile {
@@ -1984,8 +1992,6 @@ impl PetChainContract {
 
             return (years, months);
         }
-
-        (0, 0)
     }
 
     pub fn get_pet_full_profile(env: Env, pet_id: u64, caller: Address) -> Option<PetFullProfile> {
@@ -2120,7 +2126,7 @@ impl PetChainContract {
     }
 
     fn is_leap_year(year: u32) -> bool {
-        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+        (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
     }
 
     fn days_in_month(year: u32, month: u32) -> u32 {
@@ -2438,6 +2444,15 @@ impl PetChainContract {
         owner.require_auth();
 
         if name.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        if email.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        if emergency_contact.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
             panic!("Owner name exceeds maximum length");
         }
 
@@ -2552,16 +2567,21 @@ impl PetChainContract {
     }
 
     // Vet Verification & Registration
+    #[allow(dead_code)]
     const MAX_STR_SHORT: u32 = 100;
-    const MAX_STR_LONG: u32 = 500;
+    const MAX_STR_LONG: u32 = 1000;
     const MAX_VEC_MEDS: u32 = 20;
-    const MAX_VEC_ATTACHMENTS: u32 = 10;
+    const MAX_VEC_ATTACHMENTS: u32 = 20;
+    #[allow(dead_code)]
     const MAX_VET_NAME_LEN: u32 = 100;
+    #[allow(dead_code)]
     const MAX_VET_LICENSE_LEN: u32 = 50;
+    #[allow(dead_code)]
     const MAX_VET_SPEC_LEN: u32 = 100;
 
     /// Maximum byte length of a vet-review comment.
     /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
+    #[allow(dead_code)]
     const MAX_REVIEW_COMMENT_LEN: u32 = 500;
 
     pub fn register_vet(
@@ -2574,6 +2594,15 @@ impl PetChainContract {
         vet_address.require_auth();
 
         if name.len() > Self::MAX_VET_NAME_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        if license_number.len() > Self::MAX_VET_LICENSE_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        if specialization.len() > Self::MAX_VET_SPEC_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
             panic!("Vet name exceeds maximum length");
         }
 
@@ -3161,7 +3190,7 @@ impl PetChainContract {
 
         let entry = WeightEntry {
             pet_id,
-            weight: weight.into(),
+            weight,
             recorded_at: now,
             recorded_by: pet.owner.clone(),
         };
@@ -3818,7 +3847,7 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
-            if !Self::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
+            if !Self::is_emergency_authorized(&env, pet_id, &caller) {
                 panic!("Unauthorized");
             }
             let key = Self::get_encryption_key(&env);
@@ -3900,7 +3929,7 @@ impl PetChainContract {
             .instance()
             .get::<_, Pet>(&DataKey::Pet(pet_id))
         {
-            if !Self::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
+            if !Self::is_emergency_authorized(&env, pet_id, &caller) {
                 panic!("Unauthorized");
             }
             let key = Self::get_encryption_key(&env);
@@ -4735,13 +4764,13 @@ impl PetChainContract {
 
             // Validate metadata
             if metadata.filename.is_empty() {
-                env.panic_with_error(ContractError::FilenameEmpty);
+                panic_with_error!(&env, ContractError::FilenameEmpty);
             }
             if metadata.file_type.is_empty() {
-                env.panic_with_error(ContractError::FileTypeEmpty);
+                panic_with_error!(&env, ContractError::FileTypeEmpty);
             }
             if metadata.size == 0 {
-                env.panic_with_error(ContractError::FileSizeZero);
+                panic_with_error!(&env, ContractError::FileSizeZero);
             }
 
             // Create attachment
@@ -4994,6 +5023,16 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if test_type.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if results.len() > Self::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if reference_ranges.len() > Self::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
 
         let count = env
             .storage()
@@ -6126,6 +6165,16 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        if name.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if dosage.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if frequency.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
@@ -6289,6 +6338,13 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if notes.len() > Self::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if outcome.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
 
         let treatment_count: u64 = env
             .storage()
@@ -6801,6 +6857,13 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
         pet.owner.require_auth();
+
+        if milestone_name.len() > Self::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if notes.len() > Self::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
 
         let count: u64 = env
             .storage()

@@ -24,12 +24,12 @@ mod test_get_pet_decryption {
 
     // ---- helpers ----
 
-    fn setup() -> (Env, PetChainContractClient<'static>) {
+    fn setup() -> (Env, PetChainContractClient<'static>, soroban_sdk::Address) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
-        (env, client)
+        (env, client, contract_id)
     }
 
     fn register_pet(
@@ -70,87 +70,97 @@ mod test_get_pet_decryption {
 
     /// Overwrite a stored Pet's encrypted_name with bytes that are not valid
     /// XDR for a soroban String, then assert get_pet returns None.
-    fn corrupt_pet_name(env: &Env, pet_id: u64) {
-        let mut pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("pet must exist before corruption");
+    fn corrupt_pet_name(env: &Env, contract_id: &Address, pet_id: u64) {
+        env.as_contract(contract_id, || {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("pet must exist before corruption");
 
-        // 0xFF bytes are not valid XDR for a soroban String
-        let garbage = Bytes::from_array(env, &[0xFF, 0xFE, 0xFD, 0xFC]);
-        pet.encrypted_name = EncryptedData {
-            ciphertext: garbage.clone(),
-            nonce: garbage,
-        };
+            // 0xFF bytes are not valid XDR for a soroban String
+            let garbage = Bytes::from_array(env, &[0xFF, 0xFE, 0xFD, 0xFC]);
+            pet.encrypted_name = EncryptedData {
+                ciphertext: garbage.clone(),
+                nonce: garbage,
+            };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        });
     }
 
-    fn corrupt_pet_birthday(env: &Env, pet_id: u64) {
-        let mut pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("pet must exist");
+    fn corrupt_pet_birthday(env: &Env, contract_id: &Address, pet_id: u64) {
+        env.as_contract(contract_id, || {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("pet must exist");
 
-        let garbage = Bytes::from_array(env, &[0xDE, 0xAD, 0xBE, 0xEF]);
-        pet.encrypted_birthday = EncryptedData {
-            ciphertext: garbage.clone(),
-            nonce: garbage,
-        };
+            let garbage = Bytes::from_array(env, &[0xDE, 0xAD, 0xBE, 0xEF]);
+            pet.encrypted_birthday = EncryptedData {
+                ciphertext: garbage.clone(),
+                nonce: garbage,
+            };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        });
     }
 
-    fn corrupt_pet_breed(env: &Env, pet_id: u64) {
-        let mut pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("pet must exist");
+    fn corrupt_pet_breed(env: &Env, contract_id: &Address, pet_id: u64) {
+        env.as_contract(contract_id, || {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("pet must exist");
 
-        let garbage = Bytes::from_array(env, &[0x00, 0x01, 0x02, 0x03]);
-        pet.encrypted_breed = EncryptedData {
-            ciphertext: garbage.clone(),
-            nonce: garbage,
-        };
+            let garbage = Bytes::from_array(env, &[0x00, 0x01, 0x02, 0x03]);
+            pet.encrypted_breed = EncryptedData {
+                ciphertext: garbage.clone(),
+                nonce: garbage,
+            };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        });
     }
 
-    fn corrupt_pet_allergies(env: &Env, pet_id: u64) {
-        let mut pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("pet must exist");
+    fn corrupt_pet_allergies(env: &Env, contract_id: &Address, pet_id: u64) {
+        env.as_contract(contract_id, || {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("pet must exist");
 
-        let garbage = Bytes::from_array(env, &[0xAB, 0xCD, 0xEF, 0x01]);
-        pet.encrypted_allergies = EncryptedData {
-            ciphertext: garbage.clone(),
-            nonce: garbage,
-        };
+            let garbage = Bytes::from_array(env, &[0xAB, 0xCD, 0xEF, 0x01]);
+            pet.encrypted_allergies = EncryptedData {
+                ciphertext: garbage.clone(),
+                nonce: garbage,
+            };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        });
     }
 
     /// Corrupt the nonce to an invalid length (not 12 bytes)
-    fn corrupt_pet_nonce_length(env: &Env, pet_id: u64) {
-        let mut pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .expect("pet must exist");
+    fn corrupt_pet_nonce_length(env: &Env, contract_id: &Address, pet_id: u64) {
+        env.as_contract(contract_id, || {
+            let mut pet: Pet = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pet(pet_id))
+                .expect("pet must exist");
 
-        // Invalid nonce length (should be 12 bytes)
-        let invalid_nonce = Bytes::from_array(env, &[0x01, 0x02, 0x03]);
-        pet.encrypted_name = EncryptedData {
-            ciphertext: pet.encrypted_name.ciphertext.clone(),
-            nonce: invalid_nonce,
-        };
+            // Invalid nonce length (should be 12 bytes)
+            let invalid_nonce = Bytes::from_array(env, &[0x01, 0x02, 0x03]);
+            pet.encrypted_name = EncryptedData {
+                ciphertext: pet.encrypted_name.ciphertext.clone(),
+                nonce: invalid_nonce,
+            };
 
-        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+        });
     }
 
     // ================================================================
@@ -161,7 +171,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_get_pet_valid_data_returns_some() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
@@ -177,7 +187,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_get_pet_decryption_preserves_data_integrity() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
@@ -204,7 +214,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_public_pet_decryption_by_owner() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
@@ -215,7 +225,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_public_pet_decryption_by_stranger() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let stranger = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
@@ -230,7 +240,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_restricted_pet_decryption_by_owner() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
 
@@ -244,7 +254,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_restricted_pet_decryption_by_stranger_denied() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let stranger = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
@@ -258,7 +268,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_restricted_pet_decryption_with_basic_access_grant() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let grantee = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
@@ -275,7 +285,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_restricted_pet_decryption_with_full_access_grant() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let grantee = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Restricted);
@@ -292,7 +302,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_private_pet_decryption_by_owner() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
 
@@ -303,7 +313,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_private_pet_decryption_by_stranger_denied() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let stranger = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
@@ -317,7 +327,7 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_private_pet_decryption_with_full_access_grant_still_denied() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let grantee = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Private);
@@ -339,11 +349,11 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_corrupt_name_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_name(&env, pet_id);
+        corrupt_pet_name(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(
@@ -354,11 +364,11 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_corrupt_birthday_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_birthday(&env, pet_id);
+        corrupt_pet_birthday(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(
@@ -369,11 +379,11 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_corrupt_breed_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_breed(&env, pet_id);
+        corrupt_pet_breed(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(result.is_none(), "corrupt breed ciphertext must yield None");
@@ -381,11 +391,11 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_corrupt_allergies_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_allergies(&env, pet_id);
+        corrupt_pet_allergies(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(
@@ -396,11 +406,11 @@ mod test_get_pet_decryption {
 
     #[test]
     fn test_corrupt_nonce_length_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_nonce_length(&env, pet_id);
+        corrupt_pet_nonce_length(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         assert!(
@@ -413,14 +423,14 @@ mod test_get_pet_decryption {
     /// even when all fields are corrupted simultaneously.
     #[test]
     fn test_all_fields_corrupt_never_returns_error_sentinel() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
-        corrupt_pet_name(&env, pet_id);
-        corrupt_pet_birthday(&env, pet_id);
-        corrupt_pet_breed(&env, pet_id);
-        corrupt_pet_allergies(&env, pet_id);
+        corrupt_pet_name(&env, &contract_id, pet_id);
+        corrupt_pet_birthday(&env, &contract_id, pet_id);
+        corrupt_pet_breed(&env, &contract_id, pet_id);
+        corrupt_pet_allergies(&env, &contract_id, pet_id);
 
         let result = client.get_pet(&pet_id, &owner);
         // Must be None — never a profile containing "Error" strings
@@ -434,7 +444,7 @@ mod test_get_pet_decryption {
     /// A non-existent pet must still return None (regression guard).
     #[test]
     fn test_nonexistent_pet_returns_none() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         assert!(client.get_pet(&9999u64, &owner).is_none());
     }
@@ -442,7 +452,7 @@ mod test_get_pet_decryption {
     /// Verify that decryption works correctly after pet profile update.
     #[test]
     fn test_decryption_after_pet_update() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
         let pet_id = register_pet(&client, &env, &owner, PrivacyLevel::Public);
 
@@ -473,7 +483,7 @@ mod test_get_pet_decryption {
     /// Verify multiple pets can be decrypted independently with correct data.
     #[test]
     fn test_multiple_pets_decryption_independence() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
 
         let pet1_id = client.register_pet(
@@ -520,7 +530,7 @@ mod test_get_pet_decryption {
     /// Verify that corrupting one pet's data doesn't affect another pet's decryption.
     #[test]
     fn test_corruption_isolation_between_pets() {
-        let (env, client) = setup();
+        let (env, client, contract_id) = setup();
         let owner = Address::generate(&env);
 
         let pet1_id = client.register_pet(
@@ -550,7 +560,7 @@ mod test_get_pet_decryption {
         );
 
         // Corrupt only pet1
-        corrupt_pet_name(&env, pet1_id);
+        corrupt_pet_name(&env, &contract_id, pet1_id);
 
         let result1 = client.get_pet(&pet1_id, &owner);
         let result2 = client.get_pet(&pet2_id, &owner);
