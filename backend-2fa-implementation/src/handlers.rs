@@ -16,7 +16,6 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
     test_two_factor_store().clone()
 }
 
-
 #[cfg(not(test))]
 fn two_factor_store() -> Arc<dyn TwoFactorStore> {
     static STORE: OnceLock<Arc<dyn TwoFactorStore>> = OnceLock::new();
@@ -126,6 +125,15 @@ impl TwoFactorHandlers {
     ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
+        {
+            let store = two_factor_store();
+            if let Ok(existing) = store.get(&req.user_id) {
+                if existing.enabled {
+                    return Err(
+                        "2FA is already enabled. To re-enroll, you must first disable it."
+                            .to_string(),
+                    );
+                }
         if let Ok(existing) = store_get(&req.user_id) {
             if existing.enabled {
                 return Err(
