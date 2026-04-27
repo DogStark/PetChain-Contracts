@@ -3,7 +3,7 @@ use crate::db::PostgresTwoFactorStore;
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
 use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
@@ -12,10 +12,8 @@ fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
 }
 
 #[cfg(test)]
-fn two_factor_store() -> Arc<Mutex<dyn TwoFactorStore>> {
+fn two_factor_store() -> Arc<dyn TwoFactorStore> {
     test_two_factor_store().clone()
-
-    Arc::new(Mutex::new(InMemoryStore::default()))
 }
 
 
@@ -128,17 +126,12 @@ impl TwoFactorHandlers {
     ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
-        {
-            let store = two_factor_store()
-                .lock()
-                .map_err(|_| "2FA storage lock poisoned".to_string())?;
-            if let Some(existing) = store.get(&req.user_id) {
-                if existing.enabled {
-                    return Err(
-                        "2FA is already enabled. To re-enroll, you must first disable it."
-                            .to_string(),
-                    );
-                }
+        if let Ok(existing) = store_get(&req.user_id) {
+            if existing.enabled {
+                return Err(
+                    "2FA is already enabled. To re-enroll, you must first disable it."
+                        .to_string(),
+                );
             }
         }
 
