@@ -310,3 +310,363 @@ fn test_vet_stats_multiple_pets() {
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 2);
 }
+
+// ── #487 get_vet_treatment_history ─────────────────────────────────────────
+
+fn setup_vet(client: &PetChainContractClient, env: &Env, admin: &Address) -> Address {
+    let vet = Address::generate(env);
+    client.register_vet(
+        &vet,
+        &String::from_str(env, "Dr. Test"),
+        &String::from_str(env, "VET-TST-001"),
+        &String::from_str(env, "General"),
+    );
+    client.verify_vet(admin, &vet);
+    vet
+}
+
+#[test]
+fn test_get_vet_treatment_history_empty() {
+    let (env, client, _admin) = setup_env();
+    let vet = Address::generate(&env);
+    let history = client.get_vet_treatment_history(&vet, &0u64, &10u32);
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_get_vet_treatment_history_returns_records() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Diagnosis A"),
+        &String::from_str(&env, "Treatment A"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Notes A"),
+    );
+    client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Diagnosis B"),
+        &String::from_str(&env, "Treatment B"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Notes B"),
+    );
+
+    let history = client.get_vet_treatment_history(&vet, &0u64, &10u32);
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history.get(0).unwrap().diagnosis,
+        String::from_str(&env, "Diagnosis A")
+    );
+    assert_eq!(
+        history.get(1).unwrap().diagnosis,
+        String::from_str(&env, "Diagnosis B")
+    );
+}
+
+#[test]
+fn test_get_vet_treatment_history_pagination() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    for i in 0..5u32 {
+        client.add_medical_record(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Diag"),
+            &String::from_str(&env, "Treat"),
+            &Vec::new(&env),
+            &String::from_str(&env, "Notes"),
+        );
+        let _ = i;
+    }
+
+    let page1 = client.get_vet_treatment_history(&vet, &0u64, &3u32);
+    assert_eq!(page1.len(), 3);
+
+    let page2 = client.get_vet_treatment_history(&vet, &3u64, &3u32);
+    assert_eq!(page2.len(), 2);
+
+    let empty = client.get_vet_treatment_history(&vet, &10u64, &3u32);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_get_vet_treatment_history_only_own_records() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet1 = setup_vet(&client, &env, &admin);
+    let vet2 = Address::generate(&env);
+    client.register_vet(
+        &vet2,
+        &String::from_str(&env, "Dr. Other"),
+        &String::from_str(&env, "VET-OTH-002"),
+        &String::from_str(&env, "Surgery"),
+    );
+    client.verify_vet(&admin, &vet2);
+
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Cat);
+
+    client.add_medical_record(
+        &pet_id,
+        &vet1,
+        &String::from_str(&env, "Vet1 Diag"),
+        &String::from_str(&env, "Vet1 Treat"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Notes"),
+    );
+    client.add_medical_record(
+        &pet_id,
+        &vet2,
+        &String::from_str(&env, "Vet2 Diag"),
+        &String::from_str(&env, "Vet2 Treat"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Notes"),
+    );
+
+    let history1 = client.get_vet_treatment_history(&vet1, &0u64, &10u32);
+    assert_eq!(history1.len(), 1);
+    assert_eq!(
+        history1.get(0).unwrap().diagnosis,
+        String::from_str(&env, "Vet1 Diag")
+    );
+
+    let history2 = client.get_vet_treatment_history(&vet2, &0u64, &10u32);
+    assert_eq!(history2.len(), 1);
+    assert_eq!(
+        history2.get(0).unwrap().diagnosis,
+        String::from_str(&env, "Vet2 Diag")
+    );
+}
+
+// ── #488 get_vet_vaccination_history ────────────────────────────────────────
+
+#[test]
+fn test_get_vet_vaccination_history_empty() {
+    let (env, client, _admin) = setup_env();
+    let vet = Address::generate(&env);
+    let history = client.get_vet_vaccination_history(&vet, &0u64, &10u32);
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_get_vet_vaccination_history_returns_records() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    let now = env.ledger().timestamp();
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies Vax"),
+        &now,
+        &(now + 365 * 24 * 60 * 60),
+        &String::from_str(&env, "BATCH001"),
+    );
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &VaccineType::Bordetella,
+        &String::from_str(&env, "Bordetella Vax"),
+        &now,
+        &(now + 180 * 24 * 60 * 60),
+        &String::from_str(&env, "BATCH002"),
+    );
+
+    let history = client.get_vet_vaccination_history(&vet, &0u64, &10u32);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().vaccine_type, VaccineType::Rabies);
+    assert_eq!(
+        history.get(1).unwrap().vaccine_type,
+        VaccineType::Bordetella
+    );
+}
+
+#[test]
+fn test_get_vet_vaccination_history_pagination() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    let now = env.ledger().timestamp();
+    for i in 0..5u32 {
+        let _ = i;
+        client.add_vaccination(
+            &pet_id,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Vax"),
+            &now,
+            &(now + 365 * 24 * 60 * 60),
+            &String::from_str(&env, "BATCH"),
+        );
+    }
+
+    let page1 = client.get_vet_vaccination_history(&vet, &0u64, &3u32);
+    assert_eq!(page1.len(), 3);
+
+    let page2 = client.get_vet_vaccination_history(&vet, &3u64, &3u32);
+    assert_eq!(page2.len(), 2);
+
+    let empty = client.get_vet_vaccination_history(&vet, &10u64, &3u32);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_get_vet_vaccination_history_only_own_records() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet1 = setup_vet(&client, &env, &admin);
+    let vet2 = Address::generate(&env);
+    client.register_vet(
+        &vet2,
+        &String::from_str(&env, "Dr. Vax2"),
+        &String::from_str(&env, "VET-VAX-002"),
+        &String::from_str(&env, "Immunology"),
+    );
+    client.verify_vet(&admin, &vet2);
+
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Cat);
+    let now = env.ledger().timestamp();
+
+    client.add_vaccination(
+        &pet_id,
+        &vet1,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies"),
+        &now,
+        &(now + 365 * 24 * 60 * 60),
+        &String::from_str(&env, "B001"),
+    );
+    client.add_vaccination(
+        &pet_id,
+        &vet2,
+        &VaccineType::Bordetella,
+        &String::from_str(&env, "Bordetella"),
+        &now,
+        &(now + 180 * 24 * 60 * 60),
+        &String::from_str(&env, "B002"),
+    );
+
+    let h1 = client.get_vet_vaccination_history(&vet1, &0u64, &10u32);
+    assert_eq!(h1.len(), 1);
+    assert_eq!(h1.get(0).unwrap().vaccine_type, VaccineType::Rabies);
+
+    let h2 = client.get_vet_vaccination_history(&vet2, &0u64, &10u32);
+    assert_eq!(h2.len(), 1);
+    assert_eq!(h2.get(0).unwrap().vaccine_type, VaccineType::Bordetella);
+}
+
+// ── #489 get_pets_overdue_vaccinations ──────────────────────────────────────
+
+#[test]
+fn test_get_pets_overdue_vaccinations_empty() {
+    let (_env, client, _admin) = setup_env();
+    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_pets_overdue_vaccinations_no_overdue() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+    let pet_id = register_pet_with_species(&client, &env, &owner, Species::Dog);
+
+    let now = env.ledger().timestamp();
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies"),
+        &now,
+        &(now + 365 * 24 * 60 * 60),
+        &String::from_str(&env, "BATCH001"),
+    );
+
+    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_get_pets_overdue_vaccinations_returns_overdue() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+
+    let pet1 = register_pet_with_species(&client, &env, &owner, Species::Dog);
+    let pet2 = register_pet_with_species(&client, &env, &owner, Species::Cat);
+
+    let past_time: u64 = 1000;
+    let future_time: u64 = 9_999_999_999;
+
+    client.add_vaccination(
+        &pet1,
+        &vet,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies"),
+        &1,
+        &past_time,
+        &String::from_str(&env, "B001"),
+    );
+
+    client.add_vaccination(
+        &pet2,
+        &vet,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies"),
+        &1,
+        &future_time,
+        &String::from_str(&env, "B002"),
+    );
+
+    env.ledger().with_mut(|l| l.timestamp = past_time + 1);
+
+    let result = client.get_pets_overdue_vaccinations(&0u64, &10u32);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(0).unwrap(), pet1);
+}
+
+#[test]
+fn test_get_pets_overdue_vaccinations_pagination() {
+    let (env, client, admin) = setup_env();
+    let owner = Address::generate(&env);
+    let vet = setup_vet(&client, &env, &admin);
+
+    let past_due: u64 = 500;
+
+    for _i in 0..4 {
+        let pet = register_pet_with_species(&client, &env, &owner, Species::Dog);
+        client.add_vaccination(
+            &pet,
+            &vet,
+            &VaccineType::Rabies,
+            &String::from_str(&env, "Rabies"),
+            &1,
+            &past_due,
+            &String::from_str(&env, "BATCH"),
+        );
+    }
+
+    env.ledger().with_mut(|l| l.timestamp = past_due + 1);
+
+    let page1 = client.get_pets_overdue_vaccinations(&0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    let page2 = client.get_pets_overdue_vaccinations(&2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+
+    let empty = client.get_pets_overdue_vaccinations(&10u64, &2u32);
+    assert_eq!(empty.len(), 0);
+}
