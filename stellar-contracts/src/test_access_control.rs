@@ -1308,3 +1308,92 @@ fn test_get_custody_history_returns_complete_history() {
     // Verify current custody is inactive
     assert!(!client.is_custody_valid(&pet_id));
 }
+
+#[test]
+fn test_is_vet_registered_distinguishes_from_unregistered() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let vet = Address::generate(&env);
+    let unregistered_vet = Address::generate(&env);
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Vet Name"),
+        &String::from_str(&env, "LIC123"),
+        &String::from_str(&env, "General"),
+    );
+
+    assert!(client.is_vet_registered(&vet));
+    assert!(!client.is_verified_vet(&vet));
+
+    assert!(!client.is_vet_registered(&unregistered_vet));
+}
+
+#[test]
+fn test_get_vaccination_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let vet = Address::generate(&env);
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "LIC123"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    // 1. No vaccinations - should be fully current
+    let summary = client.get_vaccination_summary(&pet_id);
+    assert!(summary.is_fully_current);
+    assert_eq!(summary.overdue_types.len(), 0);
+    assert_eq!(summary.upcoming_count, 0);
+
+    // 2. Add an upcoming vaccination (due in 15 days)
+    let now = 1000u64;
+    env.ledger().with_mut(|l| l.timestamp = now);
+    
+    client.add_vaccination(
+        &pet_id,
+        &vet,
+        &VaccineType::Rabies,
+        &String::from_str(&env, "Rabies v1"),
+        &now,
+        &(now + 15 * 86400), // Due in 15 days
+        &String::from_str(&env, "BATCH001"),
+    );
+
+    let summary2 = client.get_vaccination_summary(&pet_id);
+    assert!(summary2.is_fully_current);
+    assert_eq!(summary2.upcoming_count, 1);
+
+    // 3. Move time forward so it's overdue
+    env.ledger().with_mut(|l| l.timestamp = now + 20 * 86400);
+    
+    let summary3 = client.get_vaccination_summary(&pet_id);
+    assert!(!summary3.is_fully_current);
+    assert_eq!(summary3.overdue_types.len(), 1);
+    assert_eq!(summary3.overdue_types.get(0).unwrap(), VaccineType::Rabies);
+}

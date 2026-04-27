@@ -10,6 +10,7 @@ fn setup_client(env: &Env) -> PetChainContractClient {
     let contract_id = env.register_contract(None, PetChainContract);
     PetChainContractClient::new(env, &contract_id)
 }
+use crate::{PetChainContract, PetChainContractClient, ProposalAction};
 
 #[test]
 fn test_get_admins_after_init_multisig() {
