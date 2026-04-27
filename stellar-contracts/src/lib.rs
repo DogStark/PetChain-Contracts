@@ -6766,6 +6766,34 @@ impl PetChainContract {
         false
     }
 
+    /// Checks whether a pet's most recent insurance policy is currently active.
+    ///
+    /// Returns `false` if:
+    /// - No policy exists for the pet
+    /// - The policy's `active` flag is `false`
+    /// - The policy's `expiry_date` is before the current ledger timestamp
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet to check
+    pub fn is_insurance_active(env: Env, pet_id: u64) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
+        match env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))
+        {
+            Some(policy) => policy.active && policy.expiry_date >= env.ledger().timestamp(),
+            None => false,
+        }
+    }
+
     /// Submits an insurance claim for a pet.
     ///
     /// # Arguments
