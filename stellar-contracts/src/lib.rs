@@ -103,6 +103,8 @@ mod test_pet_age;
 #[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
+mod test_get_lab_results;
+#[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
 mod test_book_slot;
@@ -4683,14 +4685,23 @@ impl PetChainContract {
             .get(&MedicalKey::LabResult(lab_result_id))
     }
 
-    pub fn get_lab_results(env: Env, pet_id: u64) -> Vec<LabResult> {
+    pub fn get_lab_results(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<LabResult> {
         let count = env
             .storage()
             .instance()
             .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
         let mut res = Vec::new(&env);
-        for i in 1..=count {
+        if limit == 0 || offset >= count {
+            return res;
+        }
+        let start = offset + 1;
+        let end = if offset + limit as u64 < count {
+            offset + limit as u64
+        } else {
+            count
+        };
+        for i in start..=end {
             if let Some(lid) = env
                 .storage()
                 .instance()
