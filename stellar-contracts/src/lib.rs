@@ -4023,6 +4023,10 @@ impl PetChainContract {
         pets
     }
 
+    pub fn get_pet_count_by_owner(env: Env, owner: Address) -> u64 {
+        PetChainContract::get_owner_pet_count(&env, &owner)
+    }
+
     pub fn get_pets_by_owner(env: Env, owner: Address, offset: u64, limit: u32) -> Vec<PetProfile> {
         let count = PetChainContract::get_owner_pet_count(&env, &owner);
         let mut pets = Vec::new(&env);
