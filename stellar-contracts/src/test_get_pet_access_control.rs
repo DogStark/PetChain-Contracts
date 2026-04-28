@@ -282,4 +282,74 @@ mod test_get_pet_access_control {
         let result = client.get_pet_data(&pet_id, &stranger);
         assert!(result.is_none());
     }
+
+    // ================================================================
+    // update_pet_privacy_level
+    // ================================================================
+
+    #[test]
+    fn test_update_privacy_public_to_private() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register(&client, &env, &owner, PrivacyLevel::Public);
+
+        // Stranger can read while Public
+        assert!(client.get_pet(&pet_id, &stranger).is_some());
+
+        client.update_pet_privacy_level(&pet_id, &PrivacyLevel::Private);
+
+        // Stranger cannot read after switch to Private
+        assert!(client.get_pet(&pet_id, &stranger).is_none());
+        // Owner still can
+        assert!(client.get_pet(&pet_id, &owner).is_some());
+    }
+
+    #[test]
+    fn test_update_privacy_private_to_public() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register(&client, &env, &owner, PrivacyLevel::Private);
+
+        assert!(client.get_pet(&pet_id, &stranger).is_none());
+
+        client.update_pet_privacy_level(&pet_id, &PrivacyLevel::Public);
+
+        assert!(client.get_pet(&pet_id, &stranger).is_some());
+    }
+
+    #[test]
+    fn test_update_privacy_to_restricted() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let pet_id = register(&client, &env, &owner, PrivacyLevel::Public);
+
+        client.update_pet_privacy_level(&pet_id, &PrivacyLevel::Restricted);
+
+        // Stranger with no grant cannot read
+        assert!(client.get_pet(&pet_id, &stranger).is_none());
+        // Owner can still read
+        assert!(client.get_pet(&pet_id, &owner).is_some());
+    }
+
+    #[test]
+    fn test_update_privacy_nonexistent_pet_returns_false() {
+        let (env, client) = setup();
+        let result = client.update_pet_privacy_level(&9999u64, &PrivacyLevel::Public);
+        assert!(!result);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_update_privacy_requires_owner_auth() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let pet_id = register(&client, &env, &owner, PrivacyLevel::Public);
+
+        // Clear mocked auths so require_auth enforces properly
+        env.mock_auths(&[]);
+        client.update_pet_privacy_level(&pet_id, &PrivacyLevel::Private);
+    }
 }

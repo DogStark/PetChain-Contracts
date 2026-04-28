@@ -1810,6 +1810,22 @@ impl PetChainContract {
         }
     }
 
+    pub fn update_pet_privacy_level(env: Env, pet_id: u64, privacy_level: PrivacyLevel) -> bool {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            pet.privacy_level = privacy_level;
+            pet.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get_pet(env: Env, id: u64, caller: Address) -> Option<PetProfile> {
         if let Some(pet) = env
             .storage()
