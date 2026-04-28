@@ -110,8 +110,7 @@ mod test_book_slot {
         assert_eq!(slots.get(0).unwrap().available, true);
 
         // A legitimate owner can still book the untouched slot
-        let owner = register_pet_owner(&env, &client);
-        let booked = client.book_slot(&owner, &vet, &slot_index);
+        let booked = client.book_slot(&vet, &slot_index);
         assert!(
             booked,
             "Legitimate owner should be able to book the available slot"

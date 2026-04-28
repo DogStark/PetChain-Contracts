@@ -357,7 +357,7 @@ fn test_add_and_get_vet_review() {
     // Get reviews
     let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
     assert_eq!(reviews.len(), 1);
-    assert_eq!(reviews.get(0).rating, 5);
+    assert_eq!(reviews.get(0).unwrap().rating, 5);
 }
 
 #[test]
@@ -378,19 +378,19 @@ fn test_get_vet_reviews_pagination() {
     // Get first page (2 reviews)
     let page1 = client.get_vet_reviews(&vet, &0u64, &2u32);
     assert_eq!(page1.len(), 2);
-    assert_eq!(page1.get(0).rating, 1);
-    assert_eq!(page1.get(1).rating, 2);
+    assert_eq!(page1.get(0).unwrap().rating, 1);
+    assert_eq!(page1.get(1).unwrap().rating, 2);
 
     // Get second page (2 reviews)
     let page2 = client.get_vet_reviews(&vet, &2u64, &2u32);
     assert_eq!(page2.len(), 2);
-    assert_eq!(page2.get(0).rating, 3);
-    assert_eq!(page2.get(1).rating, 4);
+    assert_eq!(page2.get(0).unwrap().rating, 3);
+    assert_eq!(page2.get(1).unwrap().rating, 4);
 
     // Get last page (1 review)
     let page3 = client.get_vet_reviews(&vet, &4u64, &2u32);
     assert_eq!(page3.len(), 1);
-    assert_eq!(page3.get(0).rating, 5);
+    assert_eq!(page3.get(0).unwrap().rating, 5);
 
     // Get beyond available reviews
     let empty = client.get_vet_reviews(&vet, &10u64, &5u32);

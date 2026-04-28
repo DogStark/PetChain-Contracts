@@ -6,17 +6,6 @@ fn setup_client(env: &Env) -> PetChainContractClient<'static> {
     let contract_id = env.register_contract(None, PetChainContract);
     PetChainContractClient::new(env, &contract_id)
 }
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
-
-use crate::PetChainContract;
-use crate::PetChainContractClient;
-use crate::ProposalAction;
-
-fn setup_client(env: &Env) -> PetChainContractClient {
-    let contract_id = env.register_contract(None, PetChainContract);
-    PetChainContractClient::new(env, &contract_id)
-}
-use crate::{PetChainContract, PetChainContractClient, ProposalAction};
 
 #[test]
 fn test_get_admins_after_init_multisig() {
