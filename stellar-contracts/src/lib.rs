@@ -7102,6 +7102,15 @@ impl PetChainContract {
         history
     }
 
+    /// Returns the total number of behavior records for a pet.
+    /// Returns 0 for unknown pet IDs.
+    pub fn get_behavior_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::PetBehaviorCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn add_training_milestone(
         env: Env,
         pet_id: u64,
