@@ -63,23 +63,6 @@ mod test_search_medical_records {
         vet: &Address,
         diagnosis: &str,
     ) -> u64 {
-        add_record_at(
-            client,
-            env,
-            pet_id,
-            vet,
-            diagnosis,
-            env.ledger().timestamp(),
-        )
-    }
-
-    fn add_record_at(
-        client: &PetChainContractClient,
-        env: &Env,
-        pet_id: u64,
-        vet: &Address,
-        diagnosis: &str,
-    ) -> u64 {
         client.add_medical_record(
             &pet_id,
             vet,
@@ -98,7 +81,7 @@ mod test_search_medical_records {
         diagnosis: &str,
         timestamp: u64,
     ) -> u64 {
-        env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
+        env.ledger().set_timestamp(timestamp);
         add_record(client, env, pet_id, vet, diagnosis)
     }
 
@@ -347,12 +330,8 @@ mod test_search_medical_records {
             &String::from_str(&env, "Notes"),
         );
 
-        // Try to update with vet2 (different vet) - should fail auth check
-        // With mock_all_auths the auth passes, but the record was created by vet1
-        // so the update should still succeed (auth is mocked). Just verify it doesn't panic.
-        let _result = client.update_medical_record_notes(
         // Try to update with vet2 (different vet) - should panic due to auth requirement
-        env.mock_all_auths_allowing_non_root_auth();
+        env.set_auths(&[]);
         client.update_medical_record_notes(
             &record_id,
             &String::from_str(&env, "Unauthorized update"),

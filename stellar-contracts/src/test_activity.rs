@@ -2,11 +2,6 @@ use crate::{
     ActivityType, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
 };
 use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env, String,
-};
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 
 #[test]
 fn test_add_activity_record() {
