@@ -457,3 +457,36 @@ fn test_duplicate_review_prevented() {
     let result2 = client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
     assert!(result2.is_err());
 }
+
+#[test]
+fn test_get_pet_count_by_owner_zero_for_new_owner() {
+    let (env, client, _admin) = setup_env();
+    let owner = Address::generate(&env);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 0);
+}
+
+#[test]
+fn test_get_pet_count_by_owner_increments_on_register() {
+    let (env, client, _admin) = setup_env();
+    let owner = Address::generate(&env);
+
+    register_pet_with_species(&client, &env, &owner, Species::Dog);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 1);
+
+    register_pet_with_species(&client, &env, &owner, Species::Cat);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 2);
+}
+
+#[test]
+fn test_get_pet_count_by_owner_independent_per_owner() {
+    let (env, client, _admin) = setup_env();
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+
+    register_pet_with_species(&client, &env, &owner1, Species::Dog);
+    register_pet_with_species(&client, &env, &owner1, Species::Dog);
+    register_pet_with_species(&client, &env, &owner2, Species::Cat);
+
+    assert_eq!(client.get_pet_count_by_owner(&owner1), 2);
+    assert_eq!(client.get_pet_count_by_owner(&owner2), 1);
+}
