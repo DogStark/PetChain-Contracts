@@ -580,3 +580,60 @@ fn test_activity_summary_invalid_range() {
     assert_eq!(duration, 0);
     assert_eq!(distance, 0);
 }
+
+#[test]
+fn test_get_activity_record_by_id_returns_correct_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let record_id = client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Morning walk"),
+    );
+
+    let record = client.get_activity_record_by_id(&record_id).unwrap();
+    assert_eq!(record.id, record_id);
+    assert_eq!(record.pet_id, pet_id);
+    assert_eq!(record.activity_type, ActivityType::Walk);
+    assert_eq!(record.duration_minutes, 30);
+    assert_eq!(record.intensity, 5);
+    assert_eq!(record.distance_meters, 2000);
+}
+
+#[test]
+fn test_get_activity_record_by_id_returns_none_for_nonexistent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let result = client.get_activity_record_by_id(&9999);
+    assert!(result.is_none());
+}

@@ -5789,6 +5789,13 @@ impl PetChainContract {
         history
     }
 
+    pub fn get_consent_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn get_active_consents(env: Env, pet_id: u64) -> Vec<Consent> {
         let history = Self::get_consent_history(env.clone(), pet_id);
         let mut active = Vec::new(&env);
@@ -7880,6 +7887,12 @@ impl PetChainContract {
             }
         }
         history
+    }
+
+    pub fn get_activity_record_by_id(env: Env, record_id: u64) -> Option<ActivityRecord> {
+        env.storage()
+            .instance()
+            .get::<ActivityKey, ActivityRecord>(&ActivityKey::ActivityRecord(record_id))
     }
 
     pub fn get_activity_stats(env: Env, pet_id: u64, days: u32) -> (u32, u32) {
