@@ -1167,6 +1167,17 @@ pub struct AccessRevokedEvent {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct AccessExtendedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub old_expires_at: Option<u64>,
+    pub new_expires_at: Option<u64>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct AccessExpiredEvent {
     pub pet_id: u64,
     pub grantee: Address,
@@ -4221,7 +4232,7 @@ impl PetChainContract {
                 AccessRevokedEvent {
                     pet_id,
                     granter: granter.clone(),
-                    grantee,
+                    grantee: grantee.clone(),
                     timestamp: env.ledger().timestamp(),
                 },
             );
