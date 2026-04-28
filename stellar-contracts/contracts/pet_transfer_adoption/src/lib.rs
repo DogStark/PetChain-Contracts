@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short,
-    panic_with_error, Address, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -12,12 +12,9 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
+#[cfg(test)]
+mod test;
 mod vet_registry;
-#[cfg(test)]
-mod test;
-
-#[cfg(test)]
-mod test;
 
 /// ======================================================
 /// CONTRACT
@@ -63,6 +60,7 @@ enum DataKey {
     Pet(u64),
     PendingTransfer(u64),
     OwnershipHistory(u64),
+    OwnerPets(Address),
 }
 
 /// ======================================================
@@ -88,6 +86,10 @@ pub enum ContractError {
     InvalidRecipient = 5,
     EmptyOwnershipHistory = 6,
     MissingOwnershipRecord = 7,
+    TransferNotExpired = 8,
+    StaleCancellation = 9,
+    EmptyBatch = 10,
+    BatchOwnerMismatch = 11,
 }
 
 /// ======================================================
@@ -120,6 +122,44 @@ fn save_history(env: &Env, pet_id: u64, history: &Vec<OwnershipRecord>) {
         .set(&DataKey::OwnershipHistory(pet_id), history);
 }
 
+fn get_owner_pet_ids(env: &Env, owner: &Address) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OwnerPets(owner.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_owner_pet_ids(env: &Env, owner: &Address, pet_ids: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OwnerPets(owner.clone()), pet_ids);
+}
+
+fn add_pet_to_owner(env: &Env, owner: &Address, pet_id: u64) {
+    let mut pet_ids = get_owner_pet_ids(env, owner);
+    for existing_pet_id in pet_ids.iter() {
+        if existing_pet_id == pet_id {
+            return;
+        }
+    }
+
+    pet_ids.push_back(pet_id);
+    save_owner_pet_ids(env, owner, &pet_ids);
+}
+
+fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
+    let pet_ids = get_owner_pet_ids(env, owner);
+    let mut updated_pet_ids = Vec::new(env);
+
+    for existing_pet_id in pet_ids.iter() {
+        if existing_pet_id != pet_id {
+            updated_pet_ids.push_back(existing_pet_id);
+        }
+    }
+
+    save_owner_pet_ids(env, owner, &updated_pet_ids);
+}
+
 /// ======================================================
 /// CONTRACT IMPLEMENTATION
 /// ======================================================
@@ -140,13 +180,14 @@ impl PetOwnershipContract {
 
         let mut history = Vec::new(&env);
         history.push_back(OwnershipRecord {
-            owner,
+            owner: owner.clone(),
             acquired_at: env.ledger().timestamp(),
             relinquished_at: None,
         });
 
         save_pet(&env, &pet);
         save_history(&env, pet_id, &history);
+        add_pet_to_owner(&env, &owner, pet_id);
     }
 
     /// ----------------------------------
@@ -203,10 +244,10 @@ impl PetOwnershipContract {
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
-        let last = history
-            .len()
-            .checked_sub(1)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::EmptyOwnershipHistory));
+        if history.len() == 0 {
+            panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+        }
+        let last = history.len() - 1;
         let mut prev = history
             .get(last)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
@@ -218,6 +259,9 @@ impl PetOwnershipContract {
             acquired_at: now,
             relinquished_at: None,
         });
+
+        remove_pet_from_owner(&env, &transfer.from, pet_id);
+        add_pet_to_owner(&env, &transfer.to, pet_id);
 
         pet.current_owner = transfer.to.clone();
 
@@ -246,6 +290,11 @@ impl PetOwnershipContract {
             .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingTransfer));
 
         transfer.from.require_auth();
+
+        let pet = get_pet(&env, pet_id);
+        if pet.current_owner != transfer.from {
+            panic_with_error!(env, ContractError::StaleCancellation);
+        }
 
         env.storage()
             .persistent()
@@ -300,6 +349,73 @@ impl PetOwnershipContract {
     }
 
     /// ----------------------------------
+    /// BATCH INITIATE TRANSFER
+    /// ----------------------------------
+
+    /// Atomically initiates ownership transfers for multiple pets to the same recipient.
+    ///
+    /// All pets must be owned by a single address. The function validates every pet
+    /// before writing anything, so any error rolls back the entire batch cleanly.
+    ///
+    /// # Errors
+    /// - [`ContractError::EmptyBatch`] – `pet_ids` is empty.
+    /// - [`ContractError::PetNotFound`] – any pet in the batch does not exist.
+    /// - [`ContractError::BatchOwnerMismatch`] – not all pets share the same owner.
+    /// - [`ContractError::TransferAlreadyPending`] – any pet already has a pending transfer.
+    pub fn batch_initiate_transfer(env: Env, pet_ids: Vec<u64>, to: Address) {
+        if pet_ids.is_empty() {
+            panic_with_error!(env, ContractError::EmptyBatch);
+        }
+
+        // Phase 1: read-only validation — discover owner, ensure all pets are eligible.
+        let mut expected_owner: Option<Address> = None;
+        for pet_id in pet_ids.iter() {
+            let pet = get_pet(&env, pet_id);
+
+            match expected_owner {
+                None => expected_owner = Some(pet.current_owner.clone()),
+                Some(ref owner) => {
+                    if &pet.current_owner != owner {
+                        panic_with_error!(env, ContractError::BatchOwnerMismatch);
+                    }
+                }
+            }
+
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::PendingTransfer(pet_id))
+            {
+                panic_with_error!(env, ContractError::TransferAlreadyPending);
+            }
+        }
+
+        // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
+        let owner = expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
+
+        // Phase 2: authenticate the single owner once for the entire batch.
+        owner.require_auth();
+
+        // Phase 3: write all pending transfers.
+        let now = env.ledger().timestamp();
+        for pet_id in pet_ids.iter() {
+            let transfer = PendingTransfer {
+                pet_id,
+                from: owner.clone(),
+                to: to.clone(),
+                initiated_at: now,
+            };
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::PendingTransfer(pet_id), &transfer);
+
+            env.events()
+                .publish((EVT_TRANSFER_INITIATED, pet_id), (owner.clone(), to.clone()));
+        }
+    }
+
+    /// ----------------------------------
     /// READ HELPERS
     /// ----------------------------------
 
@@ -309,6 +425,10 @@ impl PetOwnershipContract {
 
     pub fn get_ownership_history(env: Env, pet_id: u64) -> Vec<OwnershipRecord> {
         get_history(&env, pet_id)
+    }
+
+    pub fn get_owner_pets(env: Env, owner: Address) -> Vec<u64> {
+        get_owner_pet_ids(&env, &owner)
     }
 
     pub fn has_pending_transfer(env: Env, pet_id: u64) -> bool {
@@ -324,6 +444,3 @@ impl PetOwnershipContract {
             .get(&DataKey::PendingTransfer(pet_id))
     }
 }
-
-#[cfg(test)]
-mod test;

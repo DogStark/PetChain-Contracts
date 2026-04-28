@@ -4,11 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-totp-rs = { version = "5.5", features = ["qr", "otpauth"] }
-qrcode = "0.14"
-base64 = "0.22"
-base32 = "0.5"
+totp-rs = { version = "5.7.1", features = ["qr", "otpauth", "gen_secret"] }
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+base32 = "0.5.1"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres"] }
+tokio = { version = "1", features = ["full"] }
+actix-web = { version = "4" }
+
+[[example]]
+name = "example_integration"
+path = "example_integration.rs"
+redis = "0.27"

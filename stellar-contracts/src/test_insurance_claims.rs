@@ -88,7 +88,12 @@ fn test_submit_claim_inactive_policy() {
         &expiry,
     );
 
-    client.update_insurance_status(&pet_id, &false);
+    client.update_insurance_status(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "POL-INACTIVE"),
+        &false,
+    );
 
     let result = client.submit_insurance_claim(
         &pet_id,
@@ -191,4 +196,78 @@ fn test_get_all_pet_claims() {
     assert_eq!(claims.len(), 2);
     assert_eq!(claims.get(0).unwrap().amount, 200);
     assert_eq!(claims.get(1).unwrap().amount, 150);
+}
+
+#[test]
+fn test_get_insurance_claim_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2021-06-15"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Black"),
+        &String::from_str(&env, "Labrador"),
+        &25,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Count should be 0 before any claims
+    assert_eq!(client.get_insurance_claim_count(&pet_id), 0);
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "POL-COUNT-01"),
+        &String::from_str(&env, "PetSure"),
+        &String::from_str(&env, "Standard"),
+        &120,
+        &12000,
+        &expiry,
+    );
+
+    client.submit_insurance_claim(&pet_id, &300, &String::from_str(&env, "Dental cleaning"));
+    assert_eq!(client.get_insurance_claim_count(&pet_id), 1);
+
+    client.submit_insurance_claim(&pet_id, &750, &String::from_str(&env, "X-ray and treatment"));
+    assert_eq!(client.get_insurance_claim_count(&pet_id), 2);
+
+    client.submit_insurance_claim(&pet_id, &1200, &String::from_str(&env, "Emergency surgery"));
+    assert_eq!(client.get_insurance_claim_count(&pet_id), 3);
+}
+
+#[test]
+fn test_get_insurance_claim_count_no_claims() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Bella"),
+        &String::from_str(&env, "2023-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Orange"),
+        &String::from_str(&env, "Tabby"),
+        &4,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Pet with no claims should return 0
+    assert_eq!(client.get_insurance_claim_count(&pet_id), 0);
 }

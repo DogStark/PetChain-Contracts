@@ -1,3 +1,4 @@
+pub mod db;
 pub mod handlers;
 pub mod rate_limiter;
 pub mod two_factor;
@@ -5,9 +6,10 @@ pub mod two_factor;
 #[cfg(test)]
 mod tests;
 
-pub use handlers::TwoFactorHandlers;
-pub use rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
-pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
-pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup};
-pub use two_factor::{TwoFactorAuth, TwoFactorData, TwoFactorSetup, RecoveryResult};
-pub use handlers::{TwoFactorHandlers, AuthenticatedUser};
+pub use db::PostgresTwoFactorStore;
+pub use handlers::{AuthenticatedUser, TwoFactorHandlers};
+pub use rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, RedisRateLimiter};
+pub use two_factor::{
+    InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorSetup,
+    TwoFactorStore,
+};

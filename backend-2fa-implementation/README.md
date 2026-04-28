@@ -1,14 +1,55 @@
 # PetChain 2FA Implementation
 
-Minimal TOTP-based Two-Factor Authentication for PetChain backend.
+Configurable TOTP-based Two-Factor Authentication for PetChain backend with cryptographic agility.
 
 ## Features
 
+✅ **Configurable TOTP parameters** (SHA1/SHA256/SHA512, 6/8 digits, custom periods)  
+✅ **Cryptographic agility** - Future-proof algorithm support  
 ✅ QR code generation for authenticator apps  
 ✅ 8 backup codes generation  
 ✅ 2FA enable/disable endpoints  
 ✅ Verify 2FA token on login  
 ✅ Recovery mechanism with backup codes  
+✅ **Backward compatibility** with existing SHA1 implementations  
+
+## Configuration Options
+
+### Default Configuration (Recommended)
+- **Algorithm**: SHA256 (secure, modern)
+- **Digits**: 6 (standard)
+- **Period**: 30 seconds (standard)
+- **Window**: 1 (minimal clock skew tolerance)
+
+### Available Configurations
+```rust
+// Default (SHA256)
+let setup = TwoFactorAuth::setup("user@example.com", "PetChain")?;
+
+// Legacy SHA1 (backward compatibility)
+let config = TotpConfig::legacy_sha1();
+let setup = TwoFactorAuth::setup_with_config("user@example.com", "PetChain", config)?;
+
+// High Security (SHA512, 8 digits)
+let config = TotpConfig::high_security();
+let setup = TwoFactorAuth::setup_with_config("user@example.com", "PetChain", config)?;
+
+// Custom configuration
+let config = TotpConfig {
+    algorithm: Algorithm::SHA256,
+    digits: 6,
+    period: 30,
+    window: 1,
+};
+```
+
+## Migration from Hard-coded SHA1
+
+**✅ Backward Compatible**: Existing SHA1 implementations continue to work  
+**✅ Gradual Migration**: Migrate users to SHA256 over time  
+**✅ Configuration Storage**: Store TOTP config with user data  
+
+See [CONFIGURATION.md](CONFIGURATION.md) for detailed migration guide.  
 
 ## API Endpoints
 
@@ -105,10 +146,9 @@ Response:
 ### 1. Add to your backend's Cargo.toml
 ```toml
 [dependencies]
-totp-rs = { version = "5.5", features = ["qr", "otpauth"] }
-qrcode = "0.14"
-base64 = "0.22"
+totp-rs = { version = "5.7.1", features = ["qr", "otpauth", "gen_secret"] }
 rand = "0.8"
+subtle = "2.6"
 ```
 
 ### 2. Copy files to your backend
@@ -153,12 +193,27 @@ async fn main() -> std::io::Result<()> {
 ```
 
 **Axum example:**
+
+
 ```rust
-use axum::{routing::post, Json, Router};
+use axum::{
+    routing::post,
+    Json, Router,
+    http::StatusCode,
+    response::IntoResponse,
+};
 use petchain_2fa::handlers::*;
 
-async fn enable_2fa(Json(req): Json<EnableTwoFactorRequest>) -> Json<EnableTwoFactorResponse> {
-    Json(TwoFactorHandlers::enable_two_factor(req).unwrap())
+async fn enable_2fa(
+    Json(req): Json<EnableTwoFactorRequest>,
+) -> impl IntoResponse {
+    match TwoFactorHandlers::enable_two_factor(req) {
+        Ok(response) => (StatusCode::OK, Json(response)),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to enable 2FA: {}", e),
+        ),
+    }
 }
 
 #[tokio::main]

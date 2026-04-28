@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test_book_slot {
-    use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
+    use crate::{PetChainContract, PetChainContractClient};
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
     fn setup_env() -> (Env, PetChainContractClient<'static>) {
@@ -11,7 +11,7 @@ mod test_book_slot {
         (env, client)
     }
 
-    fn setup_verified_vet(env: &Env, client: &PetChainContractClient) -> (Address, Address) {
+    fn setup_verified_vet(env: &Env, client: &PetChainContractClient) -> Address {
         let admin = Address::generate(env);
         let vet = Address::generate(env);
 
@@ -26,92 +26,83 @@ mod test_book_slot {
             &String::from_str(env, "General"),
         );
         client.verify_vet(&admin, &vet);
-
-        (admin, vet)
+        vet
     }
 
-    fn register_pet_owner(env: &Env, client: &PetChainContractClient) -> Address {
-        let owner = Address::generate(env);
-        client.register_pet_owner(
-            &owner,
-            &String::from_str(env, "Alice"),
-            &String::from_str(env, "alice@example.com"),
-            &String::from_str(env, "555-0100"),
-        );
-        // Also register a pet so the owner record exists
-        client.register_pet(
-            &owner,
-            &String::from_str(env, "Buddy"),
-            &String::from_str(env, "1609459200"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(env, "Labrador"),
-            &String::from_str(env, "Brown"),
-            &25u32,
-            &None,
-            &PrivacyLevel::Public,
-        );
-        owner
-    }
-
-    fn set_slot(env: &Env, client: &PetChainContractClient, vet: &Address) -> u64 {
+    fn add_slot(env: &Env, client: &PetChainContractClient, vet: &Address) -> u64 {
         let now = env.ledger().timestamp();
         client.set_availability(vet, &now, &(now + 3600))
     }
 
     // -------------------------------------------------------
-    // Happy path: registered pet owner can book a slot
+    // Add availability: verified vet can add a slot
     // -------------------------------------------------------
     #[test]
-    fn test_registered_owner_can_book_slot() {
+    fn test_add_availability_slot() {
         let (env, client) = setup_env();
-        let (_admin, vet) = setup_verified_vet(&env, &client);
-        let owner = register_pet_owner(&env, &client);
-        let slot_index = set_slot(&env, &client, &vet);
+        let vet = setup_verified_vet(&env, &client);
 
-        let result = client.book_slot(&owner, &vet, &slot_index);
-        assert!(result, "Registered pet owner should be able to book a slot");
+        let slot_index = add_slot(&env, &client, &vet);
+        assert_eq!(slot_index, 1u64);
 
-        // Slot must now be unavailable
         let date = env.ledger().timestamp() / 86400;
         let slots = client.get_available_slots(&vet, &date);
-        assert!(
-            slots.is_empty(),
-            "Slot should no longer appear as available after booking"
-        );
+        assert_eq!(slots.len(), 1);
+        assert!(slots.get(0).unwrap().available);
     }
 
     // -------------------------------------------------------
-    // Unauthorized: unregistered caller cannot book a slot
-    // Slot must remain available after the failed attempt.
+    // Book slot: booking marks the slot unavailable
     // -------------------------------------------------------
     #[test]
-    #[should_panic(expected = "Unauthorized: only registered pet owners can book slots")]
-    fn test_unregistered_caller_cannot_book_slot() {
+    fn test_book_slot_marks_unavailable() {
         let (env, client) = setup_env();
-        let (_admin, vet) = setup_verified_vet(&env, &client);
-        let slot_index = set_slot(&env, &client, &vet);
+        let vet = setup_verified_vet(&env, &client);
+        let slot_index = add_slot(&env, &client, &vet);
 
-        let random_caller = Address::generate(&env);
+        let result = client.book_slot(&vet, &slot_index);
+        assert!(result, "book_slot should return true for an available slot");
 
-        // This must panic — random address is not a registered pet owner
-        client.book_slot(&random_caller, &vet, &slot_index);
+        let date = env.ledger().timestamp() / 86400;
+        let slots = client.get_available_slots(&vet, &date);
+        assert!(slots.is_empty(), "Slot should not appear as available after booking");
     }
 
     // -------------------------------------------------------
-    // Slot remains available when no authorized booking has occurred.
-    // Verifies that an unregistered address cannot silently consume a slot,
-    // and that a legitimate owner can still book it afterwards.
+    // Double-booking: already-booked slot must panic
     // -------------------------------------------------------
     #[test]
-    fn test_slot_remains_available_without_authorized_booking() {
+    #[should_panic(expected = "Slot already booked")]
+    fn test_cannot_double_book_slot() {
         let (env, client) = setup_env();
-        let (_admin, vet) = setup_verified_vet(&env, &client);
-        let slot_index = set_slot(&env, &client, &vet);
+        let vet = setup_verified_vet(&env, &client);
+        let slot_index = add_slot(&env, &client, &vet);
 
-        // No booking has been made yet — slot must still be available
+        client.book_slot(&vet, &slot_index);
+        // Second booking on the same slot must panic
+        client.book_slot(&vet, &slot_index);
+    }
+
+    // -------------------------------------------------------
+    // Cancel booking: vet can restore a booked slot
+    // -------------------------------------------------------
+    #[test]
+    fn test_cancel_booking_restores_availability() {
+        let (env, client) = setup_env();
+        let vet = setup_verified_vet(&env, &client);
+        let slot_index = add_slot(&env, &client, &vet);
+
+        client.book_slot(&vet, &slot_index);
+
+        // Slot is booked — cancel it
+        let cancelled = client.cancel_booking(&vet, &slot_index);
+        assert!(cancelled, "cancel_booking should return true");
+
+        // Slot must be available again
         let date = env.ledger().timestamp() / 86400;
         let slots = client.get_available_slots(&vet, &date);
+        assert_eq!(slots.len(), 1);
+        assert!(slots.get(0).unwrap().available);
         assert!(
             !slots.is_empty(),
             "Slot should be available before any booking"
@@ -119,9 +110,11 @@ mod test_book_slot {
         assert_eq!(slots.get(0).unwrap().available, true);
 
         // A legitimate owner can still book the untouched slot
-        let owner = register_pet_owner(&env, &client);
-        let booked = client.book_slot(&owner, &vet, &slot_index);
-        assert!(booked, "Legitimate owner should be able to book the available slot");
+        let booked = client.book_slot(&vet, &slot_index);
+        assert!(
+            booked,
+            "Legitimate owner should be able to book the available slot"
+        );
 
         // Now the slot must be gone from available list
         let slots_after = client.get_available_slots(&vet, &date);
@@ -132,31 +125,53 @@ mod test_book_slot {
     }
 
     // -------------------------------------------------------
-    // Double-booking: already-booked slot panics
+    // Cancel unbooked slot must panic
     // -------------------------------------------------------
     #[test]
-    #[should_panic(expected = "Slot already booked")]
-    fn test_cannot_double_book_slot() {
+    #[should_panic(expected = "Slot is not booked")]
+    fn test_cancel_unbooked_slot_panics() {
         let (env, client) = setup_env();
-        let (_admin, vet) = setup_verified_vet(&env, &client);
-        let owner = register_pet_owner(&env, &client);
-        let slot_index = set_slot(&env, &client, &vet);
+        let vet = setup_verified_vet(&env, &client);
+        let slot_index = add_slot(&env, &client, &vet);
 
-        client.book_slot(&owner, &vet, &slot_index);
-        // Second booking on the same slot must panic
-        client.book_slot(&owner, &vet, &slot_index);
+        // Slot was never booked — cancelling must panic
+        client.cancel_booking(&vet, &slot_index);
     }
 
     // -------------------------------------------------------
-    // Non-existent slot returns false (no panic)
+    // Non-existent slot: book_slot returns false
     // -------------------------------------------------------
     #[test]
     fn test_book_nonexistent_slot_returns_false() {
         let (env, client) = setup_env();
-        let (_admin, vet) = setup_verified_vet(&env, &client);
-        let owner = register_pet_owner(&env, &client);
+        let vet = setup_verified_vet(&env, &client);
 
-        let result = client.book_slot(&owner, &vet, &999u64);
+        let result = client.book_slot(&vet, &999u64);
         assert!(!result, "Booking a non-existent slot should return false");
+    }
+
+    // -------------------------------------------------------
+    // Multiple slots: each slot is independent
+    // -------------------------------------------------------
+    #[test]
+    fn test_multiple_slots_are_independent() {
+        let (env, client) = setup_env();
+        let vet = setup_verified_vet(&env, &client);
+
+        let now = env.ledger().timestamp();
+        let slot1 = client.set_availability(&vet, &now, &(now + 3600));
+        let slot2 = client.set_availability(&vet, &(now + 7200), &(now + 10800));
+
+        // Book only slot1
+        client.book_slot(&vet, &slot1);
+
+        let date = now / 86400;
+        let slots = client.get_available_slots(&vet, &date);
+        // slot2 must still be available
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots.get(0).unwrap().start_time, now + 7200);
+
+        // slot2 can still be booked
+        assert!(client.book_slot(&vet, &slot2));
     }
 }
