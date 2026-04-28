@@ -365,3 +365,109 @@ fn test_get_diet_plan_count() {
     // Count for a non-existent pet returns 0
     assert_eq!(client.get_diet_plan_count(&9999u64), 0);
 }
+
+#[test]
+fn test_get_weight_trend_returns_last_n_descending() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add 4 weight entries at different timestamps
+    for (i, w) in [10u32, 11, 12, 13].iter().enumerate() {
+        env.ledger().with_mut(|l| l.timestamp = (i as u64 + 1) * 1000);
+        client.add_weight_entry(&pet_id, w);
+    }
+
+    // Request last 2 — should be entries 4 and 3 (descending by recorded_at)
+    let trend = client.get_weight_trend(&pet_id, &2u32);
+    assert_eq!(trend.len(), 2);
+    assert_eq!(trend.get(0).unwrap().weight, 13u32);
+    assert_eq!(trend.get(1).unwrap().weight, 12u32);
+    assert!(trend.get(0).unwrap().recorded_at > trend.get(1).unwrap().recorded_at);
+}
+
+#[test]
+fn test_get_weight_trend_last_n_exceeds_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2021-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &6u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_weight_entry(&pet_id, &5u32);
+    client.add_weight_entry(&pet_id, &6u32);
+
+    // Requesting more than available returns all, still descending
+    let trend = client.get_weight_trend(&pet_id, &10u32);
+    assert_eq!(trend.len(), 2);
+    assert_eq!(trend.get(0).unwrap().weight, 6u32);
+    assert_eq!(trend.get(1).unwrap().weight, 5u32);
+}
+
+#[test]
+fn test_get_weight_trend_no_entries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2022-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Poodle"),
+        &String::from_str(&env, "White"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let trend = client.get_weight_trend(&pet_id, &5u32);
+    assert_eq!(trend.len(), 0);
+}
+
+#[test]
+fn test_get_weight_trend_nonexistent_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let trend = client.get_weight_trend(&9999u64, &5u32);
+    assert_eq!(trend.len(), 0);
+}
