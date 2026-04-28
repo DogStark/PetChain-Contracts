@@ -1,6 +1,8 @@
 pub mod db;
 pub mod handlers;
+pub mod leaderboard;
 pub mod rate_limiter;
+pub mod tracing_middleware;
 pub mod two_factor;
 
 #[cfg(test)]

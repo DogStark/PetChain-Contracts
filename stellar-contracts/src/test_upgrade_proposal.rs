@@ -196,3 +196,51 @@ fn test_list_upgrade_proposals_empty() {
     let list = client.list_upgrade_proposals(&0u64, &10u32);
     assert_eq!(list.len(), 0);
 }
+
+#[test]
+fn test_get_version_default() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let version = client.get_version();
+    assert_eq!(version.major, 1);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+fn test_set_version_by_admin() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.set_version(&admin1, &2, &3, &4);
+
+    let version = client.get_version();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 3);
+    assert_eq!(version.patch, 4);
+}
+
+#[test]
+#[should_panic]
+fn test_set_version_non_admin_fails() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    client.set_version(&non_admin, &2, &0, &0);
+}
+
+#[test]
+fn test_version_readable_publicly() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.set_version(&admin1, &3, &1, &5);
+
+    // Any address can read version (no auth required)
+    let version = client.get_version();
+    assert_eq!(version.major, 3);
+    assert_eq!(version.minor, 1);
+    assert_eq!(version.patch, 5);
+}

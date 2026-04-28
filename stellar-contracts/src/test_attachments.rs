@@ -641,14 +641,19 @@ fn test_get_attachment_by_index_middle() {
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
-        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdh",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdJ",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdK",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdL",
     ];
 
     for i in 0..5 {
-        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
+        );
     }
 
     // Get middle attachment (index 2)
@@ -668,12 +673,17 @@ fn test_get_attachment_by_index_after_removal() {
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
-        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdh",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdJ",
     ];
 
     for i in 0..3 {
-        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
+        );
     }
 
     // Verify we have 3 attachments
