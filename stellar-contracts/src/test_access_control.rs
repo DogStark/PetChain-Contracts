@@ -1375,7 +1375,7 @@ fn test_get_vaccination_summary() {
     // 2. Add an upcoming vaccination (due in 15 days)
     let now = 1000u64;
     env.ledger().with_mut(|l| l.timestamp = now);
-    
+
     client.add_vaccination(
         &pet_id,
         &vet,
@@ -1392,7 +1392,7 @@ fn test_get_vaccination_summary() {
 
     // 3. Move time forward so it's overdue
     env.ledger().with_mut(|l| l.timestamp = now + 20 * 86400);
-    
+
     let summary3 = client.get_vaccination_summary(&pet_id);
     assert!(!summary3.is_fully_current);
     assert_eq!(summary3.overdue_types.len(), 1);
