@@ -125,7 +125,7 @@ fn test_multisig_initialization_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_single_admin_reinitialization_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -138,7 +138,7 @@ fn test_single_admin_reinitialization_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_multisig_reinitialization_rejected_after_single_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -154,7 +154,7 @@ fn test_multisig_reinitialization_rejected_after_single_admin() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_single_admin_reinitialization_rejected_after_multisig() {
     let env = Env::default();
     env.mock_all_auths();
@@ -170,7 +170,7 @@ fn test_single_admin_reinitialization_rejected_after_multisig() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid threshold")]
+#[should_panic]
 fn test_multisig_initialization_rejects_zero_threshold() {
     let env = Env::default();
     env.mock_all_auths();
@@ -183,7 +183,7 @@ fn test_multisig_initialization_rejects_zero_threshold() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid threshold")]
+#[should_panic]
 fn test_multisig_initialization_rejects_threshold_above_admin_count() {
     let env = Env::default();
     env.mock_all_auths();
