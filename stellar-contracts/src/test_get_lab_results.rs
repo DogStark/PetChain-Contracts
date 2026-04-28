@@ -54,7 +54,7 @@ mod test_get_lab_results {
         results: &str,
         timestamp: u64,
     ) -> u64 {
-        env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
+        env.ledger().set_timestamp(timestamp);
         client.add_lab_result(
             &pet_id,
             vet,
