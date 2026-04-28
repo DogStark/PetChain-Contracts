@@ -3303,6 +3303,12 @@ impl PetChainContract {
         history
     }
 
+    pub fn get_weight_entry(env: Env, weight_id: u64) -> Option<WeightEntry> {
+        env.storage()
+            .instance()
+            .get(&NutritionKey::WeightEntry(weight_id))
+    }
+
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
 
     fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
