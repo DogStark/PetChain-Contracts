@@ -641,7 +641,7 @@ fn test_get_attachment_by_index_middle() {
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
-        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdh",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdJ",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdK",
     ];
@@ -668,7 +668,7 @@ fn test_get_attachment_by_index_after_removal() {
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
-        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI",
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdh",
     ];
 
     for i in 0..3 {
