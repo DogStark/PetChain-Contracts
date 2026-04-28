@@ -8013,6 +8013,14 @@ impl PetChainContract {
             .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
     }
 
+    /// Returns the total number of breeding records associated with a given pet (as sire or dam).
+    pub fn get_breeding_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&BreedingKey::PetBreedingCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
         if let Some(mut record) = env
             .storage()

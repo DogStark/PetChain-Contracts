@@ -566,3 +566,154 @@ fn test_get_breeding_record_nonexistent() {
     let record = client.get_breeding_record(&999);
     assert!(!record.is_some());
 }
+
+// --- get_breeding_count tests ---
+
+#[test]
+fn test_get_breeding_count_zero_when_no_records() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let count = client.get_breeding_count(&pet_id);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_get_breeding_count_increments_for_sire() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &28,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &1000,
+        &String::from_str(&env, "First litter"),
+    );
+
+    assert_eq!(client.get_breeding_count(&sire_id), 1);
+}
+
+#[test]
+fn test_get_breeding_count_increments_for_dam() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &28,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &2000,
+        &String::from_str(&env, "Second litter"),
+    );
+
+    assert_eq!(client.get_breeding_count(&dam_id), 1);
+}
+
+#[test]
+fn test_get_breeding_count_multiple_records() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &28,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &1000,
+        &String::from_str(&env, "Litter 1"),
+    );
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &2000,
+        &String::from_str(&env, "Litter 2"),
+    );
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &3000,
+        &String::from_str(&env, "Litter 3"),
+    );
+
+    assert_eq!(client.get_breeding_count(&sire_id), 3);
+    assert_eq!(client.get_breeding_count(&dam_id), 3);
+}
+
+#[test]
+fn test_get_breeding_count_unrelated_pet_unaffected() {
+    let (env, owner, _admin, sire_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let dam_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Daisy"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &28,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let unrelated_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2022-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &35,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_breeding_record(
+        &sire_id,
+        &dam_id,
+        &1000,
+        &String::from_str(&env, "Litter"),
+    );
+
+    assert_eq!(client.get_breeding_count(&sire_id), 1);
+    assert_eq!(client.get_breeding_count(&dam_id), 1);
+    assert_eq!(client.get_breeding_count(&unrelated_id), 0);
+}
