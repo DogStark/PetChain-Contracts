@@ -5068,6 +5068,39 @@ impl PetChainContract {
         users
     }
 
+    pub fn get_all_access_grants(env: Env, pet_id: u64) -> Vec<AccessGrant> {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+        let mut grants = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
+            {
+                if let Some(grant) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, grantee)))
+                {
+                    grants.push_back(grant);
+                }
+            }
+        }
+        grants
+    }
+
     pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
         env.storage()
             .instance()

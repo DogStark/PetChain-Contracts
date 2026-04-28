@@ -609,6 +609,74 @@ fn test_get_access_grant() {
 }
 
 #[test]
+fn test_get_all_access_grants_returns_all_grants_for_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee1 = Address::generate(&env);
+    let grantee2 = Address::generate(&env);
+    let grantee3 = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2022-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &8u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    client.grant_access(&pet_id, &grantee1, &AccessLevel::Basic, &None);
+    client.grant_access(&pet_id, &grantee2, &AccessLevel::Full, &None);
+    client.grant_access(&pet_id, &grantee3, &AccessLevel::Basic, &None);
+    client.revoke_access(&pet_id, &grantee2);
+
+    let grants = client.get_all_access_grants(&pet_id);
+    assert_eq!(grants.len(), 3);
+    assert!(grants.iter().any(|g| g.grantee == grantee1 && g.access_level == AccessLevel::Basic && g.is_active));
+    assert!(grants.iter().any(|g| g.grantee == grantee2 && g.access_level == AccessLevel::None && !g.is_active));
+    assert!(grants.iter().any(|g| g.grantee == grantee3 && g.access_level == AccessLevel::Basic && g.is_active));
+}
+
+#[test]
+fn test_get_all_access_grants_requires_owner_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Milo"),
+        &String::from_str(&env, "2020-04-18"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Corgi"),
+        &String::from_str(&env, "Orange"),
+        &11u32,
+        &None,
+        &PrivacyLevel::Restricted,
+    );
+
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+    env.set_auths(&[&other_user]);
+    let result = std::panic::catch_unwind(|| client.get_all_access_grants(&pet_id));
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_multiple_access_levels() {
     let env = Env::default();
     env.mock_all_auths();
