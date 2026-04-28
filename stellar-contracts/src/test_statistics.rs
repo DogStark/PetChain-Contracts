@@ -351,7 +351,8 @@ fn test_add_and_get_vet_review() {
     let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
     // Add a review
-    let review_id = client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
+    let review_id =
+        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
     assert!(review_id > 0);
 
     // Get reviews
@@ -433,10 +434,10 @@ fn test_get_vet_average_rating_with_fractional() {
     // Add reviews: 5, 4, 4 = avg 4.333... -> 433
     let owner1 = Address::generate(&env);
     client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Excellent"));
-    
+
     let owner2 = Address::generate(&env);
     client.add_vet_review(&owner2, &vet, &4, &String::from_str(&env, "Good"));
-    
+
     let owner3 = Address::generate(&env);
     client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Good"));
 
@@ -450,11 +451,13 @@ fn test_duplicate_review_prevented() {
     let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
     // First review should succeed
-    let result1 = client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
+    let result1 =
+        client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
     assert!(result1.is_ok());
 
     // Second review from same owner should fail
-    let result2 = client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
+    let result2 =
+        client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
     assert!(result2.is_err());
 }
 

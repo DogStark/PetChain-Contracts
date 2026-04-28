@@ -71,6 +71,8 @@ mod test_emergency_override;
 #[cfg(test)]
 mod test_encryption_nonce;
 #[cfg(test)]
+mod test_get_lab_results;
+#[cfg(test)]
 mod test_get_pet_access_control;
 #[cfg(test)]
 mod test_get_pet_decryption;
@@ -98,8 +100,6 @@ mod test_overflow;
 mod test_pet_age;
 #[cfg(test)]
 mod test_search_medical_records;
-#[cfg(test)]
-mod test_get_lab_results;
 #[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
@@ -151,6 +151,7 @@ pub enum ContractError {
     NotConsentOwner = 61,
     ConsentAlreadyRevoked = 62,
     SlotAlreadyBooked = 70,
+    SlotNotBooked = 71,
     ProposalNotFound = 80,
     ProposalAlreadyExecuted = 81,
     ProposalExpired = 82,
@@ -1465,7 +1466,7 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::AdminAlreadySet);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -1479,15 +1480,15 @@ impl PetChainContract {
         if env.storage().instance().has(&DataKey::Admin)
             || env.storage().instance().has(&SystemKey::Admins)
         {
-            panic!("Admin already set");
+            panic_with_error!(&env, ContractError::AdminAlreadySet);
         }
         if threshold == 0 || threshold > admins.len() {
-            panic!("Invalid threshold");
+            panic_with_error!(&env, ContractError::InvalidThreshold);
         }
 
         invoker.require_auth();
         if !admins.contains(invoker) {
-            panic!("Invoker must be in the initial admin list");
+            panic_with_error!(&env, ContractError::InvokerNotInAdminList);
         }
 
         env.storage().instance().set(&SystemKey::Admins, &admins);
@@ -2330,6 +2331,55 @@ impl PetChainContract {
         }
     }
 
+    /// Returns the total number of photos for a pet. Returns 0 for unknown pet IDs.
+    pub fn get_pet_photo_count(env: Env, pet_id: u64) -> u64 {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.photo_hashes.len() as u64
+        } else {
+            0
+        }
+    }
+
+    /// Returns a paginated slice of photo hashes for a pet.
+    /// `offset` is the zero-based index of the first item to return.
+    /// `limit` is the maximum number of items to return.
+    pub fn get_pet_photos_paginated(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<String> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            let total = pet.photo_hashes.len() as u64;
+            let mut result = Vec::new(&env);
+
+            if offset >= total || limit == 0 {
+                return result;
+            }
+
+            let start = offset as u32;
+            let end = (offset + limit as u64).min(total) as u32;
+
+            for i in start..end {
+                if let Some(hash) = pet.photo_hashes.get(i) {
+                    result.push_back(hash);
+                }
+            }
+
+            result
+        } else {
+            Vec::new(&env)
+        }
+    }
+
     pub fn remove_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
         if let Some(mut pet) = env
             .storage()
@@ -2652,7 +2702,7 @@ impl PetChainContract {
             .instance()
             .has(&DataKey::VetLicense(license_number.clone()))
         {
-            panic!("License already registered");
+            panic_with_error!(&env, ContractError::LicenseAlreadyRegistered);
         }
 
         if env
@@ -2660,7 +2710,7 @@ impl PetChainContract {
             .instance()
             .has(&DataKey::Vet(vet_address.clone()))
         {
-            panic!("Vet already registered");
+            panic_with_error!(&env, ContractError::VetAlreadyRegistered);
         }
 
         let vet = Vet {
@@ -2775,9 +2825,7 @@ impl PetChainContract {
     }
 
     pub fn is_vet_registered(env: Env, vet_address: Address) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::Vet(vet_address))
+        env.storage().instance().has(&DataKey::Vet(vet_address))
     }
 
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
@@ -2816,7 +2864,7 @@ impl PetChainContract {
                 .set(&DataKey::Vet(vet_address), &vet);
             true
         } else {
-            panic!("Vet not found");
+            panic_with_error!(&env, ContractError::VetNotFound);
         }
     }
     */
@@ -3350,7 +3398,7 @@ impl PetChainContract {
             .get::<TagKey, BytesN<32>>(&TagKey::PetTagId(pet_id))
             .is_some()
         {
-            panic!("Pet already has a linked tag");
+            panic_with_error!(&env, ContractError::PetAlreadyHasLinkedTag);
         }
 
         let tag_id = PetChainContract::generate_tag_id(&env, pet_id, &pet.owner);
@@ -3843,51 +3891,8 @@ impl PetChainContract {
 
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         } else {
-            panic!("Pet not found");
+            panic_with_error!(&env, ContractError::PetNotFound);
         }
-    }
-
-    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic!("Pet not found"));
-        pet.owner.require_auth();
-        let key = DataKey::EmergencyResponders(pet_id);
-        let mut responders: Vec<Address> =
-            env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
-        if !responders.contains(&responder) {
-            responders.push_back(responder);
-        }
-        env.storage().instance().set(&key, &responders);
-    }
-
-    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic!("Pet not found"));
-        pet.owner.require_auth();
-        let key = DataKey::EmergencyResponders(pet_id);
-        let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
-        let mut updated = Vec::new(&env);
-        for r in responders.iter() {
-            if r != responder {
-                updated.push_back(r);
-            }
-        }
-        env.storage().instance().set(&key, &updated);
-    }
-
-    fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address, owner: &Address) -> bool {
-        if caller == owner {
-            return true;
-        }
-        let key = DataKey::EmergencyResponders(pet_id);
-        let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
-        responders.contains(caller)
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
@@ -4008,7 +4013,7 @@ impl PetChainContract {
         {
             // Require owner authorization
             if caller != pet.owner {
-                panic!("Unauthorized: only pet owner can access emergency logs");
+                panic_with_error!(&env, ContractError::NotPetOwner);
             }
 
             // Retrieve logs from persistent storage
@@ -4018,7 +4023,7 @@ impl PetChainContract {
                 .get(&log_key)
                 .unwrap_or(Vec::new(&env))
         } else {
-            panic!("Pet not found");
+            panic_with_error!(&env, ContractError::PetNotFound);
         }
     }
 
@@ -4485,6 +4490,9 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
         if medications.len() > PetChainContract::MAX_VEC_MEDS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+        if medications.len() > Self::MAX_VEC_MEDS {
             panic_with_error!(&env, ContractError::TooManyItems);
         }
 
@@ -5891,7 +5899,7 @@ impl PetChainContract {
             .get::<SystemKey, AvailabilitySlot>(&key)
         {
             if !slot.available {
-                panic!("Slot already booked");
+                panic_with_error!(&env, ContractError::SlotAlreadyBooked);
             }
 
             slot.available = false;
@@ -5913,7 +5921,7 @@ impl PetChainContract {
             .get::<SystemKey, AvailabilitySlot>(&key)
         {
             if slot.available {
-                panic!("Slot is not booked");
+                panic_with_error!(&env, ContractError::SlotNotBooked);
             }
             slot.available = true;
             env.storage().instance().set(&key, &slot);
@@ -5998,7 +6006,7 @@ impl PetChainContract {
             .get::<DataKey, UpgradeProposal>(&DataKey::UpgradeProposal(proposal_id))
         {
             if proposal.executed {
-                panic!("Proposal already executed");
+                panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
             }
 
             proposal.approved = true;
@@ -6181,7 +6189,7 @@ impl PetChainContract {
             ProposalAction::ChangeAdmin(params) => {
                 let (admins, threshold) = params;
                 if threshold == 0 || threshold > admins.len() {
-                    panic!("Invalid threshold");
+                    panic_with_error!(&env, ContractError::InvalidThreshold);
                 }
                 env.storage().instance().set(&SystemKey::Admins, &admins);
                 env.storage()
@@ -6216,12 +6224,11 @@ impl PetChainContract {
         reviewer.require_auth();
 
         if !(1..=5).contains(&rating) {
-            panic!("Rating must be between 1 and 5");
+            panic_with_error!(&env, ContractError::InvalidRating);
         }
 
         if comment.len() > PetChainContract::MAX_REVIEW_COMMENT_LEN {
             panic_with_error!(&env, ContractError::CommentTooLong);
-            panic!("Review comment exceeds maximum length");
         }
 
         // Check duplicate
@@ -6233,7 +6240,7 @@ impl PetChainContract {
                 vet.clone(),
             )))
         {
-            panic!("You have already reviewed this veterinarian");
+            panic_with_error!(&env, ContractError::DuplicateReview);
         }
 
         let count: u64 = env
@@ -6508,7 +6515,7 @@ impl PetChainContract {
                 .instance()
                 .set(&MedicalKey::GlobalMedication(medication_id), &med);
         } else {
-            panic!("Medication not found");
+            panic_with_error!(&env, ContractError::MedicationNotFound);
         }
     }
 
@@ -6804,7 +6811,13 @@ impl PetChainContract {
     ///
     /// # Events
     /// Emits `InsuranceUpdatedEvent` on success
-    pub fn update_insurance_status(env: Env, owner: Address, pet_id: u64, policy_id: String, active: bool) -> bool {
+    pub fn update_insurance_status(
+        env: Env,
+        owner: Address,
+        pet_id: u64,
+        policy_id: String,
+        active: bool,
+    ) -> bool {
         let pet: Pet = env
             .storage()
             .instance()
@@ -7133,6 +7146,12 @@ impl PetChainContract {
         record_id
     }
 
+    pub fn get_behavior_record(env: Env, record_id: u64) -> Option<BehaviorRecord> {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::BehaviorRecord(record_id))
+    }
+
     pub fn get_behavior_history(env: Env, pet_id: u64) -> Vec<BehaviorRecord> {
         let count: u64 = env
             .storage()
@@ -7157,6 +7176,15 @@ impl PetChainContract {
             }
         }
         history
+    }
+
+    /// Returns the total number of behavior records for a pet.
+    /// Returns 0 for unknown pet IDs.
+    pub fn get_behavior_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::PetBehaviorCount(pet_id))
+            .unwrap_or(0)
     }
 
     pub fn add_training_milestone(
