@@ -2299,6 +2299,55 @@ impl PetChainContract {
         }
     }
 
+    /// Returns the total number of photos for a pet. Returns 0 for unknown pet IDs.
+    pub fn get_pet_photo_count(env: Env, pet_id: u64) -> u64 {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.photo_hashes.len() as u64
+        } else {
+            0
+        }
+    }
+
+    /// Returns a paginated slice of photo hashes for a pet.
+    /// `offset` is the zero-based index of the first item to return.
+    /// `limit` is the maximum number of items to return.
+    pub fn get_pet_photos_paginated(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<String> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            let total = pet.photo_hashes.len() as u64;
+            let mut result = Vec::new(&env);
+
+            if offset >= total || limit == 0 {
+                return result;
+            }
+
+            let start = offset as u32;
+            let end = (offset + limit as u64).min(total) as u32;
+
+            for i in start..end {
+                if let Some(hash) = pet.photo_hashes.get(i) {
+                    result.push_back(hash);
+                }
+            }
+
+            result
+        } else {
+            Vec::new(&env)
+        }
+    }
+
     pub fn remove_pet_photo(env: Env, pet_id: u64, photo_hash: String) -> bool {
         if let Some(mut pet) = env
             .storage()
