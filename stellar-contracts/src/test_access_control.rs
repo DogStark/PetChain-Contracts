@@ -138,6 +138,80 @@ fn test_access_expiry() {
 }
 
 #[test]
+fn test_extend_access_grant_updates_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Milo"),
+        &String::from_str(&env, "2020-04-18"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Corgi"),
+        &String::from_str(&env, "Orange"),
+        &11u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = env.ledger().timestamp();
+    let expires_at = now + 3600;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    let extended_expires_at = now + 7200;
+    let result = client.extend_access_grant(&pet_id, &grantee, &Some(extended_expires_at));
+    assert!(result);
+
+    env.ledger().with_mut(|l| l.timestamp = expires_at + 1);
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::Full);
+
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert_eq!(grant.expires_at, Some(extended_expires_at));
+}
+
+#[test]
+fn test_extend_access_grant_cannot_extend_revoked_grant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2021-03-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &8u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = env.ledger().timestamp();
+    let expires_at = now + 3600;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+    assert!(client.revoke_access(&pet_id, &grantee));
+
+    let result = client.extend_access_grant(&pet_id, &grantee, &Some(expires_at + 3600));
+    assert!(!result);
+
+    let grant = client.get_access_grant(&pet_id, &grantee).unwrap();
+    assert_eq!(grant.is_active, false);
+    assert_eq!(grant.expires_at, Some(expires_at));
+}
+
+#[test]
 fn test_access_level_enforcement_basic() {
     let env = Env::default();
     env.mock_all_auths();

@@ -1094,6 +1094,17 @@ pub struct AccessRevokedEvent {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct AccessExtendedEvent {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub old_expires_at: Option<u64>,
+    pub new_expires_at: Option<u64>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct AccessExpiredEvent {
     pub pet_id: u64,
     pub grantee: Address,
@@ -3343,7 +3354,7 @@ impl PetChainContract {
                 AccessRevokedEvent {
                     pet_id,
                     granter: granter.clone(),
-                    grantee,
+                    grantee: grantee.clone(),
                     timestamp: env.ledger().timestamp(),
                 },
             );
@@ -3353,6 +3364,66 @@ impl PetChainContract {
                 granter,
                 AccessAction::Revoke,
                 String::from_str(&env, "Access revoked"),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn extend_access_grant(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        new_expiry: Option<u64>,
+    ) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+            if !grant.is_active {
+                return false;
+            }
+            if let Some(current_expiry) = grant.expires_at {
+                let now = env.ledger().timestamp();
+                if now >= current_expiry {
+                    return false;
+                }
+                if let Some(new_expiry_value) = new_expiry {
+                    if new_expiry_value <= current_expiry {
+                        return false;
+                    }
+                }
+            } else if new_expiry.is_none() {
+                return false;
+            }
+
+            let old_expires_at = grant.expires_at;
+            grant.expires_at = new_expiry;
+            env.storage().instance().set(&key, &grant);
+
+            env.events().publish(
+                (String::from_str(&env, "AccessExtended"), pet_id),
+                AccessExtendedEvent {
+                    pet_id,
+                    granter: pet.owner.clone(),
+                    grantee: grantee.clone(),
+                    old_expires_at,
+                    new_expires_at: new_expiry,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            Self::log_access(
+                &env,
+                pet_id,
+                pet.owner.clone(),
+                AccessAction::Grant,
+                String::from_str(&env, "Access grant expiry extended"),
             );
             true
         } else {
