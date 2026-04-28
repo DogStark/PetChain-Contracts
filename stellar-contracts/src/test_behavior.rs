@@ -1,10 +1,8 @@
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, Ledger as _},
     Address, Env, String,
 };
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 
 fn setup_test_env() -> (Env, Address, Address, u64, soroban_sdk::Address) {
     let env = Env::default();
@@ -55,6 +53,31 @@ fn test_add_behavior_record() {
         BehaviorType::Training
     );
     assert_eq!(history.get(0).unwrap().severity, 5);
+}
+
+#[test]
+fn test_get_behavior_record_by_id() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let description = String::from_str(&env, "Learning to sit on command");
+    let record_id = client.add_behavior_record(&pet_id, &BehaviorType::Training, &5, &description);
+
+    let record = client.get_behavior_record(&record_id).unwrap();
+    assert_eq!(record.id, record_id);
+    assert_eq!(record.pet_id, pet_id);
+    assert_eq!(record.behavior_type, BehaviorType::Training);
+    assert_eq!(record.severity, 5);
+    assert_eq!(record.description, description);
+}
+
+#[test]
+fn test_get_behavior_record_not_found() {
+    let (env, _owner, _admin, _pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let record = client.get_behavior_record(&999u64);
+    assert!(record.is_none());
 }
 
 #[test]
@@ -706,12 +729,7 @@ fn test_get_breeding_count_unrelated_pet_unaffected() {
         &PrivacyLevel::Public,
     );
 
-    client.add_breeding_record(
-        &sire_id,
-        &dam_id,
-        &1000,
-        &String::from_str(&env, "Litter"),
-    );
+    client.add_breeding_record(&sire_id, &dam_id, &1000, &String::from_str(&env, "Litter"));
 
     assert_eq!(client.get_breeding_count(&sire_id), 1);
     assert_eq!(client.get_breeding_count(&dam_id), 1);

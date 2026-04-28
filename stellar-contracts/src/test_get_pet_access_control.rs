@@ -8,7 +8,8 @@
 #[cfg(test)]
 mod test_get_pet_access_control {
     use crate::{
-        AccessLevel, Gender, PetChainContract, PetChainContractClient, PetData, PrivacyLevel, Species,
+        AccessLevel, Gender, PetChainContract, PetChainContractClient, PetData, PrivacyLevel,
+        Species,
     };
     use soroban_sdk::{
         testutils::{Address as _, Ledger},

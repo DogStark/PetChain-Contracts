@@ -351,13 +351,14 @@ fn test_add_and_get_vet_review() {
     let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
     // Add a review
-    let review_id = client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
+    let review_id =
+        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
     assert!(review_id > 0);
 
     // Get reviews
     let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
     assert_eq!(reviews.len(), 1);
-    assert_eq!(reviews.get(0).rating, 5);
+    assert_eq!(reviews.get(0).unwrap().rating, 5);
 }
 
 #[test]
@@ -378,19 +379,19 @@ fn test_get_vet_reviews_pagination() {
     // Get first page (2 reviews)
     let page1 = client.get_vet_reviews(&vet, &0u64, &2u32);
     assert_eq!(page1.len(), 2);
-    assert_eq!(page1.get(0).rating, 1);
-    assert_eq!(page1.get(1).rating, 2);
+    assert_eq!(page1.get(0).unwrap().rating, 1);
+    assert_eq!(page1.get(1).unwrap().rating, 2);
 
     // Get second page (2 reviews)
     let page2 = client.get_vet_reviews(&vet, &2u64, &2u32);
     assert_eq!(page2.len(), 2);
-    assert_eq!(page2.get(0).rating, 3);
-    assert_eq!(page2.get(1).rating, 4);
+    assert_eq!(page2.get(0).unwrap().rating, 3);
+    assert_eq!(page2.get(1).unwrap().rating, 4);
 
     // Get last page (1 review)
     let page3 = client.get_vet_reviews(&vet, &4u64, &2u32);
     assert_eq!(page3.len(), 1);
-    assert_eq!(page3.get(0).rating, 5);
+    assert_eq!(page3.get(0).unwrap().rating, 5);
 
     // Get beyond available reviews
     let empty = client.get_vet_reviews(&vet, &10u64, &5u32);
@@ -433,10 +434,10 @@ fn test_get_vet_average_rating_with_fractional() {
     // Add reviews: 5, 4, 4 = avg 4.333... -> 433
     let owner1 = Address::generate(&env);
     client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Excellent"));
-    
+
     let owner2 = Address::generate(&env);
     client.add_vet_review(&owner2, &vet, &4, &String::from_str(&env, "Good"));
-    
+
     let owner3 = Address::generate(&env);
     client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Good"));
 
@@ -450,10 +451,12 @@ fn test_duplicate_review_prevented() {
     let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
 
     // First review should succeed
-    let result1 = client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
+    let result1 =
+        client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
     assert!(result1.is_ok());
 
     // Second review from same owner should fail
-    let result2 = client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
+    let result2 =
+        client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
     assert!(result2.is_err());
 }
