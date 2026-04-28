@@ -97,17 +97,11 @@ mod test_overflow;
 #[cfg(test)]
 mod test_pet_age;
 #[cfg(test)]
-mod test_book_slot;
-#[cfg(test)]
-mod test_book_slot;
-#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_get_lab_results;
 #[cfg(test)]
 mod test_statistics;
-#[cfg(test)]
-mod test_book_slot;
 #[cfg(test)]
 
 // #[cfg(test)]
@@ -1999,7 +1993,6 @@ impl PetChainContract {
             (years, months)
         } else {
             (0, 0)
-            return (years, months);
         }
     }
 
@@ -2318,7 +2311,7 @@ impl PetChainContract {
             let mut index_to_remove: Option<u32> = None;
             for (i, hash) in pet.photo_hashes.iter().enumerate() {
                 if hash == photo_hash {
-                    index_to_remove = Some(i);
+                    index_to_remove = Some(i as u32);
                     break;
                 }
             }
@@ -3797,12 +3790,7 @@ impl PetChainContract {
         responders.contains(caller)
     }
 
-    /// Grant a responder address access to read emergency data for a pet.
-    /// Only the pet owner can call this.
     pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
-        if contacts.is_empty() {
-            panic_with_error!(env, ContractError::InvalidInput);
-        }
 
         let mut has_primary = false;
         for contact in contacts.iter() {
@@ -3863,49 +3851,6 @@ impl PetChainContract {
         } else {
             panic!("Pet not found");
         }
-    }
-
-    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic!("Pet not found"));
-        pet.owner.require_auth();
-        let key = DataKey::EmergencyResponders(pet_id);
-        let mut responders: Vec<Address> =
-            env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
-        if !responders.contains(&responder) {
-            responders.push_back(responder);
-        }
-        env.storage().instance().set(&key, &responders);
-    }
-
-    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
-        let pet: Pet = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| panic!("Pet not found"));
-        pet.owner.require_auth();
-        let key = DataKey::EmergencyResponders(pet_id);
-        let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(&env));
-        let mut updated = Vec::new(&env);
-        for r in responders.iter() {
-            if r != responder {
-                updated.push_back(r);
-            }
-        }
-        env.storage().instance().set(&key, &updated);
-    }
-
-    fn is_emergency_authorized(env: &Env, pet_id: u64, caller: &Address, owner: &Address) -> bool {
-        if caller == owner {
-            return true;
-        }
-        let key = DataKey::EmergencyResponders(pet_id);
-        let responders: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
-        responders.contains(caller)
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
@@ -5160,8 +5105,8 @@ impl PetChainContract {
             return res;
         }
         let start = offset + 1;
-        let end = if offset + limit as u64 < count {
-            offset + limit as u64
+        let end = if offset + (limit as u64) < count {
+            offset + (limit as u64)
         } else {
             count
         };
@@ -5820,26 +5765,9 @@ impl PetChainContract {
     }
 
     /// Book a slot (mark as unavailable)
-    pub fn book_slot(env: Env, owner: Address, vet_address: Address, slot_index: u64) -> bool {
-        owner.require_auth();
+    pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
+        vet_address.require_auth();
 
-        // Verify caller is a registered pet owner
-        let is_owner: bool = env
-            .storage()
-            .instance()
-            .get::<DataKey, PetOwner>(&DataKey::PetOwner(owner))
-            .map(|po| po.is_pet_owner)
-            .unwrap_or(false);
-        if !is_owner {
-            panic!("Unauthorized: only registered pet owners can book slots");
-        }
-
-    pub fn book_slot(env: Env, caller: Address, vet_address: Address, slot_index: u64) -> bool {
-        caller.require_auth();
-        if !env.storage().instance().has(&DataKey::PetOwner(caller.clone())) {
-            panic!("Unauthorized: only registered pet owners can book slots");
-        }
-        
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
 
         if let Some(mut slot) = env
@@ -6736,33 +6664,6 @@ impl PetChainContract {
         policies
     }
 
-    /// Retrieves all insurance policies for a pet.
-    ///
-    /// # Arguments
-    /// * `pet_id` - The ID of the pet
-    ///
-    /// # Returns
-    /// Vector of all insurance policies for the pet (empty if none)
-    pub fn get_all_pet_policies(env: Env, pet_id: u64) -> Vec<InsurancePolicy> {
-        let mut policies = Vec::new(&env);
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&InsuranceKey::PetPolicyCount(pet_id))
-            .unwrap_or(0);
-
-        for i in 1..=count {
-            if let Some(policy) = env
-                .storage()
-                .instance()
-                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, i)))
-            {
-                policies.push_back(policy);
-            }
-        }
-        policies
-    }
-
     /// Updates the active status of a specific insurance policy by ID.
     ///
     /// # Arguments
@@ -6790,23 +6691,6 @@ impl PetChainContract {
         if pet.owner != owner {
             env.panic_with_error(ContractError::Unauthorized);
         }
-    pub fn update_insurance_status(env: Env, pet_id: u64, active: bool) -> bool {
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&InsuranceKey::PetPolicyCount(pet_id))
-            .unwrap_or(0);
-        if count == 0 {
-            return false;
-        }
-        let key = InsuranceKey::PetPolicyIndex((pet_id, count));
-        if let Some(mut policy) = env
-            .storage()
-            .instance()
-            .get::<InsuranceKey, InsurancePolicy>(&key)
-        {
-            policy.active = active;
-            env.storage().instance().set(&key, &policy);
 
         let count: u64 = env
             .storage()
@@ -7049,6 +6933,38 @@ impl PetChainContract {
             }
         }
         claims
+    }
+
+    pub fn get_claims_by_status(
+        env: Env,
+        pet_id: u64,
+        status: InsuranceClaimStatus,
+    ) -> Vec<InsuranceClaim> {
+        let mut result = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(claim_id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimIndex((pet_id, i)))
+            {
+                if let Some(claim) = env
+                    .storage()
+                    .instance()
+                    .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+                {
+                    if claim.status == status {
+                        result.push_back(claim);
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Returns the total number of insurance claims submitted for a given pet.
@@ -7743,7 +7659,7 @@ impl PetChainContract {
         {
             let mut i = 0;
             while i < active_proposals.len() {
-                if active_proposals.get(i) == proposal_id {
+                if active_proposals.get(i) == Some(proposal_id) {
                     active_proposals.remove(i);
                     break;
                 }
@@ -7773,7 +7689,7 @@ impl PetChainContract {
             .unwrap_or(Vec::new(&env));
 
         for i in 0..active_proposal_ids.len() {
-            let proposal_id = active_proposal_ids.get(i);
+            if let Some(proposal_id) = active_proposal_ids.get(i) {
             if let Some(proposal) = env
                 .storage()
                 .instance()
@@ -7783,6 +7699,7 @@ impl PetChainContract {
                 if !proposal.executed && now <= proposal.expires_at {
                     result.push_back(proposal);
                 }
+            }
             }
         }
 

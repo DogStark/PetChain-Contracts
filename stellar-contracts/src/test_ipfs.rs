@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 #[test]
 fn test_validate_ipfs_hash_v0_success() {
@@ -96,25 +96,10 @@ fn test_validate_ipfs_hash_v0_boundary_length() {
 fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) {
     let env = Env::default();
     env.mock_all_auths();
-
-#[test]
-fn test_sightings_pagination() {
-    let env = Env::default();
-    env.mock_all_auths();
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
-
-    let pet_id = client.register_pet(
-        &owner,
-        &String::from_str(&env, "Buddy"),
-        &String::from_str(&env, "2020-01-01"),
-        &Gender::Male,
-        &Species::Dog,
-        &String::from_str(&env, "Labrador"),
-        &String::from_str(&env, "Brown"),
-        &25u32,
     client.init_admin(&owner);
 
     let pet_id = client.register_pet(
@@ -267,7 +252,7 @@ fn test_remove_pet_photo_updates_timestamp() {
 
     // Add photo and get initial timestamp
     client.add_pet_photo(&pet_id, &photo);
-    let pet_after_add = client.get_pet(&pet_id).unwrap();
+    let pet_after_add = client.get_pet(&pet_id, &owner).unwrap();
     let timestamp_after_add = pet_after_add.updated_at;
 
     // Advance time
@@ -275,11 +260,36 @@ fn test_remove_pet_photo_updates_timestamp() {
 
     // Remove photo
     client.remove_pet_photo(&pet_id, &photo);
-    let pet_after_remove = client.get_pet(&pet_id).unwrap();
+    let pet_after_remove = client.get_pet(&pet_id, &owner).unwrap();
     let timestamp_after_remove = pet_after_remove.updated_at;
 
     // Verify timestamp was updated
     assert!(timestamp_after_remove > timestamp_after_add);
+}
+
+#[test]
+fn test_sightings_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "LostPet"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Color"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
     let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
 
     // Add 5 sightings
