@@ -247,7 +247,30 @@ fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) 
         &PrivacyLevel::Public,
     );
 
-    (env, client, owner, pet_id)
+    let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
+
+    // Add 5 sightings
+    for _i in 0..5 {
+        client.report_sighting(
+            &alert_id,
+            &String::from_str(&env, "Location"),
+            &String::from_str(&env, "Sighting "),
+        );
+    }
+
+    assert_eq!(client.get_sighting_count(&alert_id), 5);
+
+    let page1 = client.get_sightings_paginated(&alert_id, &0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    let page2 = client.get_sightings_paginated(&alert_id, &2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+
+    let page3 = client.get_sightings_paginated(&alert_id, &4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+
+    let empty = client.get_sightings_paginated(&alert_id, &10u64, &2u32);
+    assert_eq!(empty.len(), 0);
 }
 
 #[test]

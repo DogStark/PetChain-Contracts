@@ -631,7 +631,13 @@ fn test_get_attachment_by_index_middle() {
     let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add 5 attachments
-    let filenames = ["file0.jpg", "file1.jpg", "file2.jpg", "file3.jpg", "file4.jpg"];
+    let filenames = [
+        "file0.jpg",
+        "file1.jpg",
+        "file2.jpg",
+        "file3.jpg",
+        "file4.jpg",
+    ];
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
