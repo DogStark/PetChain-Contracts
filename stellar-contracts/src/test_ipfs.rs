@@ -91,7 +91,139 @@ fn test_validate_ipfs_hash_v0_boundary_length() {
     );
 }
 
-// ---- Pet Photo Tests ----
+#[test]
+fn test_validate_ipfs_hash_empty_string() {
+    let env = Env::default();
+    let invalid = String::from_str(&env, "");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_too_long() {
+    let env = Env::default();
+    // 129 chars starting with 'b' — exceeds CIDv1 max of 128
+    let invalid = String::from_str(
+        &env,
+        "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_l() {
+    let env = Env::default();
+    // 'l' (lowercase L) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdl");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_O() {
+    let env = Env::default();
+    // 'O' (uppercase O) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdO");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_I() {
+    let env = Env::default();
+    // 'I' (uppercase I) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_invalid_char_8() {
+    let env = Env::default();
+    // '8' is not in Base32 alphabet (a-z, 2-7)
+    let invalid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzd8",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_uppercase_rejected() {
+    let env = Env::default();
+    // CIDv1 base32 must be lowercase; uppercase 'B' in body is invalid
+    let invalid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdB",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_max_length_valid() {
+    let env = Env::default();
+    // 128 chars, starts with 'b', all valid Base32 chars
+    let hash = String::from_str(
+        &env,
+        "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &hash),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_min_length_valid() {
+    let env = Env::default();
+    // 2 chars — minimum valid CIDv1 (starts with 'b', one valid body char)
+    let hash = String::from_str(&env, "ba");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &hash),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_wrong_prefix_not_qm_or_b() {
+    let env = Env::default();
+    // Starts with 'z' — neither CIDv0 (Qm) nor CIDv1 (b)
+    let invalid = String::from_str(
+        &env,
+        "zafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_add_pet_photo_panics_on_invalid_hash() {
+    let (env, client, _owner, pet_id) = setup_pet_test_env();
+    let bad_hash = String::from_str(&env, "not-a-valid-ipfs-hash");
+    client.add_pet_photo(&pet_id, &bad_hash);
+}
+
+
 
 fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) {
     let env = Env::default();
