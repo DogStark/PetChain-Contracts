@@ -271,7 +271,7 @@ fn test_add_training_milestone() {
 
     assert_eq!(milestone_id, 1);
 
-    let milestones = client.get_training_milestones(&pet_id);
+    let milestones = client.get_training_milestones(&pet_id, &false);
     assert_eq!(milestones.len(), 1);
     assert_eq!(milestones.get(0).unwrap().achieved, false);
 }
@@ -290,7 +290,7 @@ fn test_mark_milestone_achieved() {
     let result = client.mark_milestone_achieved(&milestone_id);
     assert!(result);
 
-    let milestones = client.get_training_milestones(&pet_id);
+    let milestones = client.get_training_milestones(&pet_id, &false);
     assert_eq!(milestones.get(0).unwrap().achieved, true);
     assert!(milestones.get(0).unwrap().achieved_at.is_some());
 }
@@ -318,7 +318,7 @@ fn test_multiple_training_milestones() {
         &String::from_str(&env, "Comfortable with other dogs"),
     );
 
-    let milestones = client.get_training_milestones(&pet_id);
+    let milestones = client.get_training_milestones(&pet_id, &false);
     assert_eq!(milestones.len(), 3);
 }
 
@@ -406,7 +406,7 @@ fn test_comprehensive_behavior_tracking() {
     let history = client.get_behavior_history(&pet_id);
     assert_eq!(history.len(), 3);
 
-    let milestones = client.get_training_milestones(&pet_id);
+    let milestones = client.get_training_milestones(&pet_id, &false);
     assert_eq!(milestones.len(), 2);
     assert_eq!(milestones.get(0).unwrap().achieved, true);
     assert_eq!(milestones.get(1).unwrap().achieved, false);
@@ -429,8 +429,66 @@ fn test_empty_training_milestones() {
     let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
     let client = PetChainContractClient::new(&env, &contract_id);
 
-    let milestones = client.get_training_milestones(&pet_id);
+    let milestones = client.get_training_milestones(&pet_id, &false);
     assert_eq!(milestones.len(), 0);
+}
+
+#[test]
+fn test_get_training_milestones_all() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let m1 = client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Sit"),
+        &String::from_str(&env, ""),
+    );
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Stay"),
+        &String::from_str(&env, ""),
+    );
+    client.mark_milestone_achieved(&m1);
+
+    let all = client.get_training_milestones(&pet_id, &false);
+    assert_eq!(all.len(), 2);
+}
+
+#[test]
+fn test_get_training_milestones_achieved_only() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let m1 = client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Sit"),
+        &String::from_str(&env, ""),
+    );
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Stay"),
+        &String::from_str(&env, ""),
+    );
+    client.mark_milestone_achieved(&m1);
+
+    let achieved = client.get_training_milestones(&pet_id, &true);
+    assert_eq!(achieved.len(), 1);
+    assert_eq!(achieved.get(0).unwrap().achieved, true);
+}
+
+#[test]
+fn test_get_training_milestones_achieved_only_empty_when_none_achieved() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Sit"),
+        &String::from_str(&env, ""),
+    );
+
+    let achieved = client.get_training_milestones(&pet_id, &true);
+    assert_eq!(achieved.len(), 0);
 }
 
 // --- get_behavior_improvements tests ---
