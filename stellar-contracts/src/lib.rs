@@ -103,6 +103,8 @@ mod test_search_medical_records;
 #[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
+mod test_disputes;
+#[cfg(test)]
 mod test_upgrade_proposal;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -274,6 +276,38 @@ pub enum PrivacyLevel {
     Public,     // Accessible to anyone
     Restricted, // Accessible to granted access (e.g., vets, owners)
     Private,    // Accessible only to the owner
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    Pending,
+    ResolvedInFavorOfClaimer,
+    ResolvedInFavorOfTarget,
+    Dismissed,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Dispute {
+    pub dispute_id: u64,
+    pub pet_id: u64,
+    pub claimer: Address,
+    pub target: Address,
+    pub amount: u64,
+    pub reason: String,
+    pub evidence_hash: String,
+    pub status: DisputeStatus,
+    pub created_at: u64,
+    pub resolved_at: Option<u64>,
+}
+
+#[contracttype]
+pub enum DisputeKey {
+    Dispute(u64),
+    DisputeCount,
+    PetDisputeCount(u64),
+    PetDisputeIndex((u64, u64)),
 }
 
 #[contracttype]
@@ -2686,15 +2720,6 @@ impl PetChainContract {
 
         if specialization.len() > PetChainContract::MAX_VET_SPEC_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
-            panic!("Vet name exceeds maximum length");
-        }
-
-        if license_number.len() > PetChainContract::MAX_VET_LICENSE_LEN {
-            panic!("License number exceeds maximum length");
-        }
-
-        if specialization.len() > PetChainContract::MAX_VET_SPEC_LEN {
-            panic!("Specialization exceeds maximum length");
         }
 
         if env
@@ -3829,6 +3854,85 @@ impl PetChainContract {
 
     /// Grant a responder address access to read emergency data for a pet.
     /// Only the pet owner can call this.
+    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::EmergencyResponders(pet_id);
+        let mut responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        if !responders.contains(&responder) {
+            responders.push_back(responder);
+            env.storage().instance().set(&key, &responders);
+        }
+    }
+
+    /// Revoke a responder's access. Only the pet owner can call this.
+    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::EmergencyResponders(pet_id);
+        let responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        let mut updated = Vec::new(&env);
+        for r in responders.iter() {
+            if r != responder {
+                updated.push_back(r);
+            }
+        }
+        env.storage().instance().set(&key, &updated);
+    }
+
+    /// Returns true if caller is the pet owner or an approved emergency responder.
+    pub(crate) fn is_emergency_authorized(
+        env: &Env,
+        pet_id: u64,
+        caller: &Address,
+        owner: &Address,
+    ) -> bool {
+        if caller == owner {
+            return true;
+        }
+        let responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyResponders(pet_id))
+            .unwrap_or(Vec::new(env));
+        responders.contains(caller)
+    }
+
+    /// List all approved emergency responders for a pet. Owner auth required.
+    pub fn get_emergency_responders(env: Env, pet_id: u64, owner: Address) -> Vec<Address> {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if owner != pet.owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        owner.require_auth();
+        env.storage()
+            .instance()
+            .get(&DataKey::EmergencyResponders(pet_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
     pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
         if contacts.is_empty() {
             panic_with_error!(env, ContractError::InvalidInput);
@@ -4821,7 +4925,6 @@ impl PetChainContract {
 
             if record.attachment_hashes.len() >= PetChainContract::MAX_VEC_ATTACHMENTS {
                 panic_with_error!(&env, ContractError::TooManyItems);
-                env.panic_with_error(ContractError::TooManyItems);
             }
 
             // Validate metadata
@@ -5062,7 +5165,20 @@ impl PetChainContract {
         users
     }
 
-    pub fn get_all_access_grants(env: Env, pet_id: u64) -> Vec<AccessGrant> {
+    pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AccessGrant((pet_id, grantee)))
+    }
+
+    /// Extend (or update) the expiry of an existing active access grant.
+    /// Returns false if the grant doesn't exist or is not active.
+    pub fn extend_access_grant(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        new_expires_at: Option<u64>,
+    ) -> bool {
         let pet = env
             .storage()
             .instance()
@@ -5070,35 +5186,17 @@ impl PetChainContract {
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
         pet.owner.require_auth();
 
-        let count = env
-            .storage()
-            .instance()
-            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
-            .unwrap_or(0);
-        let mut grants = Vec::new(&env);
-
-        for i in 1..=count {
-            if let Some(grantee) = env
-                .storage()
-                .instance()
-                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
-            {
-                if let Some(grant) = env
-                    .storage()
-                    .instance()
-                    .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, grantee)))
-                {
-                    grants.push_back(grant);
-                }
+        let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+            if !grant.is_active {
+                return false;
             }
+            grant.expires_at = new_expires_at;
+            env.storage().instance().set(&key, &grant);
+            true
+        } else {
+            false
         }
-        grants
-    }
-
-    pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
-        env.storage()
-            .instance()
-            .get(&DataKey::AccessGrant((pet_id, grantee)))
     }
 
     pub fn get_all_access_grants(env: Env, pet_id: u64, owner: Address) -> Vec<AccessGrant> {
@@ -5493,6 +5591,31 @@ impl PetChainContract {
         }
 
         active_alerts
+    }
+
+    /// Get pet IDs that have active lost alerts (for map-based UIs)
+    pub fn get_pets_with_active_alerts(env: Env) -> Vec<u64> {
+        let active_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&AlertKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+
+        let mut pet_ids = Vec::new(&env);
+
+        for id in active_ids.iter() {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<AlertKey, LostPetAlert>(&AlertKey::LostPetAlert(id))
+            {
+                if alert.status == AlertStatus::Active {
+                    pet_ids.push_back(alert.pet_id);
+                }
+            }
+        }
+
+        pet_ids
     }
 
     /// Get a specific alert by ID
@@ -6054,6 +6177,27 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    /// Idempotent storage migration from v1 to v2. Admin-only.
+    /// Bumps the contract version to 2.0.0 if it is still at 1.x.x.
+    /// Safe to call multiple times.
+    pub fn migrate_v1_to_v2(env: Env, caller: Address) {
+        PetChainContract::require_admin_auth(&env, &caller);
+
+        let current: ContractVersion = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(ContractVersion { major: 1, minor: 0, patch: 0 });
+
+        // Idempotent: only migrate if still on v1
+        if current.major < 2 {
+            env.storage().instance().set(
+                &DataKey::ContractVersion,
+                &ContractVersion { major: 2, minor: 0, patch: 0 },
+            );
+        }
     }
 
     pub fn list_upgrade_proposals(env: Env, offset: u64, limit: u32) -> Vec<UpgradeProposal> {
@@ -7066,6 +7210,38 @@ impl PetChainContract {
             }
         }
         claims
+    }
+
+    pub fn get_claims_by_status(
+        env: Env,
+        pet_id: u64,
+        status: InsuranceClaimStatus,
+    ) -> Vec<InsuranceClaim> {
+        let mut result = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(claim_id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimIndex((pet_id, i)))
+            {
+                if let Some(claim) = env
+                    .storage()
+                    .instance()
+                    .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+                {
+                    if claim.status == status {
+                        result.push_back(claim);
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Returns the total number of insurance claims submitted for a given pet.
@@ -8257,6 +8433,113 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetGroomingCount(pet_id))
             .unwrap_or(0)
+    }
+
+    // --- DISPUTE RESOLUTION ---
+
+    pub fn raise_dispute(
+        env: Env,
+        pet_id: u64,
+        claimer: Address,
+        target: Address,
+        amount: u64,
+        reason: String,
+        evidence_hash: String,
+    ) -> u64 {
+        claimer.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::DisputeCount)
+            .unwrap_or(0);
+        let dispute_id = safe_increment(count);
+
+        let dispute = Dispute {
+            dispute_id,
+            pet_id,
+            claimer,
+            target,
+            amount,
+            reason,
+            evidence_hash,
+            status: DisputeStatus::Pending,
+            created_at: env.ledger().timestamp(),
+            resolved_at: None,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::DisputeCount, &dispute_id);
+
+        // Index by pet
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = safe_increment(pet_count);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::PetDisputeCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &DisputeKey::PetDisputeIndex((pet_id, new_pet_count)),
+            &dispute_id,
+        );
+
+        dispute_id
+    }
+
+    pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool {
+        PetChainContract::require_admin(&env);
+
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+
+        dispute.status = status;
+        dispute.resolved_at = Some(env.ledger().timestamp());
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
+        env.storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+    }
+
+    pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0);
+        let mut result = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(dispute_id) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, u64>(&DisputeKey::PetDisputeIndex((pet_id, i)))
+            {
+                if let Some(dispute) = env
+                    .storage()
+                    .instance()
+                    .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+                {
+                    result.push_back(dispute);
+                }
+            }
+        }
+        result
     }
 } // end impl PetChainContract
 

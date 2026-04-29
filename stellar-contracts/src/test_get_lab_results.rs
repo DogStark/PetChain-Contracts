@@ -6,7 +6,7 @@
 mod test_get_lab_results {
     use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Ledger as _},
         Address, Env, String, Vec,
     };
 

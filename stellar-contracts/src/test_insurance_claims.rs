@@ -275,3 +275,122 @@ fn test_get_insurance_claim_count_no_claims() {
     // Pet with no claims should return 0
     assert_eq!(client.get_insurance_claim_count(&pet_id), 0);
 }
+
+fn setup_pet_with_claims(
+    env: &Env,
+    client: &PetChainContractClient,
+) -> u64 {
+    let owner = Address::generate(env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(env, "Cleo"),
+        &String::from_str(env, "2020-03-15"),
+        &crate::Gender::Female,
+        &crate::Species::Dog,
+        &String::from_str(env, "Spotted"),
+        &String::from_str(env, "Dalmatian"),
+        &22,
+        &None,
+        &crate::PrivacyLevel::Public,
+    );
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(env, "POL-STATUS-01"),
+        &String::from_str(env, "StatusCare"),
+        &String::from_str(env, "Full"),
+        &150,
+        &15000,
+        &expiry,
+    );
+
+    pet_id
+}
+
+#[test]
+fn test_get_claims_by_status_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let pet_id = setup_pet_with_claims(&env, &client);
+
+    let id1 = client.submit_insurance_claim(&pet_id, &100, &String::from_str(&env, "Checkup")).unwrap();
+    let id2 = client.submit_insurance_claim(&pet_id, &200, &String::from_str(&env, "X-ray")).unwrap();
+    client.update_insurance_claim_status(&id2, &InsuranceClaimStatus::Approved);
+
+    let pending = client.get_claims_by_status(&pet_id, &InsuranceClaimStatus::Pending);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.get(0).unwrap().claim_id, id1);
+}
+
+#[test]
+fn test_get_claims_by_status_approved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let pet_id = setup_pet_with_claims(&env, &client);
+
+    let id1 = client.submit_insurance_claim(&pet_id, &300, &String::from_str(&env, "Surgery")).unwrap();
+    let id2 = client.submit_insurance_claim(&pet_id, &400, &String::from_str(&env, "Meds")).unwrap();
+    client.update_insurance_claim_status(&id1, &InsuranceClaimStatus::Approved);
+    client.update_insurance_claim_status(&id2, &InsuranceClaimStatus::Approved);
+
+    let approved = client.get_claims_by_status(&pet_id, &InsuranceClaimStatus::Approved);
+    assert_eq!(approved.len(), 2);
+}
+
+#[test]
+fn test_get_claims_by_status_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let pet_id = setup_pet_with_claims(&env, &client);
+
+    let id1 = client.submit_insurance_claim(&pet_id, &500, &String::from_str(&env, "Cosmetic")).unwrap();
+    client.update_insurance_claim_status(&id1, &InsuranceClaimStatus::Rejected);
+    client.submit_insurance_claim(&pet_id, &600, &String::from_str(&env, "Dental"));
+
+    let rejected = client.get_claims_by_status(&pet_id, &InsuranceClaimStatus::Rejected);
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected.get(0).unwrap().claim_id, id1);
+}
+
+#[test]
+fn test_get_claims_by_status_paid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let pet_id = setup_pet_with_claims(&env, &client);
+
+    let id1 = client.submit_insurance_claim(&pet_id, &700, &String::from_str(&env, "Hip surgery")).unwrap();
+    client.update_insurance_claim_status(&id1, &InsuranceClaimStatus::Paid);
+
+    let paid = client.get_claims_by_status(&pet_id, &InsuranceClaimStatus::Paid);
+    assert_eq!(paid.len(), 1);
+    assert_eq!(paid.get(0).unwrap().claim_id, id1);
+}
+
+#[test]
+fn test_get_claims_by_status_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let pet_id = setup_pet_with_claims(&env, &client);
+
+    client.submit_insurance_claim(&pet_id, &100, &String::from_str(&env, "Checkup"));
+
+    // No claims have been approved, so result should be empty
+    let approved = client.get_claims_by_status(&pet_id, &InsuranceClaimStatus::Approved);
+    assert_eq!(approved.len(), 0);
+}

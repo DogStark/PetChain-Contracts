@@ -274,7 +274,7 @@ mod test_search_medical_records {
     }
 
     #[test]
-    // #[should_panic] // Auth check always passes with mock_all_auths() in setup()
+    #[should_panic]
     fn test_update_medical_record_notes_creator_only() {
         let env = Env::default();
         let admin = Address::generate(&env);
@@ -334,7 +334,7 @@ mod test_search_medical_records {
         env.set_auths(&[]);
         client.update_medical_record_notes(
             &record_id,
-            &String::from_str(&env, "Unauthorized update"),
+            &String::from_str(&env, "Updated notes"),
         );
     }
 

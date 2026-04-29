@@ -401,3 +401,79 @@ fn test_set_emergency_contacts_pet_not_found() {
         &String::from_str(&env, ""),
     );
 }
+
+// --- get_emergency_responders tests ---
+
+fn setup_env_with_pet() -> (Env, PetChainContractClient<'static>, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    (env, client, owner, pet_id)
+}
+
+#[test]
+fn test_get_emergency_responders_empty() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 0);
+}
+
+#[test]
+fn test_get_emergency_responders_returns_added() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r1);
+    client.add_emergency_responder(&pet_id, &r2);
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 2);
+    assert!(responders.contains(&r1));
+    assert!(responders.contains(&r2));
+}
+
+#[test]
+fn test_get_emergency_responders_after_remove() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r1);
+    client.add_emergency_responder(&pet_id, &r2);
+    client.remove_emergency_responder(&pet_id, &r2);
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 1);
+    assert!(responders.contains(&r1));
+    assert!(!responders.contains(&r2));
+}
+
+#[test]
+#[should_panic]
+fn test_get_emergency_responders_non_owner_panics() {
+    let (env, client, _owner, pet_id) = setup_env_with_pet();
+    let stranger = Address::generate(&env);
+    client.get_emergency_responders(&pet_id, &stranger);
+}
+
+#[test]
+fn test_add_emergency_responder_idempotent() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r);
+    client.add_emergency_responder(&pet_id, &r); // duplicate — should not double-add
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 1);
+}
