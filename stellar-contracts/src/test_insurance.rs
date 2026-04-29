@@ -1,5 +1,8 @@
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String,
+};
 
 #[test]
 fn test_insurance_policy() {
@@ -77,12 +80,8 @@ fn test_insurance_policy() {
     assert_eq!(policy.active, true);
 
     // Update insurance status
-    let update_result = client.update_insurance_status(
-        &owner,
-        &pet_id,
-        &String::from_str(&env, "POL-123"),
-        &false,
-    );
+    let update_result =
+        client.update_insurance_status(&owner, &pet_id, &String::from_str(&env, "POL-123"), &false);
     assert_eq!(update_result, true);
 
     let updated_policy = client.get_pet_insurance(&pet_id).unwrap();

@@ -574,12 +574,8 @@ fn test_update_insurance_status_targets_specific_policy() {
     );
 
     // Deactivate only POL-A; POL-B should remain active
-    let result = client.update_insurance_status(
-        &owner,
-        &pet_id,
-        &String::from_str(&env, "POL-A"),
-        &false,
-    );
+    let result =
+        client.update_insurance_status(&owner, &pet_id, &String::from_str(&env, "POL-A"), &false);
     assert_eq!(result, true);
 
     let all = client.get_all_pet_policies(&pet_id);
@@ -589,12 +585,8 @@ fn test_update_insurance_status_targets_specific_policy() {
     assert_eq!(pol_b.active, true);
 
     // Deactivate POL-B independently
-    let result = client.update_insurance_status(
-        &owner,
-        &pet_id,
-        &String::from_str(&env, "POL-B"),
-        &false,
-    );
+    let result =
+        client.update_insurance_status(&owner, &pet_id, &String::from_str(&env, "POL-B"), &false);
     assert_eq!(result, true);
 
     let all = client.get_all_pet_policies(&pet_id);
@@ -602,12 +594,8 @@ fn test_update_insurance_status_targets_specific_policy() {
     assert_eq!(all.get(1).unwrap().active, false);
 
     // Reactivate POL-A only
-    let result = client.update_insurance_status(
-        &owner,
-        &pet_id,
-        &String::from_str(&env, "POL-A"),
-        &true,
-    );
+    let result =
+        client.update_insurance_status(&owner, &pet_id, &String::from_str(&env, "POL-A"), &true);
     assert_eq!(result, true);
 
     let all = client.get_all_pet_policies(&pet_id);

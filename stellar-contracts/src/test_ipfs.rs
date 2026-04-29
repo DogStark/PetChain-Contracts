@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 #[test]
 fn test_validate_ipfs_hash_v0_success() {
@@ -91,17 +91,147 @@ fn test_validate_ipfs_hash_v0_boundary_length() {
     );
 }
 
-// ---- Pet Photo Tests ----
+#[test]
+fn test_validate_ipfs_hash_empty_string() {
+    let env = Env::default();
+    let invalid = String::from_str(&env, "");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_too_long() {
+    let env = Env::default();
+    // 129 chars starting with 'b' — exceeds CIDv1 max of 128
+    let invalid = String::from_str(
+        &env,
+        "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_l() {
+    let env = Env::default();
+    // 'l' (lowercase L) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdl");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_O() {
+    let env = Env::default();
+    // 'O' (uppercase O) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdO");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v0_excluded_base58_char_I() {
+    let env = Env::default();
+    // 'I' (uppercase I) is excluded from Base58
+    let invalid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdI");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_invalid_char_8() {
+    let env = Env::default();
+    // '8' is not in Base32 alphabet (a-z, 2-7)
+    let invalid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzd8",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_uppercase_rejected() {
+    let env = Env::default();
+    // CIDv1 base32 must be lowercase; uppercase 'B' in body is invalid
+    let invalid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdB",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_max_length_valid() {
+    let env = Env::default();
+    // 128 chars, starts with 'b', all valid Base32 chars
+    let hash = String::from_str(
+        &env,
+        "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &hash),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_v1_min_length_valid() {
+    let env = Env::default();
+    // 2 chars — minimum valid CIDv1 (starts with 'b', one valid body char)
+    let hash = String::from_str(&env, "ba");
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &hash),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_validate_ipfs_hash_wrong_prefix_not_qm_or_b() {
+    let env = Env::default();
+    // Starts with 'z' — neither CIDv0 (Qm) nor CIDv1 (b)
+    let invalid = String::from_str(
+        &env,
+        "zafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
+    assert_eq!(
+        PetChainContract::validate_ipfs_hash(&env, &invalid),
+        Err(ContractError::InvalidIpfsHash)
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_add_pet_photo_panics_on_invalid_hash() {
+    let (env, client, _owner, pet_id) = setup_pet_test_env();
+    let bad_hash = String::from_str(&env, "not-a-valid-ipfs-hash");
+    client.add_pet_photo(&pet_id, &bad_hash);
+}
+
+
 
 fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) {
     let env = Env::default();
     env.mock_all_auths();
-
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
-
     client.init_admin(&owner);
 
     let pet_id = client.register_pet(
@@ -117,7 +247,30 @@ fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) 
         &PrivacyLevel::Public,
     );
 
-    (env, client, owner, pet_id)
+    let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
+
+    // Add 5 sightings
+    for _i in 0..5 {
+        client.report_sighting(
+            &alert_id,
+            &String::from_str(&env, "Location"),
+            &String::from_str(&env, "Sighting "),
+        );
+    }
+
+    assert_eq!(client.get_sighting_count(&alert_id), 5);
+
+    let page1 = client.get_sightings_paginated(&alert_id, &0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    let page2 = client.get_sightings_paginated(&alert_id, &2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+
+    let page3 = client.get_sightings_paginated(&alert_id, &4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+
+    let empty = client.get_sightings_paginated(&alert_id, &10u64, &2u32);
+    assert_eq!(empty.len(), 0);
 }
 
 #[test]
@@ -258,7 +411,7 @@ fn test_remove_pet_photo_updates_timestamp() {
     let timestamp_after_add = pet_after_add.updated_at;
 
     // Advance time
-    env.ledger().with_mut(|l| l.timestamp += 1000);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1000);
 
     // Remove photo
     client.remove_pet_photo(&pet_id, &photo);

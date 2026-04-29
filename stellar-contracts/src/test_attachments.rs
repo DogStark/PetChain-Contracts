@@ -631,7 +631,13 @@ fn test_get_attachment_by_index_middle() {
     let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Add 5 attachments
-    let filenames = ["file0.jpg", "file1.jpg", "file2.jpg", "file3.jpg", "file4.jpg"];
+    let filenames = [
+        "file0.jpg",
+        "file1.jpg",
+        "file2.jpg",
+        "file3.jpg",
+        "file4.jpg",
+    ];
     let hashes = [
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
         "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH",
@@ -641,7 +647,8 @@ fn test_get_attachment_by_index_middle() {
     ];
 
     for i in 0..5 {
-        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
         client.add_attachment(
             &record_id,
             &String::from_str(&env, hashes[i]),
@@ -670,7 +677,8 @@ fn test_get_attachment_by_index_after_removal() {
     ];
 
     for i in 0..3 {
-        let metadata = create_test_metadata(&env, filenames[i], "image/jpeg", 1024000);
+        let metadata =
+            create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
         client.add_attachment(
             &record_id,
             &String::from_str(&env, hashes[i]),
