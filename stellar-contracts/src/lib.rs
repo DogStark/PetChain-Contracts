@@ -2720,15 +2720,6 @@ impl PetChainContract {
 
         if specialization.len() > PetChainContract::MAX_VET_SPEC_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
-            panic!("Vet name exceeds maximum length");
-        }
-
-        if license_number.len() > PetChainContract::MAX_VET_LICENSE_LEN {
-            panic!("License number exceeds maximum length");
-        }
-
-        if specialization.len() > PetChainContract::MAX_VET_SPEC_LEN {
-            panic!("Specialization exceeds maximum length");
         }
 
         if env
