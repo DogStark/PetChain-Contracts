@@ -1,5 +1,5 @@
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 fn setup_test_env() -> (Env, Address, Address, u64, soroban_sdk::Address) {
     let env = Env::default();
@@ -50,6 +50,135 @@ fn test_add_behavior_record() {
         BehaviorType::Training
     );
     assert_eq!(history.get(0).unwrap().severity, 5);
+}
+
+#[test]
+fn test_get_behavior_record_by_id() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let description = String::from_str(&env, "Learning to sit on command");
+    let record_id = client.add_behavior_record(&pet_id, &BehaviorType::Training, &5, &description);
+
+    let record = client.get_behavior_record(&record_id).unwrap();
+    assert_eq!(record.id, record_id);
+    assert_eq!(record.pet_id, pet_id);
+    assert_eq!(record.behavior_type, BehaviorType::Training);
+    assert_eq!(record.severity, 5);
+    assert_eq!(record.description, description);
+}
+
+#[test]
+fn test_get_behavior_record_not_found() {
+    let (env, _owner, _admin, _pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let record = client.get_behavior_record(&999u64);
+    assert!(record.is_none());
+}
+
+// ---- get_behavior_count tests ----
+
+#[test]
+fn test_get_behavior_count_empty() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+    assert_eq!(client.get_behavior_count(&pet_id), 0);
+}
+
+#[test]
+fn test_get_behavior_count_unknown_pet() {
+    let (env, _owner, _admin, _pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+    assert_eq!(client.get_behavior_count(&9999u64), 0);
+}
+
+#[test]
+fn test_get_behavior_count_increments_on_add() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_behavior_count(&pet_id), 0);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &5,
+        &String::from_str(&env, "Sit command"),
+    );
+    assert_eq!(client.get_behavior_count(&pet_id), 1);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Anxiety,
+        &3,
+        &String::from_str(&env, "Separation anxiety"),
+    );
+    assert_eq!(client.get_behavior_count(&pet_id), 2);
+
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Aggression,
+        &7,
+        &String::from_str(&env, "Barking at strangers"),
+    );
+    assert_eq!(client.get_behavior_count(&pet_id), 3);
+}
+
+#[test]
+fn test_get_behavior_count_matches_history_length() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    for i in 0..5u32 {
+        client.add_behavior_record(
+            &pet_id,
+            &BehaviorType::Socialization,
+            &i,
+            &String::from_str(&env, "Record"),
+        );
+    }
+
+    let count = client.get_behavior_count(&pet_id);
+    let history = client.get_behavior_history(&pet_id);
+    assert_eq!(count, history.len() as u64);
+}
+
+#[test]
+fn test_get_behavior_count_isolated_per_pet() {
+    let (env, owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    // Register a second pet
+    let pet_id2 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2021-06-15"),
+        &Gender::Male,
+        &Species::Cat,
+        &String::from_str(&env, "Maine Coon"),
+        &String::from_str(&env, "Black"),
+        &4u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add records only to pet 1
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &5,
+        &String::from_str(&env, "Sit"),
+    );
+    client.add_behavior_record(
+        &pet_id,
+        &BehaviorType::Training,
+        &4,
+        &String::from_str(&env, "Stay"),
+    );
+
+    assert_eq!(client.get_behavior_count(&pet_id), 2);
+    assert_eq!(client.get_behavior_count(&pet_id2), 0);
 }
 
 #[test]
@@ -759,12 +888,7 @@ fn test_get_breeding_count_unrelated_pet_unaffected() {
         &PrivacyLevel::Public,
     );
 
-    client.add_breeding_record(
-        &sire_id,
-        &dam_id,
-        &1000,
-        &String::from_str(&env, "Litter"),
-    );
+    client.add_breeding_record(&sire_id, &dam_id, &1000, &String::from_str(&env, "Litter"));
 
     assert_eq!(client.get_breeding_count(&sire_id), 1);
     assert_eq!(client.get_breeding_count(&dam_id), 1);
