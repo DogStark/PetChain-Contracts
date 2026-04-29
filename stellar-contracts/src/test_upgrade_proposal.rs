@@ -244,3 +244,58 @@ fn test_version_readable_publicly() {
     assert_eq!(version.minor, 1);
     assert_eq!(version.patch, 5);
 }
+
+// --- migrate_v1_to_v2 tests ---
+
+#[test]
+fn test_migrate_v1_to_v2_bumps_version() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let before = client.get_version();
+    assert_eq!(before.major, 1);
+
+    client.migrate_v1_to_v2(&admin1);
+
+    let after = client.get_version();
+    assert_eq!(after.major, 2);
+    assert_eq!(after.minor, 0);
+    assert_eq!(after.patch, 0);
+}
+
+#[test]
+fn test_migrate_v1_to_v2_idempotent() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.migrate_v1_to_v2(&admin1);
+    client.migrate_v1_to_v2(&admin1); // second call must be a no-op
+
+    let version = client.get_version();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+fn test_migrate_v1_to_v2_does_not_downgrade() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    // Manually set version to 3.x
+    client.set_version(&admin1, &3, &0, &0);
+    client.migrate_v1_to_v2(&admin1); // must not downgrade
+
+    let version = client.get_version();
+    assert_eq!(version.major, 3);
+}
+
+#[test]
+#[should_panic]
+fn test_migrate_v1_to_v2_non_admin_panics() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    client.migrate_v1_to_v2(&non_admin);
+}

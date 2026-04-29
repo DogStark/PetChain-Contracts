@@ -3829,6 +3829,85 @@ impl PetChainContract {
 
     /// Grant a responder address access to read emergency data for a pet.
     /// Only the pet owner can call this.
+    pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::EmergencyResponders(pet_id);
+        let mut responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        if !responders.contains(&responder) {
+            responders.push_back(responder);
+            env.storage().instance().set(&key, &responders);
+        }
+    }
+
+    /// Revoke a responder's access. Only the pet owner can call this.
+    pub fn remove_emergency_responder(env: Env, pet_id: u64, responder: Address) {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::EmergencyResponders(pet_id);
+        let responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        let mut updated = Vec::new(&env);
+        for r in responders.iter() {
+            if r != responder {
+                updated.push_back(r);
+            }
+        }
+        env.storage().instance().set(&key, &updated);
+    }
+
+    /// Returns true if caller is the pet owner or an approved emergency responder.
+    pub(crate) fn is_emergency_authorized(
+        env: &Env,
+        pet_id: u64,
+        caller: &Address,
+        owner: &Address,
+    ) -> bool {
+        if caller == owner {
+            return true;
+        }
+        let responders: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyResponders(pet_id))
+            .unwrap_or(Vec::new(env));
+        responders.contains(caller)
+    }
+
+    /// List all approved emergency responders for a pet. Owner auth required.
+    pub fn get_emergency_responders(env: Env, pet_id: u64, owner: Address) -> Vec<Address> {
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if owner != pet.owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        owner.require_auth();
+        env.storage()
+            .instance()
+            .get(&DataKey::EmergencyResponders(pet_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
     pub(crate) fn validate_emergency_contacts(env: &Env, contacts: &Vec<EmergencyContact>) {
         if contacts.is_empty() {
             panic_with_error!(env, ContractError::InvalidInput);
@@ -6054,6 +6133,28 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    /// Idempotent storage migration from v1 to v2. Admin-only.
+    /// Bumps the contract version to 2.0.0 if it is still at 1.x.x.
+    /// Safe to call multiple times.
+    pub fn migrate_v1_to_v2(env: Env, caller: Address) {
+        caller.require_auth();
+        PetChainContract::require_admin_auth(&env, &caller);
+
+        let current: ContractVersion = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(ContractVersion { major: 1, minor: 0, patch: 0 });
+
+        // Idempotent: only migrate if still on v1
+        if current.major < 2 {
+            env.storage().instance().set(
+                &DataKey::ContractVersion,
+                &ContractVersion { major: 2, minor: 0, patch: 0 },
+            );
+        }
     }
 
     pub fn list_upgrade_proposals(env: Env, offset: u64, limit: u32) -> Vec<UpgradeProposal> {
