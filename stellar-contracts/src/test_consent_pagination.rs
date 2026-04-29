@@ -199,3 +199,23 @@ fn test_get_active_consents_no_consents() {
     let active = client.get_active_consents(&pet_id);
     assert_eq!(active.len(), 0);
 }
+
+#[test]
+fn test_get_consent_count_returns_correct_count() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    assert_eq!(client.get_consent_count(&pet_id), 0);
+
+    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    assert_eq!(client.get_consent_count(&pet_id), 1);
+
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    assert_eq!(client.get_consent_count(&pet_id), 2);
+}
+
+#[test]
+fn test_get_consent_count_zero_for_no_consents() {
+    let (_env, client, pet_id, _owner) = setup();
+    assert_eq!(client.get_consent_count(&pet_id), 0);
+}

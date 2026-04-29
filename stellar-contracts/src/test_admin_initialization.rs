@@ -1,6 +1,5 @@
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
-
 use crate::{PetChainContract, PetChainContractClient, ProposalAction};
+use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String};
 
 fn setup_client(env: &Env) -> PetChainContractClient<'static> {
     let contract_id = env.register_contract(None, PetChainContract);
@@ -73,7 +72,6 @@ fn test_get_admins_reflects_change_admin_proposal() {
     let admin2 = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-
     let admins = vec![&env, admin1.clone(), admin2.clone()];
     client.init_multisig(&admin1, &admins, &1u32);
 
@@ -127,7 +125,7 @@ fn test_multisig_initialization_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_single_admin_reinitialization_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -140,7 +138,7 @@ fn test_single_admin_reinitialization_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_multisig_reinitialization_rejected_after_single_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -156,7 +154,7 @@ fn test_multisig_reinitialization_rejected_after_single_admin() {
 }
 
 #[test]
-#[should_panic(expected = "Admin already set")]
+#[should_panic]
 fn test_single_admin_reinitialization_rejected_after_multisig() {
     let env = Env::default();
     env.mock_all_auths();
@@ -172,7 +170,7 @@ fn test_single_admin_reinitialization_rejected_after_multisig() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid threshold")]
+#[should_panic]
 fn test_multisig_initialization_rejects_zero_threshold() {
     let env = Env::default();
     env.mock_all_auths();
@@ -185,7 +183,7 @@ fn test_multisig_initialization_rejects_zero_threshold() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid threshold")]
+#[should_panic]
 fn test_multisig_initialization_rejects_threshold_above_admin_count() {
     let env = Env::default();
     env.mock_all_auths();

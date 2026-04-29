@@ -365,3 +365,54 @@ fn test_get_diet_plan_count() {
     // Count for a non-existent pet returns 0
     assert_eq!(client.get_diet_plan_count(&9999u64), 0);
 }
+
+#[test]
+fn test_get_weight_entry_by_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Bolt"),
+        &String::from_str(&env, "2022-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Husky"),
+        &String::from_str(&env, "White"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_weight_entry(&pet_id, &21u32);
+    client.add_weight_entry(&pet_id, &22u32);
+
+    // weight_id 1 should exist and have weight 21
+    let entry = client.get_weight_entry(&1u64);
+    assert!(entry.is_some());
+    let e = entry.unwrap();
+    assert_eq!(e.pet_id, pet_id);
+    assert_eq!(e.weight, 21u32);
+
+    // weight_id 2 should exist and have weight 22
+    let entry2 = client.get_weight_entry(&2u64);
+    assert!(entry2.is_some());
+    assert_eq!(entry2.unwrap().weight, 22u32);
+}
+
+#[test]
+fn test_get_weight_entry_nonexistent_returns_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    // No entries added — ID 999 should return None
+    let result = client.get_weight_entry(&999u64);
+    assert!(result.is_none());
+}

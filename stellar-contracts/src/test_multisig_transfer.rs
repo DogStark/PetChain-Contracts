@@ -666,11 +666,11 @@ fn test_get_active_transfer_proposals_mixed_states() {
     let mut found_proposal1 = false;
     let mut found_proposal3 = false;
     for i in 0..active.len() {
-        let proposal = active.get(i).unwrap();
-        if proposal.id == proposal_id1 {
+        let proposal = active.get(i);
+        if proposal.as_ref().map(|p| p.id) == Some(proposal_id1) {
             found_proposal1 = true;
         }
-        if proposal.id == proposal_id3 {
+        if proposal.as_ref().map(|p| p.id) == Some(proposal_id3) {
             found_proposal3 = true;
         }
     }
