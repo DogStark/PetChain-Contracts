@@ -5495,6 +5495,31 @@ impl PetChainContract {
         active_alerts
     }
 
+    /// Get pet IDs that have active lost alerts (for map-based UIs)
+    pub fn get_pets_with_active_alerts(env: Env) -> Vec<u64> {
+        let active_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&AlertKey::ActiveLostPetAlerts)
+            .unwrap_or(Vec::new(&env));
+
+        let mut pet_ids = Vec::new(&env);
+
+        for id in active_ids.iter() {
+            if let Some(alert) = env
+                .storage()
+                .instance()
+                .get::<AlertKey, LostPetAlert>(&AlertKey::LostPetAlert(id))
+            {
+                if alert.status == AlertStatus::Active {
+                    pet_ids.push_back(alert.pet_id);
+                }
+            }
+        }
+
+        pet_ids
+    }
+
     /// Get a specific alert by ID
     pub fn get_alert(env: Env, alert_id: u64) -> Option<LostPetAlert> {
         env.storage()

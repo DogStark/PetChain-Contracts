@@ -456,3 +456,91 @@ fn test_update_lost_alert() {
     assert_eq!(alert.last_seen_location, new_location);
     assert_eq!(alert.reward_amount, new_reward);
 }
+
+#[test]
+fn test_get_pets_with_active_alerts_returns_pet_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id1 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Pet1"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Black"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    let pet_id2 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Pet2"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "White"),
+        &5u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.report_lost(&pet_id1, &String::from_str(&env, "Park"), &None);
+    client.report_lost(&pet_id2, &String::from_str(&env, "Street"), &None);
+
+    let pet_ids = client.get_pets_with_active_alerts();
+    assert_eq!(pet_ids.len(), 2);
+    assert!(pet_ids.contains(&pet_id1));
+    assert!(pet_ids.contains(&pet_id2));
+}
+
+#[test]
+fn test_get_pets_with_active_alerts_excludes_resolved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Pet"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Breed"),
+        &String::from_str(&env, "Brown"),
+        &10u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
+    client.resolve_lost(&alert_id);
+
+    let pet_ids = client.get_pets_with_active_alerts();
+    assert_eq!(pet_ids.len(), 0);
+}
+
+#[test]
+fn test_get_pets_with_active_alerts_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_ids = client.get_pets_with_active_alerts();
+    assert_eq!(pet_ids.len(), 0);
+}
