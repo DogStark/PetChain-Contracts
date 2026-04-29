@@ -104,6 +104,8 @@ mod test_search_medical_records;
 mod test_statistics;
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_route_confidence;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1221,6 +1223,30 @@ pub struct MedicalRecordAddedEvent {
     pub pet_id: u64,
     pub updated_by: Address,
     pub timestamp: u64,
+}
+
+// --- ROUTE CONFIDENCE TYPES ---
+
+#[contracttype]
+pub enum RouteConfidenceKey {
+    Confidence(String),
+}
+
+/// A single factor contributing to route confidence.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfidenceFactor {
+    pub name: String,  // e.g. "liquidity_depth", "volatility", "source_freshness"
+    pub score: u32,    // 0–100
+}
+
+/// Aggregated confidence diagnostics for a route.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteConfidence {
+    pub score: u32,                    // overall 0–100
+    pub unavailable: bool,             // true when diagnostics could not be computed
+    pub factors: Vec<ConfidenceFactor>,
 }
 
 #[contract]
@@ -8251,6 +8277,26 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetGroomingCount(pet_id))
             .unwrap_or(0)
+    }
+    // --- ROUTE CONFIDENCE DIAGNOSTICS ---
+
+    /// Store route confidence diagnostics for a named route.
+    pub fn set_route_confidence(env: Env, route_id: String, confidence: RouteConfidence) {
+        env.storage()
+            .instance()
+            .set(&RouteConfidenceKey::Confidence(route_id), &confidence);
+    }
+
+    /// Retrieve route confidence diagnostics. Returns a fallback with unavailable=true when absent.
+    pub fn get_route_confidence(env: Env, route_id: String) -> RouteConfidence {
+        env.storage()
+            .instance()
+            .get::<_, RouteConfidence>(&RouteConfidenceKey::Confidence(route_id))
+            .unwrap_or(RouteConfidence {
+                score: 0,
+                unavailable: true,
+                factors: Vec::new(&env),
+            })
     }
 } // end impl PetChainContract
 
