@@ -1,5 +1,5 @@
 use crate::{PetChainContract, PetChainContractClient, ProposalAction};
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, BytesN, Env, Vec};
 
 fn setup(env: &Env) -> (PetChainContractClient, Address, Address) {
     env.mock_all_auths();
@@ -243,4 +243,136 @@ fn test_version_readable_publicly() {
     assert_eq!(version.major, 3);
     assert_eq!(version.minor, 1);
     assert_eq!(version.patch, 5);
+}
+
+// --- Missing coverage: expired proposals, duplicate approval, non-admin ---
+
+#[test]
+#[should_panic]
+fn test_approve_expired_proposal_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    // expires_in = 100 seconds
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &100);
+
+    // Advance time past expiry
+    env.ledger().with_mut(|l| l.timestamp = 200);
+
+    // admin2 tries to approve an expired proposal — must panic
+    client.approve_proposal(&admin2, &proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_execute_expired_proposal_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &100);
+
+    // Approve before expiry
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Advance time past expiry before executing
+    env.ledger().with_mut(|l| l.timestamp = 200);
+
+    // Execute after expiry — must panic
+    client.execute_proposal(&proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_duplicate_approval_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // admin2 approves once
+    client.approve_proposal(&admin2, &proposal_id);
+    // admin2 approves again — must panic
+    client.approve_proposal(&admin2, &proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_non_admin_cannot_propose_action() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    client.propose_action(&non_admin, &action, &3600);
+}
+
+#[test]
+#[should_panic]
+fn test_non_admin_cannot_approve_proposal() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    let non_admin = Address::generate(&env);
+    client.approve_proposal(&non_admin, &proposal_id);
+}
+
+// --- migrate_v1_to_v2 tests ---
+
+#[test]
+fn test_migrate_v1_to_v2_bumps_version() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let before = client.get_version();
+    assert_eq!(before.major, 1);
+
+    client.migrate_v1_to_v2(&admin1);
+
+    let after = client.get_version();
+    assert_eq!(after.major, 2);
+    assert_eq!(after.minor, 0);
+    assert_eq!(after.patch, 0);
+}
+
+#[test]
+fn test_migrate_v1_to_v2_idempotent() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.migrate_v1_to_v2(&admin1);
+    client.migrate_v1_to_v2(&admin1); // second call must be a no-op
+
+    let version = client.get_version();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
+fn test_migrate_v1_to_v2_does_not_downgrade() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    // Manually set version to 3.x
+    client.set_version(&admin1, &3, &0, &0);
+    client.migrate_v1_to_v2(&admin1); // must not downgrade
+
+    let version = client.get_version();
+    assert_eq!(version.major, 3);
+}
+
+#[test]
+#[should_panic]
+fn test_migrate_v1_to_v2_non_admin_panics() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    client.migrate_v1_to_v2(&non_admin);
 }
