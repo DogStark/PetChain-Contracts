@@ -7268,7 +7268,11 @@ impl PetChainContract {
         }
     }
 
-    pub fn get_training_milestones(env: Env, pet_id: u64) -> Vec<TrainingMilestone> {
+    pub fn get_training_milestones(
+        env: Env,
+        pet_id: u64,
+        achieved_only: bool,
+    ) -> Vec<TrainingMilestone> {
         let count: u64 = env
             .storage()
             .instance()
@@ -7289,7 +7293,9 @@ impl PetChainContract {
                         milestone_id,
                     ))
                 {
-                    milestones.push_back(milestone);
+                    if !achieved_only || milestone.achieved {
+                        milestones.push_back(milestone);
+                    }
                 }
             }
         }
