@@ -238,7 +238,11 @@ fn test_get_insurance_claim_count() {
     client.submit_insurance_claim(&pet_id, &300, &String::from_str(&env, "Dental cleaning"));
     assert_eq!(client.get_insurance_claim_count(&pet_id), 1);
 
-    client.submit_insurance_claim(&pet_id, &750, &String::from_str(&env, "X-ray and treatment"));
+    client.submit_insurance_claim(
+        &pet_id,
+        &750,
+        &String::from_str(&env, "X-ray and treatment"),
+    );
     assert_eq!(client.get_insurance_claim_count(&pet_id), 2);
 
     client.submit_insurance_claim(&pet_id, &1200, &String::from_str(&env, "Emergency surgery"));

@@ -10,13 +10,7 @@ mod test_get_lab_results {
         Address, Env, String, Vec,
     };
 
-    fn setup() -> (
-        Env,
-        PetChainContractClient<'static>,
-        Address,
-        Address,
-        u64,
-    ) {
+    fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, u64) {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -60,7 +54,7 @@ mod test_get_lab_results {
         results: &str,
         timestamp: u64,
     ) -> u64 {
-        env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
+        env.ledger().set_timestamp(timestamp);
         client.add_lab_result(
             &pet_id,
             vet,
@@ -85,59 +79,42 @@ mod test_get_lab_results {
     fn test_get_lab_results_single() {
         let (env, client, _owner, vet, pet_id) = setup();
 
-        add_lab_result(
-            &client,
-            &env,
-            pet_id,
-            &vet,
-            "Blood Test",
-            "Normal",
-            100,
-        );
+        add_lab_result(&client, &env, pet_id, &vet, "Blood Test", "Normal", 100);
 
         let results = client.get_lab_results(&pet_id, &0u64, &10u32);
         assert_eq!(results.len(), 1);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(results.get(0).unwrap().results, String::from_str(&env, "Normal"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Blood Test")
+        );
+        assert_eq!(
+            results.get(0).unwrap().results,
+            String::from_str(&env, "Normal")
+        );
     }
 
     #[test]
     fn test_get_lab_results_multiple() {
         let (env, client, _owner, vet, pet_id) = setup();
 
-        add_lab_result(
-            &client,
-            &env,
-            pet_id,
-            &vet,
-            "Blood Test",
-            "Normal",
-            100,
-        );
-        add_lab_result(
-            &client,
-            &env,
-            pet_id,
-            &vet,
-            "Urinalysis",
-            "Abnormal",
-            200,
-        );
-        add_lab_result(
-            &client,
-            &env,
-            pet_id,
-            &vet,
-            "X-Ray",
-            "Clear",
-            300,
-        );
+        add_lab_result(&client, &env, pet_id, &vet, "Blood Test", "Normal", 100);
+        add_lab_result(&client, &env, pet_id, &vet, "Urinalysis", "Abnormal", 200);
+        add_lab_result(&client, &env, pet_id, &vet, "X-Ray", "Clear", 300);
 
         let results = client.get_lab_results(&pet_id, &0u64, &10u32);
         assert_eq!(results.len(), 3);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Blood Test"));
-        assert_eq!(results.get(1).unwrap().test_type, String::from_str(&env, "Urinalysis"));
-        assert_eq!(results.get(2).unwrap().test_type, String::from_str(&env, "X-Ray"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Blood Test")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Urinalysis")
+        );
+        assert_eq!(
+            results.get(2).unwrap().test_type,
+            String::from_str(&env, "X-Ray")
+        );
     }
 
     #[test]
@@ -153,8 +130,14 @@ mod test_get_lab_results {
         // First page: offset 0, limit 2
         let results = client.get_lab_results(&pet_id, &0u64, &2u32);
         assert_eq!(results.len(), 2);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Test 1"));
-        assert_eq!(results.get(1).unwrap().test_type, String::from_str(&env, "Test 2"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 1")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Test 2")
+        );
     }
 
     #[test]
@@ -170,8 +153,14 @@ mod test_get_lab_results {
         // Second page: offset 2, limit 2
         let results = client.get_lab_results(&pet_id, &2u64, &2u32);
         assert_eq!(results.len(), 2);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Test 3"));
-        assert_eq!(results.get(1).unwrap().test_type, String::from_str(&env, "Test 4"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 3")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Test 4")
+        );
     }
 
     #[test]
@@ -187,7 +176,10 @@ mod test_get_lab_results {
         // Last page: offset 4, limit 2 (only 1 result remaining)
         let results = client.get_lab_results(&pet_id, &4u64, &2u32);
         assert_eq!(results.len(), 1);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Test 5"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 5")
+        );
     }
 
     #[test]
@@ -225,7 +217,13 @@ mod test_get_lab_results {
         // Offset 1, limit 10 (only 2 results remaining)
         let results = client.get_lab_results(&pet_id, &1u64, &10u32);
         assert_eq!(results.len(), 2);
-        assert_eq!(results.get(0).unwrap().test_type, String::from_str(&env, "Test 2"));
-        assert_eq!(results.get(1).unwrap().test_type, String::from_str(&env, "Test 3"));
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 2")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Test 3")
+        );
     }
 }
