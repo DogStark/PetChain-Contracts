@@ -244,3 +244,80 @@ fn test_version_readable_publicly() {
     assert_eq!(version.minor, 1);
     assert_eq!(version.patch, 5);
 }
+
+// --- Missing coverage: expired proposals, duplicate approval, non-admin ---
+
+#[test]
+#[should_panic]
+fn test_approve_expired_proposal_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    // expires_in = 100 seconds
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &100);
+
+    // Advance time past expiry
+    env.ledger().with_mut(|l| l.timestamp = 200);
+
+    // admin2 tries to approve an expired proposal — must panic
+    client.approve_proposal(&admin2, &proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_execute_expired_proposal_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &100);
+
+    // Approve before expiry
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Advance time past expiry before executing
+    env.ledger().with_mut(|l| l.timestamp = 200);
+
+    // Execute after expiry — must panic
+    client.execute_proposal(&proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_duplicate_approval_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // admin2 approves once
+    client.approve_proposal(&admin2, &proposal_id);
+    // admin2 approves again — must panic
+    client.approve_proposal(&admin2, &proposal_id);
+}
+
+#[test]
+#[should_panic]
+fn test_non_admin_cannot_propose_action() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    client.propose_action(&non_admin, &action, &3600);
+}
+
+#[test]
+#[should_panic]
+fn test_non_admin_cannot_approve_proposal() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    let non_admin = Address::generate(&env);
+    client.approve_proposal(&non_admin, &proposal_id);
+}
