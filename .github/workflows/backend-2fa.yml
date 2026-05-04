@@ -19,7 +19,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit
       - name: Run cargo audit
-        working-directory: backend-2fa-implementation
+        working-directory: backend-2fa
         run: cargo audit --deny warnings
 
   fmt:
@@ -32,7 +32,7 @@ jobs:
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --check
-        working-directory: backend-2fa-implementation
+        working-directory: backend-2fa
 
   build-and-test:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
           toolchain: stable
       - name: Build
         run: cargo build
-        working-directory: backend-2fa-implementation
+        working-directory: backend-2fa
       - name: Test
         run: cargo test -- --test-threads=1
-        working-directory: backend-2fa-implementation
+        working-directory: backend-2fa

@@ -1,5 +1,0 @@
-error: unexpected argument 'test_cancel_transfer_proposal' found
-
-Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
-
-For more information, try '--help'.

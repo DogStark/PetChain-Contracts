@@ -649,11 +649,7 @@ fn test_get_attachment_by_index_middle() {
     for i in 0..5 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(
-            &record_id,
-            &String::from_str(&env, hashes[i]),
-            &metadata,
-        );
+        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
     }
 
     // Get middle attachment (index 2)
@@ -679,11 +675,7 @@ fn test_get_attachment_by_index_after_removal() {
     for i in 0..3 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(
-            &record_id,
-            &String::from_str(&env, hashes[i]),
-            &metadata,
-        );
+        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
     }
 
     // Verify we have 3 attachments

@@ -34,17 +34,6 @@ mod test_book_slot {
         client.set_availability(vet, &now, &(now + 3600))
     }
 
-    fn register_pet_owner(env: &Env, client: &PetChainContractClient) -> Address {
-        let owner = Address::generate(env);
-        client.register_pet_owner(
-            &owner,
-            &String::from_str(env, "Owner"),
-            &String::from_str(env, "owner@example.com"),
-            &String::from_str(env, "Emergency Contact"),
-        );
-        owner
-    }
-
     // -------------------------------------------------------
     // Add availability: verified vet can add a slot
     // -------------------------------------------------------
@@ -69,7 +58,6 @@ mod test_book_slot {
     fn test_book_slot_marks_unavailable() {
         let (env, client) = setup_env();
         let vet = setup_verified_vet(&env, &client);
-        let _owner = register_pet_owner(&env, &client);
         let slot_index = add_slot(&env, &client, &vet);
 
         let result = client.book_slot(&vet, &slot_index);
@@ -91,7 +79,6 @@ mod test_book_slot {
     fn test_cannot_double_book_slot() {
         let (env, client) = setup_env();
         let vet = setup_verified_vet(&env, &client);
-        let _owner = register_pet_owner(&env, &client);
         let slot_index = add_slot(&env, &client, &vet);
 
         client.book_slot(&vet, &slot_index);
@@ -106,7 +93,6 @@ mod test_book_slot {
     fn test_cancel_booking_restores_availability() {
         let (env, client) = setup_env();
         let vet = setup_verified_vet(&env, &client);
-        let _owner = register_pet_owner(&env, &client);
         let slot_index = add_slot(&env, &client, &vet);
 
         client.book_slot(&vet, &slot_index);
@@ -157,8 +143,6 @@ mod test_book_slot {
     fn test_book_nonexistent_slot_returns_false() {
         let (env, client) = setup_env();
         let vet = setup_verified_vet(&env, &client);
-        let _owner = register_pet_owner(&env, &client);
-
         let result = client.book_slot(&vet, &999u64);
         assert!(!result, "Booking a non-existent slot should return false");
     }
@@ -170,8 +154,6 @@ mod test_book_slot {
     fn test_multiple_slots_are_independent() {
         let (env, client) = setup_env();
         let vet = setup_verified_vet(&env, &client);
-        let _owner = register_pet_owner(&env, &client);
-
         let now = env.ledger().timestamp();
         let slot1 = client.set_availability(&vet, &now, &(now + 3600));
         let slot2 = client.set_availability(&vet, &(now + 7200), &(now + 10800));
