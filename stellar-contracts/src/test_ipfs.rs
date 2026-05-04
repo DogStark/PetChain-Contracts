@@ -1,5 +1,8 @@
 use crate::*;
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 #[test]
 fn test_validate_ipfs_hash_v0_success() {
@@ -184,10 +187,7 @@ fn test_validate_ipfs_hash_v1_max_length_valid() {
         &env,
         "baaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
-    assert_eq!(
-        PetChainContract::validate_ipfs_hash(&env, &hash),
-        Ok(())
-    );
+    assert_eq!(PetChainContract::validate_ipfs_hash(&env, &hash), Ok(()));
 }
 
 #[test]
@@ -195,10 +195,7 @@ fn test_validate_ipfs_hash_v1_min_length_valid() {
     let env = Env::default();
     // 2 chars — minimum valid CIDv1 (starts with 'b', one valid body char)
     let hash = String::from_str(&env, "ba");
-    assert_eq!(
-        PetChainContract::validate_ipfs_hash(&env, &hash),
-        Ok(())
-    );
+    assert_eq!(PetChainContract::validate_ipfs_hash(&env, &hash), Ok(()));
 }
 
 #[test]
@@ -223,8 +220,6 @@ fn test_add_pet_photo_panics_on_invalid_hash() {
     client.add_pet_photo(&pet_id, &bad_hash);
 }
 
-
-
 fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) {
     let env = Env::default();
     env.mock_all_auths();
@@ -246,7 +241,30 @@ fn setup_pet_test_env() -> (Env, PetChainContractClient<'static>, Address, u64) 
         &None,
         &PrivacyLevel::Public,
     );
+    let alert_id = client.report_lost(&pet_id, &String::from_str(&env, "Park"), &None);
 
+    // Add 5 sightings
+    for _i in 0..5 {
+        client.report_sighting(
+            &alert_id,
+            &String::from_str(&env, "Location"),
+            &String::from_str(&env, "Sighting "),
+        );
+    }
+
+    assert_eq!(client.get_sighting_count(&alert_id), 5);
+
+    let page1 = client.get_sightings_paginated(&alert_id, &0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+
+    let page2 = client.get_sightings_paginated(&alert_id, &2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+
+    let page3 = client.get_sightings_paginated(&alert_id, &4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+
+    let empty = client.get_sightings_paginated(&alert_id, &10u64, &2u32);
+    assert_eq!(empty.len(), 0);
     (env, client, owner, pet_id)
 }
 
