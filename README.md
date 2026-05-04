@@ -1,85 +1,39 @@
-# PetMedTracka-Contracts
+# PetChain Contracts
 
-[![Stellar Contracts CI](https://github.com/DogStark/PetChain-Contracts/actions/workflows/stellar-contracts.yml/badge.svg)](https://github.com/DogStark/PetChain-Contracts/actions/workflows/stellar-contracts.yml)
-[![codecov](https://codecov.io/gh/DogStark/PetChain-Contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/DogStark/PetChain-Contracts)
+This repository contains the Rust code for PetChain’s contract and auth-related backend work.
 
-This repo is specific for handling all smart contract-based contributions. 
+## What’s Here
 
-## Teck Stack
-* Language: Rust
-* Network: Stellar
+- `stellar-contracts/`: the main Soroban contract crate plus the transfer/adoption contract package
+- `backend-2fa/`: the Rust 2FA support crate
+- `docs/`: the maintained project docs
 
-## Getting Started
-Check out the [main petchain repo](https://github.com/DogStark/petChain-Frontend) to get a clear overview of the entire PetChain project—its purpose, how it works
+## Quick Start
 
-For detailed development setup and environment configuration, see [DEVELOPMENT.md](DEVELOPMENT.md).
+### Contracts
 
-### Build and Test Smart Contracts
-
-#### Prerequisites
-Install Stellar CLI:
-```bash
-cargo install --locked stellar-cli --features opt
-```
-
-#### Build the Stellar Contracts
-```bash
-cd stellar-contracts
-cargo build --target wasm32-unknown-unknown --release
-```
-This compiles the Stellar smart contracts. Run this after making changes to confirm everything still compiles correctly.
-
-#### Run Tests
 ```bash
 cd stellar-contracts
 cargo test
 ```
-This runs the test suite for the contracts. Use it to make sure your changes don't break existing functionality.
 
-#### Gas Optimization Benchmarks
-The contract includes comprehensive gas optimization improvements. Run the gas benchmarks:
-```bash
-cd stellar-contracts
-cargo test gas_benchmarks
-```
-See [GAS_OPTIMIZATION.md](stellar-contracts/GAS_OPTIMIZATION.md) for detailed performance analysis.
+### Backend 2FA
 
-#### Deploy to Testnet
 ```bash
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/petchain_stellar.wasm \
-  --network testnet
+cd backend-2fa
+cargo test
 ```
 
+## Documentation
 
-### Contributing
-We're excited to have you contribute! Check out our [Contribution Guide](https://github.com/DogStark/petChain-Frontend/blob/main/contributing.md) to explore:
+- [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
+- [API Overview](docs/api.md)
 
-*  Code of Conduct
-*  Step-by-step contribution process 
-*  Open tasks and other ways to get involved
+## Status
 
----
+The repo has been cleaned so both Rust crates currently test successfully.
 
-### Related Repositories
+## License
 
-Explore other parts of the PetChain ecosystem:
-
-* [Backend](https://github.com/DogStark/petchain_api)
-* [Mobile App (For Pet Owners)](https://github.com/DogStark/PetMedTracka-MobileApp)
-* [Frontend (Vet Dashboard)](https://github.com/DogStark/pet-medical-tracka) 
-
-
----
-
-### Contact & Community
-For feedback, questions or collaboration:
-
-* Contact project lead: [@llins_x](https://t.me/llins_x) 
-* Join Community Chat: [@PetChain Telegram Group](https://t.me/+Jw8HkvUhinw2YjE0) 
-Have questions or feedback?
-
-[Star this repo](https://github.com/DogStark/PetMedTracka-Contracts) to stay updated on new features and releases.
-
-### License
-PetChain is licensed under the MIT License.
+MIT

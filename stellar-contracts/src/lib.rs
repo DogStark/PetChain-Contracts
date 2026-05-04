@@ -1506,7 +1506,11 @@ impl PetChainContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(
             &DataKey::ContractVersion,
-            &ContractVersion { major: 1, minor: 0, patch: 0 },
+            &ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
         );
     }
 
@@ -1531,7 +1535,11 @@ impl PetChainContract {
             .set(&SystemKey::AdminThreshold, &threshold);
         env.storage().instance().set(
             &DataKey::ContractVersion,
-            &ContractVersion { major: 1, minor: 0, patch: 0 },
+            &ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
         );
     }
 
@@ -2039,9 +2047,12 @@ impl PetChainContract {
     }
 
     pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64) {
-        if let Some(pet) = PetChainContract::get_pet(env.clone(), pet_id, env.current_contract_address()) {
+        if let Some(pet) =
+            PetChainContract::get_pet(env.clone(), pet_id, env.current_contract_address())
+        {
             let current_time = env.ledger().timestamp();
-            let birthday_timestamp = match PetChainContract::parse_birthday_timestamp(&pet.birthday) {
+            let birthday_timestamp = match PetChainContract::parse_birthday_timestamp(&pet.birthday)
+            {
                 Ok(timestamp) => timestamp,
                 Err(_) => return (0, 0),
             };
@@ -2175,7 +2186,8 @@ impl PetChainContract {
             return Err(ContractError::InvalidInput);
         }
 
-        let days_since_epoch = PetChainContract::days_from_civil(year as i32, month as i32, day as i32)?;
+        let days_since_epoch =
+            PetChainContract::days_from_civil(year as i32, month as i32, day as i32)?;
         Ok(days_since_epoch * 86_400)
     }
 
@@ -2381,12 +2393,7 @@ impl PetChainContract {
     /// Returns a paginated slice of photo hashes for a pet.
     /// `offset` is the zero-based index of the first item to return.
     /// `limit` is the maximum number of items to return.
-    pub fn get_pet_photos_paginated(
-        env: Env,
-        pet_id: u64,
-        offset: u64,
-        limit: u32,
-    ) -> Vec<String> {
+    pub fn get_pet_photos_paginated(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<String> {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -3155,7 +3162,7 @@ impl PetChainContract {
     pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
         let overdue_types = PetChainContract::get_overdue_vaccinations(env.clone(), pet_id);
         let upcoming = PetChainContract::get_upcoming_vaccinations(env.clone(), pet_id, 30);
-        
+
         VaccinationSummary {
             is_fully_current: overdue_types.is_empty(),
             overdue_types,
@@ -3952,6 +3959,7 @@ impl PetChainContract {
             panic_with_error!(env, ContractError::InvalidInput);
         }
     }
+
     // --- EMERGENCY CONTACTS ---
     pub fn set_emergency_contacts(
         env: Env,
@@ -4157,7 +4165,9 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
             {
-                if let Some(pet) = PetChainContract::get_pet(env.clone(), pid, env.current_contract_address()) {
+                if let Some(pet) =
+                    PetChainContract::get_pet(env.clone(), pid, env.current_contract_address())
+                {
                     pets.push_back(pet);
                 }
             }
@@ -4190,7 +4200,9 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::OwnerPetIndex((owner.clone(), i)))
             {
-                if let Some(pet) = PetChainContract::get_pet(env.clone(), pid, env.current_contract_address()) {
+                if let Some(pet) =
+                    PetChainContract::get_pet(env.clone(), pid, env.current_contract_address())
+                {
                     pets.push_back(pet);
                 }
             }
@@ -4230,7 +4242,9 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, u64>(&DataKey::SpeciesPetIndex((species.clone(), i)))
             {
-                if let Some(pet) = PetChainContract::get_pet(env.clone(), pid, env.current_contract_address()) {
+                if let Some(pet) =
+                    PetChainContract::get_pet(env.clone(), pid, env.current_contract_address())
+                {
                     pets.push_back(pet);
                 }
             }
@@ -4358,6 +4372,33 @@ impl PetChainContract {
                 AccessAction::Revoke,
                 String::from_str(&env, "Access revoked"),
             );
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn extend_access_grant(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        expires_at: Option<u64>,
+    ) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::AccessGrant((pet_id, grantee));
+        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
+            if !grant.is_active {
+                return false;
+            }
+
+            grant.expires_at = expires_at;
+            env.storage().instance().set(&key, &grant);
             true
         } else {
             false
@@ -5157,7 +5198,9 @@ impl PetChainContract {
                 .instance()
                 .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
             {
-                if PetChainContract::check_access(env.clone(), pet_id, grantee.clone()) != AccessLevel::None {
+                if PetChainContract::check_access(env.clone(), pet_id, grantee.clone())
+                    != AccessLevel::None
+                {
                     users.push_back(grantee);
                 }
             }
@@ -5165,20 +5208,7 @@ impl PetChainContract {
         users
     }
 
-    pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
-        env.storage()
-            .instance()
-            .get(&DataKey::AccessGrant((pet_id, grantee)))
-    }
-
-    /// Extend (or update) the expiry of an existing active access grant.
-    /// Returns false if the grant doesn't exist or is not active.
-    pub fn extend_access_grant(
-        env: Env,
-        pet_id: u64,
-        grantee: Address,
-        new_expires_at: Option<u64>,
-    ) -> bool {
+    pub fn get_all_access_grants(env: Env, pet_id: u64) -> Vec<AccessGrant> {
         let pet = env
             .storage()
             .instance()
@@ -5186,36 +5216,13 @@ impl PetChainContract {
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
         pet.owner.require_auth();
 
-        let key = DataKey::AccessGrant((pet_id, grantee.clone()));
-        if let Some(mut grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key) {
-            if !grant.is_active {
-                return false;
-            }
-            grant.expires_at = new_expires_at;
-            env.storage().instance().set(&key, &grant);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn get_all_access_grants(env: Env, pet_id: u64, owner: Address) -> Vec<AccessGrant> {
-        let pet = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
-        if pet.owner != owner {
-            panic_with_error!(&env, ContractError::Unauthorized);
-        }
-        owner.require_auth();
-
         let count = env
             .storage()
             .instance()
             .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
             .unwrap_or(0);
         let mut grants = Vec::new(&env);
+
         for i in 1..=count {
             if let Some(grantee) = env
                 .storage()
@@ -5231,7 +5238,14 @@ impl PetChainContract {
                 }
             }
         }
+
         grants
+    }
+
+    pub fn get_access_grant(env: Env, pet_id: u64, grantee: Address) -> Option<AccessGrant> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AccessGrant((pet_id, grantee)))
     }
 
     // --- LAB RESULTS ---
@@ -6077,7 +6091,11 @@ impl PetChainContract {
         PetChainContract::require_admin_auth(&env, &admin);
         env.storage().instance().set(
             &DataKey::ContractVersion,
-            &ContractVersion { major, minor, patch },
+            &ContractVersion {
+                major,
+                minor,
+                patch,
+            },
         );
     }
 
@@ -7989,16 +8007,16 @@ impl PetChainContract {
         for i in 0..active_proposal_ids.len() {
             let proposal_id = active_proposal_ids.get(i);
             if let Some(pid) = proposal_id {
-            if let Some(proposal) = env
-                .storage()
-                .instance()
-                .get::<SystemKey, PetTransferProposal>(&SystemKey::PetTransferProposal(pid))
-            {
-                // Only include non-executed, non-expired proposals
-                if !proposal.executed && now <= proposal.expires_at {
-                    result.push_back(proposal);
+                if let Some(proposal) = env
+                    .storage()
+                    .instance()
+                    .get::<SystemKey, PetTransferProposal>(&SystemKey::PetTransferProposal(pid))
+                {
+                    // Only include non-executed, non-expired proposals
+                    if !proposal.executed && now <= proposal.expires_at {
+                        result.push_back(proposal);
+                    }
                 }
-            }
             }
         }
 
