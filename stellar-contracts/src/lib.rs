@@ -656,6 +656,7 @@ pub enum DataKey {
 
     // Contract Upgrade keys
     ContractVersion,
+    StorageVersion,
     UpgradeProposal(u64),
     UpgradeProposalCount,
 
@@ -6087,6 +6088,25 @@ impl PetChainContract {
             })
     }
 
+    pub fn get_storage_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn set_storage_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance().set(
+            &DataKey::StorageVersion,
+            &ContractVersion { major, minor, patch },
+        );
+    }
+
     pub fn set_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
         PetChainContract::require_admin_auth(&env, &admin);
         env.storage().instance().set(
@@ -6195,6 +6215,56 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    /// Migrate on-chain storage schema from one version to another.
+    /// Callable only by an admin. Idempotent: re-running on an already-migrated
+    /// storage is a no-op.
+    pub fn migrate_storage(
+        env: Env,
+        caller: Address,
+        from_major: u32,
+        from_minor: u32,
+        from_patch: u32,
+        to_major: u32,
+        to_minor: u32,
+        to_patch: u32,
+    ) {
+        PetChainContract::require_admin_auth(&env, &caller);
+
+        let current: ContractVersion = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion { major: 1, minor: 0, patch: 0 });
+
+        // If already at or beyond target version, noop (idempotent / no downgrade)
+        if current.major > to_major || (current.major == to_major && (current.minor > to_minor || (current.minor == to_minor && current.patch >= to_patch))) {
+            return;
+        }
+
+        // Only run migration if current equals the expected from-version
+        if !(current.major == from_major && current.minor == from_minor && current.patch == from_patch) {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        // Dispatch migration functions per version pair
+        if from_major == 1 && to_major == 2 {
+            // perform any data transformations required for v1 -> v2
+            PetChainContract::migrate_storage_v1_to_v2(&env);
+            env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+            return;
+        }
+
+        // Unknown migration path: set version directly (conservative)
+        env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+    }
+
+    fn migrate_storage_v1_to_v2(env: &Env) {
+        // Example migration: in this simplified contract we only bump storage version.
+        // Real migrations should transform stored data structures here.
+        // Idempotency is ensured by migrate_storage guard.
+        let _ = env;
     }
 
     /// Idempotent storage migration from v1 to v2. Admin-only.

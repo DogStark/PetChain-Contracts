@@ -368,6 +368,43 @@ fn test_migrate_v1_to_v2_does_not_downgrade() {
 }
 
 #[test]
+fn test_migrate_storage_bumps_version() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let before = client.get_storage_version();
+    assert_eq!(before.major, 1);
+
+    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
+
+    let after = client.get_storage_version();
+    assert_eq!(after.major, 2);
+}
+
+#[test]
+fn test_migrate_storage_idempotent() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
+    // second call must be no-op
+    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
+
+    let version = client.get_storage_version();
+    assert_eq!(version.major, 2);
+}
+
+#[test]
+#[should_panic]
+fn test_migrate_storage_non_admin_panics() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    let non_admin = Address::generate(&env);
+    client.migrate_storage(&non_admin, &1, &0, &0, &2, &0, &0);
+}
+
+#[test]
 #[should_panic]
 fn test_migrate_v1_to_v2_non_admin_panics() {
     let env = Env::default();
