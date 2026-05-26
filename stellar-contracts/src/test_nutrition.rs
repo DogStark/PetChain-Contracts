@@ -257,3 +257,162 @@ fn test_get_active_medications_filter() {
     let all = client.get_medications(&pet_id, &0u64, &10u32);
     assert_eq!(all.len(), 2);
 }
+
+#[test]
+fn test_discontinue_medication() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    client.init_admin(&admin);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-05-10"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "LIC-001"),
+        &String::from_str(&env, "General"),
+    );
+    client.verify_vet(&admin, &vet);
+
+    let med_id = client.add_medication(
+        &pet_id,
+        &String::from_str(&env, "Amoxicillin"),
+        &String::from_str(&env, "250mg"),
+        &String::from_str(&env, "Twice daily"),
+        &1000u64,
+        &None,
+        &vet,
+    );
+
+    let end_date = 5000u64;
+    client.discontinue_medication(&med_id, &end_date, &vet);
+
+    let all = client.get_medications(&pet_id, &0, &1);
+    let med = all.get(0).unwrap();
+    assert!(!med.active);
+    assert_eq!(med.end_date, Some(end_date));
+}
+
+#[test]
+fn test_get_diet_plan_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Initially zero
+    assert_eq!(client.get_diet_plan_count(&pet_id), 0);
+
+    let restrictions = Vec::new(&env);
+    let allergies = Vec::new(&env);
+
+    // Add first diet plan
+    client.set_diet_plan(
+        &pet_id,
+        &String::from_str(&env, "Dry Kibble"),
+        &String::from_str(&env, "200g"),
+        &String::from_str(&env, "Twice daily"),
+        &restrictions,
+        &allergies,
+    );
+    assert_eq!(client.get_diet_plan_count(&pet_id), 1);
+
+    // Add second diet plan
+    client.set_diet_plan(
+        &pet_id,
+        &String::from_str(&env, "Wet Food"),
+        &String::from_str(&env, "150g"),
+        &String::from_str(&env, "Three times daily"),
+        &restrictions,
+        &allergies,
+    );
+    assert_eq!(client.get_diet_plan_count(&pet_id), 2);
+
+    // Count for a non-existent pet returns 0
+    assert_eq!(client.get_diet_plan_count(&9999u64), 0);
+}
+
+#[test]
+fn test_get_weight_entry_by_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Bolt"),
+        &String::from_str(&env, "2022-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Husky"),
+        &String::from_str(&env, "White"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.add_weight_entry(&pet_id, &21u32);
+    client.add_weight_entry(&pet_id, &22u32);
+
+    // weight_id 1 should exist and have weight 21
+    let entry = client.get_weight_entry(&1u64);
+    assert!(entry.is_some());
+    let e = entry.unwrap();
+    assert_eq!(e.pet_id, pet_id);
+    assert_eq!(e.weight, 21u32);
+
+    // weight_id 2 should exist and have weight 22
+    let entry2 = client.get_weight_entry(&2u64);
+    assert!(entry2.is_some());
+    assert_eq!(entry2.unwrap().weight, 22u32);
+}
+
+#[test]
+fn test_get_weight_entry_nonexistent_returns_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    // No entries added — ID 999 should return None
+    let result = client.get_weight_entry(&999u64);
+    assert!(result.is_none());
+}

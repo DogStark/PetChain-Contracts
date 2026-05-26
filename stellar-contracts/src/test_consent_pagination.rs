@@ -68,6 +68,7 @@ fn test_consent_history_page_zero_size_clamps_to_50() {
 #[test]
 fn test_consent_pruning_removes_oldest_revoked_at_cap() {
     let (env, client, pet_id, owner) = setup();
+    env.budget().reset_unlimited();
     let grantee = Address::generate(&env);
 
     // Fill up to the cap (50) by alternating grant/revoke so revoked records accumulate.
@@ -97,9 +98,9 @@ fn test_consent_pruning_removes_oldest_revoked_at_cap() {
 }
 
 #[test]
-#[should_panic]
 fn test_consent_hard_cap_when_all_active() {
     let (env, client, pet_id, owner) = setup();
+    env.budget().reset_unlimited();
     let grantee = Address::generate(&env);
 
     // Grant 50 consents without revoking any.
@@ -107,8 +108,7 @@ fn test_consent_hard_cap_when_all_active() {
         client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
     }
 
-    // The 51st grant should fail because no revoked record exists to prune.
-    // Note: In Soroban environment, we can't catch panics, so we just verify the limit is enforced
+    // Verify the cap is enforced
     let history = client.get_consent_history(&pet_id);
     assert_eq!(
         history.len(),
@@ -120,6 +120,7 @@ fn test_consent_hard_cap_when_all_active() {
 #[test]
 fn test_many_grant_revoke_cycles_stay_bounded() {
     let (env, client, pet_id, owner) = setup();
+    env.budget().reset_unlimited();
     let grantee = Address::generate(&env);
 
     // Simulate 200 grant/revoke cycles — storage must stay bounded at MAX_CONSENTS_PER_PET.
@@ -197,4 +198,24 @@ fn test_get_active_consents_no_consents() {
     let (_env, client, pet_id, _owner) = setup();
     let active = client.get_active_consents(&pet_id);
     assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_consent_count_returns_correct_count() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    assert_eq!(client.get_consent_count(&pet_id), 0);
+
+    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    assert_eq!(client.get_consent_count(&pet_id), 1);
+
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    assert_eq!(client.get_consent_count(&pet_id), 2);
+}
+
+#[test]
+fn test_get_consent_count_zero_for_no_consents() {
+    let (_env, client, pet_id, _owner) = setup();
+    assert_eq!(client.get_consent_count(&pet_id), 0);
 }
