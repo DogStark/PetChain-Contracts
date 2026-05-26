@@ -1,4 +1,4 @@
-use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
+use crate::{Gender, PetChainContract, PetChainContractClient, PremiumTier, PrivacyLevel, Species};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 #[test]
@@ -260,4 +260,69 @@ fn test_insurance_policy_fields() {
     assert_eq!(policy.start_date, start_time);
     assert_eq!(policy.expiry_date, expiry);
     assert_eq!(policy.active, true);
+}
+
+#[test]
+fn test_premium_estimate_has_no_state_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Quote"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "White"),
+        &String::from_str(&env, "Persian"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "QUOTE-1"),
+        &String::from_str(&env, "PetGuard"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &10000,
+        &expiry,
+    );
+
+    let before = client.get_pet_insurance(&pet_id).unwrap().premium;
+    let estimate = client.get_premium_estimate(&pet_id, &PremiumTier::Premium);
+    let after = client.get_pet_insurance(&pet_id).unwrap().premium;
+
+    assert!(estimate > before);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn test_premium_estimate_increases_by_tier() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Tier"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Gold"),
+        &String::from_str(&env, "Retriever"),
+        &20,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let basic = client.get_premium_estimate(&pet_id, &PremiumTier::Basic);
+    let premium = client.get_premium_estimate(&pet_id, &PremiumTier::Premium);
+    assert!(premium > basic);
 }
