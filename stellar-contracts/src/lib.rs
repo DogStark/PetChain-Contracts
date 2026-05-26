@@ -55,6 +55,8 @@ mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
 #[cfg(test)]
+mod test_encryption_nonce;
+#[cfg(test)]
 mod test_grooming;
 #[cfg(test)]
 mod test_insurance;
@@ -73,8 +75,19 @@ mod test_statistics;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
+    Env, String, Symbol, Vec,
 };
+
+const DEFAULT_NONCE_MAX_USES: u32 = 1;
+const NONCE_HISTORY_LIMIT: u32 = 8;
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PetChainError {
+    NonceReused = 1,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -531,6 +544,10 @@ pub enum DataKey {
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
     VetPetCount(Address),          // unique pets treated
+    NonceCounter((u64, String)),
+    NonceUsage((u64, String, Bytes)),
+    NonceHistory((u64, String)),
+    NonceMaxUse((u64, String)),
 
     // Lab Result DataKey
 
@@ -3385,6 +3402,86 @@ impl PetChainContract {
             String::from_str(&env, "Pet medical records accessed"),
         );
         records
+    }
+
+    pub fn set_nonce_max_use(env: Env, pet_id: u64, key_id: String, max_uses: u32) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::NonceMaxUse((pet_id, key_id)), &max_uses);
+    }
+
+    pub fn rotate_nonce(env: Env, pet_id: u64, key_id: String) -> Bytes {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let counter_key = DataKey::NonceCounter((pet_id, key_id.clone()));
+        let counter: u64 = env.storage().instance().get(&counter_key).unwrap_or(0) + 1;
+        env.storage().instance().set(&counter_key, &counter);
+
+        let mut nonce = Bytes::new(&env);
+        let pet_bytes = pet_id.to_be_bytes();
+        let counter_bytes = counter.to_be_bytes();
+        for byte in pet_bytes.iter().skip(4) {
+            nonce.push_back(*byte);
+        }
+        for byte in counter_bytes.iter() {
+            nonce.push_back(*byte);
+        }
+
+        env.events().publish(
+            (String::from_str(&env, "NonceRotated"), pet_id),
+            (key_id, nonce.clone(), env.ledger().timestamp()),
+        );
+
+        nonce
+    }
+
+    pub fn record_nonce_use(env: Env, pet_id: u64, key_id: String, nonce: Bytes) -> bool {
+        let max_uses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NonceMaxUse((pet_id, key_id.clone())))
+            .unwrap_or(DEFAULT_NONCE_MAX_USES);
+        let usage_key = DataKey::NonceUsage((pet_id, key_id.clone(), nonce.clone()));
+        let used: u32 = env.storage().instance().get(&usage_key).unwrap_or(0);
+        if used >= max_uses {
+            panic_with_error!(&env, PetChainError::NonceReused);
+        }
+
+        env.storage().instance().set(&usage_key, &(used + 1));
+        if used == 0 {
+            let history_key = DataKey::NonceHistory((pet_id, key_id));
+            let mut history: Vec<Bytes> = env
+                .storage()
+                .instance()
+                .get(&history_key)
+                .unwrap_or(Vec::new(&env));
+            history.push_back(nonce);
+            while history.len() > NONCE_HISTORY_LIMIT {
+                history.remove(0);
+            }
+            env.storage().instance().set(&history_key, &history);
+        }
+
+        true
+    }
+
+    pub fn get_nonce_history(env: Env, pet_id: u64, key_id: String) -> Vec<Bytes> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NonceHistory((pet_id, key_id)))
+            .unwrap_or(Vec::new(&env))
     }
 
     // --- ATTACHMENT MANAGEMENT ---
