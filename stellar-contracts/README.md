@@ -1,50 +1,22 @@
-# Stellar Smart Contracts
+# Stellar Contracts
 
-This directory contains the Stellar (Soroban) smart contracts for PetChain.
+This crate contains the main Soroban smart contract for PetChain, plus the nested transfer/adoption contract package under `contracts/pet-transfer-adoption/`.
 
-## Prerequisites
-
-Install Stellar CLI:
+## Commands
 
 ```bash
-cargo install --locked stellar-cli --features opt
-```
-
-Or install Soroban CLI:
-
-```bash
-cargo install --locked soroban-cli
-```
-
-## Build
-
-```bash
-cd stellar-contracts
-cargo build --target wasm32-unknown-unknown --release
-```
-
-## Test
-
-```bash
+cargo fmt
 cargo test
 ```
 
-The test suite includes 43 comprehensive tests covering:
-
-- All 13 public contract functions
-- Edge cases and error conditions
-- Integration workflows
-- 100% function coverage
-
-For detailed test documentation, see:
-
-- [TEST_DOCUMENTATION.md](TEST_DOCUMENTATION.md) - Complete test documentation
-- [TEST_SUMMARY.md](TEST_SUMMARY.md) - Test suite implementation summary
-
-## Deploy
+To build a release artifact:
 
 ```bash
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/petchain_stellar.wasm \
-  --network testnet
+cargo build --target wasm32-unknown-unknown --release
 ```
+
+## Notes
+
+- The main contract source lives in `src/lib.rs`.
+- The contract test suite is split across focused `src/test_*.rs` modules.
+- High-level repository docs now live in the root `docs/` directory.
