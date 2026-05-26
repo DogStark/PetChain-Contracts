@@ -12,10 +12,46 @@ use actix_web::{
     Error, HttpMessage,
 };
 use futures_util::future::{ok, LocalBoxFuture, Ready};
+use serde_json::Value;
 use tracing::Instrument;
 use uuid::Uuid;
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// List of sensitive fields that should be redacted in logs
+const SENSITIVE_FIELDS: &[&str] = &["totp_code", "secret", "recovery_code", "password", "token", "backup_code"];
+
+/// Sanitize JSON by redacting sensitive fields
+pub fn sanitize_json_body(body: &str) -> String {
+    match serde_json::from_str::<Value>(body) {
+        Ok(mut json_value) => {
+            sanitize_value(&mut json_value);
+            json_value.to_string()
+        }
+        Err(_) => "[binary]".to_string(),
+    }
+}
+
+/// Recursively sanitize a JSON value by replacing sensitive field values with [REDACTED]
+fn sanitize_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if SENSITIVE_FIELDS.contains(&key.as_str()) {
+                    *val = Value::String("[REDACTED]".to_string());
+                } else {
+                    sanitize_value(val);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                sanitize_value(item);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Actix-web middleware factory.
 pub struct RequestIdMiddleware;
@@ -63,11 +99,14 @@ where
         // Store on request extensions so handlers can read it.
         req.extensions_mut().insert(RequestId(request_id.clone()));
 
+        let method = req.method().to_string();
+        let path = req.path().to_string();
+
         let span = tracing::info_span!(
             "http_request",
             request_id = %request_id,
-            method = %req.method(),
-            path = %req.path(),
+            method = %method,
+            path = %path,
         );
 
         let fut = self.service.call(req);
