@@ -176,6 +176,16 @@ impl TwoFactorAuth {
     }
 }
 
+/// Audit log entry for recovery code usage
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryCodeUsageLog {
+    pub id: usize,
+    pub user_id: String,
+    pub code_index: i32,
+    pub used_at: String,
+    pub ip_address: Option<String>,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -183,12 +193,29 @@ pub trait TwoFactorStore: Send + Sync {
     fn delete(&self, user_id: &str) -> Result<(), String>;
     fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String>;
     fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String>;
+
+    /// Check if a recovery code has been used and log the usage atomically
+    /// Returns error if the code has already been used
+    fn log_recovery_code_usage(
+        &self,
+        user_id: &str,
+        code_index: i32,
+        ip_address: Option<&str>,
+    ) -> Result<(), String>;
+
+    /// Get paginated recovery code usage log (page starts at 1)
+    fn get_recovery_usage_log(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<RecoveryCodeUsageLog>, String>;
 }
 
 /// In-memory implementation of TwoFactorStore for testing
 #[derive(Default, Clone)]
 pub struct InMemoryStore {
     data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
+    recovery_log: Arc<Mutex<Vec<RecoveryCodeUsageLog>>>,
 }
 
 impl InMemoryStore {
@@ -235,5 +262,55 @@ impl TwoFactorStore for InMemoryStore {
             .get_mut(user_id)
             .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))
             .map(|d| d.backup_codes = codes)
+    }
+
+    fn log_recovery_code_usage(
+        &self,
+        user_id: &str,
+        code_index: i32,
+        ip_address: Option<&str>,
+    ) -> Result<(), String> {
+        let mut log = self.recovery_log.lock().unwrap();
+
+        // Check if already used
+        if log.iter().any(|e| e.user_id == user_id && e.code_index == code_index) {
+            return Err("InvalidRecoveryCode".to_string());
+        }
+
+        // Get the next id before pushing
+        let next_id = log.len();
+
+        // Add entry
+        log.push(RecoveryCodeUsageLog {
+            id: next_id,
+            user_id: user_id.to_string(),
+            code_index,
+            used_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|_| "0".to_string()),
+            ip_address: ip_address.map(|s| s.to_string()),
+        });
+
+        Ok(())
+    }
+
+    fn get_recovery_usage_log(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<RecoveryCodeUsageLog>, String> {
+        let log = self.recovery_log.lock().unwrap();
+        let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
+        let limit = page_size as usize;
+
+        let mut entries: Vec<_> = log.iter().cloned().collect();
+        entries.sort_by(|a, b| b.used_at.cmp(&a.used_at)); // Reverse chronological
+
+        Ok(entries
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect())
     }
 }

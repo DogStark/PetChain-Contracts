@@ -1088,7 +1088,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid backup code"));
+        assert!(result.unwrap_err().contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -1124,9 +1124,9 @@ mod tests {
 mod integration_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AuthenticatedUser, DisableTwoFactorRequest,
-        EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
-        TwoFactorHandlers, VerifyTwoFactorRequest,
+        overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, AuthenticatedUser,
+        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
     use crate::two_factor::{TwoFactorAuth, TwoFactorData};
@@ -1514,6 +1514,264 @@ mod integration_tests {
                 "should not be blocked yet after counter reset"
             );
         }
+    }
+
+    // ── Recovery Code Single-Use Enforcement Tests ──
+
+    #[test]
+    fn test_recovery_code_first_use_succeeds() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-1";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+
+        // Attempt recovery
+        let backup_code = setup.backup_codes[0].clone();
+        let result = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: backup_code.clone(),
+            },
+            Some("192.168.1.1"),
+        );
+
+        assert!(result.is_ok(), "First recovery use should succeed");
+    }
+
+    #[test]
+    fn test_recovery_code_second_use_rejected() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-2";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        let backup_code = setup.backup_codes[0].clone();
+
+        // First recovery succeeds
+        let first = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: backup_code.clone(),
+            },
+            Some("192.168.1.1"),
+        );
+        assert!(first.is_ok());
+
+        // Second recovery should fail
+        let second = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some("192.168.1.2"),
+        );
+
+        assert!(second.is_err());
+        assert!(second.unwrap_err().contains("InvalidRecoveryCode"));
+    }
+
+    #[test]
+    fn test_recovery_log_entry_written() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-3";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        let backup_code = setup.backup_codes[0].clone();
+
+        // Use recovery code
+        let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some("10.0.0.1"),
+        );
+
+        // Check recovery log
+        let log = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        assert!(
+            log.len() > 0,
+            "Recovery log should have entries after code usage"
+        );
+
+        let entry = &log[0];
+        assert_eq!(entry.user_id, user_id);
+        assert_eq!(entry.code_index, 0);
+        assert_eq!(entry.ip_address, Some("10.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_log_pagination() {
+        clear_two_factor_store_for_tests();
+
+        // Create multiple recovery log entries
+        for i in 0..15 {
+            let user_id = format!("user-{}", i);
+            let c = caller(&user_id);
+
+            let setup = TwoFactorHandlers::enable_two_factor(
+                &c,
+                EnableTwoFactorRequest {
+                    user_id: user_id.clone(),
+                    email: format!("{}@petchain.com", user_id),
+                },
+            )
+            .unwrap();
+
+            let token = generate_token(&setup.secret);
+            let handler = TwoFactorHandlers::new();
+            handler
+                .verify_and_activate(
+                    &c,
+                    VerifyTwoFactorRequest {
+                        user_id: user_id.clone(),
+                        token,
+                    },
+                )
+                .ok();
+
+            let backup_code = setup.backup_codes[0].clone();
+            let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+                &c,
+                RecoverWithBackupRequest {
+                    user_id,
+                    backup_code,
+                },
+                None,
+            );
+        }
+
+        // Test pagination
+        let page1 = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        let page2 = AdminRecoveryHandlers::get_recovery_log(2, 10).unwrap();
+
+        assert_eq!(page1.len(), 10);
+        assert!(page2.len() > 0);
+        assert!(page2.len() <= 10);
+
+        // Verify reverse chronological order
+        if page1.len() > 1 {
+            assert!(page1[0].used_at >= page1[1].used_at);
+        }
+    }
+
+    #[test]
+    fn test_recovery_log_fields_correct() {
+        clear_two_factor_store_for_tests();
+        let user_id = "field-test-user";
+        let caller_user = caller(user_id);
+
+        // Enable and setup
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // Use second backup code (index 1)
+        let backup_code = setup.backup_codes[1].clone();
+        let ip = "203.0.113.42";
+
+        let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some(ip),
+        );
+
+        // Verify log entry
+        let log = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        let entry = log.iter().find(|e| e.user_id == user_id).unwrap();
+
+        assert_eq!(entry.user_id, user_id);
+        assert_eq!(entry.code_index, 1);
+        assert_eq!(entry.ip_address.as_deref(), Some(ip));
+        assert!(!entry.used_at.is_empty());
     }
 }
 
