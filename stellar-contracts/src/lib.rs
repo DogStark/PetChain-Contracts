@@ -135,9 +135,17 @@ const NONCE_HISTORY_LIMIT: u32 = 8;
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
+    KeywordTooLong = 2,
+    TooManySearchTokens = 3,
+    SelfLineage = 4,
+    CircularLineage = 5,
 }
 
 const MAX_LOG_ENTRIES: u32 = 1_000;
+const MAX_SEARCH_KEYWORD_LEN: u32 = 64;
+const MAX_SEARCH_NOTES_LEN: u32 = 512;
+const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 32;
+const MAX_LINEAGE_DEPTH: u32 = 100;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
