@@ -193,7 +193,6 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
-    DuplicatePriority = 131,
 }
 
 #[contracttype]
@@ -4006,7 +4005,7 @@ impl PetChainContract {
 
             // Check for duplicate priorities
             if priorities.contains(&contact.priority) {
-                panic_with_error!(env, ContractError::DuplicatePriority);
+                panic_with_error!(env, ContractError::InvalidInput);
             }
             priorities.push_back(contact.priority);
         }
