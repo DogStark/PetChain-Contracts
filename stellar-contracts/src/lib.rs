@@ -3345,6 +3345,13 @@ impl PetChainContract {
             .unwrap_or(0)
     }
 
+    pub fn get_weight_entry_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&NutritionKey::PetWeightCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool {
         let mut pet: Pet = env
             .storage()
