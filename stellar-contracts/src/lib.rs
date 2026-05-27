@@ -114,8 +114,6 @@ mod test_statistics;
 #[cfg(test)]
 mod test_disputes;
 #[cfg(test)]
-mod test_admin_initialization;
-#[cfg(test)]
 mod test_fuzz_regression;
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
@@ -129,13 +127,22 @@ use soroban_sdk::{
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
+const MAX_SEARCH_KEYWORD_LEN: u32 = 32;
+const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
+const MAX_SEARCH_NOTES_LEN: u32 = 512;
+const MAX_LINEAGE_DEPTH: u32 = 16;
+const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
-const MAX_LOG_ENTRIES: u32 = 1_000;
+    KeywordTooLong = 10,
+    TooManySearchTokens = 11,
+    SelfLineage = 20,
+    CircularLineage = 21,
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -721,8 +728,6 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64), // pet_id -> Vec<Address>
 }
 
 #[contracttype]
@@ -5222,6 +5227,8 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::NonceHistory((pet_id, key_id)))
             .unwrap_or(Vec::new(&env))
+    }
+
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -7567,7 +7574,6 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
-        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
@@ -7576,7 +7582,7 @@ impl PetChainContract {
         if count == 0 {
             return None;
         }
-        let policy = env
+        let mut policy = env
             .storage()
             .instance()
             .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))?;
@@ -8600,6 +8606,13 @@ impl PetChainContract {
         );
 
         record_id
+    }
+
+    pub fn get_activity_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0)
     }
 
     pub fn get_activity_history(env: Env, pet_id: u64) -> Vec<ActivityRecord> {

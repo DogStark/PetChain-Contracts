@@ -635,3 +635,88 @@ fn test_get_activity_record_by_id_returns_none_for_nonexistent() {
     let result = client.get_activity_record_by_id(&9999);
     assert!(result.is_none());
 }
+
+#[test]
+fn test_get_activity_count_zero_for_new_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    assert_eq!(client.get_activity_count(&pet_id), 0);
+    assert_eq!(client.get_activity_count(&9999u64), 0);
+}
+
+#[test]
+fn test_get_activity_count_increments_on_add() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    assert_eq!(client.get_activity_count(&pet_id), 0);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk 1"),
+    );
+    assert_eq!(client.get_activity_count(&pet_id), 1);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &8,
+        &1500,
+        &String::from_str(&env, "Run 1"),
+    );
+    assert_eq!(client.get_activity_count(&pet_id), 2);
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Play,
+        &15,
+        &6,
+        &500,
+        &String::from_str(&env, "Play 1"),
+    );
+    assert_eq!(client.get_activity_count(&pet_id), 3);
+}
