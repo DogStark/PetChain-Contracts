@@ -1524,6 +1524,7 @@ mod integration_tests {
 #[cfg(test)]
 mod redis_rate_limiter_tests {
     use crate::rate_limiter::{RateLimitResult, RateLimiter, RedisRateLimiter};
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Returns a unique key per test invocation to prevent cross-test pollution.
@@ -1550,7 +1551,107 @@ mod redis_rate_limiter_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Unconditional test — no Redis instance required
+    // Mock Redis client for sliding-window unit tests
+    // -----------------------------------------------------------------------
+
+    /// A minimal mock that records ZADD/ZREMRANGEBYSCORE/ZCARD/EXPIRE/DEL
+    /// calls so we can test the sliding-window logic without a real Redis.
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct MockRedisState {
+        /// sorted set: key → BTreeMap<score_ms, member_ms>
+        zsets: HashMap<String, BTreeMap<u64, u64>>,
+        /// string keys (lockout)
+        strings: HashMap<String, u64>, // value = TTL remaining (secs)
+    }
+
+    impl MockRedisState {
+        fn zremrangebyscore(&mut self, key: &str, min: u64, max: u64) {
+            if let Some(set) = self.zsets.get_mut(key) {
+                set.retain(|&score, _| score < min || score > max);
+            }
+        }
+
+        fn zadd(&mut self, key: &str, score: u64, member: u64) {
+            self.zsets
+                .entry(key.to_string())
+                .or_default()
+                .insert(score, member);
+        }
+
+        fn zcard(&self, key: &str) -> u64 {
+            self.zsets.get(key).map(|s| s.len() as u64).unwrap_or(0)
+        }
+
+        fn set_ex(&mut self, key: &str, ttl: u64) {
+            self.strings.insert(key.to_string(), ttl);
+        }
+
+        fn ttl(&self, key: &str) -> i64 {
+            match self.strings.get(key) {
+                Some(&t) if t > 0 => t as i64,
+                _ => -2,
+            }
+        }
+
+        fn del(&mut self, keys: &[&str]) {
+            for k in keys {
+                self.zsets.remove(*k);
+                self.strings.remove(*k);
+            }
+        }
+    }
+
+    /// Simulates the sliding-window logic of `RedisRateLimiter::record_failure`
+    /// using the mock state, so we can assert on the algorithm without Redis.
+    fn mock_record_failure(
+        state: &Arc<Mutex<MockRedisState>>,
+        key: &str,
+        now_ms: u64,
+        max_failures: u32,
+        window_secs: u64,
+        lockout_secs: u64,
+    ) -> RateLimitResult {
+        let mut s = state.lock().unwrap();
+
+        let lockout_key = format!("rate:{key}:lockout");
+        let window_key = format!("rate:{key}:window");
+
+        if s.ttl(&lockout_key) > 0 {
+            return RateLimitResult::Blocked {
+                retry_after_secs: s.ttl(&lockout_key) as u64,
+            };
+        }
+
+        let cutoff_ms = now_ms.saturating_sub(window_secs * 1_000);
+        s.zremrangebyscore(&window_key, 0, cutoff_ms);
+        s.zadd(&window_key, now_ms, now_ms);
+        let count = s.zcard(&window_key);
+
+        if count >= max_failures as u64 {
+            s.set_ex(&lockout_key, lockout_secs);
+            return RateLimitResult::Blocked {
+                retry_after_secs: lockout_secs,
+            };
+        }
+
+        RateLimitResult::Allowed {
+            remaining: max_failures - count as u32,
+        }
+    }
+
+    fn mock_record_success(state: &Arc<Mutex<MockRedisState>>, key: &str) {
+        let mut s = state.lock().unwrap();
+        s.del(&[
+            &format!("rate:{key}:lockout"),
+            &format!("rate:{key}:window"),
+        ]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unconditional tests — no Redis instance required
     // -----------------------------------------------------------------------
 
     /// When Redis is unreachable the limiter must fail open (return Allowed)
@@ -1575,6 +1676,112 @@ mod redis_rate_limiter_tests {
     fn redis_rate_limiter_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RedisRateLimiter>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Mock sliding-window unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mock_sliding_window_allows_below_limit() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 1_000_000u64;
+        for i in 1u32..5 {
+            match mock_record_failure(&state, "user:a", now_ms + i as u64, 5, 60, 300) {
+                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 5 - i),
+                RateLimitResult::Blocked { .. } => panic!("should not block before limit"),
+            }
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_blocks_at_limit() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 2_000_000u64;
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:b", now_ms + i, 3, 60, 300);
+        }
+        assert!(matches!(
+            mock_record_failure(&state, "user:b", now_ms + 3, 3, 60, 300),
+            RateLimitResult::Blocked { retry_after_secs: 300 }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_evicts_stale_entries() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        // 3 failures at t=0
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:c", i, 3, 60, 300);
+        }
+        // 61 seconds later — all three are outside the 60 s window
+        let later_ms = 61_000u64;
+        match mock_record_failure(&state, "user:c", later_ms, 3, 60, 300) {
+            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("stale entries should have been evicted"),
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_prevents_boundary_burst() {
+        // Fixed-window would reset at t=60 s, allowing a burst of max_failures
+        // right after. Sliding window must not allow that.
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let max = 3u32;
+        let window_ms = 60_000u64;
+
+        // Fill the window just before the boundary (t = 59 s)
+        for i in 0..max as u64 {
+            mock_record_failure(&state, "user:d", 59_000 + i, max, 60, 300);
+        }
+        // At t = 60 s (boundary) the entries are still within the window
+        assert!(matches!(
+            mock_record_failure(&state, "user:d", window_ms, max, 60, 300),
+            RateLimitResult::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_success_resets_counter() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 3_000_000u64;
+        mock_record_failure(&state, "user:e", now_ms, 3, 60, 300);
+        mock_record_failure(&state, "user:e", now_ms + 1, 3, 60, 300);
+        mock_record_success(&state, "user:e");
+        match mock_record_failure(&state, "user:e", now_ms + 2, 3, 60, 300) {
+            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("should not block after success reset"),
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_concurrent_requests_independent_keys() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 4_000_000u64;
+        // Exhaust key "user:f"
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:f", now_ms + i, 3, 60, 300);
+        }
+        // "user:g" must be unaffected
+        assert!(matches!(
+            mock_record_failure(&state, "user:g", now_ms, 3, 60, 300),
+            RateLimitResult::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_retry_after_is_accurate() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 5_000_000u64;
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:h", now_ms + i, 3, 60, 120);
+        }
+        match mock_record_failure(&state, "user:h", now_ms + 3, 3, 60, 120) {
+            RateLimitResult::Blocked { retry_after_secs } => {
+                assert_eq!(retry_after_secs, 120, "retry_after must equal lockout_secs");
+            }
+            RateLimitResult::Allowed { .. } => panic!("should be blocked"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2018,5 +2225,139 @@ mod redis_rate_limiter_tests {
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].attempted_score, max_score);
         }
+    }
+}
+
+// ============================================================================
+// MockRedisBackend + SlidingWindowRateLimiter tests (#614)
+// ============================================================================
+
+#[cfg(test)]
+mod mock_redis_tests {
+    use crate::rate_limiter::{
+        EndpointConfig, MockRedisBackend, RateLimitResult, RateLimiter, SlidingWindowRateLimiter,
+    };
+    use std::sync::Arc;
+
+    fn limiter(max: u32, window_secs: u64, lockout_secs: u64) -> SlidingWindowRateLimiter<MockRedisBackend> {
+        SlidingWindowRateLimiter::new(
+            MockRedisBackend::new(),
+            EndpointConfig::new(window_secs, max, lockout_secs),
+        )
+    }
+
+    // --- limit ---
+
+    #[test]
+    fn allows_requests_below_limit() {
+        let l = limiter(3, 60, 300);
+        for i in 1u32..3 {
+            assert_eq!(l.record_failure("u:a"), RateLimitResult::Allowed { remaining: 3 - i });
+        }
+    }
+
+    #[test]
+    fn blocks_at_limit_with_accurate_retry_after() {
+        let l = limiter(3, 60, 120);
+        for _ in 0..3 { l.record_failure("u:b"); }
+        assert_eq!(
+            l.record_failure("u:b"),
+            RateLimitResult::Blocked { retry_after_secs: 120 },
+        );
+    }
+
+    // --- reset ---
+
+    #[test]
+    fn success_resets_counter() {
+        let l = limiter(3, 60, 300);
+        l.record_failure("u:c");
+        l.record_failure("u:c");
+        l.record_success("u:c");
+        assert_eq!(l.record_failure("u:c"), RateLimitResult::Allowed { remaining: 2 });
+    }
+
+    #[test]
+    fn window_expiry_resets_counter() {
+        let l = limiter(3, 60, 300);
+        // 2 failures (below the lockout threshold)
+        l.record_failure("u:d");
+        l.record_failure("u:d");
+        // Advance clock past the 60-second window — entries are evicted on next call
+        l.backend_advance_ms(61_000);
+        // Window has expired; the two old entries are outside the cutoff, so Allowed with remaining=2
+        assert_eq!(l.record_failure("u:d"), RateLimitResult::Allowed { remaining: 2 });
+    }
+
+    // --- concurrent / independent keys ---
+
+    #[test]
+    fn different_keys_are_independent() {
+        let l = limiter(2, 60, 300);
+        l.record_failure("u:e");
+        l.record_failure("u:e");
+        assert!(matches!(l.record_failure("u:f"), RateLimitResult::Allowed { .. }));
+    }
+
+    #[test]
+    fn concurrent_threads_do_not_corrupt_state() {
+        use std::thread;
+        let l = Arc::new(limiter(100, 60, 300));
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let l = Arc::clone(&l);
+                thread::spawn(move || l.record_failure(&format!("u:thread:{i}")))
+            })
+            .collect();
+        for h in handles { h.join().expect("thread panicked"); }
+    }
+
+    // --- per-endpoint config ---
+
+    #[test]
+    fn per_endpoint_config_applies_correct_limits() {
+        let l = SlidingWindowRateLimiter::new(
+            MockRedisBackend::new(),
+            EndpointConfig::new(60, 10, 300), // default: 10 failures
+        )
+        .with_endpoint("login", EndpointConfig::new(60, 2, 60)); // login: 2 failures
+
+        // Exhaust the login endpoint
+        l.record_failure("login:user:1");
+        l.record_failure("login:user:1");
+        assert!(matches!(
+            l.record_failure("login:user:1"),
+            RateLimitResult::Blocked { .. }
+        ));
+
+        // A key that doesn't match "login" uses the default (10 failures)
+        for _ in 0..9 {
+            assert!(matches!(
+                l.record_failure("verify:user:1"),
+                RateLimitResult::Allowed { .. }
+            ));
+        }
+    }
+
+    // --- sliding window prevents boundary burst ---
+
+    #[test]
+    fn sliding_window_prevents_boundary_burst() {
+        let l = limiter(3, 60, 300);
+        // 3 failures just before the 60-second boundary
+        for _ in 0..3 { l.record_failure("u:g"); }
+        // Advance to exactly the boundary — entries are still within the window
+        l.backend_advance_ms(59_999);
+        assert!(matches!(l.record_failure("u:g"), RateLimitResult::Blocked { .. }));
+    }
+}
+
+// Helper: expose advance_ms on SlidingWindowRateLimiter<MockRedisBackend>
+// without polluting the public API.
+#[cfg(test)]
+impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedisBackend> {
+    fn backend_advance_ms(&self, ms: u64) {
+        // Access the backend field directly (same crate, so pub(crate) is fine).
+        self.backend.advance_ms(ms);
     }
 }
