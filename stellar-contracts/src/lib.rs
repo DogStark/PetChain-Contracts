@@ -58,6 +58,8 @@ pub enum GroomingKey {
     GroomingRecordCount,
     PetGroomingCount(u64),
     PetGroomingIndex((u64, u64)),
+    Groomer(Address),
+    GroomerRatingCount,
 }
 
 #[cfg(test)]
@@ -135,6 +137,8 @@ const NONCE_HISTORY_LIMIT: u32 = 8;
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
+}
+
 const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
@@ -191,6 +195,10 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
+    UnregisteredGroomer = 140,
+    PrerequisiteIncomplete = 141,
+    CircularDependency = 142,
+    CrossPetComparison = 143,
 }
 
 #[contracttype]
@@ -219,10 +227,21 @@ pub struct GroomingRecord {
     pub pet_id: u64,
     pub service_type: String,
     pub groomer: String,
+    pub groomer_address: Option<Address>,
     pub date: u64,
     pub next_due: u64,
     pub cost: u64,
     pub notes: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomerProfile {
+    pub address: Address,
+    pub name: String,
+    pub license_id: String,
+    pub aggregate_rating: u32,  // Average rating multiplied by 100 for precision
+    pub review_count: u64,
 }
 
 #[contracttype]
@@ -721,8 +740,6 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64), // pet_id -> Vec<Address>
 }
 
 #[contracttype]
@@ -5222,6 +5239,8 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::NonceHistory((pet_id, key_id)))
             .unwrap_or(Vec::new(&env))
+    }
+
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -7567,7 +7586,6 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
-        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
@@ -8947,6 +8965,68 @@ impl PetChainContract {
             pet_id,
             service_type,
             groomer,
+            groomer_address: None,
+            date,
+            next_due,
+            cost,
+            notes,
+        };
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecordCount, &record_id);
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let new_count = safe_increment(pet_count);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::PetGroomingCount(pet_id), &new_count);
+        env.storage().instance().set(
+            &GroomingKey::PetGroomingIndex((pet_id, new_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    pub fn add_grooming_record_with_groomer(
+        env: Env,
+        pet_id: u64,
+        service_type: String,
+        groomer_address: Address,
+        date: u64,
+        next_due: u64,
+        cost: u64,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        if !env.storage().instance().has(&GroomingKey::Groomer(groomer_address.clone())) {
+            panic_with_error!(env, ContractError::UnregisteredGroomer);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecordCount)
+            .unwrap_or(0);
+        let record_id = safe_increment(count);
+        let record = GroomingRecord {
+            id: record_id,
+            pet_id,
+            service_type,
+            groomer: String::from_str(&env, ""),
+            groomer_address: Some(groomer_address),
             date,
             next_due,
             cost,
@@ -9036,6 +9116,66 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetGroomingCount(pet_id))
             .unwrap_or(0)
+    }
+
+    pub fn register_groomer(env: Env, admin: Address, address: Address, name: String, license_id: String) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        if env.storage().instance().has(&GroomingKey::Groomer(address.clone())) {
+            return false;
+        }
+
+        let profile = GroomerProfile {
+            address: address.clone(),
+            name,
+            license_id,
+            aggregate_rating: 0,
+            review_count: 0,
+        };
+
+        env.storage().instance().set(&GroomingKey::Groomer(address), &profile);
+        true
+    }
+
+    pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u8) -> bool {
+        if score < 1 || score > 5 {
+            panic_with_error!(env, ContractError::InvalidRating);
+        }
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let mut record: GroomingRecord = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecord(grooming_record_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidState));
+
+        if record.pet_id != pet_id {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        if let Some(groomer_address) = record.groomer_address.clone() {
+            if let Some(mut profile) = env.storage().instance().get::<GroomingKey, GroomerProfile>(&GroomingKey::Groomer(groomer_address.clone())) {
+                let old_rating = profile.aggregate_rating as u64;
+                let count = profile.review_count;
+                let new_avg = ((old_rating * count) + (score as u64 * 100)) / (count + 1);
+                profile.aggregate_rating = new_avg as u32;
+                profile.review_count = count + 1;
+                env.storage().instance().set(&GroomingKey::Groomer(groomer_address), &profile);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn get_groomer_profile(env: Env, address: Address) -> Option<GroomerProfile> {
+        env.storage().instance().get(&GroomingKey::Groomer(address))
     }
 
     // --- DISPUTE RESOLUTION ---
