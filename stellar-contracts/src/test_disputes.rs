@@ -103,6 +103,20 @@ fn test_non_arbitrator_cannot_rule() {
     let dispute_id = raise(&client, &env, pet_id, &owner, &target);
     client.submit_evidence(
         &dispute_id,
+fn test_resolve_dispute_no_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    let pet_id = 1; // Dummy ID for this test
+
+    let dispute_id = client.raise_dispute(
+        &pet_id,
         &owner,
         &String::from_str(&env, "ipfs://owner-evidence"),
     );
