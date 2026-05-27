@@ -135,6 +135,8 @@ const NONCE_HISTORY_LIMIT: u32 = 8;
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
+}
+
 const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
@@ -191,6 +193,7 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
+    DuplicatePriority = 131,
 }
 
 #[contracttype]
@@ -368,6 +371,7 @@ pub struct EmergencyContact {
     pub email: String,
     pub relationship: String,
     pub is_primary: bool,
+    pub priority: u8,
 }
 
 #[contracttype]
@@ -721,8 +725,6 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64), // pet_id -> Vec<Address>
 }
 
 #[contracttype]
@@ -3992,6 +3994,8 @@ impl PetChainContract {
         }
 
         let mut has_primary = false;
+        let mut priorities = soroban_sdk::Vec::new(env);
+
         for contact in contacts.iter() {
             if contact.name.is_empty() || contact.phone.is_empty() {
                 panic_with_error!(env, ContractError::InvalidInput);
@@ -3999,6 +4003,12 @@ impl PetChainContract {
             if contact.is_primary {
                 has_primary = true;
             }
+
+            // Check for duplicate priorities
+            if priorities.contains(&contact.priority) {
+                panic_with_error!(env, ContractError::DuplicatePriority);
+            }
+            priorities.push_back(contact.priority);
         }
 
         if !has_primary {
@@ -4239,6 +4249,109 @@ impl PetChainContract {
             Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env))
         } else {
             Vec::new(&env)
+        }
+    }
+
+    pub fn get_contacts_ordered(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyContact> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        {
+            if !PetChainContract::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
+                panic!("Unauthorized");
+            }
+            let key = PetChainContract::get_encryption_key(&env);
+            let c_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_emergency_contacts.ciphertext,
+                &pet.encrypted_emergency_contacts.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let mut contacts = Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
+
+            // Sort by priority ascending using bubble sort
+            let len = contacts.len();
+            for i in 0..len {
+                for j in 0..len.saturating_sub(1).saturating_sub(i) {
+                    let contact_j = contacts.get(j).unwrap();
+                    let contact_j_next = contacts.get(j + 1).unwrap();
+                    if contact_j.priority > contact_j_next.priority {
+                        let temp = contact_j.clone();
+                        contacts.set(j, contact_j_next.clone());
+                        contacts.set(j + 1, temp);
+                    }
+                }
+            }
+            contacts
+        } else {
+            Vec::new(&env)
+        }
+    }
+
+    pub fn reorder_contact(env: Env, pet_id: u64, contact_id: u64, new_priority: u8) {
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+
+            let key = PetChainContract::get_encryption_key(&env);
+            let c_bytes = decrypt_sensitive_data(
+                &env,
+                &pet.encrypted_emergency_contacts.ciphertext,
+                &pet.encrypted_emergency_contacts.nonce,
+                &key,
+            )
+            .unwrap_or(Bytes::new(&env));
+            let mut contacts = Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
+
+            let mut target_contact_idx: Option<usize> = None;
+            let mut target_contact_old_priority: Option<u8> = None;
+            let mut swap_contact_idx: Option<usize> = None;
+
+            // Find the target contact and the contact with new_priority
+            for (idx, contact) in contacts.iter().enumerate() {
+                if idx == contact_id as usize {
+                    target_contact_idx = Some(idx);
+                    target_contact_old_priority = Some(contact.priority);
+                }
+                if contact.priority == new_priority {
+                    swap_contact_idx = Some(idx);
+                }
+            }
+
+            if let Some(target_idx) = target_contact_idx {
+                let mut target = contacts.get(target_idx).unwrap();
+
+                if let Some(swap_idx) = swap_contact_idx {
+                    // Swap priorities
+                    let mut swap_contact = contacts.get(swap_idx).unwrap();
+                    swap_contact.priority = target_contact_old_priority.unwrap();
+                    target.priority = new_priority;
+                    contacts.set(swap_idx, swap_contact);
+                } else {
+                    // Just assign the new priority
+                    target.priority = new_priority;
+                }
+
+                contacts.set(target_idx, target);
+
+                // Validate and save
+                PetChainContract::validate_emergency_contacts(&env, &contacts);
+                let contacts_bytes = contacts.to_xdr(&env);
+                let (c_nonce, c_cipher) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
+                pet.encrypted_emergency_contacts = EncryptedData {
+                    nonce: c_nonce,
+                    ciphertext: c_cipher,
+                };
+                pet.updated_at = env.ledger().timestamp();
+                env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+            }
+        } else {
+            panic_with_error!(&env, ContractError::PetNotFound);
         }
     }
 
@@ -5222,6 +5335,8 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::NonceHistory((pet_id, key_id)))
             .unwrap_or(Vec::new(&env))
+    }
+
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -7567,7 +7682,6 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
-        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
