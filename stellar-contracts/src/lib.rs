@@ -938,6 +938,7 @@ pub struct LabResult {
     pub reference_ranges: String,
     pub attachment_hash: Option<String>, // IPFS hash for PDF
     pub medical_record_id: Option<u64>,  // Link to medical record
+    pub biomarkers: Map<String, i128>,
 }
 
 #[contracttype]
@@ -946,6 +947,16 @@ pub struct VaccinationSummary {
     pub is_fully_current: bool,
     pub overdue_types: Vec<VaccineType>,
     pub upcoming_count: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabDifference {
+    pub biomarker: String,
+    pub value_a: i128,
+    pub value_b: i128,
+    pub delta: i128,
+    pub abnormal: bool,
 }
 
 #[contracttype]
@@ -5655,6 +5666,7 @@ impl PetChainContract {
             reference_ranges,
             attachment_hash,
             medical_record_id,
+            biomarkers: Map::new(&env),
         };
         env.storage()
             .instance()
@@ -5711,6 +5723,67 @@ impl PetChainContract {
         }
         res
     }
+
+    pub fn diff_lab_results(env: Env, pet_id: u64, result_id_a: u64, result_id_b: u64) -> Vec<LabDifference> {
+        let mut diffs = Vec::new(&env);
+
+        if let Some(result_a) = PetChainContract::get_lab_result(env.clone(), result_id_a) {
+            if result_a.pet_id != pet_id {
+                panic_with_error!(env, ContractError::CrossPetComparison);
+            }
+
+            if let Some(result_b) = PetChainContract::get_lab_result(env.clone(), result_id_b) {
+                if result_b.pet_id != pet_id {
+                    panic_with_error!(env, ContractError::CrossPetComparison);
+                }
+
+                // Get threshold from storage, default to 500 (for 5.0 with 2 decimal precision)
+                let threshold: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&SystemKey::LabThreshold)
+                    .unwrap_or(500);
+
+                // Collect all biomarker names from both results
+                let mut biomarker_names = Vec::new(&env);
+                for entry in result_a.biomarkers.iter() {
+                    biomarker_names.push_back(entry.0.clone());
+                }
+                for entry in result_b.biomarkers.iter() {
+                    let name = entry.0.clone();
+                    let mut found = false;
+                    for existing in biomarker_names.iter() {
+                        if existing == &name {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        biomarker_names.push_back(name);
+                    }
+                }
+
+                // Compute differences for each biomarker
+                for biomarker_name in biomarker_names.iter() {
+                    let value_a = result_a.biomarkers.get(biomarker_name.clone()).unwrap_or(0);
+                    let value_b = result_b.biomarkers.get(biomarker_name.clone()).unwrap_or(0);
+                    let delta = value_b - value_a;
+                    let abnormal = delta.abs() > threshold;
+
+                    diffs.push_back(LabDifference {
+                        biomarker: biomarker_name.clone(),
+                        value_a,
+                        value_b,
+                        delta,
+                        abnormal,
+                    });
+                }
+            }
+        }
+
+        diffs
+    }
+
     // --- BATCH OPERATIONS ---
 
     pub fn batch_add_vaccinations(
