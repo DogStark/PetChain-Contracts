@@ -413,3 +413,424 @@ fn test_migrate_v1_to_v2_non_admin_panics() {
     let non_admin = Address::generate(&env);
     client.migrate_v1_to_v2(&non_admin);
 }
+
+// --- TIMELOCK AND VETO TESTS ---
+
+#[test]
+fn test_proposal_enters_timelock_after_quorum() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // Proposal should be in Pending state initially
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::Pending);
+
+    // After second approval (quorum reached), should enter TimelockPending
+    client.approve_proposal(&admin2, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
+    assert!(proposal.timelock_end > 0);
+}
+
+#[test]
+fn test_execution_rejected_before_timelock_expiry() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Try to execute immediately (should fail - timelock not expired)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.execute_proposal(&proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_execution_allowed_after_timelock_expiry() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Get timelock end time
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    let timelock_end = proposal.timelock_end;
+
+    // Advance time past timelock
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    // Now execution should succeed
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+    assert_eq!(proposal.state, crate::ProposalState::Executed);
+}
+
+#[test]
+fn test_veto_during_timelock_cancels_proposal() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Verify proposal is in timelock
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
+
+    // Admin1 vetoes during timelock
+    client.veto_proposal(&admin1, &proposal_id);
+
+    // Proposal should now be vetoed
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::Vetoed);
+    assert_eq!(proposal.veto_count, 1);
+}
+
+#[test]
+fn test_veto_after_timelock_rejected() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Get timelock end time
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    let timelock_end = proposal.timelock_end;
+
+    // Advance time past timelock
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    // Try to veto after timelock expired (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.veto_proposal(&admin1, &proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_execution_rejected_if_vetoed() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Veto the proposal
+    client.veto_proposal(&admin1, &proposal_id);
+
+    // Get timelock end time
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    let timelock_end = proposal.timelock_end;
+
+    // Advance time past timelock
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    // Try to execute vetoed proposal (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.execute_proposal(&proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_timelock_config_enforces_minimum_24_hours() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    // Try to set timelock less than 24 hours (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_timelock_config(&admin1, &3600, &true); // 1 hour
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_timelock_config_accepts_24_hours() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    // Set timelock to exactly 24 hours (should succeed)
+    client.set_timelock_config(&admin1, &86400, &true);
+
+    let config = client.get_timelock_config();
+    assert_eq!(config.timelock_duration, 86400);
+    assert!(config.enabled);
+}
+
+#[test]
+fn test_timelock_config_can_be_disabled() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    // Disable timelock
+    client.set_timelock_config(&admin1, &86400, &false);
+
+    let config = client.get_timelock_config();
+    assert!(!config.enabled);
+}
+
+#[test]
+fn test_proposal_skips_timelock_when_disabled() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    // Disable timelock
+    client.set_timelock_config(&admin1, &86400, &false);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Proposal should be directly Executable (not TimelockPending)
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::Executable);
+
+    // Should be able to execute immediately
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
+
+#[test]
+fn test_get_proposal_veto_count() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Initially no vetoes
+    let veto_count = client.get_proposal_veto_count(&proposal_id);
+    assert_eq!(veto_count, 0);
+
+    // After veto
+    client.veto_proposal(&admin1, &proposal_id);
+    let veto_count = client.get_proposal_veto_count(&proposal_id);
+    assert_eq!(veto_count, 1);
+}
+
+#[test]
+fn test_has_admin_vetoed() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Initially admin1 has not vetoed
+    assert!(!client.has_admin_vetoed(&proposal_id, &admin1));
+
+    // After veto
+    client.veto_proposal(&admin1, &proposal_id);
+    assert!(client.has_admin_vetoed(&proposal_id, &admin1));
+
+    // admin2 still has not vetoed
+    assert!(!client.has_admin_vetoed(&proposal_id, &admin2));
+}
+
+#[test]
+fn test_veto_prevents_duplicate_veto_from_same_admin() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // First veto succeeds
+    client.veto_proposal(&admin1, &proposal_id);
+
+    // Second veto from same admin should fail
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.veto_proposal(&admin1, &proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_multiple_admins_can_veto() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Both admins veto
+    client.veto_proposal(&admin1, &proposal_id);
+    client.veto_proposal(&admin2, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.veto_count, 2);
+    assert_eq!(proposal.state, crate::ProposalState::Vetoed);
+}
+
+#[test]
+fn test_timelock_duration_applies_correctly() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    // Set custom timelock duration (48 hours)
+    let custom_duration = 172800u64;
+    client.set_timelock_config(&admin1, &custom_duration, &true);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    let now = env.ledger().timestamp();
+    client.approve_proposal(&admin2, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.timelock_end, now + custom_duration);
+}
+
+#[test]
+fn test_veto_cannot_happen_on_pending_proposal() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // Try to veto while still pending (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.veto_proposal(&admin1, &proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_approval_rejected_on_vetoed_proposal() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Veto the proposal
+    client.veto_proposal(&admin1, &proposal_id);
+
+    // Try to approve vetoed proposal (should fail)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.approve_proposal(&admin2, &proposal_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_proposal_state_transitions() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+
+    // State 1: Pending
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::Pending);
+
+    // State 2: TimelockPending (after quorum)
+    client.approve_proposal(&admin2, &proposal_id);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
+
+    // State 3: Executable (after timelock expires)
+    let timelock_end = proposal.timelock_end;
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    // State 4: Executed
+    client.execute_proposal(&proposal_id);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::Executed);
+}
+
+#[test]
+fn test_coverage_get_timelock_config_default() {
+    let env = Env::default();
+    let (client, _admin1, _admin2) = setup(&env);
+
+    // Get config without setting (should return default)
+    let config = client.get_timelock_config();
+    assert_eq!(config.timelock_duration, 86400); // 24 hours
+    assert!(config.enabled);
+}
+
+#[test]
+fn test_coverage_verify_vet_proposal_with_timelock() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let vet_address = Address::generate(&env);
+    let action = ProposalAction::VerifyVet(vet_address);
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Verify enters timelock
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
+
+    // Advance time and execute
+    let timelock_end = proposal.timelock_end;
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    client.execute_proposal(&proposal_id);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
+
+#[test]
+fn test_coverage_change_admin_proposal_with_timelock() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    let mut new_admins = Vec::new(&env);
+    new_admins.push_back(admin1.clone());
+    new_admins.push_back(admin2.clone());
+
+    let action = ProposalAction::ChangeAdmin((new_admins, 2));
+    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    client.approve_proposal(&admin2, &proposal_id);
+
+    // Verify enters timelock
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
+
+    // Advance time and execute
+    let timelock_end = proposal.timelock_end;
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(timelock_end + 1);
+    });
+
+    client.execute_proposal(&proposal_id);
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+}
