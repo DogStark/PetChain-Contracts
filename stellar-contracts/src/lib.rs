@@ -116,14 +116,14 @@ use soroban_sdk::{
     Env, String, Symbol, Vec,
 };
 
-const MAX_LINEAGE_DEPTH: u32 = 16;
+const DEFAULT_NONCE_MAX_USES: u32 = 1;
+const NONCE_HISTORY_LIMIT: u32 = 8;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PetChainError {
-    SelfLineage = 20,
-    CircularLineage = 21,
+    NonceReused = 1,
 const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
@@ -667,6 +667,7 @@ pub enum DataKey {
 
     // Contract Upgrade keys
     ContractVersion,
+    StorageVersion,
     UpgradeProposal(u64),
     UpgradeProposalCount,
 
@@ -684,6 +685,10 @@ pub enum DataKey {
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
     VetPetCount(Address),          // unique pets treated
+    NonceCounter((u64, String)),
+    NonceUsage((u64, String, Bytes)),
+    NonceHistory((u64, String)),
+    NonceMaxUse((u64, String)),
 
     // Lab Result DataKey
 
@@ -726,6 +731,8 @@ pub enum MedicalKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+    KeywordRecordCount((u64, Bytes)),
+    KeywordRecordIndex((u64, Bytes, u64)),
     GlobalMedication(u64),          // medication_id -> Medication
     MedicationCount,                // Global count
     PetMedicationCount(u64),        // pet_id -> count
@@ -4706,6 +4713,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&MedicalKey::MedicalRecord(id), &record);
+        Self::index_medical_record_notes(&env, pet_id, id, &record.notes);
 
         // Update pet medical record index
         let pet_record_count = env
@@ -4759,6 +4767,136 @@ impl PetChainContract {
         );
 
         id
+    }
+
+    fn normalize_keyword(env: &Env, keyword: &String) -> Bytes {
+        if keyword.len() == 0 || keyword.len() > MAX_SEARCH_KEYWORD_LEN {
+            panic_with_error!(env, PetChainError::KeywordTooLong);
+        }
+
+        let mut input = [0u8; MAX_SEARCH_KEYWORD_LEN as usize];
+        let len = keyword.len() as usize;
+        keyword.copy_into_slice(&mut input[..len]);
+        let mut out = Bytes::new(env);
+        for b in input.iter().take(len) {
+            if b.is_ascii_uppercase() {
+                out.push_back(*b + 32);
+            } else {
+                out.push_back(*b);
+            }
+        }
+        out
+    }
+
+    fn tokenize_notes(env: &Env, notes: &String) -> Vec<Bytes> {
+        if notes.len() > MAX_SEARCH_NOTES_LEN {
+            panic_with_error!(env, PetChainError::TooManySearchTokens);
+        }
+
+        let mut input = [0u8; MAX_SEARCH_NOTES_LEN as usize];
+        let len = notes.len() as usize;
+        notes.copy_into_slice(&mut input[..len]);
+        let mut tokens = Vec::new(env);
+        let mut token = Bytes::new(env);
+
+        for b in input.iter().take(len) {
+            let normalized = if b.is_ascii_uppercase() { *b + 32 } else { *b };
+            let is_token_char = normalized.is_ascii_lowercase() || normalized.is_ascii_digit();
+            if is_token_char {
+                if token.len() >= MAX_SEARCH_KEYWORD_LEN {
+                    panic_with_error!(env, PetChainError::KeywordTooLong);
+                }
+                token.push_back(normalized);
+            } else if token.len() > 0 {
+                tokens.push_back(token);
+                if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+                    panic_with_error!(env, PetChainError::TooManySearchTokens);
+                }
+                token = Bytes::new(env);
+            }
+        }
+        if token.len() > 0 {
+            tokens.push_back(token);
+            if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+                panic_with_error!(env, PetChainError::TooManySearchTokens);
+            }
+        }
+
+        tokens
+    }
+
+    fn index_medical_record_notes(env: &Env, pet_id: u64, record_id: u64, notes: &String) {
+        let tokens = Self::tokenize_notes(env, notes);
+        for token in tokens.iter() {
+            let count_key = MedicalKey::KeywordRecordCount((pet_id, token.clone()));
+            let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0) + 1;
+            env.storage().instance().set(&count_key, &count);
+            env.storage().instance().set(
+                &MedicalKey::KeywordRecordIndex((pet_id, token, count)),
+                &record_id,
+            );
+        }
+    }
+
+    fn prune_medical_record_notes(env: &Env, pet_id: u64, record_id: u64, notes: &String) {
+        let tokens = Self::tokenize_notes(env, notes);
+        for token in tokens.iter() {
+            let count_key = MedicalKey::KeywordRecordCount((pet_id, token.clone()));
+            let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0);
+            for i in 1..=count {
+                let index_key = MedicalKey::KeywordRecordIndex((pet_id, token.clone(), i));
+                if env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&index_key)
+                    .unwrap_or(0)
+                    == record_id
+                {
+                    env.storage().instance().set(&index_key, &0u64);
+                }
+            }
+        }
+    }
+
+    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
+        let token = Self::normalize_keyword(&env, &keyword);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::KeywordRecordCount((pet_id, token.clone())))
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+
+        for i in 1..=count {
+            let index_key = MedicalKey::KeywordRecordIndex((pet_id, token.clone(), i));
+            if let Some(record_id) = env.storage().instance().get::<MedicalKey, u64>(&index_key) {
+                if record_id == 0 {
+                    continue;
+                }
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    records.push_back(record);
+                }
+            }
+        }
+
+        records
+    }
+
+    pub fn remove_medical_record(env: Env, record_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            record.vet_address.require_auth();
+            Self::prune_medical_record_notes(&env, record.pet_id, record_id, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(record_id));
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update_medical_record(
@@ -4894,6 +5032,84 @@ impl PetChainContract {
         records
     }
 
+    pub fn set_nonce_max_use(env: Env, pet_id: u64, key_id: String, max_uses: u32) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::NonceMaxUse((pet_id, key_id)), &max_uses);
+    }
+
+    pub fn rotate_nonce(env: Env, pet_id: u64, key_id: String) -> Bytes {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let counter_key = DataKey::NonceCounter((pet_id, key_id.clone()));
+        let counter: u64 = env.storage().instance().get(&counter_key).unwrap_or(0) + 1;
+        env.storage().instance().set(&counter_key, &counter);
+
+        let mut nonce = Bytes::new(&env);
+        let pet_bytes = pet_id.to_be_bytes();
+        let counter_bytes = counter.to_be_bytes();
+        for byte in pet_bytes.iter().skip(4) {
+            nonce.push_back(*byte);
+        }
+        for byte in counter_bytes.iter() {
+            nonce.push_back(*byte);
+        }
+
+        env.events().publish(
+            (String::from_str(&env, "NonceRotated"), pet_id),
+            (key_id, nonce.clone(), env.ledger().timestamp()),
+        );
+
+        nonce
+    }
+
+    pub fn record_nonce_use(env: Env, pet_id: u64, key_id: String, nonce: Bytes) -> bool {
+        let max_uses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NonceMaxUse((pet_id, key_id.clone())))
+            .unwrap_or(DEFAULT_NONCE_MAX_USES);
+        let usage_key = DataKey::NonceUsage((pet_id, key_id.clone(), nonce.clone()));
+        let used: u32 = env.storage().instance().get(&usage_key).unwrap_or(0);
+        if used >= max_uses {
+            panic_with_error!(&env, PetChainError::NonceReused);
+        }
+
+        env.storage().instance().set(&usage_key, &(used + 1));
+        if used == 0 {
+            let history_key = DataKey::NonceHistory((pet_id, key_id));
+            let mut history: Vec<Bytes> = env
+                .storage()
+                .instance()
+                .get(&history_key)
+                .unwrap_or(Vec::new(&env));
+            history.push_back(nonce);
+            while history.len() > NONCE_HISTORY_LIMIT {
+                history.remove(0);
+            }
+            env.storage().instance().set(&history_key, &history);
+        }
+
+        true
+    }
+
+    pub fn get_nonce_history(env: Env, pet_id: u64, key_id: String) -> Vec<Bytes> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NonceHistory((pet_id, key_id)))
+            .unwrap_or(Vec::new(&env))
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -6098,6 +6314,25 @@ impl PetChainContract {
             })
     }
 
+    pub fn get_storage_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn set_storage_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance().set(
+            &DataKey::StorageVersion,
+            &ContractVersion { major, minor, patch },
+        );
+    }
+
     pub fn set_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
         PetChainContract::require_admin_auth(&env, &admin);
         env.storage().instance().set(
@@ -6206,6 +6441,56 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    /// Migrate on-chain storage schema from one version to another.
+    /// Callable only by an admin. Idempotent: re-running on an already-migrated
+    /// storage is a no-op.
+    pub fn migrate_storage(
+        env: Env,
+        caller: Address,
+        from_major: u32,
+        from_minor: u32,
+        from_patch: u32,
+        to_major: u32,
+        to_minor: u32,
+        to_patch: u32,
+    ) {
+        PetChainContract::require_admin_auth(&env, &caller);
+
+        let current: ContractVersion = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion { major: 1, minor: 0, patch: 0 });
+
+        // If already at or beyond target version, noop (idempotent / no downgrade)
+        if current.major > to_major || (current.major == to_major && (current.minor > to_minor || (current.minor == to_minor && current.patch >= to_patch))) {
+            return;
+        }
+
+        // Only run migration if current equals the expected from-version
+        if !(current.major == from_major && current.minor == from_minor && current.patch == from_patch) {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        // Dispatch migration functions per version pair
+        if from_major == 1 && to_major == 2 {
+            // perform any data transformations required for v1 -> v2
+            PetChainContract::migrate_storage_v1_to_v2(&env);
+            env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+            return;
+        }
+
+        // Unknown migration path: set version directly (conservative)
+        env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+    }
+
+    fn migrate_storage_v1_to_v2(env: &Env) {
+        // Example migration: in this simplified contract we only bump storage version.
+        // Real migrations should transform stored data structures here.
+        // Idempotency is ensured by migrate_storage guard.
+        let _ = env;
     }
 
     /// Idempotent storage migration from v1 to v2. Admin-only.
