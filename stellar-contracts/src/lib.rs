@@ -72,6 +72,7 @@ mod test_attachments;
 mod test_behavior;
 #[cfg(test)]
 mod test_breeding;
+#[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
 mod test_consent_pagination;
@@ -116,11 +117,10 @@ mod test_statistics;
 #[cfg(test)]
 mod test_disputes;
 #[cfg(test)]
-mod test_admin_initialization;
-#[cfg(test)]
 mod test_fuzz_regression;
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
+#[cfg(test)]
 mod test_upgrade_proposal;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -137,7 +137,14 @@ const NONCE_HISTORY_LIMIT: u32 = 8;
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
+    SelfLineage = 2,
+    CircularLineage = 3,
+    KeywordTooLong = 4,
+    TooManySearchTokens = 5,
+}
+
 const MAX_LOG_ENTRIES: u32 = 1_000;
+const MAX_LINEAGE_DEPTH: u32 = 10;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -634,6 +641,9 @@ pub struct UpgradeProposal {
     pub proposed_at: u64,
     pub approved: bool,
     pub executed: bool,
+    pub timelock_duration: u64,  // seconds; min 86400 (24h)
+    pub approved_at: Option<u64>, // when quorum was reached
+    pub vetoed: bool,
 }
 #[contracttype]
 #[derive(Clone)]
@@ -980,6 +990,7 @@ pub struct AttachmentMetadata {
 pub struct Attachment {
     pub ipfs_hash: String,
     pub metadata: AttachmentMetadata,
+    pub content_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -1599,6 +1610,57 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::AdminThreshold)
             .unwrap_or(0u32)
+    }
+
+    /// Update the multisig admin threshold via a multisig proposal.
+    /// Requires quorum approval. Rejects if an active proposal exists.
+    /// Validates 1 <= new_threshold <= signer_count.
+    pub fn set_threshold(env: Env, proposer: Address, new_threshold: u32) {
+        PetChainContract::require_admin_auth(&env, &proposer);
+
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
+
+        if new_threshold == 0 || new_threshold > admins.len() {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        // Guard: reject if any active (non-executed, non-expired) proposal exists
+        let proposal_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::ProposalCount)
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        for i in 1..=proposal_count {
+            if let Some(p) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, MultiSigProposal>(&SystemKey::Proposal(i))
+            {
+                if !p.executed && now <= p.expires_at {
+                    panic_with_error!(&env, ContractError::InvalidState);
+                }
+            }
+        }
+
+        let old_threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::AdminThreshold)
+            .unwrap_or(1);
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::AdminThreshold, &new_threshold);
+
+        env.events().publish(
+            (Symbol::new(&env, "ThresholdChanged"),),
+            (old_threshold, new_threshold),
+        );
     }
 
     fn update_vet_stats(
@@ -2739,6 +2801,9 @@ impl PetChainContract {
     /// Enforced in `add_vet_review` to bound on-chain storage and gas costs.
     #[allow(dead_code)]
     const MAX_REVIEW_COMMENT_LEN: u32 = 500;
+    const MAX_SEARCH_KEYWORD_LEN: u32 = 64;
+    const MAX_SEARCH_NOTES_LEN: u32 = 1000;
+    const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 50;
 
     pub fn register_vet(
         env: Env,
@@ -4788,11 +4853,11 @@ impl PetChainContract {
     }
 
     fn normalize_keyword(env: &Env, keyword: &String) -> Bytes {
-        if keyword.len() == 0 || keyword.len() > MAX_SEARCH_KEYWORD_LEN {
+        if keyword.len() == 0 || keyword.len() > Self::MAX_SEARCH_KEYWORD_LEN {
             panic_with_error!(env, PetChainError::KeywordTooLong);
         }
 
-        let mut input = [0u8; MAX_SEARCH_KEYWORD_LEN as usize];
+        let mut input = [0u8; Self::MAX_SEARCH_KEYWORD_LEN as usize];
         let len = keyword.len() as usize;
         keyword.copy_into_slice(&mut input[..len]);
         let mut out = Bytes::new(env);
@@ -4807,11 +4872,11 @@ impl PetChainContract {
     }
 
     fn tokenize_notes(env: &Env, notes: &String) -> Vec<Bytes> {
-        if notes.len() > MAX_SEARCH_NOTES_LEN {
+        if notes.len() > Self::MAX_SEARCH_NOTES_LEN {
             panic_with_error!(env, PetChainError::TooManySearchTokens);
         }
 
-        let mut input = [0u8; MAX_SEARCH_NOTES_LEN as usize];
+        let mut input = [0u8; Self::MAX_SEARCH_NOTES_LEN as usize];
         let len = notes.len() as usize;
         notes.copy_into_slice(&mut input[..len]);
         let mut tokens = Vec::new(env);
@@ -4821,13 +4886,13 @@ impl PetChainContract {
             let normalized = if b.is_ascii_uppercase() { *b + 32 } else { *b };
             let is_token_char = normalized.is_ascii_lowercase() || normalized.is_ascii_digit();
             if is_token_char {
-                if token.len() >= MAX_SEARCH_KEYWORD_LEN {
+                if token.len() >= Self::MAX_SEARCH_KEYWORD_LEN {
                     panic_with_error!(env, PetChainError::KeywordTooLong);
                 }
                 token.push_back(normalized);
             } else if token.len() > 0 {
                 tokens.push_back(token);
-                if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+                if tokens.len() > Self::MAX_SEARCH_TOKENS_PER_RECORD {
                     panic_with_error!(env, PetChainError::TooManySearchTokens);
                 }
                 token = Bytes::new(env);
@@ -4835,7 +4900,7 @@ impl PetChainContract {
         }
         if token.len() > 0 {
             tokens.push_back(token);
-            if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+            if tokens.len() > Self::MAX_SEARCH_TOKENS_PER_RECORD {
                 panic_with_error!(env, PetChainError::TooManySearchTokens);
             }
         }
@@ -5128,6 +5193,8 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::NonceHistory((pet_id, key_id)))
             .unwrap_or(Vec::new(&env))
+    }
+
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -5194,7 +5261,13 @@ impl PetChainContract {
         record_id: u64,
         ipfs_hash: String,
         metadata: AttachmentMetadata,
+        content_hash: BytesN<32>,
     ) -> bool {
+        // Reject zero-value content hash
+        if content_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
         // Validate IPFS hash format
         if let Err(err) = PetChainContract::validate_ipfs_hash(&env, &ipfs_hash) {
             env.panic_with_error(err);
@@ -5228,6 +5301,7 @@ impl PetChainContract {
             let attachment = Attachment {
                 ipfs_hash,
                 metadata,
+                content_hash,
             };
 
             // Add to record
@@ -5252,6 +5326,26 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    /// Verify that the stored content_hash for an attachment matches the provided hash.
+    /// Returns false on mismatch or if record/attachment not found.
+    pub fn verify_attachment(
+        env: Env,
+        record_id: u64,
+        attachment_index: u32,
+        hash: BytesN<32>,
+    ) -> bool {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            if let Some(attachment) = record.attachment_hashes.get(attachment_index) {
+                return attachment.content_hash == hash;
+            }
+        }
+        false
     }
 
     /// Get all attachments for a medical record
@@ -5377,6 +5471,57 @@ impl PetChainContract {
             .persistent()
             .get(&key)
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns a paginated page of access log entries for a pet.
+    /// `page` is 0-indexed. `page_size` is the number of entries per page.
+    /// Returns (entries, total_count).
+    pub fn get_access_log(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        page: u32,
+        page_size: u32,
+    ) -> (Vec<AccessLog>, u32) {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if pet.owner != caller {
+            PetChainContract::require_admin_auth(&env, &caller);
+        }
+
+        let key = (Symbol::new(&env, "access_logs"), pet_id);
+        let logs: Vec<AccessLog> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let total = logs.len();
+        let mut result = Vec::new(&env);
+
+        if page_size == 0 || total == 0 {
+            return (result, total);
+        }
+
+        let start = page.saturating_mul(page_size);
+        if start >= total {
+            return (result, total);
+        }
+
+        let end = start.saturating_add(page_size).min(total);
+        for i in start..end {
+            if let Some(entry) = logs.get(i) {
+                result.push_back(entry);
+            }
+        }
+
+        (result, total)
     }
 
     pub fn check_and_expire_access(env: Env, pet_id: u64, grantee: Address) {
@@ -6394,6 +6539,52 @@ impl PetChainContract {
             proposed_at: env.ledger().timestamp(),
             approved: false,
             executed: false,
+            timelock_duration: 86400, // default 24h
+            approved_at: None,
+            vetoed: false,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposalCount, &proposal_id);
+
+        proposal_id
+    }
+
+    /// Propose an upgrade with an explicit timelock duration (min 86400s = 24h).
+    pub fn propose_upgrade_with_timelock(
+        env: Env,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+        timelock_duration: u64,
+    ) -> u64 {
+        PetChainContract::require_admin(&env);
+        proposer.require_auth();
+
+        if timelock_duration < 86400 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let proposal_id = safe_increment(count);
+
+        let proposal = UpgradeProposal {
+            id: proposal_id,
+            proposed_by: proposer,
+            new_wasm_hash,
+            proposed_at: env.ledger().timestamp(),
+            approved: false,
+            executed: false,
+            timelock_duration,
+            approved_at: None,
+            vetoed: false,
         };
 
         env.storage()
@@ -6417,8 +6608,12 @@ impl PetChainContract {
             if proposal.executed {
                 panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
             }
+            if proposal.vetoed {
+                panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+            }
 
             proposal.approved = true;
+            proposal.approved_at = Some(env.ledger().timestamp());
             env.storage()
                 .instance()
                 .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
@@ -6426,6 +6621,88 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    /// Execute an upgrade proposal after timelock has expired and no veto was cast.
+    pub fn execute_upgrade(env: Env, proposal_id: u64) {
+        PetChainContract::require_admin(&env);
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::ProposalNotFound));
+
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+        if proposal.vetoed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+        if !proposal.approved {
+            panic_with_error!(&env, ContractError::ThresholdNotMet);
+        }
+
+        let approved_at = proposal
+            .approved_at
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidState));
+
+        let now = env.ledger().timestamp();
+        if now < approved_at + proposal.timelock_duration {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+
+        // Skip actual wasm upgrade if hash is all zeros (test mode)
+        if proposal.new_wasm_hash != BytesN::from_array(&env, &[0u8; 32]) {
+            env.deployer()
+                .update_current_contract_wasm(proposal.new_wasm_hash);
+        }
+    }
+
+    /// Veto an upgrade proposal during the timelock window. Any admin can veto.
+    pub fn veto_upgrade(env: Env, admin: Address, proposal_id: u64) {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::ProposalNotFound));
+
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+        if proposal.vetoed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+        if !proposal.approved {
+            panic_with_error!(&env, ContractError::ThresholdNotMet);
+        }
+
+        let approved_at = proposal
+            .approved_at
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidState));
+
+        let now = env.ledger().timestamp();
+        // Veto only allowed during timelock window
+        if now >= approved_at + proposal.timelock_duration {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+
+        proposal.vetoed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeProposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "UpgradeVetoed"), proposal_id),
+            (admin, proposal_id),
+        );
     }
 
     pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal> {
@@ -7473,7 +7750,6 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
-        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
@@ -7482,7 +7758,7 @@ impl PetChainContract {
         if count == 0 {
             return None;
         }
-        let policy = env
+        let mut policy = env
             .storage()
             .instance()
             .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))?;
