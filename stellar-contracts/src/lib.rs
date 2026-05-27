@@ -897,6 +897,15 @@ pub enum ConsentType {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsentScope {
+    ReadMedical,
+    WriteMedical,
+    ReadLab,
+    EmergencyOnly,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct Consent {
     pub id: u64,
@@ -907,6 +916,7 @@ pub struct Consent {
     pub granted_at: u64,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
+    pub scope: ConsentScope,
 }
 
 #[contracttype]
@@ -6279,6 +6289,7 @@ impl PetChainContract {
         owner: Address,
         consent_type: ConsentType,
         granted_to: Address,
+        scope: ConsentScope,
     ) -> u64 {
         owner.require_auth();
 
@@ -6366,6 +6377,7 @@ impl PetChainContract {
             granted_at: now,
             revoked_at: None,
             is_active: true,
+            scope,
         };
 
         env.storage()
@@ -6475,6 +6487,39 @@ impl PetChainContract {
         let mut result = Vec::new(&env);
         for i in start..start.saturating_add(size) {
             match history.get(i) {
+                Some(c) => result.push_back(c),
+                None => break,
+            }
+        }
+        result
+    }
+
+    pub fn get_consents_by_scope(
+        env: Env,
+        pet_id: u64,
+        scope: ConsentScope,
+        page: u64,
+        page_size: u32,
+    ) -> Vec<Consent> {
+        let history = PetChainContract::get_consent_history(env.clone(), pet_id);
+        let size = if page_size == 0 { 50u32 } else { page_size };
+
+        // Filter consents by scope
+        let mut filtered = Vec::new(&env);
+        for consent in history.iter() {
+            if consent.scope == scope {
+                filtered.push_back(consent);
+            }
+        }
+
+        // Paginate filtered results
+        let start: u32 = match page.checked_mul(size as u64).and_then(|v| u32::try_from(v).ok()) {
+            Some(v) => v,
+            None => return Vec::new(&env),
+        };
+        let mut result = Vec::new(&env);
+        for i in start..start.saturating_add(size) {
+            match filtered.get(i) {
                 Some(c) => result.push_back(c),
                 None => break,
             }
