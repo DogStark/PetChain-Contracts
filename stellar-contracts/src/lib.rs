@@ -300,6 +300,7 @@ pub struct TrainingMilestone {
     pub achieved_at: Option<u64>,
     pub trainer: Address,
     pub notes: String,
+    pub prerequisites: Vec<u64>,
 }
 
 #[contracttype]
@@ -7946,6 +7947,7 @@ impl PetChainContract {
             achieved_at: None,
             trainer: pet.owner.clone(),
             notes,
+            prerequisites: Vec::new(&env),
         };
 
         env.storage()
@@ -7980,6 +7982,21 @@ impl PetChainContract {
         {
             milestone.trainer.require_auth();
 
+            // Check if all prerequisites are completed
+            for prereq_id in milestone.prerequisites.iter() {
+                if let Some(prereq) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(*prereq_id))
+                {
+                    if !prereq.achieved {
+                        panic_with_error!(env, ContractError::PrerequisiteIncomplete);
+                    }
+                } else {
+                    panic_with_error!(env, ContractError::PrerequisiteIncomplete);
+                }
+            }
+
             milestone.achieved = true;
             milestone.achieved_at = Some(env.ledger().timestamp());
 
@@ -7990,6 +8007,131 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn add_training_milestone_with_dependencies(
+        env: Env,
+        pet_id: u64,
+        milestone_name: String,
+        notes: String,
+        prerequisites: Vec<u64>,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        if milestone_name.len() > PetChainContract::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if notes.len() > PetChainContract::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        // Check for cycles in the dependency graph
+        Self::_check_circular_dependency(&env, pet_id, &prerequisites);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::TrainingMilestoneCount)
+            .unwrap_or(0);
+        let milestone_id = safe_increment(count);
+
+        let milestone = TrainingMilestone {
+            id: milestone_id,
+            pet_id,
+            milestone_name,
+            achieved: false,
+            achieved_at: None,
+            trainer: pet.owner.clone(),
+            notes,
+            prerequisites,
+        };
+
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestone(milestone_id), &milestone);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestoneCount, &milestone_id);
+
+        let pet_milestone_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let new_count = safe_increment(pet_milestone_count);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::PetMilestoneCount(pet_id), &new_count);
+        env.storage().instance().set(
+            &BehaviorKey::PetMilestoneIndex((pet_id, new_count)),
+            &milestone_id,
+        );
+
+        milestone_id
+    }
+
+    fn _check_circular_dependency(env: &Env, pet_id: u64, prerequisites: &Vec<u64>) {
+        // Simple check: ensure no prerequisites are in the list (since we're creating a new milestone)
+        // For each prerequisite, check if it would create a cycle by doing DFS
+        for prereq_id in prerequisites.iter() {
+            Self::_dfs_check_cycle(env, pet_id, *prereq_id, &mut Vec::new(env));
+        }
+    }
+
+    fn _dfs_check_cycle(env: &Env, pet_id: u64, current_id: u64, visited: &mut Vec<u64>) {
+        // Check if current_id is already in visited (indicates a cycle)
+        for v in visited.iter() {
+            if v == &current_id {
+                panic_with_error!(env, ContractError::CircularDependency);
+            }
+        }
+
+        visited.push_back(current_id);
+
+        // Get the milestone and check its prerequisites
+        if let Some(milestone) = env
+            .storage()
+            .instance()
+            .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(current_id))
+        {
+            if milestone.pet_id == pet_id {
+                for prereq_id in milestone.prerequisites.iter() {
+                    Self::_dfs_check_cycle(env, pet_id, *prereq_id, visited);
+                }
+            }
+        }
+    }
+
+    pub fn get_milestone_tree(env: Env, pet_id: u64) -> Vec<(u64, Vec<u64>, bool)> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let mut tree = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(milestone_id) = env
+                .storage()
+                .instance()
+                .get::<BehaviorKey, u64>(&BehaviorKey::PetMilestoneIndex((pet_id, i)))
+            {
+                if let Some(milestone) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(milestone_id))
+                {
+                    tree.push_back((milestone.id, milestone.prerequisites.clone(), milestone.achieved));
+                }
+            }
+        }
+
+        tree
     }
 
     pub fn get_training_milestones(
