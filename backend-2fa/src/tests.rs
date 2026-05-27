@@ -1660,4 +1660,363 @@ mod redis_rate_limiter_tests {
             "exhausting key_a must not affect key_b"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Tracing middleware sanitization tests
+    // -----------------------------------------------------------------------
+
+    mod tracing_sanitization {
+        use crate::tracing_middleware::sanitize_json_body;
+
+        #[test]
+        fn sanitize_simple_totp_code() {
+            let body = r#"{"user_id":"user1","totp_code":"123456"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""user_id":"user1""#));
+            assert!(!sanitized.contains("123456"));
+        }
+
+        #[test]
+        fn sanitize_secret_field() {
+            let body = r#"{"user_id":"user1","secret":"ABCDEFG123456"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(!sanitized.contains("ABCDEFG123456"));
+        }
+
+        #[test]
+        fn sanitize_password_field() {
+            let body = r#"{"username":"alice","password":"SuperSecret123!"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""password":"[REDACTED]""#));
+            assert!(!sanitized.contains("SuperSecret123!"));
+            assert!(sanitized.contains(r#""username":"alice""#));
+        }
+
+        #[test]
+        fn sanitize_recovery_code() {
+            let body = r#"{"user_id":"user1","recovery_code":"1234-5678"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""recovery_code":"[REDACTED]""#));
+            assert!(!sanitized.contains("1234-5678"));
+        }
+
+        #[test]
+        fn sanitize_token_field() {
+            let body = r#"{"user_id":"user1","token":"eyJhbGc..."}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""token":"[REDACTED]""#));
+            assert!(!sanitized.contains("eyJhbGc..."));
+        }
+
+        #[test]
+        fn sanitize_backup_code() {
+            let body = r#"{"user_id":"user1","backup_code":"BACKUP123"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""backup_code":"[REDACTED]""#));
+            assert!(!sanitized.contains("BACKUP123"));
+        }
+
+        #[test]
+        fn sanitize_multiple_sensitive_fields() {
+            let body = r#"{"user_id":"user1","totp_code":"123456","secret":"SECRET_KEY","password":"pass123"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""password":"[REDACTED]""#));
+            assert!(!sanitized.contains("123456"));
+            assert!(!sanitized.contains("SECRET_KEY"));
+            assert!(!sanitized.contains("pass123"));
+        }
+
+        #[test]
+        fn sanitize_nested_json() {
+            let body = r#"{"user_id":"user1","data":{"secret":"nested_secret","field":"value"}}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(!sanitized.contains("nested_secret"));
+            assert!(sanitized.contains(r#""field":"value""#));
+        }
+
+        #[test]
+        fn sanitize_json_array_with_sensitive_fields() {
+            let body = r#"{"items":[{"totp_code":"111111"},{"totp_code":"222222"}]}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            assert!(!sanitized.contains("111111"));
+            assert!(!sanitized.contains("222222"));
+        }
+
+        #[test]
+        fn preserve_non_sensitive_fields() {
+            let body = r#"{"user_id":"user123","email":"test@example.com","name":"John Doe"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""user_id":"user123""#));
+            assert!(sanitized.contains(r#""email":"test@example.com""#));
+            assert!(sanitized.contains(r#""name":"John Doe""#));
+        }
+
+        #[test]
+        fn handle_non_json_body() {
+            let body = "This is not JSON at all";
+            let sanitized = sanitize_json_body(body);
+            assert_eq!(sanitized, "[binary]");
+        }
+
+        #[test]
+        fn handle_invalid_json() {
+            let body = r#"{"invalid": json syntax"#;
+            let sanitized = sanitize_json_body(body);
+            assert_eq!(sanitized, "[binary]");
+        }
+
+        #[test]
+        fn handle_empty_json() {
+            let body = "{}";
+            let sanitized = sanitize_json_body(body);
+            assert_eq!(sanitized, "{}");
+        }
+
+        #[test]
+        fn handle_empty_body() {
+            let body = "";
+            let sanitized = sanitize_json_body(body);
+            assert_eq!(sanitized, "[binary]");
+        }
+
+        #[test]
+        fn case_sensitive_field_names() {
+            let body = r#"{"TOTP_CODE":"123456","Totp_Code":"654321","totp_code":"111111"}"#;
+            let sanitized = sanitize_json_body(body);
+            // Only lowercase "totp_code" should be redacted
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            // Uppercase variants should remain
+            assert!(sanitized.contains("123456") || sanitized.contains("654321"));
+        }
+
+        #[test]
+        fn sanitize_deeply_nested_structure() {
+            let body = r#"{"level1":{"level2":{"level3":{"secret":"deep_secret"}}}}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(!sanitized.contains("deep_secret"));
+        }
+
+        #[test]
+        fn sanitize_mixed_array_and_objects() {
+            let body = r#"{"users":[{"name":"Alice","totp_code":"123"},{"name":"Bob","password":"secret"}]}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""password":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""name":"Alice""#));
+            assert!(sanitized.contains(r#""name":"Bob""#));
+        }
+
+        #[test]
+        fn handle_numeric_values() {
+            let body = r#"{"user_id":123,"totp_code":654321,"amount":1000}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""totp_code":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""user_id":123"#));
+            assert!(sanitized.contains(r#""amount":1000"#));
+        }
+
+        #[test]
+        fn handle_boolean_values() {
+            let body = r#"{"enabled":true,"secret":"secret_key","active":false}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""enabled":true"#));
+            assert!(sanitized.contains(r#""active":false"#));
+        }
+
+        #[test]
+        fn handle_null_values() {
+            let body = r#"{"user_id":null,"secret":"secret_key"}"#;
+            let sanitized = sanitize_json_body(body);
+            assert!(sanitized.contains(r#""secret":"[REDACTED]""#));
+            assert!(sanitized.contains(r#""user_id":null"#));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin Score Handlers Tests
+    // -----------------------------------------------------------------------
+
+    mod admin_score_handlers {
+        use crate::handlers::AdminScoreHandlers;
+        use crate::leaderboard::FlaggedScoreSubmission;
+
+        #[test]
+        fn admin_get_all_flagged_empty() {
+            let admin = AdminScoreHandlers::new();
+            let flagged = admin.get_all_flagged();
+            assert!(flagged.is_empty());
+        }
+
+        #[test]
+        fn admin_log_rejected_submission() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Exceeds delta".into(),
+            );
+
+            let flagged = admin.get_all_flagged();
+            assert_eq!(flagged.len(), 1);
+            assert_eq!(flagged[0].user_id, "user1");
+            assert_eq!(flagged[0].attempted_score, 5000);
+            assert_eq!(flagged[0].reason, "Exceeds delta");
+        }
+
+        #[test]
+        fn admin_get_flagged_by_user() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Exceeds delta".into(),
+            );
+            admin.log_rejected_submission(
+                "user2".into(),
+                3000,
+                "Suspicious".into(),
+            );
+
+            let user1_flagged = admin.get_flagged_by_user("user1");
+            let user2_flagged = admin.get_flagged_by_user("user2");
+
+            assert_eq!(user1_flagged.len(), 1);
+            assert_eq!(user2_flagged.len(), 1);
+            assert_eq!(user1_flagged[0].user_id, "user1");
+            assert_eq!(user2_flagged[0].user_id, "user2");
+        }
+
+        #[test]
+        fn admin_get_flagged_by_user_multiple_submissions() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Exceeds delta".into(),
+            );
+            admin.log_rejected_submission(
+                "user1".into(),
+                6000,
+                "Another violation".into(),
+            );
+
+            let user1_flagged = admin.get_flagged_by_user("user1");
+            assert_eq!(user1_flagged.len(), 2);
+            assert_eq!(user1_flagged[0].attempted_score, 5000);
+            assert_eq!(user1_flagged[1].attempted_score, 6000);
+        }
+
+        #[test]
+        fn admin_get_flagged_by_nonexistent_user() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Exceeds delta".into(),
+            );
+
+            let user2_flagged = admin.get_flagged_by_user("user2");
+            assert!(user2_flagged.is_empty());
+        }
+
+        #[test]
+        fn admin_default() {
+            let admin = AdminScoreHandlers::default();
+            assert!(admin.get_all_flagged().is_empty());
+        }
+
+        #[test]
+        fn admin_log_multiple_users() {
+            let admin = AdminScoreHandlers::new();
+
+            for i in 0..5 {
+                admin.log_rejected_submission(
+                    format!("user{}", i),
+                    1000 + (i as u64 * 100),
+                    format!("Violation {}", i),
+                );
+            }
+
+            let all_flagged = admin.get_all_flagged();
+            assert_eq!(all_flagged.len(), 5);
+
+            for i in 0..5 {
+                assert_eq!(all_flagged[i].user_id, format!("user{}", i));
+                assert_eq!(
+                    all_flagged[i].attempted_score,
+                    1000 + (i as u64 * 100)
+                );
+            }
+        }
+
+        #[test]
+        #[cfg(test)]
+        fn admin_clear_flagged() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Exceeds delta".into(),
+            );
+            admin.log_rejected_submission(
+                "user2".into(),
+                3000,
+                "Suspicious".into(),
+            );
+
+            assert_eq!(admin.get_all_flagged().len(), 2);
+
+            admin.clear_flagged();
+            assert!(admin.get_all_flagged().is_empty());
+        }
+
+        #[test]
+        fn admin_timestamp_is_set() {
+            let admin = AdminScoreHandlers::new();
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                "Test".into(),
+            );
+
+            let flagged = admin.get_all_flagged();
+            assert!(flagged[0].timestamp > 0);
+        }
+
+        #[test]
+        fn admin_reason_is_preserved() {
+            let admin = AdminScoreHandlers::new();
+            let reason = "Custom reason for suspension";
+            admin.log_rejected_submission(
+                "user1".into(),
+                5000,
+                reason.into(),
+            );
+
+            let flagged = admin.get_all_flagged();
+            assert_eq!(flagged[0].reason, reason);
+        }
+
+        #[test]
+        fn admin_large_score_values() {
+            let admin = AdminScoreHandlers::new();
+            let max_score = u64::MAX;
+            admin.log_rejected_submission(
+                "user1".into(),
+                max_score,
+                "Max score".into(),
+            );
+
+            let flagged = admin.get_all_flagged();
+            assert_eq!(flagged[0].attempted_score, max_score);
+        }
+    }
 }

@@ -1,5 +1,6 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
+use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
 use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
 use serde::{Deserialize, Serialize};
@@ -282,6 +283,67 @@ impl TwoFactorHandlers {
 }
 
 impl Default for TwoFactorHandlers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Admin handlers for managing flagged leaderboard scores
+pub struct AdminScoreHandlers {
+    flagged_store: Arc<FlaggedScoreStore>,
+}
+
+impl AdminScoreHandlers {
+    pub fn new() -> Self {
+        Self {
+            flagged_store: Arc::new(FlaggedScoreStore::new()),
+        }
+    }
+
+    pub fn with_store(flagged_store: Arc<FlaggedScoreStore>) -> Self {
+        Self { flagged_store }
+    }
+
+    /// Get all flagged submissions
+    pub fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission> {
+        self.flagged_store.get_all_flagged()
+    }
+
+    /// Get flagged submissions for a specific user
+    pub fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
+        self.flagged_store.get_flagged_by_user(user_id)
+    }
+
+    /// Log a rejected score submission
+    pub fn log_rejected_submission(
+        &self,
+        user_id: String,
+        attempted_score: u64,
+        reason: String,
+    ) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let flagged = FlaggedScoreSubmission {
+            user_id,
+            attempted_score,
+            timestamp,
+            reason,
+        };
+
+        self.flagged_store.add_flagged(flagged);
+    }
+
+    /// Clear all flagged submissions (for testing)
+    #[cfg(test)]
+    pub fn clear_flagged(&self) {
+        self.flagged_store.clear();
+    }
+}
+
+impl Default for AdminScoreHandlers {
     fn default() -> Self {
         Self::new()
     }
