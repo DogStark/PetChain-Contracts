@@ -1,9 +1,129 @@
+use crate::*;
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+
+fn setup(env: &Env) -> (PetChainContractClient<'_>, Address, u64) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(env, &contract_id);
+    let owner = Address::generate(env);
+    let vet = Address::generate(env);
+    let admin = Address::generate(env);
+
+    client.register_vet(
+        &vet,
+        &String::from_str(env, "Dr Search"),
+        &String::from_str(env, "SEARCH-1"),
+        &String::from_str(env, "General"),
+    );
+    client.init_admin(&admin);
+    client.verify_vet(&admin, &vet);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(env, "Index"),
+        &String::from_str(env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(env, "Gray"),
+        &String::from_str(env, "Mixed"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    (client, vet, pet_id)
+}
+
+#[test]
+fn test_search_by_keyword_uses_index() {
+    let env = Env::default();
+    let (client, vet, pet_id) = setup(&env);
+
+    client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Cough"),
+        &String::from_str(&env, "Rest"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Mild cough improved"),
+    );
+    client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Diet"),
+        &String::from_str(&env, "Food change"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Weight stable"),
+    );
+
+    let results = client.search_by_keyword(&pet_id, &String::from_str(&env, "COUGH"));
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results.get(0).unwrap().diagnosis,
+        String::from_str(&env, "Cough")
+    );
+}
+
+#[test]
+fn test_remove_medical_record_prunes_keyword_index() {
+    let env = Env::default();
+    let (client, vet, pet_id) = setup(&env);
+
+    let record_id = client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Allergy"),
+        &String::from_str(&env, "Antihistamine"),
+        &Vec::new(&env),
+        &String::from_str(&env, "Skin allergy rash"),
+    );
+
+    assert_eq!(
+        client
+            .search_by_keyword(&pet_id, &String::from_str(&env, "rash"))
+            .len(),
+        1
+    );
+    assert!(client.remove_medical_record(&record_id));
+    assert_eq!(
+        client
+            .search_by_keyword(&pet_id, &String::from_str(&env, "rash"))
+            .len(),
+        0
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_rejects_oversized_keyword() {
+    let env = Env::default();
+    let (client, _vet, pet_id) = setup(&env);
+    client.search_by_keyword(
+        &pet_id,
+        &String::from_str(&env, "keyword-that-is-far-too-long-for-index"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_rejects_too_many_tokens() {
+    let env = Env::default();
+    let (client, vet, pet_id) = setup(&env);
+    client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Verbose"),
+        &String::from_str(&env, "None"),
+        &Vec::new(&env),
+        &String::from_str(&env, "a b c d e f g h i j k l m n o p q"),
+    );
 // ============================================================
 // MEDICAL RECORD SEARCH TESTS
 // ============================================================
 
 #[cfg(test)]
 mod test_search_medical_records {
+    extern crate std;
     use crate::{
         Gender, MedicalRecordFilter, PetChainContract, PetChainContractClient, PrivacyLevel,
         Species,
@@ -55,15 +175,13 @@ mod test_search_medical_records {
         (env, client, admin, owner, vet, pet_id)
     }
 
-    fn add_record_at(
+    fn add_record(
         client: &PetChainContractClient,
         env: &Env,
         pet_id: u64,
         vet: &Address,
         diagnosis: &str,
-        timestamp: u64,
     ) -> u64 {
-        env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
         client.add_medical_record(
             &pet_id,
             vet,
@@ -72,6 +190,18 @@ mod test_search_medical_records {
             &soroban_sdk::Vec::new(env),
             &String::from_str(env, "Notes"),
         )
+    }
+
+    fn add_record_at(
+        client: &PetChainContractClient,
+        env: &Env,
+        pet_id: u64,
+        vet: &Address,
+        diagnosis: &str,
+        timestamp: u64,
+    ) -> u64 {
+        env.ledger().set_timestamp(timestamp);
+        add_record(client, env, pet_id, vet, diagnosis)
     }
 
     fn empty_filter() -> MedicalRecordFilter {
@@ -190,8 +320,14 @@ mod test_search_medical_records {
         );
 
         assert_eq!(page.len(), 2);
-        assert_eq!(page.get(0).unwrap().diagnosis, String::from_str(&env, "Flu B"));
-        assert_eq!(page.get(1).unwrap().diagnosis, String::from_str(&env, "Flu C"));
+        assert_eq!(
+            page.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Flu B")
+        );
+        assert_eq!(
+            page.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Flu C")
+        );
     }
 
     #[test]
@@ -224,5 +360,135 @@ mod test_search_medical_records {
 
         assert_eq!(zero_limit.len(), 0);
         assert_eq!(large_offset.len(), 0);
+    }
+
+    // ---- update medical record notes ----
+
+    #[test]
+    fn test_update_medical_record_notes_success() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+        let initial_record = client.get_medical_record(&record_id).unwrap();
+
+        // Update the notes
+        let success = client.update_medical_record_notes(
+            &record_id,
+            &String::from_str(&env, "Updated notes with new information"),
+        );
+        assert!(success);
+
+        // Verify notes were updated
+        let updated_record = client.get_medical_record(&record_id).unwrap();
+        assert_eq!(
+            updated_record.notes,
+            String::from_str(&env, "Updated notes with new information")
+        );
+
+        // Verify the date field (creation time) was NOT changed
+        assert_eq!(updated_record.date, initial_record.date);
+
+        // Verify updated_at timestamp was changed
+        assert!(updated_record.updated_at >= initial_record.updated_at);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_update_medical_record_notes_creator_only() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.init_admin(&admin);
+
+        let owner = Address::generate(&env);
+        let vet1 = Address::generate(&env);
+        let vet2 = Address::generate(&env);
+
+        // Register both vets
+        client.register_vet(
+            &vet1,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "LIC-001"),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&admin, &vet1);
+
+        client.register_vet(
+            &vet2,
+            &String::from_str(&env, "Dr. Jones"),
+            &String::from_str(&env, "LIC-002"),
+            &String::from_str(&env, "Surgery"),
+        );
+        client.verify_vet(&admin, &vet2);
+
+        // Register pet
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+
+        // Create record with vet1
+        let record_id = client.add_medical_record(
+            &pet_id,
+            &vet1,
+            &String::from_str(&env, "Flu"),
+            &String::from_str(&env, "Treatment"),
+            &soroban_sdk::Vec::new(&env),
+            &String::from_str(&env, "Notes"),
+        );
+
+        // Try to update with vet2 (different vet) - should panic due to auth requirement
+        env.set_auths(&[]);
+        client.update_medical_record_notes(
+            &record_id,
+            &String::from_str(&env, "Updated notes"),
+        );
+    }
+
+    #[test]
+    fn test_update_medical_record_notes_nonexistent_record() {
+        let (env, client, _admin, _owner, _vet, _pet_id) = setup();
+
+        let success = client.update_medical_record_notes(
+            &99999u64,
+            &String::from_str(&env, "Notes for non-existent record"),
+        );
+        assert!(!success);
+    }
+
+    #[test]
+    fn test_get_medical_record_by_id() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+
+        let record = client.get_medical_record(&record_id);
+        assert!(record.is_some());
+
+        let record = record.unwrap();
+        assert_eq!(record.id, record_id);
+        assert_eq!(record.pet_id, pet_id);
+        assert_eq!(record.vet_address, vet);
+        assert_eq!(record.diagnosis, String::from_str(&env, "Flu"));
+    }
+
+    #[test]
+    fn test_get_medical_record_by_id_not_found() {
+        let (env, client, _admin, _owner, _vet, _pet_id) = setup();
+
+        let record = client.get_medical_record(&99999u64);
+        assert!(record.is_none());
     }
 }
