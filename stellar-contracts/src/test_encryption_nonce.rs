@@ -74,6 +74,8 @@ fn test_configurable_nonce_use_limit_and_history_pruning() {
     let history = client.get_nonce_history(&pet_id, &key_id);
     assert_eq!(history.len(), 8);
     assert_eq!(history.get(0).unwrap().get(0).unwrap(), 2);
+}
+
 #[cfg(test)]
 mod tests {
     use soroban_sdk::{Bytes, Env, Symbol};

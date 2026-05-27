@@ -199,7 +199,6 @@ fn test_get_all_pet_claims() {
 }
 
 #[test]
-fn test_claim_recalculates_policy_premium() {
 fn test_get_insurance_claim_count() {
     let env = Env::default();
     env.mock_all_auths();
@@ -207,18 +206,6 @@ fn test_get_insurance_claim_count() {
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
-    let pet_id = client.register_pet(
-        &owner,
-        &String::from_str(&env, "Risky"),
-        &String::from_str(&env, "2020-01-01"),
-        &Gender::Male,
-        &Species::Dog,
-        &String::from_str(&env, "Brown"),
-        &String::from_str(&env, "Mixed"),
-        &20,
-
-    let owner = Address::generate(&env);
-
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Max"),
