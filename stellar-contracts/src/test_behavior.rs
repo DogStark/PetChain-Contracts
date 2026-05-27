@@ -80,6 +80,45 @@ fn test_get_behavior_record_not_found() {
     assert!(record.is_none());
 }
 
+// ---- get_training_milestone_count tests ----
+
+#[test]
+fn test_get_training_milestone_count_zero_for_new_pet() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+    assert_eq!(client.get_training_milestone_count(&pet_id), 0);
+    assert_eq!(client.get_training_milestone_count(&9999u64), 0);
+}
+
+#[test]
+fn test_get_training_milestone_count_increments_on_add() {
+    let (env, _owner, _admin, pet_id, contract_id) = setup_test_env();
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_training_milestone_count(&pet_id), 0);
+
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Basic Obedience"),
+        &String::from_str(&env, "Sit and stay"),
+    );
+    assert_eq!(client.get_training_milestone_count(&pet_id), 1);
+
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Potty Training"),
+        &String::from_str(&env, "No accidents"),
+    );
+    assert_eq!(client.get_training_milestone_count(&pet_id), 2);
+
+    client.add_training_milestone(
+        &pet_id,
+        &String::from_str(&env, "Socialization"),
+        &String::from_str(&env, "Comfortable with dogs"),
+    );
+    assert_eq!(client.get_training_milestone_count(&pet_id), 3);
+}
+
 // ---- get_behavior_count tests ----
 
 #[test]
