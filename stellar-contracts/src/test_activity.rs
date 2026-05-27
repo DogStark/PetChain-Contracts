@@ -1,7 +1,10 @@
 use crate::{
     ActivityType, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
 };
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
 #[test]
 fn test_add_activity_record() {
@@ -427,7 +430,7 @@ fn test_activity_summary_valid_range() {
     // Activities within the range should be summed correctly.
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -466,7 +469,7 @@ fn test_activity_summary_partial_overlap() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     // Record 1 at t=100
-    env.ledger().set_timestamp(100);
+    env.ledger().with_mut(|l| l.timestamp = 100);
     let pet_id = setup_pet(&env, &client);
     client.add_activity_record(
         &pet_id,
@@ -478,7 +481,7 @@ fn test_activity_summary_partial_overlap() {
     );
 
     // Record 2 at t=5000 – outside the query range below
-    env.ledger().set_timestamp(5000);
+    env.ledger().with_mut(|l| l.timestamp = 5000);
     client.add_activity_record(
         &pet_id,
         &ActivityType::Run,
@@ -499,7 +502,7 @@ fn test_activity_summary_empty_range() {
     // No activities exist in the queried window → (0, 0).
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(9999);
+    env.ledger().with_mut(|l| l.timestamp = 9999);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -525,7 +528,7 @@ fn test_activity_summary_single_activity_on_boundary() {
     // A record exactly on from_date or to_date must be included (inclusive).
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(500);
+    env.ledger().with_mut(|l| l.timestamp = 500);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -556,7 +559,7 @@ fn test_activity_summary_invalid_range() {
     // from_date > to_date → (0, 0) without panicking.
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(1000);
+    env.ledger().with_mut(|l| l.timestamp = 1000);
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
@@ -574,4 +577,61 @@ fn test_activity_summary_invalid_range() {
     let (duration, distance) = client.get_activity_summary(&pet_id, &2000, &500);
     assert_eq!(duration, 0);
     assert_eq!(distance, 0);
+}
+
+#[test]
+fn test_get_activity_record_by_id_returns_correct_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let record_id = client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Morning walk"),
+    );
+
+    let record = client.get_activity_record_by_id(&record_id).unwrap();
+    assert_eq!(record.id, record_id);
+    assert_eq!(record.pet_id, pet_id);
+    assert_eq!(record.activity_type, ActivityType::Walk);
+    assert_eq!(record.duration_minutes, 30);
+    assert_eq!(record.intensity, 5);
+    assert_eq!(record.distance_meters, 2000);
+}
+
+#[test]
+fn test_get_activity_record_by_id_returns_none_for_nonexistent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let result = client.get_activity_record_by_id(&9999);
+    assert!(result.is_none());
 }

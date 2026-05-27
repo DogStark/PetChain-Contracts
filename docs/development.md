@@ -22,3 +22,35 @@ Budget measurements are taken in unit tests with `env.cost_estimate().budget()` 
 ### Regression Bounds
 
 `gas_profile_tests` in `stellar-contracts/src/lib.rs` asserts that optimized instruction and memory costs remain under the documented optimized bounds for `get_behavior_by_type`, `get_activity_stats`, and `get_consent_history_page`.
+# Development
+
+## Prerequisites
+
+- Rust toolchain
+- Stellar CLI for contract work
+- PostgreSQL if you want to exercise the backend database store
+- Redis only for the optional Redis rate-limiter tests
+
+## Common Commands
+
+### Stellar contracts
+
+```bash
+cd stellar-contracts
+cargo fmt
+cargo test
+```
+
+### Backend 2FA crate
+
+```bash
+cd backend-2fa
+cargo fmt
+cargo test
+```
+
+## Notes
+
+- The backend test suite skips Redis integration tests unless `REDIS_URL` is set.
+- The repo contains two independent Rust crates, so build and test them separately.
+- Use `.env.example` as the starting point for local environment variables.

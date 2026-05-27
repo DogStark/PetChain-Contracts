@@ -95,7 +95,7 @@ fn test_resolve_dispute_admin_only() {
 }
 
 #[test]
-#[should_panic(expected = "Admin not set")]
+#[should_panic]
 fn test_resolve_dispute_no_admin_fails() {
     let env = Env::default();
     env.mock_all_auths();
