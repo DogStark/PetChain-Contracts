@@ -7960,6 +7960,13 @@ impl PetChainContract {
         milestone_id
     }
 
+    pub fn get_training_milestone_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn mark_milestone_achieved(env: Env, milestone_id: u64) -> bool {
         if let Some(mut milestone) = env
             .storage()
