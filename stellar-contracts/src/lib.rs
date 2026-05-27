@@ -390,6 +390,11 @@ pub enum NutritionKey {
     WeightCount,                  // global weight entry count
     PetWeightCount(u64),          // pet_id -> count
     PetWeightByIndex((u64, u64)), // (pet_id, index) -> weight_id
+
+    // Versioned nutrition plans
+    NutritionVersion((u64, u64)), // (pet_id, version) -> NutritionVersion
+    PetNutritionVersionCount(u64), // pet_id -> current version count
+    CurrentNutritionVersion(u64),  // pet_id -> current active version
 }
 
 #[contracttype]
@@ -403,6 +408,21 @@ pub struct DietPlan {
     pub allergies: Vec<String>,
     pub created_by: Address,
     pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NutritionVersion {
+    pub pet_id: u64,
+    pub version: u64,
+    pub food_type: String,
+    pub portion_size: String,
+    pub feeding_frequency: String,
+    pub dietary_restrictions: Vec<String>,
+    pub allergies: Vec<String>,
+    pub created_by: Address,
+    pub created_at: u64,
+    pub is_active: bool,
 }
 
 #[contracttype]
@@ -3433,6 +3453,255 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&NutritionKey::WeightEntry(weight_id))
+    }
+
+    // --- VERSIONED NUTRITION PLANS ---
+
+    /// Creates a new version of nutrition plan for a pet.
+    /// Stores up to 10 versions per pet, pruning oldest when limit exceeded.
+    /// Only callable by pet owner or authorized vet.
+    pub fn set_nutrition_version(
+        env: Env,
+        pet_id: u64,
+        food_type: String,
+        portion_size: String,
+        frequency: String,
+        restrictions: Vec<String>,
+        allergies: Vec<String>,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        pet.owner.require_auth();
+
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetNutritionVersionCount(pet_id))
+            .unwrap_or(0);
+        let new_version = current_version + 1;
+        let now = env.ledger().timestamp();
+
+        let nutrition_version = NutritionVersion {
+            pet_id,
+            version: new_version,
+            food_type,
+            portion_size,
+            feeding_frequency: frequency,
+            dietary_restrictions: restrictions,
+            allergies,
+            created_by: pet.owner.clone(),
+            created_at: now,
+            is_active: true,
+        };
+
+        // Mark previous version as inactive
+        if current_version > 0 {
+            if let Some(mut prev) = env
+                .storage()
+                .instance()
+                .get::<NutritionKey, NutritionVersion>(&NutritionKey::NutritionVersion((
+                    pet_id,
+                    current_version,
+                )))
+            {
+                prev.is_active = false;
+                env.storage()
+                    .instance()
+                    .set(&NutritionKey::NutritionVersion((pet_id, current_version)), &prev);
+            }
+        }
+
+        // Store new version
+        env.storage()
+            .instance()
+            .set(&NutritionKey::NutritionVersion((pet_id, new_version)), &nutrition_version);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetNutritionVersionCount(pet_id), &new_version);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::CurrentNutritionVersion(pet_id), &new_version);
+
+        // Prune oldest version if exceeding 10 versions
+        if new_version > 10 {
+            let oldest_version = new_version - 10;
+            env.storage()
+                .instance()
+                .remove(&NutritionKey::NutritionVersion((pet_id, oldest_version)));
+        }
+
+        new_version
+    }
+
+    /// Retrieves a specific version of nutrition plan for a pet.
+    pub fn get_nutrition_version(env: Env, pet_id: u64, version: u64) -> Option<NutritionVersion> {
+        // Verify pet exists
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return None;
+        }
+
+        env.storage()
+            .instance()
+            .get(&NutritionKey::NutritionVersion((pet_id, version)))
+    }
+
+    /// Lists all versions of nutrition plans for a pet (up to 10 most recent).
+    pub fn list_nutrition_versions(env: Env, pet_id: u64) -> Vec<NutritionVersion> {
+        // Verify pet exists
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return Vec::new(&env);
+        }
+
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetNutritionVersionCount(pet_id))
+            .unwrap_or(0);
+
+        let mut versions = Vec::new(&env);
+
+        // Collect versions in reverse order (newest first)
+        let start_version = if current_version > 10 {
+            current_version - 9
+        } else {
+            1
+        };
+
+        for v in (start_version..=current_version).rev() {
+            if let Some(nutrition_version) = env
+                .storage()
+                .instance()
+                .get::<NutritionKey, NutritionVersion>(&NutritionKey::NutritionVersion((pet_id, v)))
+            {
+                versions.push_back(nutrition_version);
+            }
+        }
+
+        versions
+    }
+
+    /// Rolls back nutrition plan to a specific version.
+    /// Only callable by pet owner or authorized vet.
+    /// Creates a new version that mirrors the target version.
+    pub fn rollback_nutrition(env: Env, pet_id: u64, target_version: u64) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        pet.owner.require_auth();
+
+        // Verify target version exists
+        let target = env
+            .storage()
+            .instance()
+            .get::<NutritionKey, NutritionVersion>(&NutritionKey::NutritionVersion((
+                pet_id,
+                target_version,
+            )))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        // Create new version with target's data
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::PetNutritionVersionCount(pet_id))
+            .unwrap_or(0);
+        let new_version = current_version + 1;
+        let now = env.ledger().timestamp();
+
+        let rollback_version = NutritionVersion {
+            pet_id,
+            version: new_version,
+            food_type: target.food_type,
+            portion_size: target.portion_size,
+            feeding_frequency: target.feeding_frequency,
+            dietary_restrictions: target.dietary_restrictions,
+            allergies: target.allergies,
+            created_by: pet.owner.clone(),
+            created_at: now,
+            is_active: true,
+        };
+
+        // Mark previous version as inactive
+        if current_version > 0 {
+            if let Some(mut prev) = env
+                .storage()
+                .instance()
+                .get::<NutritionKey, NutritionVersion>(&NutritionKey::NutritionVersion((
+                    pet_id,
+                    current_version,
+                )))
+            {
+                prev.is_active = false;
+                env.storage()
+                    .instance()
+                    .set(&NutritionKey::NutritionVersion((pet_id, current_version)), &prev);
+            }
+        }
+
+        // Store rollback version
+        env.storage()
+            .instance()
+            .set(&NutritionKey::NutritionVersion((pet_id, new_version)), &rollback_version);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::PetNutritionVersionCount(pet_id), &new_version);
+        env.storage()
+            .instance()
+            .set(&NutritionKey::CurrentNutritionVersion(pet_id), &new_version);
+
+        // Prune oldest version if exceeding 10 versions
+        if new_version > 10 {
+            let oldest_version = new_version - 10;
+            env.storage()
+                .instance()
+                .remove(&NutritionKey::NutritionVersion((pet_id, oldest_version)));
+        }
+
+        new_version
+    }
+
+    /// Gets the current active nutrition version for a pet.
+    pub fn get_current_nutrition_version(env: Env, pet_id: u64) -> Option<NutritionVersion> {
+        // Verify pet exists
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return None;
+        }
+
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::CurrentNutritionVersion(pet_id))
+            .unwrap_or(0);
+
+        if current_version == 0 {
+            return None;
+        }
+
+        env.storage()
+            .instance()
+            .get(&NutritionKey::NutritionVersion((pet_id, current_version)))
     }
 
     // --- TAG LINKING (UPSTREAM IMPLEMENTATION) ---
