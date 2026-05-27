@@ -117,6 +117,8 @@ fn test_rejects_too_many_tokens() {
         &Vec::new(&env),
         &String::from_str(&env, "a b c d e f g h i j k l m n o p q"),
     );
+}
+
 // ============================================================
 // MEDICAL RECORD SEARCH TESTS
 // ============================================================
@@ -490,5 +492,52 @@ mod test_search_medical_records {
 
         let record = client.get_medical_record(&99999u64);
         assert!(record.is_none());
+    }
+
+    #[test]
+    fn test_get_lab_result_count_zero_for_new_pet() {
+        let (env, client, _admin, _owner, _vet, pet_id) = setup();
+        assert_eq!(client.get_lab_result_count(&pet_id), 0);
+        assert_eq!(client.get_lab_result_count(&9999u64), 0);
+    }
+
+    #[test]
+    fn test_get_lab_result_count_increments_on_add() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        assert_eq!(client.get_lab_result_count(&pet_id), 0);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Blood Test"),
+            &String::from_str(&env, "Normal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 1);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Urinalysis"),
+            &String::from_str(&env, "Abnormal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 2);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "X-Ray"),
+            &String::from_str(&env, "Clear"),
+            &String::from_str(&env, "N/A"),
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 3);
     }
 }
