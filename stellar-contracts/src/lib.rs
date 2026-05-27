@@ -816,6 +816,7 @@ pub enum SystemKey {
     // Multisig keys
     Admins,
     AdminThreshold,
+    PendingConfig,           // Issue #626: Three-phase bootstrap
     Proposal(u64),
     ProposalCount,
 
@@ -1107,6 +1108,16 @@ pub struct MultisigConfig {
     pub threshold: u32,
     /// Whether multisig enforcement is enabled
     pub enabled: bool,
+}
+
+/// Pending configuration for three-phase admin bootstrap (Issue #626)
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingConfig {
+    pub admins: Vec<Address>,
+    pub threshold: u32,
+    pub confirmations: Vec<Address>,
+    pub proposed_at: u64,
 }
 
 /// Proposal for transferring pet ownership with multi-signature approval.
@@ -1597,6 +1608,104 @@ impl PetChainContract {
                 patch: 0,
             },
         );
+    }
+
+    // --- THREE-PHASE BOOTSTRAP (Issue #626) ---
+
+    /// Phase 1: Propose initial admin configuration
+    pub fn propose_init(env: Env, admins: Vec<Address>, threshold: u32) {
+        // Reject if config already exists
+        if env.storage().instance().has(&DataKey::Admin)
+            || env.storage().instance().has(&SystemKey::Admins) {
+            panic_with_error!(&env, ContractError::AdminAlreadySet);
+        }
+
+        // Validate threshold
+        if threshold == 0 || threshold > admins.len() as u32 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        // Clear expired pending config if exists
+        if let Some(pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            let current_time = env.ledger().timestamp();
+            if current_time > pending.proposed_at.saturating_add(3600) {
+                // Timeout expired, clear and allow new proposal
+                env.storage().instance().remove(&SystemKey::PendingConfig);
+            } else {
+                // Already have an active pending config
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
+        }
+
+        let pending = PendingConfig {
+            admins: admins.clone(),
+            threshold,
+            confirmations: Vec::new(&env),
+            proposed_at: env.ledger().timestamp(),
+        };
+        env.storage().instance().set(&SystemKey::PendingConfig, &pending);
+    }
+
+    /// Phase 2: Confirm the pending admin configuration
+    pub fn confirm_init(env: Env, confirmer: Address) {
+        confirmer.require_auth();
+
+        if let Some(mut pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            let current_time = env.ledger().timestamp();
+            let timeout = pending.proposed_at.saturating_add(3600);
+
+            // Check timeout (1 hour = 3600 seconds)
+            if current_time >= timeout {
+                // Timeout expired, clear and return error
+                env.storage().instance().remove(&SystemKey::PendingConfig);
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
+
+            // Check if confirmer is in proposed admins
+            if !pending.admins.contains(&confirmer) {
+                panic_with_error!(&env, ContractError::NotAnAdmin);
+            }
+
+            // Check if already confirmed
+            if pending.confirmations.contains(&confirmer) {
+                panic_with_error!(&env, ContractError::AdminAlreadyApproved);
+            }
+
+            // Add confirmation
+            pending.confirmations.push_back(confirmer);
+            env.storage().instance().set(&SystemKey::PendingConfig, &pending);
+        } else {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+    }
+
+    /// Phase 3: Activate the admin configuration once threshold is met
+    pub fn activate_init(env: Env) {
+        if let Some(pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            // Check if enough confirmations
+            if (pending.confirmations.len() as u32) < pending.threshold {
+                panic_with_error!(&env, ContractError::ThresholdNotMet);
+            }
+
+            // Activate configuration
+            env.storage().instance().set(&SystemKey::Admins, &pending.admins);
+            env.storage().instance().set(&SystemKey::AdminThreshold, &pending.threshold);
+
+            // Clear pending config
+            env.storage().instance().remove(&SystemKey::PendingConfig);
+
+            // Set contract version
+            env.storage().instance().set(
+                &DataKey::ContractVersion,
+                &ContractVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                },
+            );
+        } else {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
     }
 
     pub fn get_admins(env: Env) -> Vec<Address> {
