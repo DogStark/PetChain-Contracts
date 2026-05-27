@@ -135,6 +135,8 @@ const NONCE_HISTORY_LIMIT: u32 = 8;
 #[repr(u32)]
 pub enum PetChainError {
     NonceReused = 1,
+}
+
 const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
@@ -191,6 +193,10 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
+    ArithmeticOverflow = 140, // Issue #623
+    SlotConflict = 141,       // Issue #624
+    TokenExpired = 142,       // Issue #625
+    BootstrapExpired = 143,   // Issue #626
 }
 
 #[contracttype]
@@ -721,8 +727,6 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64), // pet_id -> Vec<Address>
 }
 
 #[contracttype]
@@ -5222,6 +5226,8 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::NonceHistory((pet_id, key_id)))
             .unwrap_or(Vec::new(&env))
+    }
+
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -7567,7 +7573,6 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
-        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
