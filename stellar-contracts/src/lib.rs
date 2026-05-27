@@ -162,6 +162,24 @@ pub fn validate_id(id: &u64) -> Result<(), ValidationError> {
     Ok(())
 }
 
+// --- BREED METADATA ---
+
+#[contracttype]
+#[derive(Clone)]
+pub struct BreedMetadata {
+    pub species: String,
+    pub avg_lifespan_years: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PetAge {
+    pub years: u32,
+    pub months: u32,
+    pub days: u32,
+    pub lifespan_pct: Option<u32>,
+}
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -756,6 +774,9 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
+
+    // Breed Metadata keys
+    BreedMetadata(String),       // breed_id -> BreedMetadata
 }
 
 #[contracttype]
@@ -9333,6 +9354,115 @@ impl PetChainContract {
             }
         }
         result
+    }
+
+    // --- BREED METADATA ---
+
+    pub fn add_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        let metadata = BreedMetadata {
+            species,
+            avg_lifespan_years,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BreedMetadata(breed_id), &metadata);
+    }
+
+    pub fn update_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        let metadata = BreedMetadata {
+            species,
+            avg_lifespan_years,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BreedMetadata(breed_id), &metadata);
+    }
+
+    pub fn delete_breed_metadata(env: Env, admin: Address, breed_id: String) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::BreedMetadata(breed_id));
+    }
+
+    pub fn get_pet_age_with_lifespan(env: Env, pet_id: u64) -> PetAge {
+        if let Some(pet) =
+            PetChainContract::get_pet(env.clone(), pet_id, env.current_contract_address())
+        {
+            let current_time = env.ledger().timestamp();
+            let birthday_timestamp = match PetChainContract::parse_birthday_timestamp(&pet.birthday)
+            {
+                Ok(timestamp) => timestamp,
+                Err(_) => return PetAge {
+                    years: 0,
+                    months: 0,
+                    days: 0,
+                    lifespan_pct: None,
+                },
+            };
+
+            if current_time < birthday_timestamp {
+                return PetAge {
+                    years: 0,
+                    months: 0,
+                    days: 0,
+                    lifespan_pct: None,
+                };
+            }
+
+            let elapsed_seconds = current_time - birthday_timestamp;
+            let elapsed_days = elapsed_seconds / 86_400;
+            let years = (elapsed_days / 365) as u32;
+            let remaining_days = (elapsed_days % 365) as u32;
+            let months = remaining_days / 30;
+            let days = remaining_days % 30;
+
+            let lifespan_pct = if let Some(metadata) = env
+                .storage()
+                .instance()
+                .get::<DataKey, BreedMetadata>(&DataKey::BreedMetadata(pet.breed.clone()))
+            {
+                let age_years = years as u64;
+                let lifespan_years = metadata.avg_lifespan_years as u64;
+                if lifespan_years > 0 {
+                    Some((((age_years * 100) / lifespan_years) as u32).min(100))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            PetAge {
+                years,
+                months,
+                days,
+                lifespan_pct,
+            }
+        } else {
+            PetAge {
+                years: 0,
+                months: 0,
+                days: 0,
+                lifespan_pct: None,
+            }
+        }
     }
 } // end impl PetChainContract
 
