@@ -836,6 +836,18 @@ pub enum SystemKey {
     PetTransferProposalCount,
     PetActiveProposals(u64), // pet_id -> Vec<u64> of active proposal IDs
     EncryptionNonceCounter,
+
+    // Statistics caching keys
+    StatCacheTTL,
+    StatCache(String),
+    LabThreshold,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatCache {
+    pub value: i128,
+    pub computed_at: u64,
 }
 
 #[contracttype]
@@ -1337,10 +1349,23 @@ impl PetChainContract {
 
     /// Returns the total number of pets ever registered in the contract.
     pub fn get_total_pets(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::PetCount)
-            .unwrap_or(0)
+        let cache_key = String::from_str(&env, "total_pets");
+        let ttl = Self::_get_cache_ttl(&env);
+
+        if let Some(cache) = env.storage().instance().get::<SystemKey, StatCache>(&SystemKey::StatCache(cache_key.clone())) {
+            let current_time = env.ledger().timestamp();
+            if current_time.saturating_sub(cache.computed_at) < ttl {
+                return cache.value as u64;
+            }
+        }
+
+        let value = env.storage().instance().get(&DataKey::PetCount).unwrap_or(0) as i128;
+        let cache = StatCache {
+            value,
+            computed_at: env.ledger().timestamp(),
+        };
+        env.storage().instance().set(&SystemKey::StatCache(cache_key), &cache);
+        value as u64
     }
 
     /// Returns the number of registered pets for a given species.
@@ -9498,6 +9523,29 @@ impl PetChainContract {
             }
         }
         result
+    }
+
+    fn _get_cache_ttl(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::StatCacheTTL)
+            .unwrap_or(3600) // Default 1 hour if not set
+    }
+
+    pub fn set_stat_cache_ttl(env: Env, admin: Address, ttl: u64) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance().set(&SystemKey::StatCacheTTL, &ttl);
+        true
+    }
+
+    pub fn get_stat_cache_ttl(env: Env) -> u64 {
+        Self::_get_cache_ttl(&env)
+    }
+
+    pub fn invalidate_stat_cache(env: Env, admin: Address, stat_key: String) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance().remove(&SystemKey::StatCache(stat_key));
+        true
     }
 } // end impl PetChainContract
 
