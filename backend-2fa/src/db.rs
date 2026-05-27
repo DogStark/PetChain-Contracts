@@ -1,4 +1,4 @@
-use crate::two_factor::{TwoFactorData, TwoFactorStore};
+use crate::two_factor::{RecoveryCodeUsageLog, TwoFactorData, TwoFactorStore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -185,6 +185,82 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
         Ok(())
     }
+
+    fn log_recovery_code_usage(
+        &self,
+        user_id: &str,
+        code_index: i32,
+        ip_address: Option<&str>,
+    ) -> Result<(), String> {
+        let result = self.block_on(
+            sqlx::query(
+                r#"
+                INSERT INTO recovery_code_usage (user_id, code_index, used_at, ip_address)
+                VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
+                "#,
+            )
+            .bind(user_id)
+            .bind(code_index)
+            .bind(ip_address)
+            .execute(&self.pool),
+        );
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Check if it's a unique constraint violation (duplicate key)
+                if e.to_string().contains("duplicate") || e.to_string().contains("unique") {
+                    Err("InvalidRecoveryCode".to_string())
+                } else {
+                    Err(e.to_string())
+                }
+            }
+        }
+    }
+
+    fn get_recovery_usage_log(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<RecoveryCodeUsageLog>, String> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let limit = page_size as i64;
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i32,
+            user_id: String,
+            code_index: i32,
+            used_at: String,
+            ip_address: Option<String>,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT id, user_id, code_index, used_at, ip_address
+                FROM recovery_code_usage
+                ORDER BY used_at DESC
+                LIMIT $1 OFFSET $2
+                "#,
+            )
+            .bind(limit)
+            .bind(offset as i64)
+            .fetch_all(&self.pool),
+        )?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| RecoveryCodeUsageLog {
+                id: r.id as usize,
+                user_id: r.user_id,
+                code_index: r.code_index,
+                used_at: r.used_at,
+                ip_address: r.ip_address,
+            })
+            .collect())
+    }
+
 }
 
 #[cfg(test)]
