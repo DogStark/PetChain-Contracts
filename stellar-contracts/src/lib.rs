@@ -5670,6 +5670,13 @@ impl PetChainContract {
         id
     }
 
+    pub fn get_lab_result_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
         env.storage()
             .instance()
