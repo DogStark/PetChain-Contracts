@@ -790,3 +790,51 @@ fn test_lab_result_reference_ranges_at_limit_accepted() {
     );
     assert!(id > 0);
 }
+
+// ── Validation Middleware Tests ────────────────────────────────────────
+
+#[test]
+fn test_validate_string_empty_rejected() {
+    let result = validate_string("", 100);
+    assert_eq!(result, Err(ValidationError::EmptyString));
+}
+
+#[test]
+fn test_validate_string_at_max_len_accepted() {
+    let result = validate_string("hello", 5);
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_validate_string_over_max_len_rejected() {
+    let result = validate_string("hello", 4);
+    assert_eq!(result, Err(ValidationError::StringTooLong));
+}
+
+#[test]
+fn test_validate_string_valid() {
+    let result = validate_string("valid", 100);
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_validate_id_zero_rejected() {
+    let result = validate_id(&0);
+    assert_eq!(result, Err(ValidationError::InvalidId));
+}
+
+#[test]
+fn test_validate_id_positive_accepted() {
+    let result = validate_id(&1);
+    assert_eq!(result, Ok(()));
+    let result = validate_id(&999999);
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_validate_address_always_valid() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let result = validate_address(&addr);
+    assert_eq!(result, Ok(()));
+}

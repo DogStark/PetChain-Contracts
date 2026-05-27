@@ -130,6 +130,38 @@ use soroban_sdk::{
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
 
+// --- INPUT VALIDATION MIDDLEWARE ---
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationError {
+    StringTooLong,
+    EmptyString,
+    InvalidAddress,
+    InvalidId,
+}
+
+pub fn validate_string(s: &str, max_len: usize) -> Result<(), ValidationError> {
+    if s.is_empty() {
+        return Err(ValidationError::EmptyString);
+    }
+    if s.len() > max_len {
+        return Err(ValidationError::StringTooLong);
+    }
+    Ok(())
+}
+
+pub fn validate_address(_a: &Address) -> Result<(), ValidationError> {
+    // Addresses are structurally validated by the type system
+    Ok(())
+}
+
+pub fn validate_id(id: &u64) -> Result<(), ValidationError> {
+    if *id == 0 {
+        return Err(ValidationError::InvalidId);
+    }
+    Ok(())
+}
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
