@@ -711,6 +711,10 @@ pub enum DataKey {
     PetCustodyCount(u64),         // pet_id -> count of custody records
     PetCustodyIndex((u64, u64)),  // (pet_id, index) -> record_id
 
+    // Decryption Delegation keys (Issue #625)
+    DecryptionToken((u64, Address)), // (pet_id, delegate) -> expires_at timestamp
+    PetDelegationCount(u64),         // pet_id -> count of active delegations
+
     // Vet stats and tracking
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
@@ -6181,6 +6185,84 @@ impl PetChainContract {
 
         available_slots
     }
+
+    // --- DECRYPTION DELEGATION SYSTEM (Issue #625) ---
+
+    /// Delegate decryption key access to another address with time-bound token (Issue #625)
+    pub fn delegate_decryption(env: Env, pet_id: u64, owner: Address, delegate: Address, expires_at: u64) -> bool {
+        owner.require_auth();
+
+        // Verify owner of pet
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if pet.owner != owner {
+                panic_with_error!(&env, ContractError::NotPetOwner);
+            }
+        } else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+        let is_new_delegation = !env.storage().instance().has(&key);
+
+        // Check active delegations count (max 5) only for new delegations
+        if is_new_delegation {
+            let delegation_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+
+            if delegation_count >= 5 {
+                // Already at max delegations
+                panic_with_error!(&env, ContractError::TooManyItems);
+            }
+
+            // Increment delegation count for new delegation
+            let new_count = delegation_count.checked_add(1)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+            env.storage().instance().set(&DataKey::PetDelegationCount(pet_id), &new_count);
+        }
+
+        // Store/overwrite delegation token with expiration time
+        env.storage().instance().set(&key, &expires_at);
+
+        true
+    }
+
+    /// Revoke decryption delegation immediately
+    pub fn revoke_delegation(env: Env, pet_id: u64, owner: Address, delegate: Address) -> bool {
+        owner.require_auth();
+
+        // Verify owner of pet
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if pet.owner != owner {
+                panic_with_error!(&env, ContractError::NotPetOwner);
+            }
+        } else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if env.storage().instance().has(&key) {
+            env.storage().instance().remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if delegation token is valid (not expired)
+    pub fn check_delegation_token(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
+            // Token is valid if current time < expiration time
+            let current_time = env.ledger().timestamp();
+            current_time < expires_at
+        } else {
+            false // No token exists
+        }
+    }
+
     // --- CONSENT SYSTEM ---
 
     pub fn grant_consent(
