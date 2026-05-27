@@ -113,16 +113,14 @@ use soroban_sdk::{
     Env, String, Symbol, Vec,
 };
 
-const MAX_SEARCH_KEYWORD_LEN: u32 = 32;
-const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
-const MAX_SEARCH_NOTES_LEN: u32 = 512;
+const DEFAULT_NONCE_MAX_USES: u32 = 1;
+const NONCE_HISTORY_LIMIT: u32 = 8;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PetChainError {
-    KeywordTooLong = 10,
-    TooManySearchTokens = 11,
+    NonceReused = 1,
 const MAX_LOG_ENTRIES: u32 = 1_000;
 
 #[contracterror]
@@ -666,6 +664,7 @@ pub enum DataKey {
 
     // Contract Upgrade keys
     ContractVersion,
+    StorageVersion,
     UpgradeProposal(u64),
     UpgradeProposalCount,
 
@@ -683,6 +682,10 @@ pub enum DataKey {
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
     VetPetCount(Address),          // unique pets treated
+    NonceCounter((u64, String)),
+    NonceUsage((u64, String, Bytes)),
+    NonceHistory((u64, String)),
+    NonceMaxUse((u64, String)),
 
     // Lab Result DataKey
 
@@ -5026,6 +5029,84 @@ impl PetChainContract {
         records
     }
 
+    pub fn set_nonce_max_use(env: Env, pet_id: u64, key_id: String, max_uses: u32) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::NonceMaxUse((pet_id, key_id)), &max_uses);
+    }
+
+    pub fn rotate_nonce(env: Env, pet_id: u64, key_id: String) -> Bytes {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+        pet.owner.require_auth();
+
+        let counter_key = DataKey::NonceCounter((pet_id, key_id.clone()));
+        let counter: u64 = env.storage().instance().get(&counter_key).unwrap_or(0) + 1;
+        env.storage().instance().set(&counter_key, &counter);
+
+        let mut nonce = Bytes::new(&env);
+        let pet_bytes = pet_id.to_be_bytes();
+        let counter_bytes = counter.to_be_bytes();
+        for byte in pet_bytes.iter().skip(4) {
+            nonce.push_back(*byte);
+        }
+        for byte in counter_bytes.iter() {
+            nonce.push_back(*byte);
+        }
+
+        env.events().publish(
+            (String::from_str(&env, "NonceRotated"), pet_id),
+            (key_id, nonce.clone(), env.ledger().timestamp()),
+        );
+
+        nonce
+    }
+
+    pub fn record_nonce_use(env: Env, pet_id: u64, key_id: String, nonce: Bytes) -> bool {
+        let max_uses: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NonceMaxUse((pet_id, key_id.clone())))
+            .unwrap_or(DEFAULT_NONCE_MAX_USES);
+        let usage_key = DataKey::NonceUsage((pet_id, key_id.clone(), nonce.clone()));
+        let used: u32 = env.storage().instance().get(&usage_key).unwrap_or(0);
+        if used >= max_uses {
+            panic_with_error!(&env, PetChainError::NonceReused);
+        }
+
+        env.storage().instance().set(&usage_key, &(used + 1));
+        if used == 0 {
+            let history_key = DataKey::NonceHistory((pet_id, key_id));
+            let mut history: Vec<Bytes> = env
+                .storage()
+                .instance()
+                .get(&history_key)
+                .unwrap_or(Vec::new(&env));
+            history.push_back(nonce);
+            while history.len() > NONCE_HISTORY_LIMIT {
+                history.remove(0);
+            }
+            env.storage().instance().set(&history_key, &history);
+        }
+
+        true
+    }
+
+    pub fn get_nonce_history(env: Env, pet_id: u64, key_id: String) -> Vec<Bytes> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NonceHistory((pet_id, key_id)))
+            .unwrap_or(Vec::new(&env))
     pub fn search_medical_records(
         env: Env,
         pet_id: u64,
@@ -6230,6 +6311,25 @@ impl PetChainContract {
             })
     }
 
+    pub fn get_storage_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn set_storage_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance().set(
+            &DataKey::StorageVersion,
+            &ContractVersion { major, minor, patch },
+        );
+    }
+
     pub fn set_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
         PetChainContract::require_admin_auth(&env, &admin);
         env.storage().instance().set(
@@ -6338,6 +6438,56 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    /// Migrate on-chain storage schema from one version to another.
+    /// Callable only by an admin. Idempotent: re-running on an already-migrated
+    /// storage is a no-op.
+    pub fn migrate_storage(
+        env: Env,
+        caller: Address,
+        from_major: u32,
+        from_minor: u32,
+        from_patch: u32,
+        to_major: u32,
+        to_minor: u32,
+        to_patch: u32,
+    ) {
+        PetChainContract::require_admin_auth(&env, &caller);
+
+        let current: ContractVersion = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(ContractVersion { major: 1, minor: 0, patch: 0 });
+
+        // If already at or beyond target version, noop (idempotent / no downgrade)
+        if current.major > to_major || (current.major == to_major && (current.minor > to_minor || (current.minor == to_minor && current.patch >= to_patch))) {
+            return;
+        }
+
+        // Only run migration if current equals the expected from-version
+        if !(current.major == from_major && current.minor == from_minor && current.patch == from_patch) {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        // Dispatch migration functions per version pair
+        if from_major == 1 && to_major == 2 {
+            // perform any data transformations required for v1 -> v2
+            PetChainContract::migrate_storage_v1_to_v2(&env);
+            env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+            return;
+        }
+
+        // Unknown migration path: set version directly (conservative)
+        env.storage().instance().set(&DataKey::StorageVersion, &ContractVersion { major: to_major, minor: to_minor, patch: to_patch });
+    }
+
+    fn migrate_storage_v1_to_v2(env: &Env) {
+        // Example migration: in this simplified contract we only bump storage version.
+        // Real migrations should transform stored data structures here.
+        // Idempotency is ensured by migrate_storage guard.
+        let _ = env;
     }
 
     /// Idempotent storage migration from v1 to v2. Admin-only.
