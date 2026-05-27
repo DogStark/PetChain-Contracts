@@ -67,8 +67,6 @@ mod test_behavior;
 #[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
-mod test_consent_pagination;
-#[cfg(test)]
 mod test_emergency_contacts;
 #[cfg(test)]
 mod test_emergency_override;
@@ -390,6 +388,15 @@ pub struct EmergencyAccessLog {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditEntry {
+    pub actor: Address,
+    pub timestamp: u64,
+    pub reason_code: u32,
+    pub pet_id: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedData {
     pub nonce: Bytes,
     pub ciphertext: Bytes,
@@ -647,6 +654,7 @@ pub enum DataKey {
     // Medication keys
     // Lost Pet Alert System keys
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
+    EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
 }
 
@@ -3451,6 +3459,15 @@ impl PetChainContract {
     }
 
     pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo {
+        Self::get_emergency_info_with_reason(env, pet_id, caller, 0)
+    }
+
+    pub fn get_emergency_info_with_reason(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        reason_code: u32,
+    ) -> EmergencyInfo {
         if let Some(pet) = env
             .storage()
             .instance()
@@ -3504,7 +3521,7 @@ impl PetChainContract {
             // Log the emergency access
             let log = EmergencyAccessLog {
                 pet_id,
-                accessed_by: env.current_contract_address(),
+                accessed_by: caller.clone(),
                 timestamp: env.ledger().timestamp(),
             };
 
@@ -3520,6 +3537,8 @@ impl PetChainContract {
             logs.push_back(log);
             env.storage().persistent().set(&log_key, &logs);
 
+            Self::write_emergency_audit(&env, pet_id, caller, reason_code);
+
             EmergencyInfo {
                 pet_id,
                 species: Self::species_to_string(&env, &pet.species),
@@ -3530,6 +3549,79 @@ impl PetChainContract {
         } else {
             panic_with_error!(&env, ContractError::PetNotFound);
         }
+    }
+
+    fn write_emergency_audit(env: &Env, pet_id: u64, actor: Address, reason_code: u32) {
+        let audit_key = DataKey::EmergencyAuditLog(pet_id);
+        let mut entries: Vec<AuditEntry> = env
+            .storage()
+            .persistent()
+            .get(&audit_key)
+            .unwrap_or(Vec::new(env));
+        while entries.len() >= MAX_LOG_ENTRIES {
+            entries.remove(0);
+        }
+        entries.push_back(AuditEntry {
+            actor,
+            timestamp: env.ledger().timestamp(),
+            reason_code,
+            pet_id,
+        });
+        env.storage().persistent().set(&audit_key, &entries);
+    }
+
+    fn is_admin_address(env: &Env, caller: &Address) -> bool {
+        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            if &admin == caller {
+                return true;
+            }
+        }
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or(Vec::new(env));
+        admins.contains(caller.clone())
+    }
+
+    pub fn get_emergency_audit(
+        env: Env,
+        pet_id: u64,
+        page: u64,
+        page_size: u32,
+        caller: Address,
+    ) -> Vec<AuditEntry> {
+        caller.require_auth();
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        if caller != pet.owner && !Self::is_admin_address(&env, &caller) {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
+        let size = if page_size == 0 {
+            50
+        } else if page_size > 50 {
+            50
+        } else {
+            page_size
+        };
+        let entries: Vec<AuditEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EmergencyAuditLog(pet_id))
+            .unwrap_or(Vec::new(&env));
+        let start = (page.saturating_mul(size as u64)) as u32;
+        let mut result = Vec::new(&env);
+        for i in start..start.saturating_add(size) {
+            match entries.get(i) {
+                Some(entry) => result.push_back(entry),
+                None => break,
+            }
+        }
+        result
     }
 
     pub fn get_emergency_contacts(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyContact> {
