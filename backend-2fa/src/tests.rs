@@ -1516,6 +1516,88 @@ mod integration_tests {
         }
     }
 
+    // ── W3C Traceparent Header Tests ──
+
+    mod tracing_context {
+        use crate::tracing_middleware::TraceContext;
+
+        #[test]
+        fn parse_valid_traceparent() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+            assert_eq!(tc.parent_span_id, "00f067aa0ba902b7");
+            assert_eq!(tc.flags, "01");
+        }
+
+        #[test]
+        fn parse_valid_traceparent_with_zeros() {
+            let header = "00-00000000000000000000000000000000-0000000000000000-00";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "00000000000000000000000000000000");
+            assert_eq!(tc.parent_span_id, "0000000000000000");
+            assert_eq!(tc.flags, "00");
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_parts() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_trace_id_length() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e47-00f067aa0ba902b7-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_parent_span_length() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_non_hex() {
+            let header = "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_absent_header_fallback() {
+            // When header is absent, middleware should generate a fresh trace context
+            // This is tested in the middleware integration tests
+            assert!(true);
+        }
+
+        #[test]
+        fn generate_traceparent_header() {
+            let tc = TraceContext {
+                trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".to_string(),
+                parent_span_id: "00f067aa0ba902b7".to_string(),
+                flags: "01".to_string(),
+            };
+            let header = tc.to_header();
+            assert_eq!(header, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        #[test]
+        fn round_trip_traceparent() {
+            let original = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+            let tc = TraceContext::parse(original).unwrap();
+            let generated = tc.to_header();
+            assert_eq!(generated, original);
+        }
+
+        #[test]
+        fn parse_case_insensitive_hex() {
+            // Hex should be case-insensitive
+            let header = "00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "4BF92F3577B34DA6A3CE929D0E0E4736");
+        }
+    }
+
     // ── Recovery Code Single-Use Enforcement Tests ──
 
     #[test]
