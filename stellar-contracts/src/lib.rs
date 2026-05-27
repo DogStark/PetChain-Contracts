@@ -1796,12 +1796,13 @@ impl PetChainContract {
             String::from_str(&env, "Initial Registration"),
         );
 
-        let owner_pet_count: u64 = env
+        let prev_owner_count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0);
+        let owner_pet_count = prev_owner_count.checked_add(1) // Prevent overflow: fail if owner has u64::MAX pets
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
@@ -1812,12 +1813,13 @@ impl PetChainContract {
 
         // Add to species index
         let species_key = PetChainContract::species_to_string(&env, &species);
-        let species_count: u64 = env
+        let prev_species_count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::SpeciesPetCount(species_key.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0);
+        let species_count = prev_species_count.checked_add(1) // Prevent overflow: fail if species has u64::MAX pets
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
         env.storage().instance().set(
             &DataKey::SpeciesPetCount(species_key.clone()),
             &species_count,
