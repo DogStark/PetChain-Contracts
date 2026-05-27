@@ -13,6 +13,14 @@ pub enum InsuranceKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PremiumTier {
+    Basic,
+    Standard,
+    Premium,
+}
+
+#[contracttype]
 pub enum BehaviorKey {
     BehaviorRecord(u64),
     BehaviorRecordCount,
@@ -1133,6 +1141,7 @@ pub struct InsurancePolicy {
     pub policy_id: String,
     pub provider: String,
     pub coverage_type: String,
+    pub tier: PremiumTier,
     pub premium: u64,
     pub coverage_limit: u64,
     pub start_date: u64,
@@ -7164,10 +7173,12 @@ impl PetChainContract {
         }
 
         let start_date = env.ledger().timestamp();
+        let tier = Self::premium_tier_from_coverage(&coverage_type);
         let policy = InsurancePolicy {
             policy_id: policy_id.clone(),
             provider: provider.clone(),
             coverage_type,
+            tier,
             premium,
             coverage_limit,
             start_date,
@@ -7201,6 +7212,78 @@ impl PetChainContract {
         );
 
         true
+    }
+
+    fn premium_tier_from_coverage(coverage_type: &String) -> PremiumTier {
+        let len = coverage_type.len() as usize;
+        let mut bytes = [0u8; 64];
+        if len > 64 {
+            return PremiumTier::Basic;
+        }
+        coverage_type.copy_into_slice(&mut bytes[..len]);
+
+        if len >= 7
+            && bytes[0].eq_ignore_ascii_case(&b'P')
+            && bytes[1].eq_ignore_ascii_case(&b'r')
+            && bytes[2].eq_ignore_ascii_case(&b'e')
+            && bytes[3].eq_ignore_ascii_case(&b'm')
+            && bytes[4].eq_ignore_ascii_case(&b'i')
+            && bytes[5].eq_ignore_ascii_case(&b'u')
+            && bytes[6].eq_ignore_ascii_case(&b'm')
+        {
+            PremiumTier::Premium
+        } else if len >= 8
+            && bytes[0].eq_ignore_ascii_case(&b'S')
+            && bytes[1].eq_ignore_ascii_case(&b't')
+            && bytes[2].eq_ignore_ascii_case(&b'a')
+            && bytes[3].eq_ignore_ascii_case(&b'n')
+            && bytes[4].eq_ignore_ascii_case(&b'd')
+            && bytes[5].eq_ignore_ascii_case(&b'a')
+            && bytes[6].eq_ignore_ascii_case(&b'r')
+            && bytes[7].eq_ignore_ascii_case(&b'd')
+        {
+            PremiumTier::Standard
+        } else {
+            PremiumTier::Basic
+        }
+    }
+
+    fn tier_base(tier: &PremiumTier) -> u64 {
+        match tier {
+            PremiumTier::Basic => 1000,
+            PremiumTier::Standard => 1500,
+            PremiumTier::Premium => 2500,
+        }
+    }
+
+    fn calculate_premium(
+        env: Env,
+        pet_id: u64,
+        tier: PremiumTier,
+        base_premium: u64,
+        claim_count: u64,
+    ) -> u64 {
+        let (years, _) = Self::get_pet_age(env.clone(), pet_id);
+        let species_factor = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .map(|pet| match pet.species {
+                Species::Dog => 100,
+                Species::Cat => 50,
+                Species::Bird => 25,
+                Species::Other => 0,
+            })
+            .unwrap_or(0);
+        base_premium
+            .saturating_add(Self::tier_base(&tier) / 10)
+            .saturating_add(species_factor)
+            .saturating_add(years.saturating_mul(25))
+            .saturating_add(claim_count.saturating_mul(100))
+    }
+
+    pub fn get_premium_estimate(env: Env, pet_id: u64, tier: PremiumTier) -> u64 {
+        Self::calculate_premium(env, pet_id, tier.clone(), Self::tier_base(&tier), 0)
     }
 
     /// Retrieves the insurance policy for a pet.
@@ -7363,6 +7446,7 @@ impl PetChainContract {
         amount: u64,
         description: String,
     ) -> Option<u64> {
+        let mut policy = env
         let count: u64 = env
             .storage()
             .instance()
@@ -7420,6 +7504,17 @@ impl PetChainContract {
             &InsuranceKey::PetClaimIndex((pet_id, pet_claim_count)),
             &claim_id,
         );
+
+        policy.premium = Self::calculate_premium(
+            env.clone(),
+            pet_id,
+            policy.tier.clone(),
+            policy.premium,
+            pet_claim_count,
+        );
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Policy(pet_id), &policy);
 
         env.events().publish(
             (String::from_str(&env, "InsuranceClaimSubmitted"), pet_id),
