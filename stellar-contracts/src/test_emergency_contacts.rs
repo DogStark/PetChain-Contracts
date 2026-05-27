@@ -491,7 +491,7 @@ fn test_add_emergency_responder_idempotent() {
 // --- Priority Queue Tests ---
 
 #[test]
-#[should_panic(expected = "Error(Contract, #131)")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_duplicate_priority_rejected() {
     let env = Env::default();
     let mut contacts = soroban_sdk::Vec::new(&env);
