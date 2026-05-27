@@ -193,10 +193,6 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
-    ArithmeticOverflow = 140, // Issue #623
-    SlotConflict = 141,       // Issue #624
-    TokenExpired = 142,       // Issue #625
-    BootstrapExpired = 143,   // Issue #626
 }
 
 #[contracttype]
@@ -7581,7 +7577,7 @@ impl PetChainContract {
         if count == 0 {
             return None;
         }
-        let policy = env
+        let mut policy = env
             .storage()
             .instance()
             .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))?;
