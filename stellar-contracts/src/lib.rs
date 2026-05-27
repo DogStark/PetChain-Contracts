@@ -892,6 +892,8 @@ pub struct AvailabilitySlot {
     pub start_time: u64,
     pub end_time: u64,
     pub available: bool,
+    pub start_ts: u64,        // Unix timestamp for slot start (Issue #624)
+    pub duration_minutes: u32, // Duration in minutes for overlap detection (Issue #624)
 }
 
 #[contracttype]
@@ -6082,11 +6084,21 @@ impl PetChainContract {
             .unwrap_or(0);
         let slot_index = safe_increment(slot_count);
 
+        // Calculate duration: convert seconds to minutes, saturating if necessary
+        let duration_seconds = if end_time > start_time {
+            end_time - start_time
+        } else {
+            0
+        };
+        let duration_minutes = (duration_seconds / 60).min(u32::MAX as u64) as u32; // Saturate duration to u32
+
         let slot = AvailabilitySlot {
             vet_address: vet_address.clone(),
             start_time,
             end_time,
             available: true,
+            start_ts: start_time,        // Use start_time as timestamp (Issue #624)
+            duration_minutes,            // Duration for overlap detection (Issue #624)
         };
 
         // Store the slot
@@ -6380,7 +6392,7 @@ impl PetChainContract {
         result
     }
 
-    /// Book a slot (mark as unavailable)
+    /// Book a slot (mark as unavailable) with conflict detection (Issue #624)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
         vet_address.require_auth();
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
@@ -6394,12 +6406,67 @@ impl PetChainContract {
                 panic_with_error!(&env, ContractError::SlotAlreadyBooked);
             }
 
+            // Check for overlapping slots with same provider (Issue #624)
+            let slot_count: u64 = env
+                .storage()
+                .instance()
+                .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+                .unwrap_or(0);
+
+            let slot_end_ts = slot.start_ts.saturating_add((slot.duration_minutes as u64).saturating_mul(60));
+
+            for i in 1..=slot_count {
+                if i == slot_index {
+                    continue; // Skip the slot being booked
+                }
+                let other_key = SystemKey::VetAvailability((vet_address.clone(), i));
+                if let Some(other_slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(&other_key) {
+                    if !other_slot.available {
+                        continue; // Skip already-booked slots
+                    }
+                    // Check for overlap: new.start < other.start + other.duration*60 AND new.start + new.duration*60 > other.start
+                    let other_end_ts = other_slot.start_ts.saturating_add((other_slot.duration_minutes as u64).saturating_mul(60));
+                    if slot.start_ts < other_end_ts && slot_end_ts > other_slot.start_ts {
+                        // Conflict detected: reject with InvalidState error
+                        panic_with_error!(&env, ContractError::InvalidState);
+                    }
+                }
+            }
+
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
         } else {
             false
         }
+    }
+
+    /// Get slots in time range for a provider (Issue #624)
+    pub fn get_slots_in_range(
+        env: Env,
+        vet_address: Address,
+        start_ts: u64,
+        end_ts: u64,
+    ) -> Vec<AvailabilitySlot> {
+        let mut result = Vec::new(&env);
+
+        let slot_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        for i in 1..=slot_count {
+            let key = SystemKey::VetAvailability((vet_address.clone(), i));
+            if let Some(slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(&key) {
+                // Return slots where slot.start_ts >= start_ts && slot.start_ts < end_ts
+                if slot.start_ts >= start_ts && slot.start_ts < end_ts {
+                    result.push_back(slot);
+                }
+            }
+        }
+
+        result
     }
 
     /// Cancel a booking (restore slot availability). Only the vet who owns the slot can cancel.
