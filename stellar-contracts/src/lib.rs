@@ -40,6 +40,8 @@ pub enum BreedingKey {
     PetBreedingIndex((u64, u64)),
     PetOffspringCount(u64),
     PetOffspringIndex((u64, u64)),
+    ParentPair(u64),
+    LineageDepth(u64),
 }
 
 #[contracttype]
@@ -61,6 +63,7 @@ mod test_attachments;
 #[cfg(test)]
 mod test_behavior;
 #[cfg(test)]
+mod test_breeding;
 mod test_book_slot;
 #[cfg(test)]
 mod test_consent_pagination;
@@ -8575,10 +8578,43 @@ impl PetChainContract {
             .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
         {
             record.breeder.require_auth();
+            if offspring_id == record.sire_id || offspring_id == record.dam_id {
+                panic_with_error!(&env, PetChainError::SelfLineage);
+            }
+            if Self::has_ancestor(env.clone(), record.sire_id, offspring_id, MAX_LINEAGE_DEPTH)
+                || Self::has_ancestor(env.clone(), record.dam_id, offspring_id, MAX_LINEAGE_DEPTH)
+            {
+                panic_with_error!(&env, PetChainError::CircularLineage);
+            }
+
             record.offspring_ids.push_back(offspring_id);
             env.storage()
                 .instance()
                 .set(&BreedingKey::BreedingRecord(record_id), &record);
+
+            env.storage().instance().set(
+                &BreedingKey::ParentPair(offspring_id),
+                &(record.sire_id, record.dam_id),
+            );
+            let sire_depth: u32 = env
+                .storage()
+                .instance()
+                .get(&BreedingKey::LineageDepth(record.sire_id))
+                .unwrap_or(0);
+            let dam_depth: u32 = env
+                .storage()
+                .instance()
+                .get(&BreedingKey::LineageDepth(record.dam_id))
+                .unwrap_or(0);
+            let depth = if sire_depth > dam_depth {
+                sire_depth + 1
+            } else {
+                dam_depth + 1
+            };
+            env.storage()
+                .instance()
+                .set(&BreedingKey::LineageDepth(offspring_id), &depth);
+
             let off_count: u64 = env
                 .storage()
                 .instance()
@@ -8596,6 +8632,46 @@ impl PetChainContract {
             true
         } else {
             false
+        }
+    }
+
+    fn has_ancestor(env: Env, pet_id: u64, ancestor_id: u64, max_depth: u32) -> bool {
+        if max_depth == 0 {
+            return false;
+        }
+        if let Some((sire_id, dam_id)) = env
+            .storage()
+            .instance()
+            .get::<BreedingKey, (u64, u64)>(&BreedingKey::ParentPair(pet_id))
+        {
+            if sire_id == ancestor_id || dam_id == ancestor_id {
+                return true;
+            }
+            return Self::has_ancestor(env.clone(), sire_id, ancestor_id, max_depth - 1)
+                || Self::has_ancestor(env, dam_id, ancestor_id, max_depth - 1);
+        }
+        false
+    }
+
+    pub fn get_lineage(env: Env, pet_id: u64, depth: u32) -> Vec<u64> {
+        let mut lineage = Vec::new(&env);
+        Self::push_lineage(&env, pet_id, depth, &mut lineage);
+        lineage
+    }
+
+    fn push_lineage(env: &Env, pet_id: u64, depth: u32, lineage: &mut Vec<u64>) {
+        if depth == 0 {
+            return;
+        }
+        if let Some((sire_id, dam_id)) = env
+            .storage()
+            .instance()
+            .get::<BreedingKey, (u64, u64)>(&BreedingKey::ParentPair(pet_id))
+        {
+            lineage.push_back(sire_id);
+            lineage.push_back(dam_id);
+            Self::push_lineage(env, sire_id, depth - 1, lineage);
+            Self::push_lineage(env, dam_id, depth - 1, lineage);
         }
     }
 
