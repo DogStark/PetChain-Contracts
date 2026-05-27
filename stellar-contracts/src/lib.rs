@@ -116,6 +116,11 @@ mod test_statistics;
 #[cfg(test)]
 mod test_disputes;
 #[cfg(test)]
+mod test_admin_initialization;
+#[cfg(test)]
+mod test_fuzz_regression;
+// #[cfg(test)]
+// mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 mod test_upgrade_proposal;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -3136,6 +3141,10 @@ impl PetChainContract {
         days_threshold: u64,
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
+        let threshold = days_threshold
+            .saturating_mul(86400)
+            .saturating_add(current_time);
+        let history = Self::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let threshold = current_time + (days_threshold * 86400);
         let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
@@ -6250,7 +6259,11 @@ impl PetChainContract {
     ) -> Vec<Consent> {
         let history = PetChainContract::get_consent_history(env.clone(), pet_id);
         let size = if page_size == 0 { 50u32 } else { page_size };
-        let start = (page * size as u64) as u32;
+        // Guard against overflow: if page * size overflows u32, return empty.
+        let start: u32 = match page.checked_mul(size as u64).and_then(|v| u32::try_from(v).ok()) {
+            Some(v) => v,
+            None => return Vec::new(&env),
+        };
         let mut result = Vec::new(&env);
         for i in start..start.saturating_add(size) {
             match history.get(i) {
@@ -6698,6 +6711,10 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::CommentTooLong);
         }
 
+        if comment.len() > Self::MAX_REVIEW_COMMENT_LEN {
+            panic_with_error!(&env, ContractError::CommentTooLong);
+        }
+
         // Check duplicate
         if env
             .storage()
@@ -6917,6 +6934,11 @@ impl PetChainContract {
             .unwrap_or(0);
 
         let mut result = Vec::new(&env);
+        if limit == 0 || offset >= count {
+            return result;
+        }
+        let start_index = offset.saturating_add(1);
+        let end_index = offset.saturating_add(limit as u64).min(count);
         let start_index = safe_increment(offset); // indices are 1-based
         let end_index = (offset + limit as u64).min(count);
 
@@ -7097,6 +7119,11 @@ impl PetChainContract {
             .unwrap_or(0);
 
         let mut history = Vec::new(&env);
+        if limit == 0 || offset >= count {
+            return history;
+        }
+        let start_index = offset.saturating_add(1);
+        let end_index = offset.saturating_add(limit as u64).min(count);
         let start_index = safe_increment(offset); // indices are 1-based
         let end_index = (offset + limit as u64).min(count);
 
