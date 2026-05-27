@@ -822,6 +822,7 @@ pub struct Consent {
     pub consent_type: ConsentType,
     pub granted_to: Address,
     pub granted_at: u64,
+    pub expires_at: Option<u64>,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
 }
@@ -4891,6 +4892,17 @@ impl PetChainContract {
         consent_type: ConsentType,
         granted_to: Address,
     ) -> u64 {
+        Self::grant_consent_with_expiry(env, pet_id, owner, consent_type, granted_to, None)
+    }
+
+    pub fn grant_consent_with_expiry(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+        expires_at: Option<u64>,
+    ) -> u64 {
         owner.require_auth();
 
         let pet: Pet = env
@@ -4924,7 +4936,7 @@ impl PetChainContract {
                         .instance()
                         .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
                     {
-                        if !c.is_active {
+                        if !Self::is_consent_active_at(&env, &c) {
                             // Shift remaining indices down
                             for j in i..count {
                                 if let Some(next_cid) = env
@@ -4976,6 +4988,7 @@ impl PetChainContract {
             consent_type,
             granted_to,
             granted_at: now,
+            expires_at,
             revoked_at: None,
             is_active: true,
         };
@@ -4997,6 +5010,61 @@ impl PetChainContract {
         );
 
         consent_id
+    }
+
+    fn is_consent_active_at(env: &Env, consent: &Consent) -> bool {
+        if !consent.is_active {
+            return false;
+        }
+        match consent.expires_at {
+            Some(expires_at) => env.ledger().timestamp() <= expires_at,
+            None => true,
+        }
+    }
+
+    pub fn is_consent_active(env: Env, consent_id: u64) -> bool {
+        if let Some(consent) = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            Self::is_consent_active_at(&env, &consent)
+        } else {
+            false
+        }
+    }
+
+    pub fn extend_consent(
+        env: Env,
+        pet_id: u64,
+        consent_id: u64,
+        owner: Address,
+        new_expires_at: u64,
+    ) -> bool {
+        owner.require_auth();
+
+        if let Some(mut consent) = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            if consent.pet_id != pet_id {
+                env.panic_with_error(ContractError::InvalidInput);
+            }
+            if consent.owner != owner {
+                env.panic_with_error(ContractError::NotConsentOwner);
+            }
+            consent.expires_at = Some(new_expires_at);
+            if consent.revoked_at.is_none() {
+                consent.is_active = true;
+            }
+            env.storage()
+                .instance()
+                .set(&ConsentKey::Consent(consent_id), &consent);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn revoke_consent(env: Env, consent_id: u64, owner: Address) -> bool {
@@ -5057,7 +5125,7 @@ impl PetChainContract {
         let history = Self::get_consent_history(env.clone(), pet_id);
         let mut active = Vec::new(&env);
         for consent in history.iter() {
-            if consent.is_active {
+            if Self::is_consent_active_at(&env, &consent) {
                 active.push_back(consent);
             }
         }
