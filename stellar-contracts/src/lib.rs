@@ -728,6 +728,8 @@ pub enum MedicalKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+    KeywordRecordCount((u64, Bytes)),
+    KeywordRecordIndex((u64, Bytes, u64)),
     GlobalMedication(u64),          // medication_id -> Medication
     MedicationCount,                // Global count
     PetMedicationCount(u64),        // pet_id -> count
@@ -4708,6 +4710,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&MedicalKey::MedicalRecord(id), &record);
+        Self::index_medical_record_notes(&env, pet_id, id, &record.notes);
 
         // Update pet medical record index
         let pet_record_count = env
@@ -4761,6 +4764,136 @@ impl PetChainContract {
         );
 
         id
+    }
+
+    fn normalize_keyword(env: &Env, keyword: &String) -> Bytes {
+        if keyword.len() == 0 || keyword.len() > MAX_SEARCH_KEYWORD_LEN {
+            panic_with_error!(env, PetChainError::KeywordTooLong);
+        }
+
+        let mut input = [0u8; MAX_SEARCH_KEYWORD_LEN as usize];
+        let len = keyword.len() as usize;
+        keyword.copy_into_slice(&mut input[..len]);
+        let mut out = Bytes::new(env);
+        for b in input.iter().take(len) {
+            if b.is_ascii_uppercase() {
+                out.push_back(*b + 32);
+            } else {
+                out.push_back(*b);
+            }
+        }
+        out
+    }
+
+    fn tokenize_notes(env: &Env, notes: &String) -> Vec<Bytes> {
+        if notes.len() > MAX_SEARCH_NOTES_LEN {
+            panic_with_error!(env, PetChainError::TooManySearchTokens);
+        }
+
+        let mut input = [0u8; MAX_SEARCH_NOTES_LEN as usize];
+        let len = notes.len() as usize;
+        notes.copy_into_slice(&mut input[..len]);
+        let mut tokens = Vec::new(env);
+        let mut token = Bytes::new(env);
+
+        for b in input.iter().take(len) {
+            let normalized = if b.is_ascii_uppercase() { *b + 32 } else { *b };
+            let is_token_char = normalized.is_ascii_lowercase() || normalized.is_ascii_digit();
+            if is_token_char {
+                if token.len() >= MAX_SEARCH_KEYWORD_LEN {
+                    panic_with_error!(env, PetChainError::KeywordTooLong);
+                }
+                token.push_back(normalized);
+            } else if token.len() > 0 {
+                tokens.push_back(token);
+                if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+                    panic_with_error!(env, PetChainError::TooManySearchTokens);
+                }
+                token = Bytes::new(env);
+            }
+        }
+        if token.len() > 0 {
+            tokens.push_back(token);
+            if tokens.len() > MAX_SEARCH_TOKENS_PER_RECORD {
+                panic_with_error!(env, PetChainError::TooManySearchTokens);
+            }
+        }
+
+        tokens
+    }
+
+    fn index_medical_record_notes(env: &Env, pet_id: u64, record_id: u64, notes: &String) {
+        let tokens = Self::tokenize_notes(env, notes);
+        for token in tokens.iter() {
+            let count_key = MedicalKey::KeywordRecordCount((pet_id, token.clone()));
+            let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0) + 1;
+            env.storage().instance().set(&count_key, &count);
+            env.storage().instance().set(
+                &MedicalKey::KeywordRecordIndex((pet_id, token, count)),
+                &record_id,
+            );
+        }
+    }
+
+    fn prune_medical_record_notes(env: &Env, pet_id: u64, record_id: u64, notes: &String) {
+        let tokens = Self::tokenize_notes(env, notes);
+        for token in tokens.iter() {
+            let count_key = MedicalKey::KeywordRecordCount((pet_id, token.clone()));
+            let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0);
+            for i in 1..=count {
+                let index_key = MedicalKey::KeywordRecordIndex((pet_id, token.clone(), i));
+                if env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&index_key)
+                    .unwrap_or(0)
+                    == record_id
+                {
+                    env.storage().instance().set(&index_key, &0u64);
+                }
+            }
+        }
+    }
+
+    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
+        let token = Self::normalize_keyword(&env, &keyword);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::KeywordRecordCount((pet_id, token.clone())))
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+
+        for i in 1..=count {
+            let index_key = MedicalKey::KeywordRecordIndex((pet_id, token.clone(), i));
+            if let Some(record_id) = env.storage().instance().get::<MedicalKey, u64>(&index_key) {
+                if record_id == 0 {
+                    continue;
+                }
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    records.push_back(record);
+                }
+            }
+        }
+
+        records
+    }
+
+    pub fn remove_medical_record(env: Env, record_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            record.vet_address.require_auth();
+            Self::prune_medical_record_notes(&env, record.pet_id, record_id, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(record_id));
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update_medical_record(
