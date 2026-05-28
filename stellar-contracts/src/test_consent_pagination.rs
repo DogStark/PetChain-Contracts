@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
 
 fn setup() -> (Env, PetChainContractClient<'static>, u64, Address) {
     let env = Env::default();
@@ -32,7 +32,7 @@ fn test_consent_history_pagination_basic() {
     // Grant 5 consents, revoke 2 of them.
     let mut ids = Vec::new(&env);
     for _ in 0..5u32 {
-        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
         ids.push_back(id);
     }
     client.revoke_consent(&ids.get(0).unwrap(), &owner);
@@ -57,7 +57,7 @@ fn test_consent_history_page_zero_size_clamps_to_50() {
     let grantee = Address::generate(&env);
 
     for _ in 0..3u32 {
-        client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+        client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee, &ConsentScope::ReadMedical);
     }
 
     // page_size=0 should be treated as 50 (clamped), returning all 3 records.
@@ -74,7 +74,7 @@ fn test_consent_pruning_removes_oldest_revoked_at_cap() {
     // Fill up to the cap (50) by alternating grant/revoke so revoked records accumulate.
     let mut first_active_id: u64 = 0;
     for i in 0..50u32 {
-        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
         if i == 0 {
             first_active_id = id;
         }
@@ -86,7 +86,7 @@ fn test_consent_pruning_removes_oldest_revoked_at_cap() {
 
     // At this point: 49 revoked + 1 active = 50 total (at cap).
     // Granting one more should prune the oldest revoked record without panicking.
-    let new_id = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee);
+    let new_id = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee, &ConsentScope::ReadMedical);
     assert!(new_id > 0);
 
     // Total stored should still be <= 50.
@@ -105,7 +105,7 @@ fn test_consent_hard_cap_when_all_active() {
 
     // Grant 50 consents without revoking any.
     for _ in 0..50u32 {
-        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
     }
 
     // Verify the cap is enforced
@@ -125,7 +125,7 @@ fn test_many_grant_revoke_cycles_stay_bounded() {
 
     // Simulate 200 grant/revoke cycles — storage must stay bounded at MAX_CONSENTS_PER_PET.
     for _ in 0..200u32 {
-        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        let id = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
         client.revoke_consent(&id, &owner);
     }
 
@@ -149,9 +149,9 @@ fn test_get_active_consents_only_returns_active() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
-    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
-    let _id3 = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee);
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee, &ConsentScope::ReadMedical);
+    let _id3 = client.grant_consent(&pet_id, &owner, &ConsentType::PublicHealth, &grantee, &ConsentScope::ReadMedical);
 
     // Revoke two of the three
     client.revoke_consent(&id1, &owner);
@@ -167,8 +167,8 @@ fn test_get_active_consents_empty_when_all_revoked() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
-    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    let id1 = client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
+    let id2 = client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee, &ConsentScope::ReadMedical);
 
     client.revoke_consent(&id1, &owner);
     client.revoke_consent(&id2, &owner);
@@ -183,7 +183,7 @@ fn test_get_active_consents_all_active() {
     let grantee = Address::generate(&env);
 
     for _ in 0..3u32 {
-        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
     }
 
     let active = client.get_active_consents(&pet_id);
@@ -201,16 +201,84 @@ fn test_get_active_consents_no_consents() {
 }
 
 #[test]
+fn test_expired_consent_is_not_active() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    let id = client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &grantee,
+        &Some(150),
+    );
+    assert!(client.is_consent_active(&id));
+
+    env.ledger().set_timestamp(151);
+    assert!(!client.is_consent_active(&id));
+}
+
+#[test]
+fn test_get_active_consents_excludes_expired() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &grantee,
+        &Some(120),
+    );
+    client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Insurance,
+        &grantee,
+        &Some(300),
+    );
+
+    env.ledger().set_timestamp(121);
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().consent_type, ConsentType::Insurance);
+}
+
+#[test]
+fn test_extend_consent_reactivates_after_original_expiry() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    let id = client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::PublicHealth,
+        &grantee,
+        &Some(110),
+    );
+
+    env.ledger().set_timestamp(111);
+    assert!(!client.is_consent_active(&id));
+
+    assert!(client.extend_consent(&pet_id, &id, &owner, &200));
+    assert!(client.is_consent_active(&id));
+
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().expires_at, Some(200));
 fn test_get_consent_count_returns_correct_count() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
 
     assert_eq!(client.get_consent_count(&pet_id), 0);
 
-    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+    client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
     assert_eq!(client.get_consent_count(&pet_id), 1);
 
-    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee);
+    client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee, &ConsentScope::ReadMedical);
     assert_eq!(client.get_consent_count(&pet_id), 2);
 }
 
@@ -218,4 +286,37 @@ fn test_get_consent_count_returns_correct_count() {
 fn test_get_consent_count_zero_for_no_consents() {
     let (_env, client, pet_id, _owner) = setup();
     assert_eq!(client.get_consent_count(&pet_id), 0);
+}
+
+#[test]
+fn test_get_consents_by_scope_pagination() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    // Grant 5 consents with ReadMedical scope
+    for _ in 0..5u32 {
+        client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical);
+    }
+
+    // Grant 3 consents with WriteMedical scope
+    for _ in 0..3u32 {
+        client.grant_consent(&pet_id, &owner, &ConsentType::Insurance, &grantee, &ConsentScope::WriteMedical);
+    }
+
+    // Get first page of ReadMedical consents (page size 2)
+    let page0 = client.get_consents_by_scope(&pet_id, &ConsentScope::ReadMedical, &0, &2);
+    assert_eq!(page0.len(), 2);
+
+    // Get second page of ReadMedical consents
+    let page1 = client.get_consents_by_scope(&pet_id, &ConsentScope::ReadMedical, &1, &2);
+    assert_eq!(page1.len(), 2);
+
+    // Get all WriteMedical consents
+    let write_page = client.get_consents_by_scope(&pet_id, &ConsentScope::WriteMedical, &0, &10);
+    assert_eq!(write_page.len(), 3);
+
+    // Verify all returned consents have correct scope
+    for consent in page0.iter() {
+        assert_eq!(consent.scope, ConsentScope::ReadMedical);
+    }
 }

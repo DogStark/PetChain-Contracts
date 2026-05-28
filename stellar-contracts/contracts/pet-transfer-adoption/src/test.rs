@@ -1,7 +1,8 @@
 use super::{
-    ContractError, DataKey, OwnershipRecord, PetOwnershipContract, PetOwnershipContractClient,
+    ContractError, DataKey, EscrowedTransfer, OwnershipRecord, PetOwnershipContract,
+    PetOwnershipContractClient, DISPUTE_WINDOW_SECONDS,
 };
-use soroban_sdk::{testutils::Address as _, Address, Env, Error, Vec};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, Error, Vec};
 
 fn setup() -> (Env, Address, Address, u64) {
     let env = Env::default();
@@ -52,7 +53,13 @@ fn get_owner_pets_updates_after_transfer_acceptance() {
     client.create_pet(&pet_id, &owner);
     client.create_pet(&2, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
-    client.accept_transfer(&pet_id);
+    client.accept_transfer(&pet_id); // → Escrowed
+
+    // Advance past the 48-hour dispute window then finalize
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+    client.finalize_transfer(&pet_id);
 
     let owner_pets = client.get_owner_pets(&owner);
     assert_eq!(owner_pets.len(), 1);
@@ -78,11 +85,12 @@ fn create_pet_does_not_duplicate_owner_pet_index() {
 }
 
 #[test]
-fn accept_transfer_errors_when_history_is_missing() {
+fn finalize_transfer_errors_when_history_is_missing() {
     let (env, owner, new_owner, pet_id) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
     let client = PetOwnershipContractClient::new(&env, &contract_id);
     create_pending_transfer(&client, pet_id, &owner, &new_owner);
+    client.accept_transfer(&pet_id); // → Escrowed
 
     env.as_contract(&contract_id, || {
         env.storage()
@@ -90,7 +98,11 @@ fn accept_transfer_errors_when_history_is_missing() {
             .remove(&DataKey::OwnershipHistory(pet_id));
     });
 
-    let result = client.try_accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+
+    let result = client.try_finalize_transfer(&pet_id);
     assert_eq!(
         result,
         Err(Ok(Error::from_contract_error(
@@ -100,11 +112,12 @@ fn accept_transfer_errors_when_history_is_missing() {
 }
 
 #[test]
-fn accept_transfer_errors_when_history_is_empty() {
+fn finalize_transfer_errors_when_history_is_empty() {
     let (env, owner, new_owner, pet_id) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
     let client = PetOwnershipContractClient::new(&env, &contract_id);
     create_pending_transfer(&client, pet_id, &owner, &new_owner);
+    client.accept_transfer(&pet_id); // → Escrowed
 
     let empty_history = Vec::<OwnershipRecord>::new(&env);
     env.as_contract(&contract_id, || {
@@ -113,7 +126,11 @@ fn accept_transfer_errors_when_history_is_empty() {
             .set(&DataKey::OwnershipHistory(pet_id), &empty_history);
     });
 
-    let result = client.try_accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+
+    let result = client.try_finalize_transfer(&pet_id);
     assert_eq!(
         result,
         Err(Ok(Error::from_contract_error(
@@ -288,4 +305,197 @@ fn batch_initiate_transfer_errors_when_a_pet_already_has_pending_transfer() {
     );
     // Atomicity: pet 2 must remain unaffected
     assert!(!client.has_pending_transfer(&2));
+}
+
+// ======================================================
+// Escrow + dispute window tests
+// ======================================================
+
+#[test]
+fn accept_transfer_enters_escrowed_state() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    // Ownership must NOT have changed yet
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+    // Pending transfer is gone; escrowed transfer exists
+    assert!(!client.has_pending_transfer(&pet_id));
+    let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
+    assert_eq!(escrowed.from, owner);
+    assert_eq!(escrowed.to, new_owner);
+    assert!(!escrowed.disputed);
+}
+
+#[test]
+fn finalize_transfer_before_window_is_rejected() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    // Advance time but stay within the window
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS - 1;
+    });
+
+    let result = client.try_finalize_transfer(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::DisputeWindowNotElapsed as u32,
+        )))
+    );
+    // Ownership unchanged
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+#[test]
+fn finalize_transfer_after_window_transfers_ownership() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+    client.finalize_transfer(&pet_id);
+
+    assert_eq!(client.get_current_owner(&pet_id), new_owner);
+    assert!(client.get_escrowed_transfer(&pet_id).is_none());
+}
+
+#[test]
+fn raise_dispute_blocks_finalization() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+    client.raise_dispute(&pet_id, &owner);
+
+    // Escrowed transfer is now marked disputed
+    let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
+    assert!(escrowed.disputed);
+
+    // Finalize must fail even after the window
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+    let result = client.try_finalize_transfer(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::TransferAlreadyDisputed as u32,
+        )))
+    );
+    // Ownership unchanged
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+#[test]
+fn raise_dispute_after_window_is_rejected() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+
+    let result = client.try_raise_dispute(&pet_id, &owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::DisputeWindowNotElapsed as u32,
+        )))
+    );
+}
+
+#[test]
+fn finalize_transfer_no_escrowed_transfer_errors() {
+    let (env, _, _, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    let result = client.try_finalize_transfer(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::NoEscrowedTransfer as u32,
+        )))
+    );
+}
+
+#[test]
+fn recipient_can_raise_dispute_during_window() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+    // Recipient (new_owner / `to`) raises the dispute
+    client.raise_dispute(&pet_id, &new_owner);
+
+    let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
+    assert!(escrowed.disputed);
+}
+
+#[test]
+fn unauthorized_party_cannot_raise_dispute() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    let stranger = Address::generate(&env);
+    let result = client.try_raise_dispute(&pet_id, &stranger);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::Unauthorized as u32,
+        )))
+    );
+}
+
+#[test]
+fn double_dispute_is_rejected() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+    client.raise_dispute(&pet_id, &owner);
+
+    let result = client.try_raise_dispute(&pet_id, &new_owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::TransferAlreadyDisputed as u32,
+        )))
+    );
 }
