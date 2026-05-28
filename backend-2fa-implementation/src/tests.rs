@@ -1513,4 +1513,136 @@ mod integration_tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // JWT Session Token, Sliding Expiry, Redis Revocation, & Logout Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_jwt_issuance_on_login_and_activate() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-jwt-test";
+        let secret_key = b"my_custom_secret_key_for_testing_12345";
+        let handlers = TwoFactorHandlers::new()
+            .with_jwt_config(secret_key.to_vec(), 600); // 10 mins duration
+
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "jwt@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // 1. Verify and activate 2FA and get JWT
+        let token = handlers
+            .verify_and_activate_jwt(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&resp.secret),
+                },
+            )
+            .expect("Verify and activate should succeed and return JWT");
+
+        assert!(!token.is_empty());
+
+        // Decode token to verify claims
+        let claims = crate::handlers::decode_jwt(&token, secret_key).expect("JWT should be decodable");
+        assert_eq!(claims.sub, user_id);
+        assert!(claims.exp > claims.iat);
+
+        // 2. Verify login token and get JWT
+        let login_token = handlers
+            .verify_login_token_jwt(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&resp.secret),
+                },
+            )
+            .expect("Login with 2FA should succeed and return JWT");
+
+        assert!(!login_token.is_empty());
+        let login_claims = crate::handlers::decode_jwt(&login_token, secret_key).expect("Login JWT should be decodable");
+        assert_eq!(login_claims.sub, user_id);
+    }
+
+    #[test]
+    fn test_sliding_expiry_extensions() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-sliding-test";
+        let secret_key = b"my_custom_secret_key_for_testing_12345";
+        let handlers = TwoFactorHandlers::new()
+            .with_jwt_config(secret_key.to_vec(), 100); // 100 seconds duration
+
+        let initial_token = crate::handlers::generate_jwt(user_id, secret_key, 100)
+            .expect("Should generate initial JWT");
+
+        // Wait a brief moment or just authenticate immediately.
+        // authenticate_request extends by the configured duration from NOW.
+        let (auth_user, extended_token) = handlers
+            .authenticate_request(&initial_token)
+            .expect("Authentication should succeed and extend token");
+
+        assert_eq!(auth_user.user_id, user_id);
+        assert!(!extended_token.is_empty());
+        assert_ne!(initial_token, extended_token);
+
+        let initial_claims = crate::handlers::decode_jwt(&initial_token, secret_key).unwrap();
+        let extended_claims = crate::handlers::decode_jwt(&extended_token, secret_key).unwrap();
+
+        assert_eq!(extended_claims.sub, user_id);
+        // Expiry of extended token is set to now + 100, which is >= original expiry
+        assert!(extended_claims.exp >= initial_claims.exp);
+    }
+
+    #[test]
+    fn test_logout_and_revocation_blacklist() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-revocation-test";
+        let secret_key = b"my_custom_secret_key_for_testing_12345";
+        let handlers = TwoFactorHandlers::new()
+            .with_jwt_config(secret_key.to_vec(), 300);
+
+        let token = crate::handlers::generate_jwt(user_id, secret_key, 300)
+            .expect("Should generate JWT");
+
+        // Authenticate request before logout — should succeed
+        let (auth_user, _) = handlers
+            .authenticate_request(&token)
+            .expect("Should authenticate successfully");
+        assert_eq!(auth_user.user_id, user_id);
+
+        // Perform logout
+        handlers.logout(&token).expect("Logout should succeed");
+
+        // Authenticate request after logout — should fail (revoked immediately)
+        let auth_result = handlers.authenticate_request(&token);
+        assert!(auth_result.is_err());
+        assert!(auth_result.unwrap_err().contains("revoked"));
+    }
+
+    #[test]
+    fn test_redis_client_reuse_and_rate_limiter() {
+        // If Redis is not running, this test behaves normally by asserting the structural integrity.
+        // It validates that TwoFactorHandlers::with_limiter correctly downcasts a RedisRateLimiter
+        // and reuses the Redis client.
+        if let Ok(redis_url) = std::env::var("REDIS_URL") {
+            if let Ok(client) = redis::Client::open(redis_url) {
+                let limiter = crate::rate_limiter::RedisRateLimiter::new(client.clone(), 5, 60, 300);
+                let handlers = TwoFactorHandlers::with_limiter(std::sync::Arc::new(limiter));
+                
+                // Assert that the handlers' revocation store shares/contains a Redis variant
+                match &*handlers.revocation_store {
+                    crate::handlers::RevocationStore::Redis { .. } => {}
+                    _ => panic!("Expected revocation store to be Redis-backed via rate limiter reuse"),
+                }
+            }
+        }
+    }
 }

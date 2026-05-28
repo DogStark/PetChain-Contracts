@@ -1,9 +1,110 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, RedisRateLimiter};
 use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashSet;
+use jsonwebtoken::{encode, decode, Header, Algorithm, EncodingKey, DecodingKey, Validation};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Claims {
+    pub sub: String,
+    pub iat: usize,
+    pub exp: usize,
+}
+
+pub fn generate_jwt(user_id: &str, secret: &[u8], duration_secs: u64) -> Result<String, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let claims = Claims {
+        sub: user_id.to_string(),
+        iat: now as usize,
+        exp: (now + duration_secs) as usize,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, String> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret),
+        &validation,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(token_data.claims)
+}
+
+pub enum RevocationStore {
+    Redis { client: redis::Client },
+    InMemory { revoked: Mutex<HashSet<String>> },
+}
+
+impl RevocationStore {
+    pub fn new() -> Self {
+        if let Ok(redis_url) = std::env::var("REDIS_URL") {
+            if let Ok(client) = redis::Client::open(redis_url) {
+                if client.get_connection().is_ok() {
+                    return Self::Redis { client };
+                }
+            }
+        }
+        Self::InMemory {
+            revoked: Mutex::new(HashSet::new()),
+        }
+    }
+
+    pub fn new_redis(client: redis::Client) -> Self {
+        Self::Redis { client }
+    }
+
+    pub fn revoke(&self, token: &str, ttl_secs: u64) -> Result<(), String> {
+        match self {
+            Self::Redis { client } => {
+                let mut conn = client.get_connection().map_err(|e| e.to_string())?;
+                let key = format!("revoked:{}", token);
+                let _: Result<(), _> = redis::cmd("SETEX")
+                    .arg(&key)
+                    .arg(ttl_secs)
+                    .arg(1)
+                    .query(&mut conn);
+                Ok(())
+            }
+            Self::InMemory { revoked } => {
+                let mut set = revoked.lock().map_err(|_| "Lock poisoned".to_string())?;
+                set.insert(token.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn is_revoked(&self, token: &str) -> Result<bool, String> {
+        match self {
+            Self::Redis { client } => {
+                let mut conn = client.get_connection().map_err(|e| e.to_string())?;
+                let key = format!("revoked:{}", token);
+                let exists: bool = redis::cmd("EXISTS")
+                    .arg(&key)
+                    .query(&mut conn)
+                    .unwrap_or(false);
+                Ok(exists)
+            }
+            Self::InMemory { revoked } => {
+                let set = revoked.lock().map_err(|_| "Lock poisoned".to_string())?;
+                Ok(set.contains(token))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 fn test_two_factor_store() -> &'static Arc<InMemoryStore> {
@@ -109,17 +210,40 @@ pub struct RecoverWithBackupResponse {
 
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
+    jwt_secret: Vec<u8>,
+    token_duration_secs: u64,
+    revocation_store: Arc<RevocationStore>,
 }
 
 impl TwoFactorHandlers {
     pub fn new() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
+            jwt_secret: b"super_secret_petchain_key_12345".to_vec(),
+            token_duration_secs: 1800, // 30 mins
+            revocation_store: Arc::new(RevocationStore::new()),
         }
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
-        Self { limiter }
+        let revocation_store = if let Some(redis_limiter) = limiter.as_any().downcast_ref::<RedisRateLimiter>() {
+            Arc::new(RevocationStore::new_redis(redis_limiter.get_client()))
+        } else {
+            Arc::new(RevocationStore::new())
+        };
+
+        Self {
+            limiter,
+            jwt_secret: b"super_secret_petchain_key_12345".to_vec(),
+            token_duration_secs: 1800,
+            revocation_store,
+        }
+    }
+
+    pub fn with_jwt_config(mut self, secret: Vec<u8>, duration_secs: u64) -> Self {
+        self.jwt_secret = secret;
+        self.token_duration_secs = duration_secs;
+        self
     }
 
     pub fn enable_two_factor(
@@ -188,6 +312,20 @@ impl TwoFactorHandlers {
         Ok(result)
     }
 
+    pub fn verify_and_activate_jwt(
+        &self,
+        caller: &AuthenticatedUser,
+        req: VerifyTwoFactorRequest,
+    ) -> Result<String, String> {
+        let is_valid = self.verify_and_activate(caller, req.clone())?;
+        if is_valid {
+            let token = generate_jwt(&req.user_id, &self.jwt_secret, self.token_duration_secs)?;
+            Ok(token)
+        } else {
+            Err("Invalid 2FA token".to_string())
+        }
+    }
+
     pub fn verify_login_token(
         &self,
         caller: &AuthenticatedUser,
@@ -215,6 +353,54 @@ impl TwoFactorHandlers {
         }
 
         Ok(is_valid)
+    }
+
+    pub fn verify_login_token_jwt(
+        &self,
+        caller: &AuthenticatedUser,
+        req: LoginWithTwoFactorRequest,
+    ) -> Result<String, String> {
+        let is_valid = self.verify_login_token(caller, req.clone())?;
+        if is_valid {
+            let token = generate_jwt(&req.user_id, &self.jwt_secret, self.token_duration_secs)?;
+            Ok(token)
+        } else {
+            Err("Invalid 2FA token".to_string())
+        }
+    }
+
+    pub fn authenticate_request(&self, token: &str) -> Result<(AuthenticatedUser, String), String> {
+        let claims = decode_jwt(token, &self.jwt_secret)?;
+
+        if self.revocation_store.is_revoked(token)? {
+            return Err("Token has been revoked".to_string());
+        }
+
+        // Extend expiry (sliding window) by issuing a new token
+        let new_token = generate_jwt(&claims.sub, &self.jwt_secret, self.token_duration_secs)?;
+
+        Ok((AuthenticatedUser::new(claims.sub), new_token))
+    }
+
+    pub fn logout(&self, token: &str) -> Result<(), String> {
+        let claims = decode_jwt(token, &self.jwt_secret)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs() as usize;
+
+        let remaining_secs = if claims.exp > now {
+            claims.exp - now
+        } else {
+            0
+        };
+
+        if remaining_secs > 0 {
+            self.revocation_store.revoke(token, remaining_secs as u64)?;
+        }
+
+        Ok(())
     }
 
     pub fn disable_two_factor(

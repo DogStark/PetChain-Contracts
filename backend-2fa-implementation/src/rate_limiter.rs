@@ -16,13 +16,18 @@ pub enum RateLimitResult {
 /// Implement this trait to back the limiter with Redis, a database, or
 /// any other store. The in-process [`InMemoryRateLimiter`] is provided
 /// for development and testing.
-pub trait RateLimiter: Send + Sync {
+pub trait RateLimiter: Send + Sync + 'static {
     /// Record a failed attempt for `key` and return whether further
     /// attempts are currently allowed.
     fn record_failure(&self, key: &str) -> RateLimitResult;
 
     /// Clear the failure counter for `key` on a successful attempt.
     fn record_success(&self, key: &str);
+
+    /// Dynamic cast helper to allow downcasting
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -113,5 +118,104 @@ impl RateLimiter for InMemoryRateLimiter {
     fn record_success(&self, key: &str) {
         let mut records = self.records.lock().expect("rate limiter lock poisoned");
         records.remove(key);
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Redis implementation
+// ---------------------------------------------------------------------------
+
+/// Redis-backed rate limiter using a sliding window + lockout.
+pub struct RedisRateLimiter {
+    client: redis::Client,
+    max_failures: u32,
+    window_secs: u64,
+    lockout_secs: u64,
+}
+
+impl RedisRateLimiter {
+    pub fn new(client: redis::Client, max_failures: u32, window_secs: u64, lockout_secs: u64) -> Self {
+        Self {
+            client,
+            max_failures,
+            window_secs,
+            lockout_secs,
+        }
+    }
+
+    pub fn get_client(&self) -> redis::Client {
+        self.client.clone()
+    }
+}
+
+impl RateLimiter for RedisRateLimiter {
+    fn record_failure(&self, key: &str) -> RateLimitResult {
+        let mut conn = match self.client.get_connection() {
+            Ok(c) => c,
+            Err(_) => {
+                // If Redis is not available, we fail open for availability
+                return RateLimitResult::Allowed {
+                    remaining: self.max_failures,
+                };
+            }
+        };
+
+        let lockout_key = format!("lockout:{}", key);
+        let failures_key = format!("failures:{}", key);
+
+        // Check if locked out
+        if let Ok(ttl) = redis::cmd("TTL").arg(&lockout_key).query::<i64>(&mut conn) {
+            if ttl > 0 {
+                return RateLimitResult::Blocked {
+                    retry_after_secs: ttl as u64,
+                };
+            }
+        }
+
+        let failures: u32 = redis::cmd("INCR")
+            .arg(&failures_key)
+            .query(&mut conn)
+            .unwrap_or(1);
+
+        if failures == 1 {
+            let _: Result<(), _> = redis::cmd("EXPIRE")
+                .arg(&failures_key)
+                .arg(self.window_secs)
+                .query(&mut conn);
+        }
+
+        if failures >= self.max_failures {
+            let _: Result<(), _> = redis::cmd("SETEX")
+                .arg(&lockout_key)
+                .arg(self.lockout_secs)
+                .arg(1)
+                .query(&mut conn);
+            RateLimitResult::Blocked {
+                retry_after_secs: self.lockout_secs,
+            }
+        } else {
+            RateLimitResult::Allowed {
+                remaining: self.max_failures.saturating_sub(failures),
+            }
+        }
+    }
+
+    fn record_success(&self, key: &str) {
+        if let Ok(mut conn) = self.client.get_connection() {
+            let lockout_key = format!("lockout:{}", key);
+            let failures_key = format!("failures:{}", key);
+            let _: Result<(), _> = redis::cmd("DEL")
+                .arg(&lockout_key)
+                .arg(&failures_key)
+                .query(&mut conn);
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
