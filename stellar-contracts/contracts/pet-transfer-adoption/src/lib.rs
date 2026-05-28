@@ -67,6 +67,25 @@ pub struct OwnershipRecord {
     pub relinquished_at: Option<u64>,
 }
 
+/// Transfer type for chain-of-custody entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransferType {
+    Direct,
+    Adoption,
+    Multisig,
+}
+
+/// A single chain-of-custody entry appended on every ownership change.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustodyEntry {
+    pub from: Address,
+    pub to: Address,
+    pub timestamp: u64,
+    pub transfer_type: TransferType,
+}
+
 /// ======================================================
 /// STORAGE KEYS
 /// ======================================================
@@ -78,6 +97,7 @@ enum DataKey {
     EscrowedTransfer(u64),
     OwnershipHistory(u64),
     OwnerPets(Address),
+    CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
 }
 
 /// ======================================================
@@ -142,6 +162,23 @@ fn save_history(env: &Env, pet_id: u64, history: &Vec<OwnershipRecord>) {
     env.storage()
         .persistent()
         .set(&DataKey::OwnershipHistory(pet_id), history);
+}
+
+fn append_custody_entry(env: &Env, pet_id: u64, from: Address, to: Address, transfer_type: TransferType) {
+    let mut chain: Vec<CustodyEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::CustodyChain(pet_id))
+        .unwrap_or_else(|| Vec::new(env));
+    chain.push_back(CustodyEntry {
+        from,
+        to,
+        timestamp: env.ledger().timestamp(),
+        transfer_type,
+    });
+    env.storage()
+        .persistent()
+        .set(&DataKey::CustodyChain(pet_id), &chain);
 }
 
 fn get_owner_pet_ids(env: &Env, owner: &Address) -> Vec<u64> {
@@ -340,6 +377,8 @@ impl PetOwnershipContract {
         env.storage()
             .persistent()
             .remove(&DataKey::EscrowedTransfer(pet_id));
+
+        append_custody_entry(&env, pet_id, escrowed.from.clone(), escrowed.to.clone(), TransferType::Direct);
 
         env.events().publish(
             (EVT_TRANSFER_FINALIZED, pet_id),
@@ -540,6 +579,14 @@ impl PetOwnershipContract {
 
     pub fn get_owner_pets(env: Env, owner: Address) -> Vec<u64> {
         get_owner_pet_ids(&env, &owner)
+    }
+
+    /// Return the full chain-of-custody log for `pet_id` in chronological order.
+    pub fn get_custody_chain(env: Env, pet_id: u64) -> Vec<CustodyEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CustodyChain(pet_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     pub fn has_pending_transfer(env: Env, pet_id: u64) -> bool {

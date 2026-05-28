@@ -122,6 +122,8 @@ mod test_statistics;
 mod test_disputes;
 #[cfg(test)]
 mod test_fuzz_regression;
+#[cfg(test)]
+mod test_custody_chain;
 // #[cfg(test)]
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 #[cfg(test)]
@@ -973,6 +975,8 @@ pub enum SystemKey {
     StatCacheTTL,
     StatCache(String),
     LabThreshold,
+    // Chain-of-custody log (Issue #637)
+    CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
 }
 
 #[contracttype]
@@ -1286,6 +1290,25 @@ pub struct OwnershipRecord {
     pub new_owner: Address,
     pub transfer_date: u64,
     pub transfer_reason: String,
+}
+
+/// Transfer type for chain-of-custody entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransferType {
+    Direct,
+    Adoption,
+    Multisig,
+}
+
+/// A single chain-of-custody entry appended on every ownership change.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustodyEntry {
+    pub from: Address,
+    pub to: Address,
+    pub timestamp: u64,
+    pub transfer_type: TransferType,
 }
 
 #[contracttype]
@@ -2951,6 +2974,14 @@ impl PetChainContract {
                 String::from_str(&env, "Ownership Transfer"),
             );
 
+            PetChainContract::append_custody_entry(
+                &env,
+                id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                TransferType::Direct,
+            );
+
             env.events().publish(
                 (String::from_str(&env, "PetOwnershipTransferred"), id),
                 PetOwnershipTransferredEvent {
@@ -4536,6 +4567,32 @@ impl PetChainContract {
             &SystemKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
             &record_id,
         );
+    }
+
+    /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
+    fn append_custody_entry(env: &Env, pet_id: u64, from: Address, to: Address, transfer_type: TransferType) {
+        let mut chain: Vec<CustodyEntry> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::CustodyChain(pet_id))
+            .unwrap_or_else(|| Vec::new(env));
+        chain.push_back(CustodyEntry {
+            from,
+            to,
+            timestamp: env.ledger().timestamp(),
+            transfer_type,
+        });
+        env.storage()
+            .instance()
+            .set(&SystemKey::CustodyChain(pet_id), &chain);
+    }
+
+    /// Return the full chain-of-custody log for `pet_id` in chronological order.
+    pub fn get_custody_chain(env: Env, pet_id: u64) -> Vec<CustodyEntry> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::CustodyChain(pet_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     pub fn get_ownership_history(
@@ -10238,6 +10295,14 @@ impl PetChainContract {
             old_owner.clone(),
             pet.owner.clone(),
             String::from_str(&env, "Multisig Transfer"),
+        );
+
+        PetChainContract::append_custody_entry(
+            &env,
+            proposal.pet_id,
+            old_owner.clone(),
+            pet.owner.clone(),
+            TransferType::Multisig,
         );
 
         env.events().publish(
