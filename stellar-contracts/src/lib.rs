@@ -6413,6 +6413,8 @@ impl PetChainContract {
         active
     }
 
+    pub fn get_consent_history_page(env: Env, pet_id: u64, page: u64, page_size: u32) -> Vec<Consent> {
+        let size = if page_size == 0 { 50u32 } else { page_size };
     pub fn get_consent_history_page(
         env: Env,
         pet_id: u64,
@@ -6427,10 +6429,30 @@ impl PetChainContract {
             None => return Vec::new(&env),
         };
         let mut result = Vec::new(&env);
-        for i in start..start.saturating_add(size) {
-            match history.get(i) {
-                Some(c) => result.push_back(c),
-                None => break,
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+        let start = page.saturating_mul(size as u64).saturating_add(1);
+        if start > count {
+            return result;
+        }
+        let end = core::cmp::min(count, start.saturating_add(size as u64).saturating_sub(1));
+
+        for i in start..=end {
+            if let Some(consent_id) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(consent) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+                {
+                    result.push_back(consent);
+                }
             }
         }
         result
@@ -8089,14 +8111,30 @@ impl PetChainContract {
         pet_id: u64,
         behavior_type: BehaviorType,
     ) -> Vec<BehaviorRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetBehaviorCount(pet_id))
+            .unwrap_or(0);
         // Fetch all records for this pet; returns empty Vec if pet is unknown.
         let history = PetChainContract::get_behavior_history(env.clone(), pet_id);
 
         // Filter to the requested behavior type.
         let mut filtered: soroban_sdk::Vec<BehaviorRecord> = Vec::new(&env);
-        for record in history.iter() {
-            if record.behavior_type == behavior_type {
-                filtered.push_back(record);
+
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<BehaviorKey, u64>(&BehaviorKey::PetBehaviorIndex((pet_id, i)))
+            {
+                if let Some(record) = env.storage().instance().get::<BehaviorKey, BehaviorRecord>(
+                    &BehaviorKey::BehaviorRecord(record_id),
+                ) {
+                    if record.behavior_type == behavior_type {
+                        filtered.push_back(record);
+                    }
+                }
             }
         }
 
@@ -8705,15 +8743,30 @@ impl PetChainContract {
     pub fn get_activity_stats(env: Env, pet_id: u64, days: u32) -> (u32, u32) {
         let current_time = env.ledger().timestamp();
         let cutoff_time = current_time.saturating_sub((days as u64) * 86400);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
         let history = PetChainContract::get_activity_history(env, pet_id);
 
         let mut total_duration = 0u32;
         let mut total_distance = 0u32;
 
-        for record in history.iter() {
-            if record.recorded_at >= cutoff_time {
-                total_duration = total_duration.saturating_add(record.duration_minutes);
-                total_distance = total_distance.saturating_add(record.distance_meters);
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<ActivityKey, u64>(&ActivityKey::PetActivityIndex((pet_id, i)))
+            {
+                if let Some(record) = env.storage().instance().get::<ActivityKey, ActivityRecord>(
+                    &ActivityKey::ActivityRecord(record_id),
+                ) {
+                    if record.recorded_at >= cutoff_time {
+                        total_duration = total_duration.saturating_add(record.duration_minutes);
+                        total_distance = total_distance.saturating_add(record.distance_meters);
+                    }
+                }
             }
         }
 
@@ -8737,16 +8790,30 @@ impl PetChainContract {
             return (0, 0);
         }
 
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
         let history = PetChainContract::get_activity_history(env, pet_id);
 
         let mut total_duration = 0u32;
         let mut total_distance = 0u32;
 
-        for record in history.iter() {
-            // Inclusive boundary check
-            if record.recorded_at >= from_date && record.recorded_at <= to_date {
-                total_duration = total_duration.saturating_add(record.duration_minutes);
-                total_distance = total_distance.saturating_add(record.distance_meters);
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<ActivityKey, u64>(&ActivityKey::PetActivityIndex((pet_id, i)))
+            {
+                if let Some(record) = env.storage().instance().get::<ActivityKey, ActivityRecord>(
+                    &ActivityKey::ActivityRecord(record_id),
+                ) {
+                    if record.recorded_at >= from_date && record.recorded_at <= to_date {
+                        total_duration = total_duration.saturating_add(record.duration_minutes);
+                        total_distance = total_distance.saturating_add(record.distance_meters);
+                    }
+                }
             }
         }
 
@@ -9290,4 +9357,107 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
         block_index = block_index.saturating_add(1);
     }
     output
+}
+
+#[cfg(test)]
+mod gas_profile_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    const CONSENT_PAGE_CPU_BOUND: u64 = 9_000_000;
+    const ACTIVITY_STATS_CPU_BOUND: u64 = 12_000_000;
+    const BEHAVIOR_BY_TYPE_CPU_BOUND: u64 = 14_000_000;
+
+    fn setup() -> (Env, PetChainContractClient<'static>, u64, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "GasPet"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Black"),
+            &String::from_str(&env, "Lab"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        (env, client, pet_id, owner)
+    }
+
+    #[test]
+    fn gas_bound_consent_history_page() {
+        let (env, client, pet_id, owner) = setup();
+        let grantee = Address::generate(&env);
+        for _ in 0..30u32 {
+            client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
+        }
+
+        let mut budget = env.budget();
+        budget.reset_unlimited();
+        budget.reset_tracker();
+        let page = client.get_consent_history_page(&pet_id, &1, &10);
+
+        assert_eq!(page.len(), 10);
+        assert!(budget.cpu_instruction_cost() <= CONSENT_PAGE_CPU_BOUND);
+        assert!(budget.memory_bytes_cost() <= 2_000_000);
+    }
+
+    #[test]
+    fn gas_bound_activity_stats() {
+        let (env, client, pet_id, _owner) = setup();
+        for i in 0..20u64 {
+            env.ledger().set_timestamp(1_000 + i);
+            client.add_activity_record(
+                &pet_id,
+                &ActivityType::Walk,
+                &30u32,
+                &5u32,
+                &100u32,
+                &String::from_str(&env, "walk"),
+            );
+        }
+        env.ledger().set_timestamp(2_000);
+
+        let mut budget = env.budget();
+        budget.reset_unlimited();
+        budget.reset_tracker();
+        let stats = client.get_activity_stats(&pet_id, &1);
+
+        assert_eq!(stats, (600, 2_000));
+        assert!(budget.cpu_instruction_cost() <= ACTIVITY_STATS_CPU_BOUND);
+        assert!(budget.memory_bytes_cost() <= 2_500_000);
+    }
+
+    #[test]
+    fn gas_bound_behavior_by_type() {
+        let (env, client, pet_id, _owner) = setup();
+        for i in 0..20u64 {
+            env.ledger().set_timestamp(1_000 + i);
+            let behavior_type = if i % 2 == 0 {
+                BehaviorType::Training
+            } else {
+                BehaviorType::Anxiety
+            };
+            client.add_behavior_record(
+                &pet_id,
+                &behavior_type,
+                &5u32,
+                &String::from_str(&env, "note"),
+            );
+        }
+
+        let mut budget = env.budget();
+        budget.reset_unlimited();
+        budget.reset_tracker();
+        let records = client.get_behavior_by_type(&pet_id, &BehaviorType::Training);
+
+        assert_eq!(records.len(), 10);
+        assert!(budget.cpu_instruction_cost() <= BEHAVIOR_BY_TYPE_CPU_BOUND);
+        assert!(budget.memory_bytes_cost() <= 2_500_000);
+    }
 }
