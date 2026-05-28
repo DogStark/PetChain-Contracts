@@ -134,6 +134,56 @@ use soroban_sdk::{
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
 
+// --- INPUT VALIDATION MIDDLEWARE ---
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationError {
+    StringTooLong,
+    EmptyString,
+    InvalidAddress,
+    InvalidId,
+}
+
+pub fn validate_string(s: &str, max_len: usize) -> Result<(), ValidationError> {
+    if s.is_empty() {
+        return Err(ValidationError::EmptyString);
+    }
+    if s.len() > max_len {
+        return Err(ValidationError::StringTooLong);
+    }
+    Ok(())
+}
+
+pub fn validate_address(_a: &Address) -> Result<(), ValidationError> {
+    // Addresses are structurally validated by the type system
+    Ok(())
+}
+
+pub fn validate_id(id: &u64) -> Result<(), ValidationError> {
+    if *id == 0 {
+        return Err(ValidationError::InvalidId);
+    }
+    Ok(())
+}
+
+// --- BREED METADATA ---
+
+#[contracttype]
+#[derive(Clone)]
+pub struct BreedMetadata {
+    pub species: String,
+    pub avg_lifespan_years: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PetAge {
+    pub years: u32,
+    pub months: u32,
+    pub days: u32,
+    pub lifespan_pct: Option<u32>,
+}
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -400,6 +450,7 @@ pub struct EmergencyContact {
     pub email: String,
     pub relationship: String,
     pub is_primary: bool,
+    pub priority: u8,
 }
 
 #[contracttype]
@@ -776,8 +827,9 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
     EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
     EmergencyResponders(u64),     // pet_id -> Vec<Address>
-    EmergencyAccessLogs(u64), // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyResponders(u64), // pet_id -> Vec<Address>
+
+    // Breed Metadata keys
+    BreedMetadata(String),       // breed_id -> BreedMetadata
 }
 
 #[contracttype]
@@ -966,6 +1018,15 @@ pub enum ConsentType {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsentScope {
+    ReadMedical,
+    WriteMedical,
+    ReadLab,
+    EmergencyOnly,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct Consent {
     pub id: u64,
@@ -977,6 +1038,7 @@ pub struct Consent {
     pub expires_at: Option<u64>,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
+    pub scope: ConsentScope,
 }
 
 #[contracttype]
@@ -4434,6 +4496,8 @@ impl PetChainContract {
         }
 
         let mut has_primary = false;
+        let mut priorities = soroban_sdk::Vec::new(env);
+
         for contact in contacts.iter() {
             if contact.name.is_empty() || contact.phone.is_empty() {
                 panic_with_error!(env, ContractError::InvalidInput);
@@ -4441,6 +4505,12 @@ impl PetChainContract {
             if contact.is_primary {
                 has_primary = true;
             }
+
+            // Check for duplicate priorities
+            if priorities.contains(&contact.priority) {
+                panic_with_error!(env, ContractError::InvalidInput);
+            }
+            priorities.push_back(contact.priority);
         }
 
         if !has_primary {
@@ -6944,6 +7014,7 @@ impl PetChainContract {
         owner: Address,
         consent_type: ConsentType,
         granted_to: Address,
+        scope: ConsentScope,
     ) -> u64 {
         Self::grant_consent_with_expiry(env, pet_id, owner, consent_type, granted_to, None)
     }
@@ -7043,6 +7114,7 @@ impl PetChainContract {
             expires_at,
             revoked_at: None,
             is_active: true,
+            scope,
         };
 
         env.storage()
@@ -7231,6 +7303,39 @@ impl PetChainContract {
                 {
                     result.push_back(consent);
                 }
+            }
+        }
+        result
+    }
+
+    pub fn get_consents_by_scope(
+        env: Env,
+        pet_id: u64,
+        scope: ConsentScope,
+        page: u64,
+        page_size: u32,
+    ) -> Vec<Consent> {
+        let history = PetChainContract::get_consent_history(env.clone(), pet_id);
+        let size = if page_size == 0 { 50u32 } else { page_size };
+
+        // Filter consents by scope
+        let mut filtered = Vec::new(&env);
+        for consent in history.iter() {
+            if consent.scope == scope {
+                filtered.push_back(consent);
+            }
+        }
+
+        // Paginate filtered results
+        let start: u32 = match page.checked_mul(size as u64).and_then(|v| u32::try_from(v).ok()) {
+            Some(v) => v,
+            None => return Vec::new(&env),
+        };
+        let mut result = Vec::new(&env);
+        for i in start..start.saturating_add(size) {
+            match filtered.get(i) {
+                Some(c) => result.push_back(c),
+                None => break,
             }
         }
         result
@@ -10506,6 +10611,115 @@ impl PetChainContract {
             }
         }
         result
+    }
+
+    // --- BREED METADATA ---
+
+    pub fn add_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        let metadata = BreedMetadata {
+            species,
+            avg_lifespan_years,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BreedMetadata(breed_id), &metadata);
+    }
+
+    pub fn update_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        let metadata = BreedMetadata {
+            species,
+            avg_lifespan_years,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BreedMetadata(breed_id), &metadata);
+    }
+
+    pub fn delete_breed_metadata(env: Env, admin: Address, breed_id: String) {
+        admin.require_auth();
+        if !PetChainContract::is_admin(&env, &admin) {
+            env.panic_with_error(ContractError::NotAnAdmin);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::BreedMetadata(breed_id));
+    }
+
+    pub fn get_pet_age_with_lifespan(env: Env, pet_id: u64) -> PetAge {
+        if let Some(pet) =
+            PetChainContract::get_pet(env.clone(), pet_id, env.current_contract_address())
+        {
+            let current_time = env.ledger().timestamp();
+            let birthday_timestamp = match PetChainContract::parse_birthday_timestamp(&pet.birthday)
+            {
+                Ok(timestamp) => timestamp,
+                Err(_) => return PetAge {
+                    years: 0,
+                    months: 0,
+                    days: 0,
+                    lifespan_pct: None,
+                },
+            };
+
+            if current_time < birthday_timestamp {
+                return PetAge {
+                    years: 0,
+                    months: 0,
+                    days: 0,
+                    lifespan_pct: None,
+                };
+            }
+
+            let elapsed_seconds = current_time - birthday_timestamp;
+            let elapsed_days = elapsed_seconds / 86_400;
+            let years = (elapsed_days / 365) as u32;
+            let remaining_days = (elapsed_days % 365) as u32;
+            let months = remaining_days / 30;
+            let days = remaining_days % 30;
+
+            let lifespan_pct = if let Some(metadata) = env
+                .storage()
+                .instance()
+                .get::<DataKey, BreedMetadata>(&DataKey::BreedMetadata(pet.breed.clone()))
+            {
+                let age_years = years as u64;
+                let lifespan_years = metadata.avg_lifespan_years as u64;
+                if lifespan_years > 0 {
+                    Some((((age_years * 100) / lifespan_years) as u32).min(100))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            PetAge {
+                years,
+                months,
+                days,
+                lifespan_pct,
+            }
+        } else {
+            PetAge {
+                years: 0,
+                months: 0,
+                days: 0,
+                lifespan_pct: None,
+            }
+        }
     }
 } // end impl PetChainContract
 
