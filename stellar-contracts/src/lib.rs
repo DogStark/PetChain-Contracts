@@ -62,6 +62,8 @@ pub enum GroomingKey {
     GroomingRecordCount,
     PetGroomingCount(u64),
     PetGroomingIndex((u64, u64)),
+    Groomer(Address),
+    GroomerRatingCount,
 }
 
 #[cfg(test)]
@@ -255,6 +257,10 @@ pub enum ContractError {
     SeverityOutOfRange = 120,
     IntensityOutOfRange = 121,
     CustodyNotFound = 130,
+    UnregisteredGroomer = 140,
+    PrerequisiteIncomplete = 141,
+    CircularDependency = 142,
+    CrossPetComparison = 143,
 }
 
 #[contracttype]
@@ -283,10 +289,21 @@ pub struct GroomingRecord {
     pub pet_id: u64,
     pub service_type: String,
     pub groomer: String,
+    pub groomer_address: Option<Address>,
     pub date: u64,
     pub next_due: u64,
     pub cost: u64,
     pub notes: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomerProfile {
+    pub address: Address,
+    pub name: String,
+    pub license_id: String,
+    pub aggregate_rating: u32,  // Average rating multiplied by 100 for precision
+    pub review_count: u64,
 }
 
 #[contracttype]
@@ -363,6 +380,7 @@ pub struct TrainingMilestone {
     pub achieved_at: Option<u64>,
     pub trainer: Address,
     pub notes: String,
+    pub prerequisites: Vec<u64>,
 }
 
 #[contracttype]
@@ -945,6 +963,18 @@ pub enum SystemKey {
     PetTransferProposalCount,
     PetActiveProposals(u64), // pet_id -> Vec<u64> of active proposal IDs
     EncryptionNonceCounter,
+
+    // Statistics caching keys
+    StatCacheTTL,
+    StatCache(String),
+    LabThreshold,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatCache {
+    pub value: i128,
+    pub computed_at: u64,
 }
 
 #[contracttype]
@@ -1103,6 +1133,7 @@ pub struct LabResult {
     pub reference_ranges: String,
     pub attachment_hash: Option<String>, // IPFS hash for PDF
     pub medical_record_id: Option<u64>,  // Link to medical record
+    pub biomarkers: Map<String, i128>,
 }
 
 #[contracttype]
@@ -1111,6 +1142,16 @@ pub struct VaccinationSummary {
     pub is_fully_current: bool,
     pub overdue_types: Vec<VaccineType>,
     pub upcoming_count: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabDifference {
+    pub biomarker: String,
+    pub value_a: i128,
+    pub value_b: i128,
+    pub delta: i128,
+    pub abnormal: bool,
 }
 
 #[contracttype]
@@ -1516,10 +1557,23 @@ impl PetChainContract {
 
     /// Returns the total number of pets ever registered in the contract.
     pub fn get_total_pets(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::PetCount)
-            .unwrap_or(0)
+        let cache_key = String::from_str(&env, "total_pets");
+        let ttl = Self::_get_cache_ttl(&env);
+
+        if let Some(cache) = env.storage().instance().get::<SystemKey, StatCache>(&SystemKey::StatCache(cache_key.clone())) {
+            let current_time = env.ledger().timestamp();
+            if current_time.saturating_sub(cache.computed_at) < ttl {
+                return cache.value as u64;
+            }
+        }
+
+        let value = env.storage().instance().get(&DataKey::PetCount).unwrap_or(0) as i128;
+        let cache = StatCache {
+            value,
+            computed_at: env.ledger().timestamp(),
+        };
+        env.storage().instance().set(&SystemKey::StatCache(cache_key), &cache);
+        value as u64
     }
 
     /// Returns the number of registered pets for a given species.
@@ -6591,6 +6645,7 @@ impl PetChainContract {
             reference_ranges,
             attachment_hash,
             medical_record_id,
+            biomarkers: Map::new(&env),
         };
         env.storage()
             .instance()
@@ -6647,6 +6702,67 @@ impl PetChainContract {
         }
         res
     }
+
+    pub fn diff_lab_results(env: Env, pet_id: u64, result_id_a: u64, result_id_b: u64) -> Vec<LabDifference> {
+        let mut diffs = Vec::new(&env);
+
+        if let Some(result_a) = PetChainContract::get_lab_result(env.clone(), result_id_a) {
+            if result_a.pet_id != pet_id {
+                panic_with_error!(env, ContractError::CrossPetComparison);
+            }
+
+            if let Some(result_b) = PetChainContract::get_lab_result(env.clone(), result_id_b) {
+                if result_b.pet_id != pet_id {
+                    panic_with_error!(env, ContractError::CrossPetComparison);
+                }
+
+                // Get threshold from storage, default to 500 (for 5.0 with 2 decimal precision)
+                let threshold: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&SystemKey::LabThreshold)
+                    .unwrap_or(500);
+
+                // Collect all biomarker names from both results
+                let mut biomarker_names = Vec::new(&env);
+                for entry in result_a.biomarkers.iter() {
+                    biomarker_names.push_back(entry.0.clone());
+                }
+                for entry in result_b.biomarkers.iter() {
+                    let name = entry.0.clone();
+                    let mut found = false;
+                    for existing in biomarker_names.iter() {
+                        if existing == &name {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        biomarker_names.push_back(name);
+                    }
+                }
+
+                // Compute differences for each biomarker
+                for biomarker_name in biomarker_names.iter() {
+                    let value_a = result_a.biomarkers.get(biomarker_name.clone()).unwrap_or(0);
+                    let value_b = result_b.biomarkers.get(biomarker_name.clone()).unwrap_or(0);
+                    let delta = value_b - value_a;
+                    let abnormal = delta.abs() > threshold;
+
+                    diffs.push_back(LabDifference {
+                        biomarker: biomarker_name.clone(),
+                        value_a,
+                        value_b,
+                        delta,
+                        abnormal,
+                    });
+                }
+            }
+        }
+
+        diffs
+    }
+
     // --- BATCH OPERATIONS ---
 
     pub fn batch_add_vaccinations(
@@ -9429,6 +9545,7 @@ impl PetChainContract {
             achieved_at: None,
             trainer: pet.owner.clone(),
             notes,
+            prerequisites: Vec::new(&env),
         };
 
         env.storage()
@@ -9463,6 +9580,21 @@ impl PetChainContract {
         {
             milestone.trainer.require_auth();
 
+            // Check if all prerequisites are completed
+            for prereq_id in milestone.prerequisites.iter() {
+                if let Some(prereq) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(*prereq_id))
+                {
+                    if !prereq.achieved {
+                        panic_with_error!(env, ContractError::PrerequisiteIncomplete);
+                    }
+                } else {
+                    panic_with_error!(env, ContractError::PrerequisiteIncomplete);
+                }
+            }
+
             milestone.achieved = true;
             milestone.achieved_at = Some(env.ledger().timestamp());
 
@@ -9473,6 +9605,131 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn add_training_milestone_with_dependencies(
+        env: Env,
+        pet_id: u64,
+        milestone_name: String,
+        notes: String,
+        prerequisites: Vec<u64>,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        if milestone_name.len() > PetChainContract::MAX_STR_SHORT {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if notes.len() > PetChainContract::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        // Check for cycles in the dependency graph
+        Self::_check_circular_dependency(&env, pet_id, &prerequisites);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::TrainingMilestoneCount)
+            .unwrap_or(0);
+        let milestone_id = safe_increment(count);
+
+        let milestone = TrainingMilestone {
+            id: milestone_id,
+            pet_id,
+            milestone_name,
+            achieved: false,
+            achieved_at: None,
+            trainer: pet.owner.clone(),
+            notes,
+            prerequisites,
+        };
+
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestone(milestone_id), &milestone);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestoneCount, &milestone_id);
+
+        let pet_milestone_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let new_count = safe_increment(pet_milestone_count);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::PetMilestoneCount(pet_id), &new_count);
+        env.storage().instance().set(
+            &BehaviorKey::PetMilestoneIndex((pet_id, new_count)),
+            &milestone_id,
+        );
+
+        milestone_id
+    }
+
+    fn _check_circular_dependency(env: &Env, pet_id: u64, prerequisites: &Vec<u64>) {
+        // Simple check: ensure no prerequisites are in the list (since we're creating a new milestone)
+        // For each prerequisite, check if it would create a cycle by doing DFS
+        for prereq_id in prerequisites.iter() {
+            Self::_dfs_check_cycle(env, pet_id, *prereq_id, &mut Vec::new(env));
+        }
+    }
+
+    fn _dfs_check_cycle(env: &Env, pet_id: u64, current_id: u64, visited: &mut Vec<u64>) {
+        // Check if current_id is already in visited (indicates a cycle)
+        for v in visited.iter() {
+            if v == &current_id {
+                panic_with_error!(env, ContractError::CircularDependency);
+            }
+        }
+
+        visited.push_back(current_id);
+
+        // Get the milestone and check its prerequisites
+        if let Some(milestone) = env
+            .storage()
+            .instance()
+            .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(current_id))
+        {
+            if milestone.pet_id == pet_id {
+                for prereq_id in milestone.prerequisites.iter() {
+                    Self::_dfs_check_cycle(env, pet_id, *prereq_id, visited);
+                }
+            }
+        }
+    }
+
+    pub fn get_milestone_tree(env: Env, pet_id: u64) -> Vec<(u64, Vec<u64>, bool)> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0);
+        let mut tree = Vec::new(&env);
+
+        for i in 1..=count {
+            if let Some(milestone_id) = env
+                .storage()
+                .instance()
+                .get::<BehaviorKey, u64>(&BehaviorKey::PetMilestoneIndex((pet_id, i)))
+            {
+                if let Some(milestone) = env
+                    .storage()
+                    .instance()
+                    .get::<BehaviorKey, TrainingMilestone>(&BehaviorKey::TrainingMilestone(milestone_id))
+                {
+                    tree.push_back((milestone.id, milestone.prerequisites.clone(), milestone.achieved));
+                }
+            }
+        }
+
+        tree
     }
 
     pub fn get_training_milestones(
@@ -10665,6 +10922,68 @@ impl PetChainContract {
             pet_id,
             service_type,
             groomer,
+            groomer_address: None,
+            date,
+            next_due,
+            cost,
+            notes,
+        };
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomingRecordCount, &record_id);
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::PetGroomingCount(pet_id))
+            .unwrap_or(0);
+        let new_count = safe_increment(pet_count);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::PetGroomingCount(pet_id), &new_count);
+        env.storage().instance().set(
+            &GroomingKey::PetGroomingIndex((pet_id, new_count)),
+            &record_id,
+        );
+
+        record_id
+    }
+
+    pub fn add_grooming_record_with_groomer(
+        env: Env,
+        pet_id: u64,
+        service_type: String,
+        groomer_address: Address,
+        date: u64,
+        next_due: u64,
+        cost: u64,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        if !env.storage().instance().has(&GroomingKey::Groomer(groomer_address.clone())) {
+            panic_with_error!(env, ContractError::UnregisteredGroomer);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecordCount)
+            .unwrap_or(0);
+        let record_id = safe_increment(count);
+        let record = GroomingRecord {
+            id: record_id,
+            pet_id,
+            service_type,
+            groomer: String::from_str(&env, ""),
+            groomer_address: Some(groomer_address),
             date,
             next_due,
             cost,
@@ -10754,6 +11073,66 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetGroomingCount(pet_id))
             .unwrap_or(0)
+    }
+
+    pub fn register_groomer(env: Env, admin: Address, address: Address, name: String, license_id: String) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        if env.storage().instance().has(&GroomingKey::Groomer(address.clone())) {
+            return false;
+        }
+
+        let profile = GroomerProfile {
+            address: address.clone(),
+            name,
+            license_id,
+            aggregate_rating: 0,
+            review_count: 0,
+        };
+
+        env.storage().instance().set(&GroomingKey::Groomer(address), &profile);
+        true
+    }
+
+    pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u8) -> bool {
+        if score < 1 || score > 5 {
+            panic_with_error!(env, ContractError::InvalidRating);
+        }
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let mut record: GroomingRecord = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecord(grooming_record_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidState));
+
+        if record.pet_id != pet_id {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        if let Some(groomer_address) = record.groomer_address.clone() {
+            if let Some(mut profile) = env.storage().instance().get::<GroomingKey, GroomerProfile>(&GroomingKey::Groomer(groomer_address.clone())) {
+                let old_rating = profile.aggregate_rating as u64;
+                let count = profile.review_count;
+                let new_avg = ((old_rating * count) + (score as u64 * 100)) / (count + 1);
+                profile.aggregate_rating = new_avg as u32;
+                profile.review_count = count + 1;
+                env.storage().instance().set(&GroomingKey::Groomer(groomer_address), &profile);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn get_groomer_profile(env: Env, address: Address) -> Option<GroomerProfile> {
+        env.storage().instance().get(&GroomingKey::Groomer(address))
     }
 
     // --- DISPUTE RESOLUTION ---
