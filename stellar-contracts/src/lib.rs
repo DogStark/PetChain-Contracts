@@ -174,6 +174,8 @@ mod test_custody_chain;
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_vaccination_expiry;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -774,6 +776,7 @@ pub struct Vaccination {
 
     pub administered_at: u64,
     pub next_due_date: u64,
+    pub expires_at: u64, // Unix timestamp when the vaccination expires (0 = same as next_due_date)
 
     pub batch_number: Option<String>, // Decrypted value (None in storage)
     pub encrypted_batch_number: EncryptedData, // Encrypted value
@@ -1300,6 +1303,7 @@ pub struct VaccinationInput {
     pub vaccine_name: String,
     pub administered_at: u64,
     pub next_due_date: u64,
+    pub expires_at: u64,
     pub batch_number: String,
 }
 
@@ -1653,6 +1657,29 @@ pub struct VaccinationAddedEvent {
     pub vaccine_type: VaccineType,
     pub next_due_date: u64,
     pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationExpiringSoonEvent {
+    pub version: u32,
+    pub vaccine_id: u64,
+    pub pet_id: u64,
+    pub vaccine_type: VaccineType,
+    pub expires_at: u64,
+    pub days_remaining: u64,
+    pub already_expired: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpiringVaccination {
+    pub vaccine_id: u64,
+    pub vaccine_type: VaccineType,
+    pub expires_at: u64,
+    pub days_remaining: u64,
+    pub already_expired: bool,
 }
 
 #[contracttype]
@@ -3528,6 +3555,7 @@ impl PetChainContract {
         vaccine_name: String,
         administered_at: u64,
         next_due_date: u64,
+        expires_at: u64,
         batch_number: String,
     ) -> u64 {
         veterinarian.require_auth();
@@ -3566,6 +3594,9 @@ impl PetChainContract {
             ciphertext: batch_ciphertext,
         };
 
+        // If expires_at is 0, default to next_due_date
+        let effective_expires_at = if expires_at == 0 { next_due_date } else { expires_at };
+
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
@@ -3575,6 +3606,7 @@ impl PetChainContract {
             encrypted_vaccine_name,
             administered_at,
             next_due_date,
+            expires_at: effective_expires_at,
             batch_number: None,
             encrypted_batch_number,
             created_at: now,
@@ -3632,6 +3664,9 @@ impl PetChainContract {
                 timestamp: now,
             },
         );
+
+        // Lazy expiry check: emit VaccinationExpiringSoon for this pet's vaccinations
+        PetChainContract::check_and_emit_expiry_events(env, pet_id, 30);
 
         vaccine_id
     }
@@ -3779,6 +3814,69 @@ impl PetChainContract {
             }
         }
         overdue
+    }
+
+    /// Returns vaccinations for `pet_id` that expire within `within_days` days,
+    /// including already-expired ones (flagged via `already_expired: true`).
+    pub fn get_expiring_vaccinations(
+        env: Env,
+        pet_id: u64,
+        within_days: u64,
+    ) -> Vec<ExpiringVaccination> {
+        let now = env.ledger().timestamp();
+        let window_end = now.saturating_add(within_days.saturating_mul(86400));
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+        let mut result = Vec::new(&env);
+
+        for vax in history.iter() {
+            let exp = vax.expires_at;
+            let already_expired = exp < now;
+            let within_window = exp <= window_end;
+            if already_expired || within_window {
+                let days_remaining = if already_expired {
+                    0
+                } else {
+                    (exp.saturating_sub(now)) / 86400
+                };
+                result.push_back(ExpiringVaccination {
+                    vaccine_id: vax.id,
+                    vaccine_type: vax.vaccine_type,
+                    expires_at: exp,
+                    days_remaining,
+                    already_expired,
+                });
+            }
+        }
+        result
+    }
+
+    /// Internal helper: emit `VaccinationExpiringSoon` for any vaccination on
+    /// `pet_id` that expires within `within_days` days (lazy, called on writes).
+    fn check_and_emit_expiry_events(env: Env, pet_id: u64, within_days: u64) {
+        let now = env.ledger().timestamp();
+        let window_end = now.saturating_add(within_days.saturating_mul(86400));
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+
+        for vax in history.iter() {
+            let exp = vax.expires_at;
+            let already_expired = exp < now;
+            if already_expired || exp <= window_end {
+                let days_remaining = if already_expired { 0 } else { (exp.saturating_sub(now)) / 86400 };
+                env.events().publish(
+                    (String::from_str(&env, "VaccinationExpiringSoon"), pet_id),
+                    VaccinationExpiringSoonEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        vaccine_id: vax.id,
+                        pet_id,
+                        vaccine_type: vax.vaccine_type,
+                        expires_at: exp,
+                        days_remaining,
+                        already_expired,
+                        timestamp: now,
+                    },
+                );
+            }
+        }
     }
 
     pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
@@ -6986,6 +7084,7 @@ impl PetChainContract {
                 input.vaccine_name,
                 input.administered_at,
                 input.next_due_date,
+                input.expires_at,
                 input.batch_number,
             );
             ids.push_back(id);

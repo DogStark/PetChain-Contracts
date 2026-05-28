@@ -1022,6 +1022,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
     client.add_vaccination(
@@ -1031,6 +1032,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "ParvoVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-002"),
     );
     client.add_vaccination(
@@ -1040,6 +1042,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "BordetellaVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-003"),
     );
 
@@ -1099,6 +1102,7 @@ fn test_get_vaccination_history_pagination_out_of_bounds_offset() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
 
@@ -1150,6 +1154,7 @@ fn test_get_vaccination_history_pagination_limit_zero() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
 
@@ -1532,6 +1537,7 @@ fn test_get_vaccination_summary() {
         &String::from_str(&env, "Rabies v1"),
         &now,
         &(now + 15 * 86400), // Due in 15 days
+        &0u64,
         &String::from_str(&env, "BATCH001"),
     );
 
