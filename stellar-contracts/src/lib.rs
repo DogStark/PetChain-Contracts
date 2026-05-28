@@ -38,6 +38,10 @@ pub enum ActivityKey {
     ActivityRecordCount,
     PetActivityCount(u64),
     PetActivityIndex((u64, u64)),
+    
+    // Streak tracking
+    PetActivityStreak(u64),        // pet_id -> ActivityStreak
+    PetStreakLastRecordDate(u64),  // pet_id -> last activity date (for gap detection)
 }
 
 #[contracttype]
@@ -246,6 +250,24 @@ pub struct ActivityRecord {
     pub distance_meters: u32,
     pub recorded_at: u64,
     pub notes: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityStreak {
+    pub pet_id: u64,
+    pub current_streak: u64,
+    pub longest_streak: u64,
+    pub last_activity_date: u64,
+    pub milestones_reached: Vec<u64>, // 7, 30, 100 day milestones
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreakMilestoneEvent {
+    pub pet_id: u64,
+    pub milestone_days: u64,
+    pub timestamp: u64,
 }
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -9740,6 +9762,73 @@ impl PetChainContract {
         );
 
         record_id
+    }    pub fn add_activity_record(
+        env: Env,
+        pet_id: u64,
+        activity_type: ActivityType,
+        duration_minutes: u32,
+        intensity: u32,
+        distance_meters: u32,
+        notes: String,
+    ) -> u64 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        if intensity > 10 {
+            env.panic_with_error(ContractError::IntensityOutOfRange);
+        }
+        if notes.len() > PetChainContract::MAX_STR_LONG {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::ActivityRecordCount)
+            .unwrap_or(0);
+        let record_id = safe_increment(count);
+
+        let now = env.ledger().timestamp();
+        let record = ActivityRecord {
+            id: record_id,
+            pet_id,
+            activity_type,
+            duration_minutes,
+            intensity,
+            distance_meters,
+            recorded_at: now,
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecordCount, &record_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = safe_increment(pet_count);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::PetActivityCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &ActivityKey::PetActivityIndex((pet_id, new_pet_count)),
+            &record_id,
+        );
+
+        // Compute and update streak
+        PetChainContract::update_activity_streak(&env, pet_id, now);
+
+        record_id
     }
 
     pub fn get_activity_history(env: Env, pet_id: u64) -> Vec<ActivityRecord> {
@@ -9853,6 +9942,111 @@ impl PetChainContract {
 
         (total_duration, total_distance)
     }
+
+    // --- ACTIVITY STREAK TRACKING ---
+
+    /// Updates activity streak for a pet based on the current activity date.
+    /// Computes consecutive days, resets if gap > 1 day, and emits milestone events.
+    fn update_activity_streak(env: &Env, pet_id: u64, current_date: u64) {
+        const SECONDS_PER_DAY: u64 = 86400;
+        const MILESTONE_7_DAYS: u64 = 7;
+        const MILESTONE_30_DAYS: u64 = 30;
+        const MILESTONE_100_DAYS: u64 = 100;
+
+        // Get or create streak record
+        let mut streak: ActivityStreak = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityStreak(pet_id))
+            .unwrap_or(ActivityStreak {
+                pet_id,
+                current_streak: 0,
+                longest_streak: 0,
+                last_activity_date: 0,
+                milestones_reached: Vec::new(env),
+            });
+
+        let last_date = streak.last_activity_date;
+        let current_day = current_date / SECONDS_PER_DAY;
+        let last_day = last_date / SECONDS_PER_DAY;
+
+        // Calculate new streak
+        if last_date == 0 {
+            // First activity
+            streak.current_streak = 1;
+        } else if current_day == last_day {
+            // Same day - no streak change
+        } else if current_day == last_day + 1 {
+            // Consecutive day - increment streak
+            streak.current_streak += 1;
+        } else {
+            // Gap > 1 day - reset streak
+            streak.current_streak = 1;
+        }
+
+        // Update longest streak
+        if streak.current_streak > streak.longest_streak {
+            streak.longest_streak = streak.current_streak;
+        }
+
+        // Check for milestone events
+        let milestones = [MILESTONE_7_DAYS, MILESTONE_30_DAYS, MILESTONE_100_DAYS];
+        for &milestone in &milestones {
+            if streak.current_streak == milestone && !streak.milestones_reached.contains(&milestone) {
+                // Emit milestone event
+                env.events().publish(
+                    (String::from_str(env, "StreakMilestone"), pet_id),
+                    StreakMilestoneEvent {
+                        pet_id,
+                        milestone_days: milestone,
+                        timestamp: current_date,
+                    },
+                );
+                streak.milestones_reached.push_back(milestone);
+            }
+        }
+
+        // Update last activity date
+        streak.last_activity_date = current_date;
+
+        // Store updated streak
+        env.storage()
+            .instance()
+            .set(&ActivityKey::PetActivityStreak(pet_id), &streak);
+    }
+
+    /// Gets the current activity streak for a pet.
+    pub fn get_activity_streak(env: Env, pet_id: u64) -> ActivityStreak {
+        env.storage()
+            .instance()
+            .get(&ActivityKey::PetActivityStreak(pet_id))
+            .unwrap_or(ActivityStreak {
+                pet_id,
+                current_streak: 0,
+                longest_streak: 0,
+                last_activity_date: 0,
+                milestones_reached: Vec::new(&env),
+            })
+    }
+
+    /// Gets the current streak days for a pet.
+    pub fn get_current_streak(env: Env, pet_id: u64) -> u64 {
+        let streak = PetChainContract::get_activity_streak(env, pet_id);
+        streak.current_streak
+    }
+
+    /// Gets the longest streak days for a pet.
+    pub fn get_longest_streak(env: Env, pet_id: u64) -> u64 {
+        let streak = PetChainContract::get_activity_streak(env, pet_id);
+        streak.longest_streak
+    }
+
+    /// Checks if a pet has reached a specific milestone.
+    pub fn has_reached_milestone(env: Env, pet_id: u64, milestone_days: u64) -> bool {
+        let streak = PetChainContract::get_activity_streak(env, pet_id);
+        streak.milestones_reached.contains(&milestone_days)
+    }
+
     // --- BREEDING RECORDS SYSTEM ---
     pub fn add_breeding_record(
         env: Env,
