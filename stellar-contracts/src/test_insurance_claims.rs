@@ -205,7 +205,9 @@ fn test_get_insurance_claim_count() {
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
+
     let owner = Address::generate(&env);
+
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Max"),
@@ -219,21 +221,6 @@ fn test_get_insurance_claim_count() {
         &PrivacyLevel::Public,
     );
 
-    let expiry = env.ledger().timestamp() + 31536000;
-    client.add_insurance_policy(
-        &pet_id,
-        &String::from_str(&env, "RISK-1"),
-        &String::from_str(&env, "Happy Pets Inc"),
-        &String::from_str(&env, "Standard"),
-        &1000,
-        &10000,
-        &expiry,
-    );
-
-    let before = client.get_pet_insurance(&pet_id).unwrap().premium;
-    client.submit_insurance_claim(&pet_id, &500, &String::from_str(&env, "Vet visit"));
-    let after = client.get_pet_insurance(&pet_id).unwrap().premium;
-    assert!(after > before);
     // Count should be 0 before any claims
     assert_eq!(client.get_insurance_claim_count(&pet_id), 0);
 

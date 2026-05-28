@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
 
 fn setup() -> (Env, PetChainContractClient<'static>, u64, Address) {
     let env = Env::default();
@@ -201,6 +201,74 @@ fn test_get_active_consents_no_consents() {
 }
 
 #[test]
+fn test_expired_consent_is_not_active() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    let id = client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &grantee,
+        &Some(150),
+    );
+    assert!(client.is_consent_active(&id));
+
+    env.ledger().set_timestamp(151);
+    assert!(!client.is_consent_active(&id));
+}
+
+#[test]
+fn test_get_active_consents_excludes_expired() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &grantee,
+        &Some(120),
+    );
+    client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::Insurance,
+        &grantee,
+        &Some(300),
+    );
+
+    env.ledger().set_timestamp(121);
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().consent_type, ConsentType::Insurance);
+}
+
+#[test]
+fn test_extend_consent_reactivates_after_original_expiry() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    let id = client.grant_consent_with_expiry(
+        &pet_id,
+        &owner,
+        &ConsentType::PublicHealth,
+        &grantee,
+        &Some(110),
+    );
+
+    env.ledger().set_timestamp(111);
+    assert!(!client.is_consent_active(&id));
+
+    assert!(client.extend_consent(&pet_id, &id, &owner, &200));
+    assert!(client.is_consent_active(&id));
+
+    let active = client.get_active_consents(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().expires_at, Some(200));
 fn test_get_consent_count_returns_correct_count() {
     let (env, client, pet_id, owner) = setup();
     let grantee = Address::generate(&env);
