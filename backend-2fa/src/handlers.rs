@@ -1,7 +1,7 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
 use crate::two_factor::{
     AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
     UserTwoFactorSummary,
@@ -410,6 +410,56 @@ impl AdminScoreHandlers {
 impl Default for AdminScoreHandlers {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admin rate-limit quota management
+// ---------------------------------------------------------------------------
+
+/// Request / response types for quota admin endpoints.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SetUserQuotaRequest {
+    pub user_id: String,
+    pub requests_per_minute: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GrantUnlimitedRequest {
+    pub user_id: String,
+    /// Unix timestamp (seconds) until which the bypass is active.
+    pub expires_at: u64,
+}
+
+/// Admin handlers for per-user rate-limit quota management.
+pub struct AdminRateLimitHandlers {
+    pub quota_store: Arc<UserQuotaStore>,
+}
+
+impl AdminRateLimitHandlers {
+    pub fn new(quota_store: Arc<UserQuotaStore>) -> Self {
+        Self { quota_store }
+    }
+
+    /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
+    /// Takes effect on the user's next request window.
+    pub fn set_user_quota(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: SetUserQuotaRequest,
+    ) -> Result<(), String> {
+        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        Ok(())
+    }
+
+    /// POST /admin/rate-limits/unlimited — grant temporary unlimited bypass.
+    pub fn grant_unlimited(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: GrantUnlimitedRequest,
+    ) -> Result<(), String> {
+        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        Ok(())
     }
 }
 

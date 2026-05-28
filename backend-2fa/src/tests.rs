@@ -2711,7 +2711,7 @@ mod admin_dashboard_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
         AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
     };
-    use crate::two_factor::TwoFactorData;
+    use crate::two_factor::{TwoFactorData, TwoFactorStore};
 
     fn admin() -> AuthenticatedAdmin {
         AuthenticatedAdmin::new("admin-001")
@@ -2814,6 +2814,7 @@ mod canary_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
         CanaryHandlers, CreateCanaryRequest,
     };
+    use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
