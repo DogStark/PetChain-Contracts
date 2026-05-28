@@ -62,8 +62,8 @@ mod test_behavior;
 // mod test_book_slot;  // Has compilation errors - method signature mismatch
 // #[cfg(test)]
 // mod test_consent_pagination;  // Has compilation errors - std::panic not available
-// #[cfg(test)]
-// mod test_disputes;  // Has compilation errors - missing DisputeStatus
+#[cfg(test)]
+mod test_disputes;
 #[cfg(test)]
 mod test_consent_pagination;
 #[cfg(test)]
@@ -990,6 +990,7 @@ pub enum ProposalAction {
     VerifyVet(Address),
     RevokeVet(Address),
     ChangeAdmin((Vec<Address>, u32)),
+    RotateSigner((Address, Address)),
 }
 
 #[contracttype]
@@ -1210,6 +1211,51 @@ pub struct MedicalRecordAddedEvent {
     pub pet_id: u64,
     pub updated_by: Address,
     pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeStatus {
+    Pending = 1,
+    EvidencePhase = 2,
+    ResolvedInFavorOfClaimer = 3,
+    ResolvedInFavorOfTarget = 4,
+    Cancelled = 5,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dispute {
+    pub dispute_id: u64,
+    pub pet_id: u64,
+    pub claimer: Address,
+    pub target: Address,
+    pub amount: u64,
+    pub reason: String,
+    pub evidence_hash: String,
+    pub status: DisputeStatus,
+    pub resolved_at: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Evidence {
+    pub evidence_id: u64,
+    pub submitter: Address,
+    pub cid: String,
+    pub sha256_hash: BytesN<32>,
+}
+
+#[contracttype]
+pub enum DisputeKey {
+    Dispute(u64),
+    DisputeCount,
+    PetDisputesCount(u64),
+    PetDisputesIndex((u64, u64)),
+    DisputeEvidence(u64, u64),
+    DisputeEvidenceCount(u64),
+    PartyEvidenceCount(u64, Address),
 }
 
 #[contract]
@@ -5573,6 +5619,39 @@ impl PetChainContract {
                 // Also clean up legacy admin if needed
                 env.storage().instance().remove(&DataKey::Admin);
             }
+            ProposalAction::RotateSigner(params) => {
+                let (remove_address, add_address) = params;
+                let mut admins: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&SystemKey::Admins)
+                    .unwrap_or_else(|| env.panic_with_error(ContractError::AdminsNotSet));
+                
+                let threshold = env
+                    .storage()
+                    .instance()
+                    .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
+                    .unwrap_or(1);
+
+                let mut new_admins = Vec::new(&env);
+                let mut found = false;
+                for admin in admins.iter() {
+                    if admin == remove_address {
+                        found = true;
+                        new_admins.push_back(add_address.clone());
+                    } else {
+                        new_admins.push_back(admin);
+                    }
+                }
+                
+                assert!(found, "Signer to remove not found");
+                assert!(new_admins.len() >= threshold, "Active signers below threshold");
+
+                env.storage().instance().set(&SystemKey::Admins, &new_admins);
+                
+                let topics = (Symbol::new(&env, "signer_rotated"), remove_address, add_address);
+                env.events().publish(topics, ());
+            }
         }
 
         proposal.executed = true;
@@ -7355,6 +7434,172 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&GroomingKey::GroomingRecord(record_id))
+    }
+
+    pub fn raise_dispute(
+        env: Env,
+        pet_id: u64,
+        claimer: Address,
+        target: Address,
+        amount: u64,
+        reason: String,
+        evidence: String,
+    ) -> u64 {
+        claimer.require_auth();
+
+        let count_key = DisputeKey::DisputeCount;
+        let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let dispute_id = count + 1;
+
+        let dispute = Dispute {
+            dispute_id,
+            pet_id,
+            claimer: claimer.clone(),
+            target: target.clone(),
+            amount,
+            reason,
+            evidence_hash: evidence,
+            status: DisputeStatus::Pending,
+            resolved_at: None,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        env.storage().instance().set(&count_key, &dispute_id);
+
+        let pet_count_key = DisputeKey::PetDisputesCount(pet_id);
+        let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::PetDisputesIndex((pet_id, new_pet_count)), &dispute_id);
+        env.storage()
+            .instance()
+            .set(&pet_count_key, &new_pet_count);
+
+        dispute_id
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
+        env.storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+    }
+
+    pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool {
+        Self::require_admin(&env);
+
+        let key = DisputeKey::Dispute(dispute_id);
+        if let Some(mut dispute) = env.storage().instance().get::<DisputeKey, Dispute>(&key) {
+            dispute.status = status;
+            dispute.resolved_at = Some(env.ledger().timestamp());
+            env.storage().instance().set(&key, &dispute);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute> {
+        let mut result = Vec::new(&env);
+        let count_key = DisputeKey::PetDisputesCount(pet_id);
+        let count: u64 = env.storage().instance().get(&count_key).unwrap_or(0);
+        for i in 1..=count {
+            if let Some(dispute_id) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, u64>(&DisputeKey::PetDisputesIndex((pet_id, i)))
+            {
+                if let Some(dispute) = env
+                    .storage()
+                    .instance()
+                    .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+                {
+                    result.push_back(dispute);
+                }
+            }
+        }
+        result
+    }
+
+    pub fn submit_evidence(
+        env: Env,
+        dispute_id: u64,
+        submitter: Address,
+        cid: String,
+        sha256_hash: BytesN<32>,
+    ) -> u64 {
+        submitter.require_auth();
+
+        let dispute_key = DisputeKey::Dispute(dispute_id);
+        let dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&dispute_key)
+            .unwrap_or_else(|| panic!("Dispute not found"));
+
+        assert!(
+            dispute.status == DisputeStatus::EvidencePhase,
+            "Submission outside evidence phase rejected"
+        );
+
+        assert!(
+            submitter == dispute.claimer || submitter == dispute.target,
+            "Only claimer or target can submit evidence"
+        );
+
+        let count_key = DisputeKey::PartyEvidenceCount(dispute_id, submitter.clone());
+        let party_count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        assert!(party_count < 10, "Max 10 evidence items per dispute per party");
+
+        let evidence_count_key = DisputeKey::DisputeEvidenceCount(dispute_id);
+        let total_count: u64 = env.storage().instance().get(&evidence_count_key).unwrap_or(0);
+        let evidence_id = total_count + 1;
+
+        let evidence = Evidence {
+            evidence_id,
+            submitter: submitter.clone(),
+            cid,
+            sha256_hash,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::DisputeEvidence(dispute_id, evidence_id), &evidence);
+        env.storage().instance().set(&evidence_count_key, &evidence_id);
+        env.storage().instance().set(&count_key, &(party_count + 1));
+
+        evidence_id
+    }
+
+    pub fn verify_evidence(
+        env: Env,
+        dispute_id: u64,
+        evidence_id: u64,
+        hash: BytesN<32>,
+    ) -> bool {
+        let key = DisputeKey::DisputeEvidence(dispute_id, evidence_id);
+        if let Some(evidence) = env.storage().instance().get::<DisputeKey, Evidence>(&key) {
+            evidence.sha256_hash == hash
+        } else {
+            false
+        }
+    }
+
+    pub fn propose_signer_rotation(
+        env: Env,
+        proposer: Address,
+        remove_address: Address,
+        add_address: Address,
+    ) -> u64 {
+        Self::propose_action(
+            env,
+            proposer,
+            ProposalAction::RotateSigner((remove_address, add_address)),
+            3600 * 24, // 1 day
+        )
     }
 }
 

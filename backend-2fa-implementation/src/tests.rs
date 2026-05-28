@@ -1645,4 +1645,88 @@ mod integration_tests {
             }
         }
     }
+
+    #[test]
+    fn test_regenerate_recovery_codes_flow() {
+        clear_two_factor_store_for_tests();
+
+        let user_id = "user-regenerate-test";
+        let handlers = TwoFactorHandlers::new();
+
+        // 1. Enable 2FA
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "regen@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Initially 2FA is NOT enabled in db, let's verify and activate it
+        let is_activated = handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&resp.secret),
+                },
+            )
+            .unwrap();
+        assert!(is_activated);
+
+        // Capture initial backup codes
+        let initial_data = get_two_factor_data_for_tests(user_id).unwrap();
+        let old_backup_codes = initial_data.backup_codes.clone();
+        assert_eq!(old_backup_codes.len(), 8);
+
+        // 2. Regenerate recovery codes with correct TOTP token
+        let regen_resp = handlers
+            .regenerate_recovery_codes(
+                &caller(user_id),
+                crate::handlers::RegenerateRecoveryCodesRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&resp.secret),
+                    ip: "127.0.0.1".to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(regen_resp.new_backup_codes.len(), 8);
+
+        // 3. Verify database updated and old codes invalidated
+        let current_data = get_two_factor_data_for_tests(user_id).unwrap();
+        let new_backup_codes = current_data.backup_codes.clone();
+        assert_eq!(new_backup_codes.len(), 8);
+        assert_eq!(new_backup_codes, regen_resp.new_backup_codes);
+
+        // Old codes must be invalidated
+        for old_code in old_backup_codes.iter() {
+            assert!(!new_backup_codes.contains(old_code));
+        }
+
+        // 4. Regenerate fails with bad TOTP token
+        let fail_result = handlers.regenerate_recovery_codes(
+            &caller(user_id),
+            crate::handlers::RegenerateRecoveryCodesRequest {
+                user_id: user_id.to_string(),
+                token: "000000".to_string(),
+                ip: "127.0.0.1".to_string(),
+            },
+        );
+        assert!(fail_result.is_err());
+        assert!(fail_result.unwrap_err().contains("Invalid 2FA token"));
+
+        // 5. Regenerate fails if 2FA not enabled
+        let unenabled_user = "unenabled-user";
+        let fail_result2 = handlers.regenerate_recovery_codes(
+            &caller(unenabled_user),
+            crate::handlers::RegenerateRecoveryCodesRequest {
+                user_id: unenabled_user.to_string(),
+                token: "123456".to_string(),
+                ip: "127.0.0.1".to_string(),
+            },
+        );
+        assert!(fail_result2.is_err());
+    }
 }

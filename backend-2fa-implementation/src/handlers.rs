@@ -208,6 +208,18 @@ pub struct RecoverWithBackupResponse {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct RegenerateRecoveryCodesRequest {
+    pub user_id: String,
+    pub token: String,
+    pub ip: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegenerateRecoveryCodesResponse {
+    pub new_backup_codes: Vec<String>,
+}
+
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     jwt_secret: Vec<u8>,
@@ -467,6 +479,50 @@ impl TwoFactorHandlers {
             new_secret: setup.secret,
             new_backup_codes: setup.backup_codes,
             enabled: true,
+        })
+    }
+
+    pub fn regenerate_recovery_codes(
+        &self,
+        caller: &AuthenticatedUser,
+        req: RegenerateRecoveryCodesRequest,
+    ) -> Result<RegenerateRecoveryCodesResponse, String> {
+        caller.authorize(&req.user_id)?;
+
+        let key = format!("regenerate:{}", req.user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
+        }
+
+        let data = store_get(&req.user_id)?;
+        if !data.enabled {
+            return Err("2FA not enabled for user".to_string());
+        }
+
+        let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        if !is_valid {
+            return Err("Invalid 2FA token".to_string());
+        }
+
+        self.limiter.record_success(&key);
+
+        let new_backup_codes = TwoFactorAuth::generate_backup_codes(8);
+        two_factor_store().update_backup_codes(&req.user_id, new_backup_codes.clone())?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs();
+        println!(
+            "REGENERATION EVENT: user_id={}, ip={}, timestamp={}",
+            req.user_id, req.ip, now
+        );
+
+        Ok(RegenerateRecoveryCodesResponse {
+            new_backup_codes,
         })
     }
 }
