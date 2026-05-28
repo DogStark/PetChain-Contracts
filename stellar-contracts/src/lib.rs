@@ -176,6 +176,8 @@ mod test_custody_chain;
 mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_vaccination_expiry;
+#[cfg(test)]
+mod test_medical_record_soft_delete;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -317,6 +319,10 @@ pub enum ContractError {
     CircularDependency = 142,
     CrossPetComparison = 143,
     BreedingRecordNotFound = 150,
+    RecordAlreadyDeleted = 160,
+    RecordNotDeleted = 161,
+    RetentionPeriodNotElapsed = 162,
+    MedicalRecordNotFound = 163,
 }
 
 #[contracttype]
@@ -955,6 +961,8 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+    // Soft-delete retention
+    RetentionPeriodSecs,            // global default retention in seconds
 }
 
 #[contracttype]
@@ -1293,6 +1301,7 @@ pub struct MedicalRecord {
     pub updated_at: u64,
     pub notes: String,
     pub attachment_hashes: Vec<Attachment>,
+    pub deleted_at: Option<u64>, // None = active; Some(ts) = soft-deleted at ts
 }
 
 #[contracttype]
@@ -1698,6 +1707,26 @@ pub struct MedicalRecordAddedEvent {
     pub version: u32,
     pub pet_id: u64,
     pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordDeletedEvent {
+    pub version: u32,
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub deleted_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordPurgedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub purged_count: u32,
+    pub purged_by: Address,
     pub timestamp: u64,
 }
 
@@ -6040,6 +6069,7 @@ impl PetChainContract {
             updated_at: now,
             notes,
             attachment_hashes: Vec::new(&env),
+            deleted_at: None,
         };
 
         // Store the medical record
@@ -6232,6 +6262,190 @@ impl PetChainContract {
         }
     }
 
+    pub fn remove_medical_record(env: Env, record_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            record.vet_address.require_auth();
+            Self::prune_medical_record_notes(&env, record.pet_id, record_id, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(record_id));
+            true
+        } else {
+            false
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Soft-delete & retention
+    // ---------------------------------------------------------------------------
+
+    /// Default retention period: 30 days in seconds.
+    const DEFAULT_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
+
+    /// Admin: configure the global retention period (seconds) before a
+    /// soft-deleted record may be permanently purged.
+    pub fn set_retention_period(env: Env, admin: Address, retention_secs: u64) {
+        Self::require_admin_auth(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::RetentionPeriodSecs, &retention_secs);
+    }
+
+    /// Soft-delete a medical record.  Only the pet owner or the vet who created
+    /// the record may call this.  The record is hidden from all normal queries
+    /// but remains in storage until `purge_expired_records` is called.
+    pub fn delete_medical_record(env: Env, pet_id: u64, record_id: u64, caller: Address) -> bool {
+        caller.require_auth();
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MedicalRecordNotFound));
+
+        if record.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+        if record.deleted_at.is_some() {
+            panic_with_error!(&env, ContractError::RecordAlreadyDeleted);
+        }
+
+        // Authorise: pet owner or the vet who created the record
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        let is_owner = caller == pet.owner;
+        let is_vet = caller == record.vet_address;
+        if !is_owner && !is_vet {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        record.deleted_at = Some(now);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordDeleted"), pet_id),
+            MedicalRecordDeletedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                pet_id,
+                deleted_by: caller,
+                timestamp: now,
+            },
+        );
+
+        true
+    }
+
+    /// Permanently remove all soft-deleted records for `pet_id` whose
+    /// `deleted_at` is older than the configured retention period.
+    /// Only the pet owner or a multisig admin may call this.
+    /// Returns the number of records purged.
+    pub fn purge_expired_records(env: Env, pet_id: u64, caller: Address) -> u32 {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Authorise: pet owner or multisig admin
+        let is_owner = caller == pet.owner;
+        let is_admin = Self::caller_is_admin(&env, &caller);
+        if !is_owner && !is_admin {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let retention: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::RetentionPeriodSecs)
+            .unwrap_or(Self::DEFAULT_RETENTION_SECS);
+
+        let now = env.ledger().timestamp();
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut purged: u32 = 0;
+        for i in 1..=count {
+            let Some(rid) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            else {
+                continue;
+            };
+            let Some(record) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(rid))
+            else {
+                continue;
+            };
+            let Some(deleted_at) = record.deleted_at else {
+                continue; // not soft-deleted
+            };
+            if now.saturating_sub(deleted_at) < retention {
+                panic_with_error!(&env, ContractError::RetentionPeriodNotElapsed);
+            }
+            Self::prune_medical_record_notes(&env, pet_id, rid, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(rid));
+            purged += 1;
+        }
+
+        if purged > 0 {
+            env.events().publish(
+                (String::from_str(&env, "MedicalRecordPurged"), pet_id),
+                MedicalRecordPurgedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    purged_count: purged,
+                    purged_by: caller,
+                    timestamp: now,
+                },
+            );
+        }
+
+        purged
+    }
+
+    /// Returns `true` if `caller` is in the multisig admin list (or legacy admin).
+    fn caller_is_admin(env: &Env, caller: &Address) -> bool {
+        if let Some(legacy) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
+            if &legacy == caller {
+                return true;
+            }
+        }
+        if let Some(admins) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<Address>>(&SystemKey::Admins)
+        {
+            return admins.contains(caller);
+        }
+        false
+    }
+
     pub fn update_medical_record(
         env: Env,
         record_id: u64,
@@ -6309,6 +6523,10 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::MedicalRecord(record_id));
         if let Some(ref r) = record {
+            // Soft-deleted records are invisible to normal queries
+            if r.deleted_at.is_some() {
+                return None;
+            }
             PetChainContract::log_access(
                 &env,
                 r.pet_id,
