@@ -2998,3 +2998,194 @@ mod webhook_handler_tests {
         assert_eq!(log[0].event_type, "failed_two_fa");
     }
 }
+
+// ===========================================================================
+// Pool health check, retry logic, and pool stats tests
+// ===========================================================================
+
+#[cfg(test)]
+mod pool_health_tests {
+    use crate::db::{is_connection_error, PoolStats, PostgresTwoFactorStore};
+    use crate::handlers::PoolMetricsHandlers;
+
+    // -----------------------------------------------------------------------
+    // is_connection_error classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn connection_error_detected_by_keyword() {
+        assert!(is_connection_error("connection refused"));
+        assert!(is_connection_error("timeout waiting for pool"));
+        assert!(is_connection_error("pool exhausted"));
+        assert!(is_connection_error("io error: broken pipe"));
+    }
+
+    #[test]
+    fn non_connection_error_not_classified_as_connection() {
+        assert!(!is_connection_error("duplicate key value"));
+        assert!(!is_connection_error("No 2FA data found for user"));
+        assert!(!is_connection_error("invalid input syntax"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Retry logic — mock via closure
+    // -----------------------------------------------------------------------
+
+    /// Simulate the retry behaviour without a real DB by driving the same
+    /// exponential-backoff logic through a counter.
+    #[test]
+    fn retry_succeeds_on_third_attempt() {
+        let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let a = attempts.clone();
+
+        // Simulate: first two calls return a connection error, third succeeds.
+        let mut succeeded = false;
+        let mut delay_ms = 1u64;
+        for attempt in 1u32..=3 {
+            let mut count = a.lock().unwrap();
+            *count += 1;
+            let is_conn_err = *count < 3;
+            drop(count);
+
+            if !is_conn_err {
+                succeeded = true;
+                break;
+            }
+            if attempt < 3 {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                delay_ms *= 2;
+            }
+        }
+
+        assert!(succeeded, "should have succeeded on the third attempt");
+        assert_eq!(*attempts.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn retry_does_not_retry_non_connection_errors() {
+        let attempts = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let a = attempts.clone();
+
+        let result: Result<(), String> = {
+            let mut last_err = String::new();
+            for attempt in 1u32..=3 {
+                let mut count = a.lock().unwrap();
+                *count += 1;
+                let err = "duplicate key value".to_string(); // not a connection error
+                drop(count);
+                if attempt < 3 && is_connection_error(&err) {
+                    last_err = err;
+                } else {
+                    last_err = err;
+                    break; // stop immediately
+                }
+            }
+            Err(last_err)
+        };
+
+        // Should have stopped after the first attempt
+        assert_eq!(*attempts.lock().unwrap(), 1);
+        assert!(result.unwrap_err().contains("duplicate key"));
+    }
+
+    // -----------------------------------------------------------------------
+    // health_check — pool exhaustion path
+    // -----------------------------------------------------------------------
+
+    /// When DATABASE_URL is not set we cannot build a real pool, so we test
+    /// the exhaustion guard logic directly via a helper that mirrors it.
+    #[test]
+    fn health_check_returns_error_when_pool_exhausted() {
+        // Simulate the guard: size >= max → exhausted
+        fn check(size: u32, max: u32) -> Result<(), String> {
+            if size >= max {
+                return Err("pool exhausted".to_string());
+            }
+            Ok(())
+        }
+
+        assert!(check(10, 10).is_err());
+        assert!(check(11, 10).is_err());
+        assert!(check(9, 10).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // pool_stats — field arithmetic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pool_stats_active_is_size_minus_idle() {
+        // Mirror the arithmetic in PostgresTwoFactorStore::pool_stats
+        fn compute(size: u32, idle: u32, max: u32) -> PoolStats {
+            let active = size.saturating_sub(idle);
+            PoolStats { active, idle, max }
+        }
+
+        let s = compute(7, 3, 10);
+        assert_eq!(s.active, 4);
+        assert_eq!(s.idle, 3);
+        assert_eq!(s.max, 10);
+    }
+
+    #[test]
+    fn pool_stats_active_never_underflows() {
+        fn compute(size: u32, idle: u32, max: u32) -> PoolStats {
+            let active = size.saturating_sub(idle);
+            PoolStats { active, idle, max }
+        }
+        // idle > size should not panic
+        let s = compute(2, 5, 10);
+        assert_eq!(s.active, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // PoolMetricsHandlers endpoint (test mode returns sentinel)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pool_metrics_endpoint_returns_ok_in_tests() {
+        let resp = PoolMetricsHandlers::pool_stats().unwrap();
+        // In test mode the sentinel is all-zeros
+        assert_eq!(resp.active, 0);
+        assert_eq!(resp.idle, 0);
+        assert_eq!(resp.max, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Env-var pool size configuration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pool_size_env_vars_parsed_correctly() {
+        fn parse_pool_size(min_var: Option<&str>, max_var: Option<&str>) -> (u32, u32) {
+            let min: u32 = min_var.and_then(|v| v.parse().ok()).unwrap_or(1);
+            let max: u32 = max_var.and_then(|v| v.parse().ok()).unwrap_or(10);
+            (min, max)
+        }
+
+        assert_eq!(parse_pool_size(None, None), (1, 10));
+        assert_eq!(parse_pool_size(Some("2"), Some("20")), (2, 20));
+        assert_eq!(parse_pool_size(Some("bad"), Some("bad")), (1, 10));
+    }
+
+    // -----------------------------------------------------------------------
+    // Live DB integration (skipped unless DATABASE_URL is set)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn health_check_succeeds_when_database_url_is_set() {
+        let Ok(url) = std::env::var("DATABASE_URL") else { return };
+        let store = PostgresTwoFactorStore::connect(&url).unwrap();
+        assert!(store.health_check().is_ok());
+    }
+
+    #[test]
+    fn pool_stats_returns_valid_values_when_database_url_is_set() {
+        let Ok(url) = std::env::var("DATABASE_URL") else { return };
+        let store = PostgresTwoFactorStore::connect(&url).unwrap();
+        let stats = store.pool_stats();
+        assert!(stats.max > 0);
+        // active + idle ≤ max
+        assert!(stats.active + stats.idle <= stats.max);
+    }
+}

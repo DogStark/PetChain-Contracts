@@ -10,11 +10,12 @@ pub mod webhooks;
 mod tests;
 
 pub use db::PostgresTwoFactorStore;
-pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, SecretProvider};
+pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, SecretProvider, PoolStats};
 pub use handlers::{
     AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin,
     AuthenticatedUser, CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse,
-    GrantUnlimitedRequest, SetUserQuotaRequest, TwoFactorHandlers,
+    GrantUnlimitedRequest, PoolMetricsHandlers, PoolStatsResponse, SetUserQuotaRequest,
+    TwoFactorHandlers,
 };
 pub use leaderboard::{
     FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
