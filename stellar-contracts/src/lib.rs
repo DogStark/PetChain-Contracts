@@ -877,6 +877,10 @@ pub enum DataKey {
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
+    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
+    UserAccessCount(Address),     // grantee -> count of pets they can access
+    // Veterinarian authorization
+    AuthorizedVet(Address),
     TemporaryCustody(u64),        // pet_id -> temporary custody record
     CustodyHistory(u64),          // record_id -> TemporaryCustody
     CustodyRecordCount,           // global count of custody records
@@ -896,6 +900,7 @@ pub enum DataKey {
     NonceHistory((u64, String)),
     NonceMaxUse((u64, String)),
 
+    // Grooming records
     // Lab Result DataKey
 
     // Medical Record DataKey
@@ -1053,6 +1058,19 @@ pub enum StatsKey {
     ActivePetsCount,
 }
 
+
+#[contracttype]
+pub enum FeatureKey {
+    Rg((u64, Address)),
+    Gr(u64),
+    Gc,
+    Ar(u64),
+    Ac,
+    Br(u64),
+    Bc,
+    BP,
+    BN,
+}
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1223,6 +1241,41 @@ pub enum AccessLevel {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    ReadOnly,
+    Vet,
+    Admin,
+    Owner,
+}
+
+impl Role {
+    fn rank(self) -> u8 {
+        match self {
+            Role::ReadOnly => 0,
+            Role::Vet => 1,
+            Role::Admin => 2,
+            Role::Owner => 3,
+        }
+    }
+
+    fn inherited_roles(self, env: &Env) -> Vec<Role> {
+        let mut roles = Vec::new(env);
+        roles.push_back(Role::ReadOnly);
+        if self.rank() >= Role::Vet.rank() {
+            roles.push_back(Role::Vet);
+        }
+        if self.rank() >= Role::Admin.rank() {
+            roles.push_back(Role::Admin);
+        }
+        if self.rank() >= Role::Owner.rank() {
+            roles.push_back(Role::Owner);
+        }
+        roles
+    }
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct AccessGrant {
     pub pet_id: u64,
@@ -1244,6 +1297,53 @@ pub struct TemporaryCustody {
     pub end_date: u64,
     pub permissions: Vec<String>,
     pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleGrant {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub role: Role,
+    pub granted_at: u64,
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub groomer: Address,
+    pub notes: String,
+    pub photos: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub activity_type: String,
+    pub notes: String,
+    pub latitude: i32,
+    pub longitude: i32,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BehaviorRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub notes: String,
+    pub sentiment_score: i32,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -6790,6 +6890,566 @@ impl PetChainContract {
             .get(&DataKey::AccessGrant((pet_id, grantee)))
     }
 
+    fn get_highest_role(env: &Env, pet_id: u64, user: &Address) -> Option<Role> {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))?;
+
+        if pet.owner == user.clone() {
+            return Some(Role::Owner);
+        }
+
+        env.storage()
+            .instance()
+            .get::<FeatureKey, RoleGrant>(&FeatureKey::Rg((pet_id, user.clone())))
+            .and_then(|grant| {
+                if grant.is_active {
+                    Some(grant.role)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub fn grant_role(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        grantee: Address,
+        role: Role,
+    ) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        caller.require_auth();
+
+        let caller_role = Self::get_highest_role(&env, pet_id, &caller).unwrap_or_else(|| {
+            if pet.owner == caller {
+                Role::Owner
+            } else {
+                panic!("Caller has no role")
+            }
+        });
+
+        if caller_role.rank() <= role.rank() {
+            panic!("Role exceeds caller authority");
+        }
+
+        let now = env.ledger().timestamp();
+        let key = FeatureKey::Rg((pet_id, grantee.clone()));
+        let grant = RoleGrant {
+            pet_id,
+            granter: caller.clone(),
+            grantee: grantee.clone(),
+            role,
+            granted_at: now,
+            is_active: true,
+        };
+
+        env.storage().instance().set(&key, &grant);
+
+        true
+    }
+
+    pub fn revoke_role(env: Env, pet_id: u64, caller: Address, grantee: Address) -> bool {
+        caller.require_auth();
+
+        let caller_role = Self::get_highest_role(&env, pet_id, &caller)
+            .unwrap_or_else(|| panic!("Caller has no role"));
+        if caller_role == Role::ReadOnly {
+            panic!("Caller has no authority");
+        }
+
+        let key = FeatureKey::Rg((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<FeatureKey, RoleGrant>(&key) {
+            grant.is_active = false;
+            env.storage().instance().set(&key, &grant);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_role(env: Env, pet_id: u64, user: Address) -> Option<Role> {
+        Self::get_highest_role(&env, pet_id, &user)
+    }
+
+    pub fn get_effective_permissions(env: Env, user: Address, pet_id: u64) -> Vec<Role> {
+        if let Some(role) = Self::get_highest_role(&env, pet_id, &user) {
+            role.inherited_roles(&env)
+        } else {
+            Vec::new(&env)
+        }
+    }
+
+    pub fn has_role_permission(env: Env, user: Address, pet_id: u64, required_role: Role) -> bool {
+        if let Some(role) = Self::get_highest_role(&env, pet_id, &user) {
+            role.rank() >= required_role.rank()
+        } else {
+            false
+        }
+    }
+
+    fn is_valid_ipfs_cid(cid: &String) -> bool {
+        let len = cid.len();
+        len > 0 && len <= 128
+    }
+
+    fn grooming_photo_total_for_pet(env: &Env, pet_id: u64) -> u64 {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let mut total = 0u64;
+        for i in 1..=count {
+            if let Some(record) = env
+                .storage()
+                .instance()
+                .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(i))
+            {
+                if record.pet_id == pet_id {
+                    total += record.photos.len() as u64;
+                }
+            }
+        }
+        total
+    }
+
+    fn normalize_keyword_list(env: &Env, keywords: Vec<String>) -> Vec<String> {
+        let mut normalized = Vec::new(env);
+        for keyword in keywords.iter() {
+            normalized.push_back(keyword.clone());
+        }
+        normalized
+    }
+
+    fn default_positive_keywords(env: &Env) -> Vec<String> {
+        let mut keywords = Vec::new(env);
+        keywords.push_back(String::from_str(env, "good"));
+        keywords.push_back(String::from_str(env, "calm"));
+        keywords.push_back(String::from_str(env, "friendly"));
+        keywords.push_back(String::from_str(env, "happy"));
+        keywords.push_back(String::from_str(env, "playful"));
+        keywords
+    }
+
+    fn default_negative_keywords(env: &Env) -> Vec<String> {
+        let mut keywords = Vec::new(env);
+        keywords.push_back(String::from_str(env, "aggressive"));
+        keywords.push_back(String::from_str(env, "anxious"));
+        keywords.push_back(String::from_str(env, "bite"));
+        keywords.push_back(String::from_str(env, "bark"));
+        keywords.push_back(String::from_str(env, "fearful"));
+        keywords
+    }
+
+    fn tokenize_words(env: &Env, notes: &String) -> Vec<String> {
+        let mut words = Vec::new(env);
+        let len = notes.len() as usize;
+        if len == 0 {
+            return words;
+        }
+
+        const MAX_NOTES_BYTES: usize = 1024;
+        if len > MAX_NOTES_BYTES {
+            panic!("Behavior notes too long");
+        }
+
+        let mut bytes = [0u8; MAX_NOTES_BYTES];
+        notes.copy_into_slice(&mut bytes[..len]);
+
+        let mut start = 0usize;
+        for i in 0..len {
+            if Self::is_word_separator(bytes[i]) {
+                if start < i {
+                    words.push_back(String::from_bytes(env, &bytes[start..i]));
+                }
+                start = i + 1;
+            }
+        }
+
+        if start < len {
+            words.push_back(String::from_bytes(env, &bytes[start..len]));
+        }
+        words
+    }
+
+    fn is_word_separator(byte: u8) -> bool {
+        matches!(
+            byte,
+            b' ' | b'\n'
+                | b'\r'
+                | b'\t'
+                | b','
+                | b'.'
+                | b';'
+                | b':'
+                | b'!'
+                | b'?'
+                | b'-'
+                | b'_'
+                | b'/'
+                | b'\\'
+                | b'"'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+        )
+    }
+
+    fn behavior_keywords(env: &Env, key: FeatureKey, default: Vec<String>) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get::<FeatureKey, Vec<String>>(&key)
+            .unwrap_or(default)
+    }
+
+    fn compute_sentiment_score(env: &Env, notes: &String) -> i32 {
+        let words = Self::tokenize_words(env, notes);
+        let total_words = words.len();
+        if total_words == 0 {
+            return 0;
+        }
+
+        let positives =
+            Self::behavior_keywords(env, FeatureKey::BP, Self::default_positive_keywords(env));
+        let negatives =
+            Self::behavior_keywords(env, FeatureKey::BN, Self::default_negative_keywords(env));
+
+        let mut positive_matches: i64 = 0;
+        let mut negative_matches: i64 = 0;
+
+        for word in words.iter() {
+            for keyword in positives.iter() {
+                if word == keyword {
+                    positive_matches += 1;
+                }
+            }
+            for keyword in negatives.iter() {
+                if word == keyword {
+                    negative_matches += 1;
+                }
+            }
+        }
+
+        let scale: i64 = 1_000_000;
+        let total_words_i64 = total_words as i64;
+        (((positive_matches - negative_matches) * scale) / total_words_i64) as i32
+    }
+
+    pub fn set_behavior_keywords(
+        env: Env,
+        admin: Address,
+        positive_keywords: Vec<String>,
+        negative_keywords: Vec<String>,
+    ) -> bool {
+        Self::require_admin(&env);
+        admin.require_auth();
+
+        env.storage().instance().set(
+            &FeatureKey::BP,
+            &Self::normalize_keyword_list(&env, positive_keywords),
+        );
+        env.storage().instance().set(
+            &FeatureKey::BN,
+            &Self::normalize_keyword_list(&env, negative_keywords),
+        );
+        true
+    }
+
+    pub fn add_grooming_record(env: Env, pet_id: u64, groomer: Address, notes: String) -> u64 {
+        groomer.require_auth();
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Gc, &id);
+
+        let now = env.ledger().timestamp();
+        let record = GroomingRecord {
+            id,
+            pet_id,
+            groomer,
+            notes,
+            photos: Vec::new(&env),
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Gr(id), &record);
+
+        id
+    }
+
+    pub fn get_grooming_record(env: Env, record_id: u64) -> Option<GroomingRecord> {
+        env.storage().instance().get(&FeatureKey::Gr(record_id))
+    }
+
+    pub fn get_pet_grooming_records(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_grooming_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn add_grooming_photo(env: Env, record_id: u64, cid: String) -> bool {
+        if !Self::is_valid_ipfs_cid(&cid) {
+            panic!("Invalid CID");
+        }
+
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(record_id))
+        {
+            if record.photos.len() >= 5 {
+                panic!("Record photo limit exceeded");
+            }
+
+            let pet_photo_count = Self::grooming_photo_total_for_pet(&env, record.pet_id);
+            if pet_photo_count >= 50 {
+                panic!("Pet photo limit exceeded");
+            }
+
+            record.photos.push_back(cid);
+            record.updated_at = env.ledger().timestamp();
+            env.storage()
+                .instance()
+                .set(&FeatureKey::Gr(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_grooming_photo(env: Env, record_id: u64, cid: String) -> bool {
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(record_id))
+        {
+            let mut remove_index: Option<u32> = None;
+            for i in 0..record.photos.len() {
+                if let Some(photo_cid) = record.photos.get(i) {
+                    if photo_cid == cid {
+                        remove_index = Some(i);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(index) = remove_index {
+                record.photos.remove(index);
+                record.updated_at = env.ledger().timestamp();
+                env.storage()
+                    .instance()
+                    .set(&FeatureKey::Gr(record_id), &record);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn add_activity_record(
+        env: Env,
+        pet_id: u64,
+        activity_type: String,
+        notes: String,
+        latitude: i32,
+        longitude: i32,
+    ) -> u64 {
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        if latitude == 0 || longitude == 0 {
+            panic!("Coordinates cannot be zero");
+        }
+        if latitude < -90_000_000 || latitude > 90_000_000 {
+            panic!("Latitude out of range");
+        }
+        if longitude < -180_000_000 || longitude > 180_000_000 {
+            panic!("Longitude out of range");
+        }
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Ac)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Ac, &id);
+
+        let now = env.ledger().timestamp();
+        let record = ActivityRecord {
+            id,
+            pet_id,
+            activity_type,
+            notes,
+            latitude,
+            longitude,
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Ar(id), &record);
+
+        id
+    }
+
+    pub fn get_activity_record(env: Env, record_id: u64) -> Option<ActivityRecord> {
+        env.storage().instance().get(&FeatureKey::Ar(record_id))
+    }
+
+    pub fn get_pet_activity_records(env: Env, pet_id: u64) -> Vec<ActivityRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Ac)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_activity_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn get_activities_in_bbox(
+        env: Env,
+        pet_id: u64,
+        min_lat: i32,
+        max_lat: i32,
+        min_lon: i32,
+        max_lon: i32,
+    ) -> Vec<ActivityRecord> {
+        if min_lat > max_lat || min_lon > max_lon {
+            panic!("Invalid bounding box");
+        }
+
+        let mut activities = Vec::new(&env);
+        let records = Self::get_pet_activity_records(env.clone(), pet_id);
+        for record in records.iter() {
+            if record.latitude >= min_lat
+                && record.latitude <= max_lat
+                && record.longitude >= min_lon
+                && record.longitude <= max_lon
+            {
+                activities.push_back(record);
+            }
+        }
+        activities
+    }
+
+    pub fn add_behavior_record(env: Env, pet_id: u64, notes: String) -> u64 {
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Bc)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Bc, &id);
+
+        let score = Self::compute_sentiment_score(&env, &notes);
+        let now = env.ledger().timestamp();
+        let record = BehaviorRecord {
+            id,
+            pet_id,
+            notes,
+            sentiment_score: score,
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Br(id), &record);
+
+        id
+    }
+
+    pub fn get_behavior_record(env: Env, record_id: u64) -> Option<BehaviorRecord> {
+        env.storage().instance().get(&FeatureKey::Br(record_id))
+    }
+
+    pub fn get_pet_behavior_records(env: Env, pet_id: u64) -> Vec<BehaviorRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Bc)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_behavior_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn get_behavior_sentiment_trend(env: Env, pet_id: u64, days: u64) -> i32 {
+        let records = Self::get_pet_behavior_records(env.clone(), pet_id);
+        let cutoff = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(days.saturating_mul(86_400));
+
+        let mut sum: i64 = 0;
+        let mut count: i64 = 0;
+        for record in records.iter() {
+            if record.created_at >= cutoff {
+                sum += record.sentiment_score as i64;
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            0
+        } else {
+            (sum / count) as i32
+        }
+    }
+
     // --- LAB RESULTS ---
     pub fn add_lab_result(
         env: Env,
@@ -11762,6 +12422,15 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
 }
 
 #[cfg(test)]
+mod test;
+#[cfg(test)]
+mod test_access_control;
+#[cfg(test)]
+mod test_activity;
+#[cfg(test)]
+mod test_behavior;
+#[cfg(test)]
+mod test_grooming;
 mod gas_profile_tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
