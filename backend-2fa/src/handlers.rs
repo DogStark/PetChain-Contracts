@@ -110,6 +110,15 @@ pub struct RecoverWithBackupResponse {
     pub enabled: bool,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct RecoveryUsageLogEntry {
+    pub id: i32,
+    pub user_id: String,
+    pub code_index: i32,
+    pub used_at: String,
+    pub ip_address: Option<String>,
+}
+
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
 }
@@ -250,6 +259,14 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
     ) -> Result<RecoverWithBackupResponse, String> {
+        Self::recover_with_backup_with_ip(caller, req, None)
+    }
+
+    pub fn recover_with_backup_with_ip(
+        caller: &AuthenticatedUser,
+        req: RecoverWithBackupRequest,
+        ip_address: Option<&str>,
+    ) -> Result<RecoverWithBackupResponse, String> {
         caller.authorize(&req.user_id)?;
 
         let data = store_get(&req.user_id)?;
@@ -258,10 +275,29 @@ impl TwoFactorHandlers {
             return Err("2FA not enabled for user".to_string());
         }
 
-        let mut backup_codes = data.backup_codes.clone();
-        if !TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code) {
-            return Err("Invalid backup code".to_string());
+        let backup_codes = &data.backup_codes;
+        // Find the index of the provided backup code
+        let code_index = match TwoFactorAuth::verify_backup_code(backup_codes, &req.backup_code) {
+            Some(idx) => idx as i32,
+            None => {
+                // Even if code not in current list, check recovery log for single-use enforcement
+                // This handles the case where codes were already used in a previous recovery
+                let store = two_factor_store();
+                // Try to find this code in recovery log (this is expensive but ensures single-use)
+                // For now, just return the standard error
+                return Err("InvalidRecoveryCode".to_string());
+            }
+        };
+
+        // Check if code has already been used and log the usage atomically
+        let store = two_factor_store();
+        if let Err(e) = store.log_recovery_code_usage(&req.user_id, code_index, ip_address) {
+            return Err(e);
         }
+
+        // Now consume the code and generate new secret
+        let mut backup_codes = backup_codes.clone();
+        TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code);
 
         let setup = TwoFactorAuth::setup("recovery", "PetChain")?;
 
@@ -285,6 +321,29 @@ impl TwoFactorHandlers {
 impl Default for TwoFactorHandlers {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Admin handlers for recovery code audit log
+pub struct AdminRecoveryHandlers;
+
+impl AdminRecoveryHandlers {
+    /// Get recovery code usage log (admin-only endpoint would check authorization externally)
+    pub fn get_recovery_log(
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<RecoveryUsageLogEntry>, String> {
+        let entries = two_factor_store().get_recovery_usage_log(page, page_size)?;
+        Ok(entries
+            .into_iter()
+            .map(|e| RecoveryUsageLogEntry {
+                id: e.id as i32,
+                user_id: e.user_id,
+                code_index: e.code_index,
+                used_at: e.used_at,
+                ip_address: e.ip_address,
+            })
+            .collect())
     }
 }
 

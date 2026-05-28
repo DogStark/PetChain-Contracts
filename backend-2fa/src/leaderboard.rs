@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::f64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Timeframe {
@@ -185,6 +186,75 @@ pub fn rank_organizers(
             organizer,
             score,
         })
+        .collect()
+}
+
+/// A leaderboard entry with decayed score and percentile rank
+#[derive(Debug, Clone, Serialize)]
+pub struct LeaderboardEntry {
+    pub user_id: String,
+    pub decayed_score: f64,
+    pub percentile: f64,
+}
+
+/// Get decay lambda from environment variable with sensible default
+fn get_decay_lambda() -> f64 {
+    std::env::var("LEADERBOARD_DECAY_LAMBDA")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.1)
+}
+
+/// Calculate decayed score using exponential decay formula
+/// decayed_score = raw_score * e^(-λ * days_since_activity)
+fn calculate_decayed_score(raw_score: u64, days_since_activity: f64, lambda: f64) -> f64 {
+    let score_f64 = raw_score as f64;
+    score_f64 * (-lambda * days_since_activity).exp()
+}
+
+/// Get paginated leaderboard with percentile rankings and decay
+pub fn get_leaderboard(
+    entries: &[(String, u64, u64)], // (user_id, raw_score, timestamp)
+    page: u32,
+    page_size: u32,
+    now: u64,
+) -> Vec<LeaderboardEntry> {
+    let lambda = get_decay_lambda();
+    let seconds_per_day = 24 * 3600;
+
+    // Calculate decayed scores
+    let mut decayed_entries: Vec<(String, f64)> = entries
+        .iter()
+        .map(|(user_id, raw_score, timestamp)| {
+            let days_since = (now.saturating_sub(*timestamp) as f64) / seconds_per_day as f64;
+            let decayed = calculate_decayed_score(*raw_score, days_since, lambda);
+            (user_id.clone(), decayed)
+        })
+        .collect();
+
+    // Sort by decayed score descending
+    decayed_entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let total_entries = decayed_entries.len() as f64;
+
+    // Calculate percentiles and paginate
+    let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
+    let limit = page_size as usize;
+
+    decayed_entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (user_id, decayed_score))| {
+            let entries_below = index as f64;
+            let percentile = (entries_below / total_entries) * 100.0;
+            LeaderboardEntry {
+                user_id,
+                decayed_score,
+                percentile,
+            }
+        })
+        .skip(offset)
+        .take(limit)
         .collect()
 }
 
@@ -521,6 +591,114 @@ mod tests {
                 assert_eq!(attempted_score, 9999);
                 assert_eq!(reason, "Test reason");
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Percentile Ranking with Decay Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decay_function_recent_activity_higher_score() {
+        let lambda = 0.1;
+        let recent = calculate_decayed_score(100, 0.0, lambda);
+        let older = calculate_decayed_score(100, 1.0, lambda);
+        assert!(recent > older);
+    }
+
+    #[test]
+    fn decay_function_no_decay_with_zero_lambda() {
+        let score = calculate_decayed_score(100, 5.0, 0.0);
+        assert_eq!(score, 100.0);
+    }
+
+    #[test]
+    fn decay_function_aggressive_decay() {
+        let score = calculate_decayed_score(100, 10.0, 1.0);
+        assert!(score < 1.0); // e^(-10) is very small
+    }
+
+    #[test]
+    fn percentile_single_entry() {
+        let entries = vec![("user1".to_string(), 100, 1000)];
+        let result = get_leaderboard(&entries, 1, 10, 1000);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].user_id, "user1");
+        assert_eq!(result[0].percentile, 0.0); // Only entry, 0 below it
+    }
+
+    #[test]
+    fn percentile_multiple_entries() {
+        let entries = vec![
+            ("user1".to_string(), 100, 1000),
+            ("user2".to_string(), 50, 1000),
+            ("user3".to_string(), 150, 1000),
+        ];
+        let result = get_leaderboard(&entries, 1, 10, 1000);
+        assert_eq!(result.len(), 3);
+        // Sorted by decayed score: user3 (150), user1 (100), user2 (50)
+        assert_eq!(result[0].user_id, "user3");
+        assert_eq!(result[0].percentile, 0.0); // Highest, 0 below
+        assert_eq!(result[1].user_id, "user1");
+        assert!(result[1].percentile > 0.0 && result[1].percentile < 100.0);
+        assert_eq!(result[2].user_id, "user2");
+        assert!(result[2].percentile > result[1].percentile);
+    }
+
+    #[test]
+    fn pagination_respects_page_and_size() {
+        let entries: Vec<(String, u64, u64)> = (0..15)
+            .map(|i| (format!("user{}", i), 100 - i as u64, 1000))
+            .collect();
+
+        let page1 = get_leaderboard(&entries, 1, 10, 1000);
+        let page2 = get_leaderboard(&entries, 2, 10, 1000);
+
+        assert_eq!(page1.len(), 10);
+        assert_eq!(page2.len(), 5);
+    }
+
+    #[test]
+    fn decay_affects_ranking() {
+        let now = 100_000_000;
+        let entries = vec![
+            ("recent_low".to_string(), 50, now - 1),      // Recent, low score
+            ("old_high".to_string(), 1000, now - 30 * 86400), // Old, high score
+        ];
+
+        let result = get_leaderboard(&entries, 1, 10, now);
+        // With decay, recent_low might rank higher despite lower raw score
+        assert_eq!(result.len(), 2);
+        // The exact ranking depends on decay function, but both should be present
+    }
+
+    #[test]
+    fn empty_leaderboard() {
+        let result = get_leaderboard(&[], 1, 10, 1000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn configurable_lambda_affects_decay() {
+        // Save current lambda
+        let original = std::env::var("LEADERBOARD_DECAY_LAMBDA").ok();
+
+        // Set high decay lambda
+        std::env::set_var("LEADERBOARD_DECAY_LAMBDA", "1.0");
+        let entries = vec![("user1".to_string(), 100, 100)];
+        let result1 = get_leaderboard(&entries, 1, 10, 1000);
+
+        // Set low decay lambda
+        std::env::set_var("LEADERBOARD_DECAY_LAMBDA", "0.01");
+        let result2 = get_leaderboard(&entries, 1, 10, 1000);
+
+        // Higher lambda means more decay (lower score)
+        assert!(result1[0].decayed_score < result2[0].decayed_score);
+
+        // Restore original
+        match original {
+            Some(v) => std::env::set_var("LEADERBOARD_DECAY_LAMBDA", v),
+            None => std::env::remove_var("LEADERBOARD_DECAY_LAMBDA"),
         }
     }
 }

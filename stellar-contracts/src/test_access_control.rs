@@ -1699,3 +1699,64 @@ fn test_get_access_grant_returns_none_when_not_granted() {
     let grant = client.get_access_grant(&pet_id, &stranger);
     assert!(grant.is_none());
 }
+
+#[test]
+fn test_get_access_log_paginated() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Lab"),
+        &String::from_str(&env, "Gold"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    // generate some log entries via grant/revoke
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+    client.revoke_access(&pet_id, &grantee);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None);
+
+    let (page0, total) = client.get_access_log(&pet_id, &owner, &0u32, &2u32);
+    assert!(total >= 3);
+    assert_eq!(page0.len(), 2);
+
+    let (page1, _) = client.get_access_log(&pet_id, &owner, &1u32, &2u32);
+    assert!(page1.len() >= 1);
+}
+
+#[test]
+fn test_expired_grant_returns_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Lab"),
+        &String::from_str(&env, "Black"),
+        &20u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    // grant with expiry in the past
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &Some(1u64));
+    // advance time
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    let level = client.check_access(&pet_id, &grantee);
+    assert_eq!(level, AccessLevel::None);
+}

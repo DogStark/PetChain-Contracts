@@ -636,8 +636,10 @@ fn test_get_activity_record_by_id_returns_none_for_nonexistent() {
     assert!(result.is_none());
 }
 
+// --- ACTIVITY STREAK TRACKING TESTS ---
+
 #[test]
-fn test_get_activity_count_zero_for_new_pet() {
+fn test_streak_increments_on_consecutive_days() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -660,12 +662,59 @@ fn test_get_activity_count_zero_for_new_pet() {
         &PrivacyLevel::Public,
     );
 
-    assert_eq!(client.get_activity_count(&pet_id), 0);
-    assert_eq!(client.get_activity_count(&9999u64), 0);
+    // Day 1: Add activity
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Day 1 walk"),
+    );
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1);
+    assert_eq!(streak.longest_streak, 1);
+
+    // Day 2: Advance time by 1 day and add activity
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(ledger.timestamp() + 86400);
+    });
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &7,
+        &1500,
+        &String::from_str(&env, "Day 2 run"),
+    );
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 2);
+    assert_eq!(streak.longest_streak, 2);
+
+    // Day 3: Advance time by 1 day and add activity
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(ledger.timestamp() + 86400);
+    });
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Play,
+        &45,
+        &6,
+        &0,
+        &String::from_str(&env, "Day 3 play"),
+    );
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 3);
+    assert_eq!(streak.longest_streak, 3);
 }
 
 #[test]
-fn test_get_activity_count_increments_on_add() {
+fn test_streak_resets_on_gap_greater_than_one_day() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -688,8 +737,369 @@ fn test_get_activity_count_increments_on_add() {
         &PrivacyLevel::Public,
     );
 
-    assert_eq!(client.get_activity_count(&pet_id), 0);
+    // Day 1: Add activity
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Day 1 walk"),
+    );
 
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1);
+
+    // Day 2: Advance time by 2 days (gap > 1 day) and add activity
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(ledger.timestamp() + 172800); // 2 days
+    });
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &7,
+        &1500,
+        &String::from_str(&env, "Day 3 run"),
+    );
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1); // Reset to 1
+    assert_eq!(streak.longest_streak, 1); // Longest remains 1
+}
+
+#[test]
+fn test_milestone_event_at_7_days() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activities for 7 consecutive days
+    for day in 0..7 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Daily walk"),
+        );
+
+        if day < 6 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 7);
+    assert!(client.has_reached_milestone(&pet_id, &7));
+}
+
+#[test]
+fn test_milestone_event_at_30_days() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activities for 30 consecutive days
+    for day in 0..30 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Daily walk"),
+        );
+
+        if day < 29 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 30);
+    assert!(client.has_reached_milestone(&pet_id, &30));
+}
+
+#[test]
+fn test_milestone_event_at_100_days() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activities for 100 consecutive days
+    for day in 0..100 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Daily walk"),
+        );
+
+        if day < 99 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 100);
+    assert!(client.has_reached_milestone(&pet_id, &100));
+}
+
+#[test]
+fn test_longest_streak_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Build a 5-day streak
+    for day in 0..5 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Walk"),
+        );
+
+        if day < 4 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 5);
+    assert_eq!(streak.longest_streak, 5);
+
+    // Break the streak with a 2-day gap
+    env.ledger().with_mut(|ledger| {
+        ledger.set_timestamp(ledger.timestamp() + 172800); // 2 days
+    });
+
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
+    );
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1); // Reset to 1
+    assert_eq!(streak.longest_streak, 5); // Longest remains 5
+
+    // Build a new 8-day streak
+    for day in 0..7 {
+        env.ledger().with_mut(|ledger| {
+            ledger.set_timestamp(ledger.timestamp() + 86400);
+        });
+
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Walk"),
+        );
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 8);
+    assert_eq!(streak.longest_streak, 8); // Updated to 8
+}
+
+#[test]
+fn test_get_current_streak() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Initially no streak
+    assert_eq!(client.get_current_streak(&pet_id), 0);
+
+    // Add activity
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
+    );
+
+    assert_eq!(client.get_current_streak(&pet_id), 1);
+}
+
+#[test]
+fn test_get_longest_streak() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Initially no streak
+    assert_eq!(client.get_longest_streak(&pet_id), 0);
+
+    // Add activity
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
+    );
+
+    assert_eq!(client.get_longest_streak(&pet_id), 1);
+}
+
+#[test]
+fn test_same_day_activity_no_streak_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add first activity
     client.add_activity_record(
         &pet_id,
         &ActivityType::Walk,
@@ -698,25 +1108,359 @@ fn test_get_activity_count_increments_on_add() {
         &2000,
         &String::from_str(&env, "Walk 1"),
     );
-    assert_eq!(client.get_activity_count(&pet_id), 1);
 
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1);
+
+    // Add second activity on same day (no time advance)
     client.add_activity_record(
         &pet_id,
         &ActivityType::Run,
         &20,
-        &8,
+        &7,
         &1500,
         &String::from_str(&env, "Run 1"),
     );
-    assert_eq!(client.get_activity_count(&pet_id), 2);
 
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 1); // No change
+}
+
+#[test]
+fn test_milestone_not_reached_before_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activities for 6 days (below 7-day milestone)
+    for day in 0..6 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Walk"),
+        );
+
+        if day < 5 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    assert!(!client.has_reached_milestone(&pet_id, &7));
+    assert!(!client.has_reached_milestone(&pet_id, &30));
+    assert!(!client.has_reached_milestone(&pet_id, &100));
+}
+
+#[test]
+fn test_multiple_milestones_reached() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activities for 30 consecutive days
+    for day in 0..30 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Walk"),
+        );
+
+        if day < 29 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    // Should have reached both 7 and 30 day milestones
+    assert!(client.has_reached_milestone(&pet_id, &7));
+    assert!(client.has_reached_milestone(&pet_id, &30));
+    assert!(!client.has_reached_milestone(&pet_id, &100));
+}
+
+#[test]
+fn test_streak_with_multiple_pets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet1_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let pet2_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Luna"),
+        &String::from_str(&env, "2021-03-15"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Pet 1: 5-day streak
+    for day in 0..5 {
+        client.add_activity_record(
+            &pet1_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &2000,
+            &String::from_str(&env, "Walk"),
+        );
+
+        if day < 4 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    // Pet 2: 3-day streak (different timeline)
+    for day in 0..3 {
+        client.add_activity_record(
+            &pet2_id,
+            &ActivityType::Play,
+            &20,
+            &4,
+            &0,
+            &String::from_str(&env, "Play"),
+        );
+
+        if day < 2 {
+            env.ledger().with_mut(|ledger| {
+                ledger.set_timestamp(ledger.timestamp() + 86400);
+            });
+        }
+    }
+
+    let streak1 = client.get_activity_streak(&pet1_id);
+    let streak2 = client.get_activity_streak(&pet2_id);
+
+    assert_eq!(streak1.current_streak, 5);
+    assert_eq!(streak2.current_streak, 3);
+}
+
+#[test]
+fn test_streak_persistence_across_calls() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add activity
     client.add_activity_record(
         &pet_id,
-        &ActivityType::Play,
-        &15,
-        &6,
-        &500,
-        &String::from_str(&env, "Play 1"),
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &2000,
+        &String::from_str(&env, "Walk"),
     );
-    assert_eq!(client.get_activity_count(&pet_id), 3);
+
+    // Get streak multiple times
+    let streak1 = client.get_activity_streak(&pet_id);
+    let streak2 = client.get_activity_streak(&pet_id);
+
+    assert_eq!(streak1.current_streak, streak2.current_streak);
+    assert_eq!(streak1.longest_streak, streak2.longest_streak);
+}
+
+#[test]
+fn test_streak_after_gap_resets_to_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Day 1: Add activity
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &1000,
+        &String::from_str(&env, "Walk"),
+    );
+
+    let streak_day1 = client.get_activity_streak(&pet_id);
+    assert_eq!(streak_day1.current_streak, 1);
+
+    // Day 2: Add activity (consecutive)
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &87400, // 1 day + 1 second later
+        &String::from_str(&env, "Walk"),
+    );
+
+    let streak_day2 = client.get_activity_streak(&pet_id);
+    assert_eq!(streak_day2.current_streak, 2);
+
+    // Day 4: Add activity (gap > 1 day)
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &261200, // 3 days + 1 second later
+        &String::from_str(&env, "Walk"),
+    );
+
+    let streak_day4 = client.get_activity_streak(&pet_id);
+    assert_eq!(streak_day4.current_streak, 1); // Reset to 1
+    assert_eq!(streak_day4.longest_streak, 2); // Longest still 2
+}
+
+#[test]
+fn test_milestone_events_not_duplicated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Add 7 consecutive days of activity
+    for day in 0..7 {
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &(1000 + (day as u64 * 86400)),
+            &String::from_str(&env, "Walk"),
+        );
+    }
+
+    let streak = client.get_activity_streak(&pet_id);
+    assert_eq!(streak.current_streak, 7);
+    assert!(streak.milestones_reached.contains(&7));
+
+    // Add one more day - should not emit duplicate 7-day event
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &5,
+        &(1000 + (7 as u64 * 86400)),
+        &String::from_str(&env, "Walk"),
+    );
+
+    let streak_after = client.get_activity_streak(&pet_id);
+    assert_eq!(streak_after.current_streak, 8);
+    // Milestone vector should still only have one entry for 7 days
+    let milestone_count = streak_after.milestones_reached.iter().filter(|&&m| m == 7).count();
+    assert_eq!(milestone_count, 1);
 }
