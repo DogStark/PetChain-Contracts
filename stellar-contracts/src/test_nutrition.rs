@@ -367,6 +367,66 @@ fn test_get_diet_plan_count() {
 }
 
 #[test]
+fn test_get_weight_entry_count_zero_for_new_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    assert_eq!(client.get_weight_entry_count(&pet_id), 0);
+    assert_eq!(client.get_weight_entry_count(&9999u64), 0);
+}
+
+#[test]
+fn test_get_weight_entry_count_increments_on_add() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    assert_eq!(client.get_weight_entry_count(&pet_id), 0);
+
+    client.add_weight_entry(&pet_id, &21u32);
+    assert_eq!(client.get_weight_entry_count(&pet_id), 1);
+
+    client.add_weight_entry(&pet_id, &22u32);
+    assert_eq!(client.get_weight_entry_count(&pet_id), 2);
+
+    client.add_weight_entry(&pet_id, &23u32);
+    assert_eq!(client.get_weight_entry_count(&pet_id), 3);
+}
+
+#[test]
 fn test_get_weight_entry_by_id() {
     let env = Env::default();
     env.mock_all_auths();
