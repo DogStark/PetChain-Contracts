@@ -1,15 +1,40 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+// ---------------------------------------------------------------------------
+// EVENT SCHEMA VERSIONING
+// Increment EVENT_SCHEMA_VERSION whenever any event struct's fields change.
+// Off-chain indexers must check the `version` field on every event to handle
+// schema evolution without breaking.
+//
+// Migration path:
+//   v0 (pre-versioning): events had no `version` field — treat as version 0.
+//   v1 (current):        `version: u32` added to every event struct.
+//                        Indexers that see version 0 should apply defaults for
+//                        the new field.
+// ---------------------------------------------------------------------------
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// Canonical enum for off-chain indexers to identify the active event schema.
+/// Bump the variant and `EVENT_SCHEMA_VERSION` together whenever fields change.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventSchema {
+    V1 = 1,
+}
+
 #[contracttype]
 pub enum InsuranceKey {
-    Policy(u64),               // (pet_id) -> InsurancePolicy [deprecated, kept for migration]
-    Claim(u64),                // claim_id -> InsuranceClaim
-    ClaimCount,                // Global count of claims
-    PetClaimCount(u64),        // pet_id -> count of claims
-    PetClaimIndex((u64, u64)), // (pet_id, index) -> claim_id
-    PetPolicyCount(u64),       // pet_id -> count of policies
+    Policy(u64),                // (pet_id) -> InsurancePolicy [deprecated, kept for migration]
+    Claim(u64),                 // claim_id -> InsuranceClaim
+    ClaimCount,                 // Global count of claims
+    PetClaimCount(u64),         // pet_id -> count of claims
+    PetClaimIndex((u64, u64)),  // (pet_id, index) -> claim_id
+    PetPolicyCount(u64),        // pet_id -> count of policies
     PetPolicyIndex((u64, u64)), // (pet_id, index) -> InsurancePolicy
+    // Fraud detection
+    FlaggedClaimCount,          // Global count of entries in the flagged index
+    FlaggedClaimIndex(u64),     // sequential index -> claim_id (for paginated admin review)
 }
 
 #[contracttype]
@@ -266,6 +291,14 @@ pub enum ContractError {
     PrerequisiteIncomplete = 141,
     CircularDependency = 142,
     CrossPetComparison = 143,
+    // Feature: Vet License Verification
+    /// Vet is registered but their license has not been verified via
+    /// `verify_vet_license()`. `grant_access` will reject unverified vets.
+    VetLicenseNotVerified = 144,
+    // Feature: Fraud Detection
+    /// `approve_flagged_claim` was called on a claim that is not in
+    /// `UnderReview` state.
+    ClaimNotUnderReview = 145,
 }
 
 #[contracttype]
@@ -813,6 +846,10 @@ pub enum DataKey {
     VetCount,
     VetIndex(u64),
     Admin,
+    /// Stores the license_id that was explicitly on-chain verified via
+    /// `verify_vet_license()`. Presence of this key is the authoritative
+    /// signal used by `grant_access` to allow vet access grants.
+    VetLicenseVerified(Address), // vet_address -> verified license_id (String)
 
     // Contract Upgrade keys
     ContractVersion,
@@ -1421,6 +1458,7 @@ pub struct InsurancePolicy {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceAddedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub policy_id: String,
     pub provider: String,
@@ -1430,6 +1468,7 @@ pub struct InsuranceAddedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceUpdatedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub policy_id: String,
     pub active: bool,
@@ -1443,6 +1482,9 @@ pub enum InsuranceClaimStatus {
     Approved,
     Rejected,
     Paid,
+    /// Claim was flagged by one or more fraud heuristics and is awaiting
+    /// manual admin review via `approve_flagged_claim`.
+    UnderReview,
 }
 
 #[contracttype]
@@ -1455,30 +1497,65 @@ pub struct InsuranceClaim {
     pub date: u64,
     pub status: InsuranceClaimStatus,
     pub description: String,
+    /// True when at least one fraud heuristic triggered for this claim.
+    pub flagged: bool,
+    /// Bitmask of triggered fraud rules:
+    ///   bit 0 (0x01) — HIGH_AMOUNT:        amount > 3× pet's average past claim
+    ///   bit 1 (0x02) — HIGH_FREQUENCY:     ≥ 2 claims within the last 7 days
+    ///   bit 2 (0x04) — BEFORE_POLICY_START: claim date before policy start_date
+    pub fraud_flags: u32,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceClaimSubmittedEvent {
+    pub version: u32,
     pub claim_id: u64,
     pub pet_id: u64,
     pub policy_id: String,
     pub amount: u64,
+    /// True when the claim was flagged by fraud heuristics.
+    pub flagged: bool,
     pub timestamp: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceClaimStatusUpdatedEvent {
+    pub version: u32,
     pub claim_id: u64,
     pub pet_id: u64,
     pub status: InsuranceClaimStatus,
     pub timestamp: u64,
 }
 
+/// Emitted when a claim is automatically flagged by fraud heuristics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimFlaggedEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub fraud_flags: u32,
+    pub timestamp: u64,
+}
+
+/// Emitted when an admin overrides a flagged claim and approves it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FlaggedClaimApprovedEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub admin: Address,
+    pub reason: String,
+    pub timestamp: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessGrantedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub granter: Address,
     pub grantee: Address,
@@ -1490,6 +1567,7 @@ pub struct AccessGrantedEvent {
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessRevokedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub granter: Address,
     pub grantee: Address,
@@ -1499,6 +1577,7 @@ pub struct AccessRevokedEvent {
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessExtendedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub granter: Address,
     pub grantee: Address,
@@ -1510,6 +1589,7 @@ pub struct AccessExtendedEvent {
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessExpiredEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub grantee: Address,
     pub expired_at: u64,
@@ -1518,9 +1598,10 @@ pub struct AccessExpiredEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PetRegisteredEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub owner: Address,
-    pub name: String, // Note: This might be redundant if encrypted, but keeping for event compatibility if safe
+    pub name: String,
     pub species: Species,
     pub timestamp: u64,
 }
@@ -1528,6 +1609,7 @@ pub struct PetRegisteredEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VaccinationAddedEvent {
+    pub version: u32,
     pub vaccine_id: u64,
     pub pet_id: u64,
     pub veterinarian: Address,
@@ -1539,6 +1621,7 @@ pub struct VaccinationAddedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PetOwnershipTransferredEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub old_owner: Address,
     pub new_owner: Address,
@@ -1548,8 +1631,32 @@ pub struct PetOwnershipTransferredEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MedicalRecordAddedEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+// --- VET LICENSE VERIFICATION EVENTS ---
+
+/// Emitted when a multisig admin verifies a vet's license on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VetLicenseVerifiedEvent {
+    pub version: u32,
+    pub vet_address: Address,
+    pub license_id: String,
+    pub timestamp: u64,
+}
+
+/// Emitted when a multisig admin revokes a vet's license.
+/// All active access grants held by this vet are also revoked.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VetLicenseRevokedEvent {
+    pub version: u32,
+    pub vet_address: Address,
+    pub license_id: String,
     pub timestamp: u64,
 }
 
@@ -2243,6 +2350,7 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "PetRegistered"), pet_id),
             PetRegisteredEvent {
+                version: EVENT_SCHEMA_VERSION,
                 pet_id,
                 owner,
                 name: String::from_str(&env, "PROTECTED"), // Masking name in event for safety
@@ -2954,6 +3062,7 @@ impl PetChainContract {
             env.events().publish(
                 (String::from_str(&env, "PetOwnershipTransferred"), id),
                 PetOwnershipTransferredEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     pet_id: id,
                     old_owner,
                     new_owner: pet.owner.clone(),
@@ -3469,6 +3578,7 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "VaccinationAdded"), pet_id),
             VaccinationAddedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 vaccine_id,
                 pet_id,
                 veterinarian,
