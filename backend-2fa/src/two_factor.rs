@@ -186,6 +186,25 @@ pub struct RecoveryCodeUsageLog {
     pub ip_address: Option<String>,
 }
 
+/// Summary of a user's 2FA status for admin listings.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserTwoFactorSummary {
+    pub user_id: String,
+    pub enabled: bool,
+    pub is_canary: bool,
+}
+
+/// Audit log entry for admin-visible 2FA events.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: usize,
+    pub user_id: String,
+    pub event: String,
+    pub timestamp: u64,
+    pub actor: String,
+    pub metadata: Option<String>,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -209,6 +228,48 @@ pub trait TwoFactorStore: Send + Sync {
         page: u32,
         page_size: u32,
     ) -> Result<Vec<RecoveryCodeUsageLog>, String>;
+
+    // --- Admin dashboard (Issue #688) ---
+
+    /// Paginated list of all users with their 2FA status.
+    /// Canary accounts are excluded from this listing.
+    fn list_users(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<UserTwoFactorSummary>, String>;
+
+    /// Force-disable 2FA for a user and append an audit log entry.
+    fn admin_disable_two_fa(
+        &self,
+        user_id: &str,
+        admin_id: &str,
+    ) -> Result<(), String>;
+
+    /// Get the full audit log for a user (paginated, page starts at 1).
+    fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String>;
+
+    /// Append an entry to the audit log.
+    fn append_audit_log(
+        &self,
+        user_id: &str,
+        event: &str,
+        actor: &str,
+        metadata: Option<&str>,
+    ) -> Result<(), String>;
+
+    // --- Canary tokens (Issue #713) ---
+
+    /// Mark a user account as a canary token account.
+    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String>;
+
+    /// Check whether a user account is a canary.
+    fn is_canary(&self, user_id: &str) -> bool;
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -216,6 +277,8 @@ pub trait TwoFactorStore: Send + Sync {
 pub struct InMemoryStore {
     data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
     recovery_log: Arc<Mutex<Vec<RecoveryCodeUsageLog>>>,
+    audit_log: Arc<Mutex<Vec<AuditLogEntry>>>,
+    canary_flags: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl InMemoryStore {
@@ -312,5 +375,98 @@ impl TwoFactorStore for InMemoryStore {
             .skip(offset)
             .take(limit)
             .collect())
+    }
+
+    fn list_users(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+        let data = self.data.lock().unwrap();
+        let canary_flags = self.canary_flags.lock().unwrap();
+        let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
+
+        let mut summaries: Vec<UserTwoFactorSummary> = data
+            .iter()
+            .filter(|(uid, _)| !canary_flags.get(*uid).copied().unwrap_or(false))
+            .map(|(uid, d)| UserTwoFactorSummary {
+                user_id: uid.clone(),
+                enabled: d.enabled,
+                is_canary: false,
+            })
+            .collect();
+
+        summaries.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+
+        Ok(summaries.into_iter().skip(offset).take(page_size as usize).collect())
+    }
+
+    fn admin_disable_two_fa(
+        &self,
+        user_id: &str,
+        admin_id: &str,
+    ) -> Result<(), String> {
+        self.update_enabled(user_id, false)?;
+        self.append_audit_log(user_id, "admin_disabled_2fa", admin_id, None)?;
+        Ok(())
+    }
+
+    fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        let log = self.audit_log.lock().unwrap();
+        let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
+
+        let entries: Vec<AuditLogEntry> = log
+            .iter()
+            .filter(|e| e.user_id == user_id)
+            .cloned()
+            .collect();
+
+        Ok(entries.into_iter().skip(offset).take(page_size as usize).collect())
+    }
+
+    fn append_audit_log(
+        &self,
+        user_id: &str,
+        event: &str,
+        actor: &str,
+        metadata: Option<&str>,
+    ) -> Result<(), String> {
+        let mut log = self.audit_log.lock().unwrap();
+        let id = log.len();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        log.push(AuditLogEntry {
+            id,
+            user_id: user_id.to_string(),
+            event: event.to_string(),
+            timestamp,
+            actor: actor.to_string(),
+            metadata: metadata.map(|s| s.to_string()),
+        });
+        Ok(())
+    }
+
+    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        self.canary_flags
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), is_canary);
+        Ok(())
+    }
+
+    fn is_canary(&self, user_id: &str) -> bool {
+        self.canary_flags
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .copied()
+            .unwrap_or(false)
     }
 }

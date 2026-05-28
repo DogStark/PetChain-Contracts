@@ -1,4 +1,4 @@
-use crate::two_factor::{RecoveryCodeUsageLog, TwoFactorData, TwoFactorStore};
+use crate::two_factor::{AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorStore, UserTwoFactorSummary};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -261,6 +261,161 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .collect())
     }
 
+    fn list_users(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let limit = page_size as i64;
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+            enabled: bool,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT u.user_id, u.enabled
+                FROM user_two_factor u
+                LEFT JOIN canary_accounts c ON c.user_id = u.user_id
+                WHERE c.user_id IS NULL
+                ORDER BY u.user_id
+                LIMIT $1 OFFSET $2
+                "#,
+            )
+            .bind(limit)
+            .bind(offset as i64)
+            .fetch_all(&self.pool),
+        )?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| UserTwoFactorSummary {
+                user_id: r.user_id,
+                enabled: r.enabled,
+                is_canary: false,
+            })
+            .collect())
+    }
+
+    fn admin_disable_two_fa(
+        &self,
+        user_id: &str,
+        admin_id: &str,
+    ) -> Result<(), String> {
+        self.update_enabled(user_id, false)?;
+        self.append_audit_log(user_id, "admin_disabled_2fa", admin_id, None)?;
+        Ok(())
+    }
+
+    fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let limit = page_size as i64;
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i32,
+            user_id: String,
+            event: String,
+            timestamp: i64,
+            actor: String,
+            metadata: Option<String>,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT id, user_id, event, EXTRACT(EPOCH FROM timestamp)::bigint AS timestamp,
+                       actor, metadata
+                FROM two_fa_audit_log
+                WHERE user_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2 OFFSET $3
+                "#,
+            )
+            .bind(user_id)
+            .bind(limit)
+            .bind(offset as i64)
+            .fetch_all(&self.pool),
+        )?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| AuditLogEntry {
+                id: r.id as usize,
+                user_id: r.user_id,
+                event: r.event,
+                timestamp: r.timestamp as u64,
+                actor: r.actor,
+                metadata: r.metadata,
+            })
+            .collect())
+    }
+
+    fn append_audit_log(
+        &self,
+        user_id: &str,
+        event: &str,
+        actor: &str,
+        metadata: Option<&str>,
+    ) -> Result<(), String> {
+        self.block_on(
+            sqlx::query(
+                r#"
+                INSERT INTO two_fa_audit_log (user_id, event, actor, metadata)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(user_id)
+            .bind(event)
+            .bind(actor)
+            .bind(metadata)
+            .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        if is_canary {
+            self.block_on(
+                sqlx::query(
+                    r#"
+                    INSERT INTO canary_accounts (user_id) VALUES ($1)
+                    ON CONFLICT (user_id) DO NOTHING
+                    "#,
+                )
+                .bind(user_id)
+                .execute(&self.pool),
+            )?;
+        } else {
+            self.block_on(
+                sqlx::query("DELETE FROM canary_accounts WHERE user_id = $1")
+                    .bind(user_id)
+                    .execute(&self.pool),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn is_canary(&self, user_id: &str) -> bool {
+        self.block_on(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .fetch_one(&self.pool),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]

@@ -81,6 +81,25 @@ pub enum BreedingKey {
     LineageDepth(u64),
 }
 
+/// Allele type for Mendelian genetics simulation.
+/// Dominant allele expresses when at least one copy is present;
+/// Recessive allele only expresses when both copies are recessive.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Allele {
+    Dominant,
+    Recessive,
+}
+
+/// Storage keys for genetics data (kept separate to avoid breaking existing structs).
+#[contracttype]
+pub enum GeneticsKey {
+    /// pet_id -> Map<trait_name, Allele>
+    PetTraits(u64),
+    /// breeding_record_id -> Map<trait_name, u32>  (probability in basis points 0-10000)
+    PredictedTraits(u64),
+}
+
 #[contracttype]
 pub enum GroomingKey {
     GroomingRecord(u64),
@@ -103,6 +122,8 @@ mod test_attachments;
 mod test_behavior;
 #[cfg(test)]
 mod test_breeding;
+#[cfg(test)]
+mod test_breeding_genetics;
 #[cfg(test)]
 mod test_book_slot;
 #[cfg(test)]
@@ -155,7 +176,7 @@ mod test_upgrade_proposal;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
-    Env, String, Symbol, Vec,
+    Env, Map, String, Symbol, Vec,
 };
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
@@ -291,14 +312,7 @@ pub enum ContractError {
     PrerequisiteIncomplete = 141,
     CircularDependency = 142,
     CrossPetComparison = 143,
-    // Feature: Vet License Verification
-    /// Vet is registered but their license has not been verified via
-    /// `verify_vet_license()`. `grant_access` will reject unverified vets.
-    VetLicenseNotVerified = 144,
-    // Feature: Fraud Detection
-    /// `approve_flagged_claim` was called on a claim that is not in
-    /// `UnderReview` state.
-    ClaimNotUnderReview = 145,
+    BreedingRecordNotFound = 150,
 }
 
 #[contracttype]
@@ -11037,6 +11051,115 @@ impl PetChainContract {
         pedigree
     }
 
+    // --- GENETICS / TRAIT INHERITANCE (Issue #677) ---
+
+    /// Set the genetic traits for a pet. Only the pet owner may call this.
+    /// `traits` maps trait name -> Allele (Dominant or Recessive).
+    pub fn set_pet_traits(env: Env, pet_id: u64, traits: Map<String, Allele>) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+        env.storage()
+            .instance()
+            .set(&GeneticsKey::PetTraits(pet_id), &traits);
+    }
+
+    /// Get the genetic traits stored for a pet.
+    pub fn get_pet_traits(env: Env, pet_id: u64) -> Map<String, Allele> {
+        env.storage()
+            .instance()
+            .get::<GeneticsKey, Map<String, Allele>>(&GeneticsKey::PetTraits(pet_id))
+            .unwrap_or_else(|| Map::new(&env))
+    }
+
+    /// Compute Mendelian offspring trait probabilities for a breeding record.
+    ///
+    /// For each trait present in either parent:
+    ///   - Both Dominant  → offspring probability = 10000 (100.00 %)
+    ///   - One Dominant, one Recessive → 7500 (75.00 %)
+    ///   - Both Recessive → 0 (0.00 %, recessive only expresses when homozygous)
+    ///
+    /// Probabilities are stored as basis points (u32, 0-10000).
+    /// Returns the predicted traits map.
+    pub fn compute_offspring_traits(
+        env: Env,
+        record_id: u64,
+    ) -> Map<String, u32> {
+        let record: BreedingRecord = env
+            .storage()
+            .instance()
+            .get::<BreedingKey, BreedingRecord>(&BreedingKey::BreedingRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::BreedingRecordNotFound));
+
+        let sire_traits: Map<String, Allele> = env
+            .storage()
+            .instance()
+            .get::<GeneticsKey, Map<String, Allele>>(&GeneticsKey::PetTraits(record.sire_id))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let dam_traits: Map<String, Allele> = env
+            .storage()
+            .instance()
+            .get::<GeneticsKey, Map<String, Allele>>(&GeneticsKey::PetTraits(record.dam_id))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut predicted: Map<String, u32> = Map::new(&env);
+
+        // Collect all trait names from both parents
+        for (trait_name, sire_allele) in sire_traits.iter() {
+            let dam_allele = dam_traits
+                .get(trait_name.clone())
+                .unwrap_or(Allele::Recessive);
+            let prob = Self::mendelian_probability(&sire_allele, &dam_allele);
+            predicted.set(trait_name, prob);
+        }
+        for (trait_name, dam_allele) in dam_traits.iter() {
+            // Only add traits not already computed from sire
+            if predicted.get(trait_name.clone()).is_none() {
+                let sire_allele = Allele::Recessive;
+                let prob = Self::mendelian_probability(&sire_allele, &dam_allele);
+                predicted.set(trait_name, prob);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&GeneticsKey::PredictedTraits(record_id), &predicted);
+
+        predicted
+    }
+
+    /// Mendelian probability in basis points (0-10000):
+    ///   D×D → 10000 (dominant always expressed)
+    ///   D×R or R×D → 7500 (3 out of 4 Punnett squares show dominant)
+    ///   R×R → 0 (recessive — no dominant expression)
+    fn mendelian_probability(a: &Allele, b: &Allele) -> u32 {
+        match (a, b) {
+            (Allele::Dominant, Allele::Dominant) => 10000,
+            (Allele::Dominant, Allele::Recessive) | (Allele::Recessive, Allele::Dominant) => 7500,
+            (Allele::Recessive, Allele::Recessive) => 0,
+        }
+    }
+
+    /// Get the predicted dominant-expression probability (basis points 0-10000)
+    /// for a specific trait in the offspring of a breeding record.
+    /// Returns `None` if the trait is unknown for this record.
+    pub fn get_trait_probability(
+        env: Env,
+        record_id: u64,
+        trait_name: String,
+    ) -> Option<u32> {
+        let predicted: Map<String, u32> = env
+            .storage()
+            .instance()
+            .get::<GeneticsKey, Map<String, u32>>(&GeneticsKey::PredictedTraits(record_id))
+            .unwrap_or_else(|| Map::new(&env));
+        predicted.get(trait_name)
+    }
+
     // --- GROOMING RECORDS SYSTEM ---
     pub fn add_grooming_record(
         env: Env,
@@ -11675,3 +11798,4 @@ mod gas_profile_tests {
         assert!(budget.memory_bytes_cost() <= 2_500_000);
     }
 }
+} // end mod gas_profile_tests

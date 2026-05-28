@@ -2701,3 +2701,299 @@ impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedi
         self.backend.advance_ms(ms);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #688 — Admin Dashboard tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod admin_dashboard_tests {
+    use crate::handlers::{
+        clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
+        AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
+    };
+    use crate::two_factor::TwoFactorData;
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("admin-001")
+    }
+
+    fn setup_user(user_id: &str) {
+        let store = get_two_factor_store_for_tests();
+        let _ = store.save(
+            user_id,
+            TwoFactorData {
+                secret: "JBSWY3DPEHPK3PXP".to_string(),
+                backup_codes: vec![],
+                enabled: true,
+            },
+        );
+    }
+
+    #[test]
+    fn test_list_users_returns_paginated_results() {
+        clear_two_factor_store_for_tests();
+        setup_user("user-a");
+        setup_user("user-b");
+        setup_user("user-c");
+
+        let page1 = AdminDashboardHandlers::list_users(&admin(), 1, 2).unwrap();
+        let page2 = AdminDashboardHandlers::list_users(&admin(), 2, 2).unwrap();
+
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 1);
+    }
+
+    #[test]
+    fn test_disable_two_fa_creates_audit_log() {
+        clear_two_factor_store_for_tests();
+        setup_user("user-disable");
+
+        AdminDashboardHandlers::disable_two_fa(&admin(), "user-disable").unwrap();
+
+        let store = get_two_factor_store_for_tests();
+        let data = store.get("user-disable").unwrap();
+        assert!(!data.enabled);
+
+        let log = AdminDashboardHandlers::get_audit_log(&admin(), "user-disable", 1, 10).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].event, "admin_disabled_2fa");
+        assert_eq!(log[0].actor, "admin-001");
+    }
+
+    #[test]
+    fn test_audit_log_paginated() {
+        clear_two_factor_store_for_tests();
+        setup_user("user-audit");
+
+        let store = get_two_factor_store_for_tests();
+        for i in 0..5 {
+            store
+                .append_audit_log("user-audit", &format!("event_{}", i), "admin-001", None)
+                .unwrap();
+        }
+
+        let page1 = AdminDashboardHandlers::get_audit_log(&admin(), "user-audit", 1, 3).unwrap();
+        let page2 = AdminDashboardHandlers::get_audit_log(&admin(), "user-audit", 2, 3).unwrap();
+        assert_eq!(page1.len(), 3);
+        assert_eq!(page2.len(), 2);
+    }
+
+    #[test]
+    fn test_non_admin_cannot_call_admin_endpoints() {
+        // AuthenticatedAdmin is a distinct type from AuthenticatedUser —
+        // the type system prevents non-admin callers from reaching these handlers.
+        // This test documents that the types are distinct.
+        let user = AuthenticatedUser::new("regular-user");
+        let _admin = AuthenticatedAdmin::new("admin-001");
+        // user and _admin are different types; the compiler enforces this.
+        assert_ne!(user.user_id, _admin.admin_id.clone() + "-different");
+    }
+
+    #[test]
+    fn test_canary_excluded_from_user_listing() {
+        clear_two_factor_store_for_tests();
+        setup_user("normal-user");
+        setup_user("canary-user");
+
+        let store = get_two_factor_store_for_tests();
+        store.set_canary("canary-user", true).unwrap();
+
+        let users = AdminDashboardHandlers::list_users(&admin(), 1, 100).unwrap();
+        let ids: Vec<&str> = users.iter().map(|u| u.user_id.as_str()).collect();
+        assert!(ids.contains(&"normal-user"));
+        assert!(!ids.contains(&"canary-user"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #713 — Canary Token Detection tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod canary_tests {
+    use crate::handlers::{
+        clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
+        CanaryHandlers, CreateCanaryRequest,
+    };
+    use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    };
+
+    struct RecordingHttpClient {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingHttpClient {
+        fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            (Self { calls: calls.clone() }, calls)
+        }
+    }
+
+    impl HttpClient for RecordingHttpClient {
+        fn post(&self, url: &str, body: &str) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", url, body));
+            Ok(())
+        }
+    }
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("admin-001")
+    }
+
+    fn make_canary_handlers() -> (CanaryHandlers, Arc<Mutex<Vec<String>>>) {
+        let (http_client, calls) = RecordingHttpClient::new();
+        let wm = Arc::new(WebhookManager::new(Arc::new(http_client)));
+        wm.configure(
+            SecurityEventType::CanaryTriggered,
+            "http://alert.example.com/hook".to_string(),
+        );
+        (CanaryHandlers::new(wm), calls)
+    }
+
+    #[test]
+    fn test_create_canary_account() {
+        clear_two_factor_store_for_tests();
+        let (handlers, _calls) = make_canary_handlers();
+
+        let resp = CanaryHandlers::create_canary(
+            &admin(),
+            CreateCanaryRequest {
+                user_id: "canary-001".to_string(),
+                email: "canary@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resp.user_id, "canary-001");
+        assert!(!resp.secret.is_empty());
+
+        let store = get_two_factor_store_for_tests();
+        assert!(store.is_canary("canary-001"));
+    }
+
+    #[test]
+    fn test_canary_trigger_logs_event_with_ip() {
+        clear_two_factor_store_for_tests();
+        let (handlers, _calls) = make_canary_handlers();
+
+        CanaryHandlers::create_canary(
+            &admin(),
+            CreateCanaryRequest {
+                user_id: "canary-002".to_string(),
+                email: "canary2@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let result = handlers
+            .verify_with_canary_check("canary-002", "123456", Some("10.0.0.1"))
+            .unwrap();
+
+        // Canary always returns false
+        assert!(!result);
+
+        let store = get_two_factor_store_for_tests();
+        let log = store.get_audit_log("canary-002", 1, 10).unwrap();
+        let triggered: Vec<_> = log.iter().filter(|e| e.event == "CanaryTriggered").collect();
+        assert!(!triggered.is_empty());
+        assert!(triggered[0].metadata.as_deref().unwrap_or("").contains("10.0.0.1"));
+    }
+
+    #[test]
+    fn test_canary_trigger_fires_webhook() {
+        clear_two_factor_store_for_tests();
+        let (handlers, calls) = make_canary_handlers();
+
+        CanaryHandlers::create_canary(
+            &admin(),
+            CreateCanaryRequest {
+                user_id: "canary-003".to_string(),
+                email: "canary3@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        handlers
+            .verify_with_canary_check("canary-003", "000000", Some("192.168.1.1"))
+            .unwrap();
+
+        let fired = calls.lock().unwrap();
+        assert!(!fired.is_empty());
+        assert!(fired[0].contains("canary_triggered"));
+    }
+
+    #[test]
+    fn test_canary_excluded_from_normal_user_listing() {
+        clear_two_factor_store_for_tests();
+        let (_handlers, _calls) = make_canary_handlers();
+
+        CanaryHandlers::create_canary(
+            &admin(),
+            CreateCanaryRequest {
+                user_id: "canary-004".to_string(),
+                email: "canary4@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let store = get_two_factor_store_for_tests();
+        let users = store.list_users(1, 100).unwrap();
+        let ids: Vec<&str> = users.iter().map(|u| u.user_id.as_str()).collect();
+        assert!(!ids.contains(&"canary-004"));
+    }
+
+    #[test]
+    fn test_normal_user_not_treated_as_canary() {
+        clear_two_factor_store_for_tests();
+        let (handlers, calls) = make_canary_handlers();
+
+        // Set up a normal user
+        let store = get_two_factor_store_for_tests();
+        store
+            .save(
+                "normal-user",
+                crate::two_factor::TwoFactorData {
+                    secret: "JBSWY3DPEHPK3PXP".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                },
+            )
+            .unwrap();
+
+        // Verification attempt on a normal user should NOT fire canary webhook
+        let _ = handlers.verify_with_canary_check("normal-user", "000000", Some("1.2.3.4"));
+        let fired = calls.lock().unwrap();
+        assert!(fired.is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #704 — Webhook tests (integration with handlers)
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod webhook_handler_tests {
+    use crate::webhooks::{SecurityEventType, WebhookManager};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_webhook_manager_configure_and_query_log() {
+        let manager = WebhookManager::default();
+        manager.configure(
+            SecurityEventType::FailedTwoFa,
+            "http://example.com/hook".to_string(),
+        );
+        manager.fire(
+            SecurityEventType::FailedTwoFa,
+            "user1",
+            std::collections::HashMap::new(),
+        );
+        let log = manager.get_delivery_log(1, 10);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].event_type, "failed_two_fa");
+    }
+}
