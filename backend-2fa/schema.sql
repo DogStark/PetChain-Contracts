@@ -30,3 +30,14 @@ CREATE INDEX idx_user_two_factor_enabled ON user_two_factor(enabled);
 
 -- Disable/Delete 2FA
 -- DELETE FROM user_two_factor WHERE user_id = ?;
+
+-- Table to audit recovery code usage (single-use enforcement)
+CREATE TABLE recovery_code_usage (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    code_index INT NOT NULL,
+    used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, code_index)
+);

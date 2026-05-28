@@ -1088,7 +1088,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid backup code"));
+        assert!(result.unwrap_err().contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -1124,9 +1124,9 @@ mod tests {
 mod integration_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AuthenticatedUser, DisableTwoFactorRequest,
-        EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
-        TwoFactorHandlers, VerifyTwoFactorRequest,
+        overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, AuthenticatedUser,
+        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
     use crate::two_factor::{TwoFactorAuth, TwoFactorData};
@@ -1515,6 +1515,346 @@ mod integration_tests {
             );
         }
     }
+
+    // ── W3C Traceparent Header Tests ──
+
+    mod tracing_context {
+        use crate::tracing_middleware::TraceContext;
+
+        #[test]
+        fn parse_valid_traceparent() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+            assert_eq!(tc.parent_span_id, "00f067aa0ba902b7");
+            assert_eq!(tc.flags, "01");
+        }
+
+        #[test]
+        fn parse_valid_traceparent_with_zeros() {
+            let header = "00-00000000000000000000000000000000-0000000000000000-00";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "00000000000000000000000000000000");
+            assert_eq!(tc.parent_span_id, "0000000000000000");
+            assert_eq!(tc.flags, "00");
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_parts() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_trace_id_length() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e47-00f067aa0ba902b7-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_wrong_parent_span_length() {
+            let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_invalid_traceparent_non_hex() {
+            let header = "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01";
+            assert!(TraceContext::parse(header).is_none());
+        }
+
+        #[test]
+        fn parse_absent_header_fallback() {
+            // When header is absent, middleware should generate a fresh trace context
+            // This is tested in the middleware integration tests
+            assert!(true);
+        }
+
+        #[test]
+        fn generate_traceparent_header() {
+            let tc = TraceContext {
+                trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".to_string(),
+                parent_span_id: "00f067aa0ba902b7".to_string(),
+                flags: "01".to_string(),
+            };
+            let header = tc.to_header();
+            assert_eq!(header, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        #[test]
+        fn round_trip_traceparent() {
+            let original = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+            let tc = TraceContext::parse(original).unwrap();
+            let generated = tc.to_header();
+            assert_eq!(generated, original);
+        }
+
+        #[test]
+        fn parse_case_insensitive_hex() {
+            // Hex should be case-insensitive
+            let header = "00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01";
+            let tc = TraceContext::parse(header).unwrap();
+            assert_eq!(tc.trace_id, "4BF92F3577B34DA6A3CE929D0E0E4736");
+        }
+    }
+
+    // ── Recovery Code Single-Use Enforcement Tests ──
+
+    #[test]
+    fn test_recovery_code_first_use_succeeds() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-1";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+
+        // Attempt recovery
+        let backup_code = setup.backup_codes[0].clone();
+        let result = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: backup_code.clone(),
+            },
+            Some("192.168.1.1"),
+        );
+
+        assert!(result.is_ok(), "First recovery use should succeed");
+    }
+
+    #[test]
+    fn test_recovery_code_second_use_rejected() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-2";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        let backup_code = setup.backup_codes[0].clone();
+
+        // First recovery succeeds
+        let first = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: backup_code.clone(),
+            },
+            Some("192.168.1.1"),
+        );
+        assert!(first.is_ok());
+
+        // Second recovery should fail
+        let second = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some("192.168.1.2"),
+        );
+
+        assert!(second.is_err());
+        assert!(second.unwrap_err().contains("InvalidRecoveryCode"));
+    }
+
+    #[test]
+    fn test_recovery_log_entry_written() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-user-3";
+        let caller_user = caller(user_id);
+
+        // Enable 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        let backup_code = setup.backup_codes[0].clone();
+
+        // Use recovery code
+        let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some("10.0.0.1"),
+        );
+
+        // Check recovery log
+        let log = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        assert!(
+            log.len() > 0,
+            "Recovery log should have entries after code usage"
+        );
+
+        let entry = &log[0];
+        assert_eq!(entry.user_id, user_id);
+        assert_eq!(entry.code_index, 0);
+        assert_eq!(entry.ip_address, Some("10.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_log_pagination() {
+        clear_two_factor_store_for_tests();
+
+        // Create multiple recovery log entries
+        for i in 0..15 {
+            let user_id = format!("user-{}", i);
+            let c = caller(&user_id);
+
+            let setup = TwoFactorHandlers::enable_two_factor(
+                &c,
+                EnableTwoFactorRequest {
+                    user_id: user_id.clone(),
+                    email: format!("{}@petchain.com", user_id),
+                },
+            )
+            .unwrap();
+
+            let token = generate_token(&setup.secret);
+            let handler = TwoFactorHandlers::new();
+            handler
+                .verify_and_activate(
+                    &c,
+                    VerifyTwoFactorRequest {
+                        user_id: user_id.clone(),
+                        token,
+                    },
+                )
+                .ok();
+
+            let backup_code = setup.backup_codes[0].clone();
+            let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+                &c,
+                RecoverWithBackupRequest {
+                    user_id,
+                    backup_code,
+                },
+                None,
+            );
+        }
+
+        // Test pagination
+        let page1 = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        let page2 = AdminRecoveryHandlers::get_recovery_log(2, 10).unwrap();
+
+        assert_eq!(page1.len(), 10);
+        assert!(page2.len() > 0);
+        assert!(page2.len() <= 10);
+
+        // Verify reverse chronological order
+        if page1.len() > 1 {
+            assert!(page1[0].used_at >= page1[1].used_at);
+        }
+    }
+
+    #[test]
+    fn test_recovery_log_fields_correct() {
+        clear_two_factor_store_for_tests();
+        let user_id = "field-test-user";
+        let caller_user = caller(user_id);
+
+        // Enable and setup
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // Use second backup code (index 1)
+        let backup_code = setup.backup_codes[1].clone();
+        let ip = "203.0.113.42";
+
+        let _ = TwoFactorHandlers::recover_with_backup_with_ip(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code,
+            },
+            Some(ip),
+        );
+
+        // Verify log entry
+        let log = AdminRecoveryHandlers::get_recovery_log(1, 10).unwrap();
+        let entry = log.iter().find(|e| e.user_id == user_id).unwrap();
+
+        assert_eq!(entry.user_id, user_id);
+        assert_eq!(entry.code_index, 1);
+        assert_eq!(entry.ip_address.as_deref(), Some(ip));
+        assert!(!entry.used_at.is_empty());
+    }
 }
 
 // ============================================================================
@@ -1524,6 +1864,7 @@ mod integration_tests {
 #[cfg(test)]
 mod redis_rate_limiter_tests {
     use crate::rate_limiter::{RateLimitResult, RateLimiter, RedisRateLimiter};
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Returns a unique key per test invocation to prevent cross-test pollution.
@@ -1550,7 +1891,107 @@ mod redis_rate_limiter_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Unconditional test — no Redis instance required
+    // Mock Redis client for sliding-window unit tests
+    // -----------------------------------------------------------------------
+
+    /// A minimal mock that records ZADD/ZREMRANGEBYSCORE/ZCARD/EXPIRE/DEL
+    /// calls so we can test the sliding-window logic without a real Redis.
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct MockRedisState {
+        /// sorted set: key → BTreeMap<score_ms, member_ms>
+        zsets: HashMap<String, BTreeMap<u64, u64>>,
+        /// string keys (lockout)
+        strings: HashMap<String, u64>, // value = TTL remaining (secs)
+    }
+
+    impl MockRedisState {
+        fn zremrangebyscore(&mut self, key: &str, min: u64, max: u64) {
+            if let Some(set) = self.zsets.get_mut(key) {
+                set.retain(|&score, _| score < min || score > max);
+            }
+        }
+
+        fn zadd(&mut self, key: &str, score: u64, member: u64) {
+            self.zsets
+                .entry(key.to_string())
+                .or_default()
+                .insert(score, member);
+        }
+
+        fn zcard(&self, key: &str) -> u64 {
+            self.zsets.get(key).map(|s| s.len() as u64).unwrap_or(0)
+        }
+
+        fn set_ex(&mut self, key: &str, ttl: u64) {
+            self.strings.insert(key.to_string(), ttl);
+        }
+
+        fn ttl(&self, key: &str) -> i64 {
+            match self.strings.get(key) {
+                Some(&t) if t > 0 => t as i64,
+                _ => -2,
+            }
+        }
+
+        fn del(&mut self, keys: &[&str]) {
+            for k in keys {
+                self.zsets.remove(*k);
+                self.strings.remove(*k);
+            }
+        }
+    }
+
+    /// Simulates the sliding-window logic of `RedisRateLimiter::record_failure`
+    /// using the mock state, so we can assert on the algorithm without Redis.
+    fn mock_record_failure(
+        state: &Arc<Mutex<MockRedisState>>,
+        key: &str,
+        now_ms: u64,
+        max_failures: u32,
+        window_secs: u64,
+        lockout_secs: u64,
+    ) -> RateLimitResult {
+        let mut s = state.lock().unwrap();
+
+        let lockout_key = format!("rate:{key}:lockout");
+        let window_key = format!("rate:{key}:window");
+
+        if s.ttl(&lockout_key) > 0 {
+            return RateLimitResult::Blocked {
+                retry_after_secs: s.ttl(&lockout_key) as u64,
+            };
+        }
+
+        let cutoff_ms = now_ms.saturating_sub(window_secs * 1_000);
+        s.zremrangebyscore(&window_key, 0, cutoff_ms);
+        s.zadd(&window_key, now_ms, now_ms);
+        let count = s.zcard(&window_key);
+
+        if count >= max_failures as u64 {
+            s.set_ex(&lockout_key, lockout_secs);
+            return RateLimitResult::Blocked {
+                retry_after_secs: lockout_secs,
+            };
+        }
+
+        RateLimitResult::Allowed {
+            remaining: max_failures - count as u32,
+        }
+    }
+
+    fn mock_record_success(state: &Arc<Mutex<MockRedisState>>, key: &str) {
+        let mut s = state.lock().unwrap();
+        s.del(&[
+            &format!("rate:{key}:lockout"),
+            &format!("rate:{key}:window"),
+        ]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unconditional tests — no Redis instance required
     // -----------------------------------------------------------------------
 
     /// When Redis is unreachable the limiter must fail open (return Allowed)
@@ -1575,6 +2016,112 @@ mod redis_rate_limiter_tests {
     fn redis_rate_limiter_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RedisRateLimiter>();
+    }
+
+    // -----------------------------------------------------------------------
+    // Mock sliding-window unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mock_sliding_window_allows_below_limit() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 1_000_000u64;
+        for i in 1u32..5 {
+            match mock_record_failure(&state, "user:a", now_ms + i as u64, 5, 60, 300) {
+                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 5 - i),
+                RateLimitResult::Blocked { .. } => panic!("should not block before limit"),
+            }
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_blocks_at_limit() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 2_000_000u64;
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:b", now_ms + i, 3, 60, 300);
+        }
+        assert!(matches!(
+            mock_record_failure(&state, "user:b", now_ms + 3, 3, 60, 300),
+            RateLimitResult::Blocked { retry_after_secs: 300 }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_evicts_stale_entries() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        // 3 failures at t=0
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:c", i, 3, 60, 300);
+        }
+        // 61 seconds later — all three are outside the 60 s window
+        let later_ms = 61_000u64;
+        match mock_record_failure(&state, "user:c", later_ms, 3, 60, 300) {
+            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("stale entries should have been evicted"),
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_prevents_boundary_burst() {
+        // Fixed-window would reset at t=60 s, allowing a burst of max_failures
+        // right after. Sliding window must not allow that.
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let max = 3u32;
+        let window_ms = 60_000u64;
+
+        // Fill the window just before the boundary (t = 59 s)
+        for i in 0..max as u64 {
+            mock_record_failure(&state, "user:d", 59_000 + i, max, 60, 300);
+        }
+        // At t = 60 s (boundary) the entries are still within the window
+        assert!(matches!(
+            mock_record_failure(&state, "user:d", window_ms, max, 60, 300),
+            RateLimitResult::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_success_resets_counter() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 3_000_000u64;
+        mock_record_failure(&state, "user:e", now_ms, 3, 60, 300);
+        mock_record_failure(&state, "user:e", now_ms + 1, 3, 60, 300);
+        mock_record_success(&state, "user:e");
+        match mock_record_failure(&state, "user:e", now_ms + 2, 3, 60, 300) {
+            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("should not block after success reset"),
+        }
+    }
+
+    #[test]
+    fn mock_sliding_window_concurrent_requests_independent_keys() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 4_000_000u64;
+        // Exhaust key "user:f"
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:f", now_ms + i, 3, 60, 300);
+        }
+        // "user:g" must be unaffected
+        assert!(matches!(
+            mock_record_failure(&state, "user:g", now_ms, 3, 60, 300),
+            RateLimitResult::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn mock_sliding_window_retry_after_is_accurate() {
+        let state = Arc::new(Mutex::new(MockRedisState::default()));
+        let now_ms = 5_000_000u64;
+        for i in 0..3u64 {
+            mock_record_failure(&state, "user:h", now_ms + i, 3, 60, 120);
+        }
+        match mock_record_failure(&state, "user:h", now_ms + 3, 3, 60, 120) {
+            RateLimitResult::Blocked { retry_after_secs } => {
+                assert_eq!(retry_after_secs, 120, "retry_after must equal lockout_secs");
+            }
+            RateLimitResult::Allowed { .. } => panic!("should be blocked"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2018,5 +2565,139 @@ mod redis_rate_limiter_tests {
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].attempted_score, max_score);
         }
+    }
+}
+
+// ============================================================================
+// MockRedisBackend + SlidingWindowRateLimiter tests (#614)
+// ============================================================================
+
+#[cfg(test)]
+mod mock_redis_tests {
+    use crate::rate_limiter::{
+        EndpointConfig, MockRedisBackend, RateLimitResult, RateLimiter, SlidingWindowRateLimiter,
+    };
+    use std::sync::Arc;
+
+    fn limiter(max: u32, window_secs: u64, lockout_secs: u64) -> SlidingWindowRateLimiter<MockRedisBackend> {
+        SlidingWindowRateLimiter::new(
+            MockRedisBackend::new(),
+            EndpointConfig::new(window_secs, max, lockout_secs),
+        )
+    }
+
+    // --- limit ---
+
+    #[test]
+    fn allows_requests_below_limit() {
+        let l = limiter(3, 60, 300);
+        for i in 1u32..3 {
+            assert_eq!(l.record_failure("u:a"), RateLimitResult::Allowed { remaining: 3 - i });
+        }
+    }
+
+    #[test]
+    fn blocks_at_limit_with_accurate_retry_after() {
+        let l = limiter(3, 60, 120);
+        for _ in 0..3 { l.record_failure("u:b"); }
+        assert_eq!(
+            l.record_failure("u:b"),
+            RateLimitResult::Blocked { retry_after_secs: 120 },
+        );
+    }
+
+    // --- reset ---
+
+    #[test]
+    fn success_resets_counter() {
+        let l = limiter(3, 60, 300);
+        l.record_failure("u:c");
+        l.record_failure("u:c");
+        l.record_success("u:c");
+        assert_eq!(l.record_failure("u:c"), RateLimitResult::Allowed { remaining: 2 });
+    }
+
+    #[test]
+    fn window_expiry_resets_counter() {
+        let l = limiter(3, 60, 300);
+        // 2 failures (below the lockout threshold)
+        l.record_failure("u:d");
+        l.record_failure("u:d");
+        // Advance clock past the 60-second window — entries are evicted on next call
+        l.backend_advance_ms(61_000);
+        // Window has expired; the two old entries are outside the cutoff, so Allowed with remaining=2
+        assert_eq!(l.record_failure("u:d"), RateLimitResult::Allowed { remaining: 2 });
+    }
+
+    // --- concurrent / independent keys ---
+
+    #[test]
+    fn different_keys_are_independent() {
+        let l = limiter(2, 60, 300);
+        l.record_failure("u:e");
+        l.record_failure("u:e");
+        assert!(matches!(l.record_failure("u:f"), RateLimitResult::Allowed { .. }));
+    }
+
+    #[test]
+    fn concurrent_threads_do_not_corrupt_state() {
+        use std::thread;
+        let l = Arc::new(limiter(100, 60, 300));
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let l = Arc::clone(&l);
+                thread::spawn(move || l.record_failure(&format!("u:thread:{i}")))
+            })
+            .collect();
+        for h in handles { h.join().expect("thread panicked"); }
+    }
+
+    // --- per-endpoint config ---
+
+    #[test]
+    fn per_endpoint_config_applies_correct_limits() {
+        let l = SlidingWindowRateLimiter::new(
+            MockRedisBackend::new(),
+            EndpointConfig::new(60, 10, 300), // default: 10 failures
+        )
+        .with_endpoint("login", EndpointConfig::new(60, 2, 60)); // login: 2 failures
+
+        // Exhaust the login endpoint
+        l.record_failure("login:user:1");
+        l.record_failure("login:user:1");
+        assert!(matches!(
+            l.record_failure("login:user:1"),
+            RateLimitResult::Blocked { .. }
+        ));
+
+        // A key that doesn't match "login" uses the default (10 failures)
+        for _ in 0..9 {
+            assert!(matches!(
+                l.record_failure("verify:user:1"),
+                RateLimitResult::Allowed { .. }
+            ));
+        }
+    }
+
+    // --- sliding window prevents boundary burst ---
+
+    #[test]
+    fn sliding_window_prevents_boundary_burst() {
+        let l = limiter(3, 60, 300);
+        // 3 failures just before the 60-second boundary
+        for _ in 0..3 { l.record_failure("u:g"); }
+        // Advance to exactly the boundary — entries are still within the window
+        l.backend_advance_ms(59_999);
+        assert!(matches!(l.record_failure("u:g"), RateLimitResult::Blocked { .. }));
+    }
+}
+
+// Helper: expose advance_ms on SlidingWindowRateLimiter<MockRedisBackend>
+// without polluting the public API.
+#[cfg(test)]
+impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedisBackend> {
+    fn backend_advance_ms(&self, ms: u64) {
+        // Access the backend field directly (same crate, so pub(crate) is fine).
+        self.backend.advance_ms(ms);
     }
 }

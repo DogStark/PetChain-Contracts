@@ -709,3 +709,68 @@ fn test_get_active_transfer_proposals_per_pet_isolation() {
     assert_eq!(active_pet2.len(), 1);
     assert_eq!(active_pet2.get(0).unwrap().pet_id, pet_id2);
 }
+
+#[test]
+fn test_set_threshold_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+
+    client.set_threshold(&admin1, &2u32);
+    assert_eq!(client.get_admin_threshold(), 2u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    client.set_threshold(&admin1, &0u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_exceeds_signer_count_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    client.set_threshold(&admin1, &5u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_blocked_by_active_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    // create an active proposal
+    let action = crate::ProposalAction::VerifyVet(admin2.clone());
+    client.propose_action(&admin1, &action, &3600u64);
+    // now try to change threshold — should panic
+    client.set_threshold(&admin1, &2u32);
+}
