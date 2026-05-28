@@ -12,15 +12,17 @@ mod tests;
 pub use db::PostgresTwoFactorStore;
 pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, SecretProvider};
 pub use handlers::{
-    AdminDashboardHandlers, AdminScoreHandlers, AuthenticatedAdmin, AuthenticatedUser,
-    CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse, TwoFactorHandlers,
+    AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin,
+    AuthenticatedUser, CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse,
+    GrantUnlimitedRequest, SetUserQuotaRequest, TwoFactorHandlers,
 };
 pub use leaderboard::{
     FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use rate_limiter::{
-    EndpointConfig, InMemoryRateLimiter, LiveRedisBackend, MockRedisBackend, RateLimitResult,
-    RateLimiter, RedisBackend, RedisRateLimiter, SlidingWindowRateLimiter,
+    EndpointConfig, InMemoryRateLimiter, LiveRedisBackend, MockRedisBackend, QuotaAwareRateLimiter,
+    RateLimitResult, RateLimiter, RedisBackend, RedisRateLimiter, SlidingWindowRateLimiter,
+    UserQuota, UserQuotaStore,
 };
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
