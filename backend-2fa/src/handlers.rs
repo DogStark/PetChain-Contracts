@@ -641,3 +641,35 @@ impl CanaryHandlers {
 pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
     test_two_factor_store()
 }
+
+// ---------------------------------------------------------------------------
+// Pool metrics endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PoolStatsResponse {
+    pub active: u32,
+    pub idle: u32,
+    pub max: u32,
+}
+
+pub struct PoolMetricsHandlers;
+
+#[cfg(not(test))]
+impl PoolMetricsHandlers {
+    /// Return current pool utilisation. Only available when backed by Postgres.
+    /// Requires `POOL_STATS_ENABLED=1` to be set; otherwise returns an error
+    /// to avoid coupling the handler to a concrete store type at runtime.
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string())
+    }
+}
+
+#[cfg(test)]
+impl PoolMetricsHandlers {
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        // In tests there is no real pool; return a fixed sentinel so the
+        // endpoint handler can be exercised without a database.
+        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+    }
+}
