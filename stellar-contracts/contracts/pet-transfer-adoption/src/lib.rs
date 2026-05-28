@@ -12,6 +12,10 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
+/// Dispute window: after both parties sign, either party has 48 hours to raise
+/// a dispute before [`finalize_transfer`] may be called.
+pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
+
 #[cfg(test)]
 mod test;
 mod vet_registry;
@@ -43,6 +47,18 @@ pub struct PendingTransfer {
     pub initiated_at: u64,
 }
 
+/// A transfer that has been accepted by both parties and is now in the
+/// 48-hour dispute window before ownership is finalised.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowedTransfer {
+    pub pet_id: u64,
+    pub from: Address,
+    pub to: Address,
+    pub escrowed_at: u64,
+    pub disputed: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipRecord {
@@ -59,6 +75,7 @@ pub struct OwnershipRecord {
 enum DataKey {
     Pet(u64),
     PendingTransfer(u64),
+    EscrowedTransfer(u64),
     OwnershipHistory(u64),
     OwnerPets(Address),
 }
@@ -68,8 +85,10 @@ enum DataKey {
 /// ======================================================
 
 const EVT_TRANSFER_INITIATED: Symbol = symbol_short!("xfer_init");
-const EVT_TRANSFER_ACCEPTED: Symbol = symbol_short!("xfer_ok");
 const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
+const EVT_TRANSFER_ESCROWED: Symbol = symbol_short!("xfer_escr");
+const EVT_TRANSFER_FINALIZED: Symbol = symbol_short!("xfer_fin");
+const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
 
 /// ======================================================
 /// ERRORS
@@ -90,6 +109,9 @@ pub enum ContractError {
     StaleCancellation = 9,
     EmptyBatch = 10,
     BatchOwnerMismatch = 11,
+    NoEscrowedTransfer = 12,
+    DisputeWindowNotElapsed = 13,
+    TransferAlreadyDisputed = 14,
 }
 
 /// ======================================================
@@ -222,9 +244,13 @@ impl PetOwnershipContract {
     }
 
     /// ----------------------------------
-    /// ACCEPT TRANSFER
+    /// ACCEPT TRANSFER → ESCROW
     /// ----------------------------------
-
+    ///
+    /// The recipient accepts the transfer. Ownership does **not** change yet;
+    /// the transfer enters an [`EscrowedTransfer`] state and a 48-hour dispute
+    /// window begins. Call [`finalize_transfer`] after the window to complete
+    /// the ownership change, or [`raise_dispute`] to block finalization.
     pub fn accept_transfer(env: Env, pet_id: u64) {
         let transfer: PendingTransfer = env
             .storage()
@@ -234,13 +260,59 @@ impl PetOwnershipContract {
 
         transfer.to.require_auth();
 
-        let mut pet = get_pet(&env, pet_id);
-
+        let pet = get_pet(&env, pet_id);
         if pet.current_owner != transfer.from {
             panic_with_error!(env, ContractError::Unauthorized);
         }
 
+        let escrowed = EscrowedTransfer {
+            pet_id,
+            from: transfer.from.clone(),
+            to: transfer.to.clone(),
+            escrowed_at: env.ledger().timestamp(),
+            disputed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingTransfer(pet_id));
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowedTransfer(pet_id), &escrowed);
+
+        env.events().publish(
+            (EVT_TRANSFER_ESCROWED, pet_id),
+            (transfer.from, transfer.to),
+        );
+    }
+
+    /// ----------------------------------
+    /// FINALIZE TRANSFER
+    /// ----------------------------------
+    ///
+    /// Completes the ownership transfer after the 48-hour dispute window has
+    /// elapsed. Either party may call this. Panics if the window has not yet
+    /// elapsed or if the transfer has been disputed.
+    pub fn finalize_transfer(env: Env, pet_id: u64) {
+        let escrowed: EscrowedTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowedTransfer(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoEscrowedTransfer));
+
+        if escrowed.disputed {
+            panic_with_error!(env, ContractError::TransferAlreadyDisputed);
+        }
+
         let now = env.ledger().timestamp();
+        if now.saturating_sub(escrowed.escrowed_at) < DISPUTE_WINDOW_SECONDS {
+            panic_with_error!(env, ContractError::DisputeWindowNotElapsed);
+        }
+
+        let mut pet = get_pet(&env, pet_id);
+        if pet.current_owner != escrowed.from {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
 
         // Update ownership history
         let mut history = get_history(&env, pet_id);
@@ -253,28 +325,67 @@ impl PetOwnershipContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
         prev.relinquished_at = Some(now);
         history.set(last, prev);
-
         history.push_back(OwnershipRecord {
-            owner: transfer.to.clone(),
+            owner: escrowed.to.clone(),
             acquired_at: now,
             relinquished_at: None,
         });
 
-        remove_pet_from_owner(&env, &transfer.from, pet_id);
-        add_pet_to_owner(&env, &transfer.to, pet_id);
-
-        pet.current_owner = transfer.to.clone();
+        remove_pet_from_owner(&env, &escrowed.from, pet_id);
+        add_pet_to_owner(&env, &escrowed.to, pet_id);
+        pet.current_owner = escrowed.to.clone();
 
         save_pet(&env, &pet);
         save_history(&env, pet_id, &history);
-
         env.storage()
             .persistent()
-            .remove(&DataKey::PendingTransfer(pet_id));
+            .remove(&DataKey::EscrowedTransfer(pet_id));
 
         env.events().publish(
-            (EVT_TRANSFER_ACCEPTED, pet_id),
-            (transfer.from, transfer.to),
+            (EVT_TRANSFER_FINALIZED, pet_id),
+            (escrowed.from, escrowed.to),
+        );
+    }
+
+    /// ----------------------------------
+    /// RAISE DISPUTE
+    /// ----------------------------------
+    ///
+    /// Either the sender or recipient may raise a dispute during the 48-hour
+    /// window. A disputed transfer cannot be finalized; it must be resolved
+    /// through the main contract's dispute module.
+    ///
+    /// `caller` must be either the `from` or `to` address of the escrowed transfer.
+    pub fn raise_dispute(env: Env, pet_id: u64, caller: Address) {
+        let mut escrowed: EscrowedTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowedTransfer(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoEscrowedTransfer));
+
+        if escrowed.disputed {
+            panic_with_error!(env, ContractError::TransferAlreadyDisputed);
+        }
+
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(escrowed.escrowed_at) >= DISPUTE_WINDOW_SECONDS {
+            panic_with_error!(env, ContractError::DisputeWindowNotElapsed);
+        }
+
+        // Require auth from the caller and verify they are a party to the transfer.
+        caller.require_auth();
+        if caller != escrowed.from && caller != escrowed.to {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
+
+        escrowed.disputed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowedTransfer(pet_id), &escrowed);
+
+        env.events().publish(
+            (EVT_TRANSFER_DISPUTED, pet_id),
+            (escrowed.from, escrowed.to),
         );
     }
 
@@ -442,5 +553,12 @@ impl PetOwnershipContract {
         env.storage()
             .persistent()
             .get(&DataKey::PendingTransfer(pet_id))
+    }
+
+    /// Returns the [`EscrowedTransfer`] for `pet_id`, or `None` if none exists.
+    pub fn get_escrowed_transfer(env: Env, pet_id: u64) -> Option<EscrowedTransfer> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EscrowedTransfer(pet_id))
     }
 }

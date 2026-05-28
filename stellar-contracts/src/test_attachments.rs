@@ -2,7 +2,7 @@ use crate::*;
 extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, String,
+    Address, BytesN, Env, String,
 };
 
 // Helper function to setup test environment
@@ -86,7 +86,7 @@ fn test_add_attachment_success() {
     let metadata = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    let result = client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    let result = client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     assert!(result);
 
     // Verify attachment was added
@@ -106,17 +106,17 @@ fn test_add_multiple_attachments() {
     // Add first attachment
     let metadata1 = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
     let ipfs_hash1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
-    client.add_attachment(&record_id, &ipfs_hash1, &metadata1);
+    client.add_attachment(&record_id, &ipfs_hash1, &metadata1, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Add second attachment
     let metadata2 = create_test_metadata(&env, "blood_test.pdf", "application/pdf", 512000);
     let ipfs_hash2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
-    client.add_attachment(&record_id, &ipfs_hash2, &metadata2);
+    client.add_attachment(&record_id, &ipfs_hash2, &metadata2, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Add third attachment
     let metadata3 = create_test_metadata(&env, "ultrasound.png", "image/png", 2048000);
     let ipfs_hash3 = String::from_str(&env, "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB");
-    client.add_attachment(&record_id, &ipfs_hash3, &metadata3);
+    client.add_attachment(&record_id, &ipfs_hash3, &metadata3, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Verify all attachments were added
     let attachments = client.get_attachments(&record_id);
@@ -164,7 +164,7 @@ fn test_attachment_metadata_storage() {
     };
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
     let attachments = client.get_attachments(&record_id);
     let stored_attachment = attachments.get(0).unwrap();
@@ -190,7 +190,7 @@ fn test_add_attachment_invalid_ipfs_hash_too_short() {
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     let invalid_hash = String::from_str(&env, "short"); // Too short
 
-    client.add_attachment(&record_id, &invalid_hash, &metadata);
+    client.add_attachment(&record_id, &invalid_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn test_add_attachment_invalid_ipfs_hash_too_long() {
     }
     let long_string = soroban_sdk::String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdGQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdGQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    client.add_attachment(&record_id, &long_string, &metadata);
+    client.add_attachment(&record_id, &long_string, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn test_add_attachment_empty_filename() {
     let metadata = create_test_metadata(&env, "", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn test_add_attachment_empty_file_type() {
     let metadata = create_test_metadata(&env, "xray.jpg", "", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn test_add_attachment_zero_file_size() {
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 0);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn test_add_attachment_nonexistent_record() {
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    let result = client.add_attachment(&999u64, &ipfs_hash, &metadata);
+    let result = client.add_attachment(&999u64, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     assert!(!result);
 }
 
@@ -261,11 +261,11 @@ fn test_remove_attachment_success() {
     // Add two attachments
     let metadata1 = create_test_metadata(&env, "xray_001.jpg", "image/jpeg", 1024000);
     let ipfs_hash1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
-    client.add_attachment(&record_id, &ipfs_hash1, &metadata1);
+    client.add_attachment(&record_id, &ipfs_hash1, &metadata1, &BytesN::from_array(&env, &[1u8; 32]));
 
     let metadata2 = create_test_metadata(&env, "blood_test.pdf", "application/pdf", 512000);
     let ipfs_hash2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
-    client.add_attachment(&record_id, &ipfs_hash2, &metadata2);
+    client.add_attachment(&record_id, &ipfs_hash2, &metadata2, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Verify both attachments exist
     assert_eq!(client.get_attachments(&record_id).len(), 2);
@@ -290,7 +290,7 @@ fn test_remove_attachment_invalid_index() {
     // Add one attachment
     let metadata = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
-    client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Try to remove with invalid index - should return false, not panic
     let result = client.remove_attachment(&record_id, &5u32);
@@ -315,13 +315,13 @@ fn test_get_attachment_count() {
     // Add first attachment
     let metadata1 = create_test_metadata(&env, "xray.jpg", "image/jpeg", 1024000);
     let ipfs_hash1 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
-    client.add_attachment(&record_id, &ipfs_hash1, &metadata1);
+    client.add_attachment(&record_id, &ipfs_hash1, &metadata1, &BytesN::from_array(&env, &[1u8; 32]));
     assert_eq!(client.get_attachment_count(&record_id), 1);
 
     // Add second attachment
     let metadata2 = create_test_metadata(&env, "report.pdf", "application/pdf", 512000);
     let ipfs_hash2 = String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX");
-    client.add_attachment(&record_id, &ipfs_hash2, &metadata2);
+    client.add_attachment(&record_id, &ipfs_hash2, &metadata2, &BytesN::from_array(&env, &[1u8; 32]));
     assert_eq!(client.get_attachment_count(&record_id), 2);
 
     // Remove one attachment
@@ -366,7 +366,7 @@ fn test_attachment_with_various_file_types() {
             "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdL"
         };
         let ipfs_hash = String::from_str(&env, hash_str);
-        client.add_attachment(&record_id, &ipfs_hash, &metadata);
+        client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     }
 
     let attachments = client.get_attachments(&record_id);
@@ -381,7 +381,7 @@ fn test_attachment_with_large_file_size() {
     let metadata = create_test_metadata(&env, "large_scan.dicom", "application/dicom", 104857600);
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
 
-    let result = client.add_attachment(&record_id, &ipfs_hash, &metadata);
+    let result = client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     assert!(result);
 
     let attachments = client.get_attachments(&record_id);
@@ -405,17 +405,17 @@ fn test_medical_record_with_attachments_integration() {
     // Add X-ray images
     let xray1_metadata = create_test_metadata(&env, "xray_front.jpg", "image/jpeg", 2048000);
     let xray1_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdM");
-    client.add_attachment(&record_id, &xray1_hash, &xray1_metadata);
+    client.add_attachment(&record_id, &xray1_hash, &xray1_metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
     let xray2_metadata = create_test_metadata(&env, "xray_side.jpg", "image/jpeg", 2048000);
     let xray2_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdN");
-    client.add_attachment(&record_id, &xray2_hash, &xray2_metadata);
+    client.add_attachment(&record_id, &xray2_hash, &xray2_metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Add medical report
     let report_metadata =
         create_test_metadata(&env, "diagnosis_report.pdf", "application/pdf", 512000);
     let report_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdQ");
-    client.add_attachment(&record_id, &report_hash, &report_metadata);
+    client.add_attachment(&record_id, &report_hash, &report_metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Verify the complete medical record
     let record = client.get_medical_record(&record_id).unwrap();
@@ -460,6 +460,7 @@ fn test_multiple_records_with_attachments() {
         &record1_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"),
         &metadata1,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Create second record with attachments
@@ -476,6 +477,7 @@ fn test_multiple_records_with_attachments() {
         &record2_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdP"),
         &metadata2,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Verify each record has its own attachments
@@ -507,6 +509,7 @@ fn test_attachment_timestamp_tracking() {
         &record_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdH"),
         &metadata1,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Advance time
@@ -517,6 +520,7 @@ fn test_attachment_timestamp_tracking() {
         &record_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdP"),
         &metadata2,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Verify timestamps are different
@@ -537,6 +541,7 @@ fn test_get_attachment_by_index_first() {
         &record_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"),
         &metadata1,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     let metadata2 = create_test_metadata(&env, "file2.pdf", "application/pdf", 512000);
@@ -544,6 +549,7 @@ fn test_get_attachment_by_index_first() {
         &record_id,
         &String::from_str(&env, "QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX"),
         &metadata2,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Get first attachment by index
@@ -601,6 +607,7 @@ fn test_get_attachment_by_index_out_of_bounds() {
         &record_id,
         &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"),
         &metadata,
+    &BytesN::from_array(&env, &[1u8; 32]),
     );
 
     // Try to get index that's out of bounds
@@ -697,4 +704,36 @@ fn test_get_attachment_by_index_after_removal() {
     // Old index 2 should now be out of bounds
     let attachment = client.get_attachment_by_index(&record_id, &2u32);
     assert!(attachment.is_none());
+}
+
+#[test]
+fn test_add_attachment_with_content_hash() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+    let metadata = create_test_metadata(&env, "report.pdf", "application/pdf", 2048);
+    let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let content_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let result = client.add_attachment(&record_id, &ipfs_hash, &metadata, &content_hash);
+    assert!(result);
+    assert!(client.verify_attachment(&record_id, &0u32, &content_hash));
+}
+
+#[test]
+fn test_verify_attachment_mismatch() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+    let metadata = create_test_metadata(&env, "report.pdf", "application/pdf", 2048);
+    let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let content_hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &content_hash);
+    let wrong_hash = BytesN::from_array(&env, &[2u8; 32]);
+    assert!(!client.verify_attachment(&record_id, &0u32, &wrong_hash));
+}
+
+#[test]
+#[should_panic]
+fn test_add_attachment_zero_hash_rejected() {
+    let (env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
+    let metadata = create_test_metadata(&env, "report.pdf", "application/pdf", 2048);
+    let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.add_attachment(&record_id, &ipfs_hash, &metadata, &zero_hash);
 }
