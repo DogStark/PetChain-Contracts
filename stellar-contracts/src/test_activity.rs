@@ -1464,3 +1464,316 @@ fn test_milestone_events_not_duplicated() {
     let milestone_count = streak_after.milestones_reached.iter().filter(|&&m| m == 7).count();
     assert_eq!(milestone_count, 1);
 }
+
+// --- 5 NEW TESTS ---
+
+/// Streak resets to 1 when a gap of exactly 2 days separates two activities,
+/// and the previous longest streak is preserved correctly.
+#[test]
+fn test_streak_reset_preserves_longest() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Streak"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &25,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Build a 4-day streak
+    for day in 0..4u64 {
+        env.ledger().with_mut(|l| l.timestamp = 1_000 + day * 86_400);
+        client.add_activity_record(
+            &pet_id,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &1000,
+            &String::from_str(&env, "Walk"),
+        );
+    }
+
+    let after_four = client.get_activity_streak(&pet_id);
+    assert_eq!(after_four.current_streak, 4);
+    assert_eq!(after_four.longest_streak, 4);
+
+    // Skip a day (gap = 2 days) then add one activity
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 6 * 86_400);
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &6,
+        &500,
+        &String::from_str(&env, "Run after gap"),
+    );
+
+    let after_reset = client.get_activity_streak(&pet_id);
+    assert_eq!(after_reset.current_streak, 1);
+    assert_eq!(after_reset.longest_streak, 4); // longest must not shrink
+}
+
+/// `get_activity_history` returns records in insertion order across
+/// different activity types.
+#[test]
+fn test_activity_history_order_preserved() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Order"),
+        &String::from_str(&env, "2021-06-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Siamese"),
+        &String::from_str(&env, "Cream"),
+        &4,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let types = [
+        ActivityType::Training,
+        ActivityType::Play,
+        ActivityType::Walk,
+        ActivityType::Run,
+        ActivityType::Other,
+    ];
+
+    for t in types.iter() {
+        client.add_activity_record(
+            &pet_id,
+            t,
+            &10,
+            &3,
+            &100,
+            &String::from_str(&env, "note"),
+        );
+    }
+
+    let history = client.get_activity_history(&pet_id);
+    assert_eq!(history.len(), 5);
+    for (i, t) in types.iter().enumerate() {
+        assert_eq!(history.get(i as u32).unwrap().activity_type, *t);
+    }
+}
+
+/// `get_activity_stats` only counts records within the requested day window
+/// and ignores older records.
+#[test]
+fn test_activity_stats_respects_day_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Window"),
+        &String::from_str(&env, "2019-03-10"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Beagle"),
+        &String::from_str(&env, "Tricolor"),
+        &12,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Record at t=0 (old, outside a 7-day window from t=30*86400)
+    env.ledger().with_mut(|l| l.timestamp = 0);
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &60,
+        &5,
+        &5000,
+        &String::from_str(&env, "Old walk"),
+    );
+
+    // Record at t=29*86400 (inside a 7-day window from t=30*86400)
+    env.ledger().with_mut(|l| l.timestamp = 29 * 86_400);
+    client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &20,
+        &7,
+        &1500,
+        &String::from_str(&env, "Recent run"),
+    );
+
+    // Query with days=7 from current time t=30*86400
+    env.ledger().with_mut(|l| l.timestamp = 30 * 86_400);
+    let (duration, distance) = client.get_activity_stats(&pet_id, &7);
+
+    // Only the recent run should be counted
+    assert_eq!(duration, 20);
+    assert_eq!(distance, 1500);
+}
+
+/// Adding activities for two different pets does not cross-contaminate
+/// their individual streaks.
+#[test]
+fn test_streaks_are_isolated_per_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_a = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Alpha"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Husky"),
+        &String::from_str(&env, "Gray"),
+        &28,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let pet_b = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Beta"),
+        &String::from_str(&env, "2021-05-20"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Persian"),
+        &String::from_str(&env, "White"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // Pet A: 3 consecutive days
+    for day in 0..3u64 {
+        env.ledger().with_mut(|l| l.timestamp = 1_000 + day * 86_400);
+        client.add_activity_record(
+            &pet_a,
+            &ActivityType::Walk,
+            &30,
+            &5,
+            &1000,
+            &String::from_str(&env, "A walk"),
+        );
+    }
+
+    // Pet B: only 1 day (same timestamps as pet A day 0)
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.add_activity_record(
+        &pet_b,
+        &ActivityType::Play,
+        &15,
+        &3,
+        &0,
+        &String::from_str(&env, "B play"),
+    );
+
+    let streak_a = client.get_activity_streak(&pet_a);
+    let streak_b = client.get_activity_streak(&pet_b);
+
+    assert_eq!(streak_a.current_streak, 3);
+    assert_eq!(streak_b.current_streak, 1);
+    assert_eq!(streak_a.longest_streak, 3);
+    assert_eq!(streak_b.longest_streak, 1);
+}
+
+/// `get_activity_record_by_id` returns the correct record when multiple
+/// records exist, and returns `None` for an id that was never created.
+#[test]
+fn test_get_activity_record_by_id_multiple_records() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Multi"),
+        &String::from_str(&env, "2022-02-14"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Poodle"),
+        &String::from_str(&env, "Apricot"),
+        &8,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let id1 = client.add_activity_record(
+        &pet_id,
+        &ActivityType::Walk,
+        &30,
+        &4,
+        &2000,
+        &String::from_str(&env, "First"),
+    );
+
+    let id2 = client.add_activity_record(
+        &pet_id,
+        &ActivityType::Run,
+        &15,
+        &8,
+        &1200,
+        &String::from_str(&env, "Second"),
+    );
+
+    let id3 = client.add_activity_record(
+        &pet_id,
+        &ActivityType::Training,
+        &45,
+        &6,
+        &0,
+        &String::from_str(&env, "Third"),
+    );
+
+    // Each id resolves to the correct record
+    let r1 = client.get_activity_record_by_id(&id1).unwrap();
+    assert_eq!(r1.activity_type, ActivityType::Walk);
+    assert_eq!(r1.duration_minutes, 30);
+
+    let r2 = client.get_activity_record_by_id(&id2).unwrap();
+    assert_eq!(r2.activity_type, ActivityType::Run);
+    assert_eq!(r2.distance_meters, 1200);
+
+    let r3 = client.get_activity_record_by_id(&id3).unwrap();
+    assert_eq!(r3.activity_type, ActivityType::Training);
+    assert_eq!(r3.intensity, 6);
+
+    // An id that was never issued returns None
+    let missing_id = id3 + 999;
+    assert!(client.get_activity_record_by_id(&missing_id).is_none());
+}
