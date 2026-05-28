@@ -110,3 +110,150 @@ fn test_register_pet_rejects_invalid_birthday_format() {
         &PrivacyLevel::Public,
     );
 }
+
+// --- Issue #622: Breed Metadata and Lifespan ---
+
+#[test]
+fn test_add_breed_metadata_and_calculate_lifespan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000_000_000);
+
+    // Add breed metadata for Golden Retriever with 12 year lifespan
+    client.add_breed_metadata(
+        &admin,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Dog"),
+        &12,
+    );
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "1963280000"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let age = client.get_pet_age_with_lifespan(&pet_id);
+    assert_eq!(age.years, 1);
+    assert_eq!(age.months, 2);
+    // 1.16 years / 12 years = ~9.7%
+    assert!(age.lifespan_pct.is_some());
+    assert!(age.lifespan_pct.unwrap() < 15 && age.lifespan_pct.unwrap() > 5);
+}
+
+#[test]
+fn test_unknown_breed_returns_none_lifespan() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000_000_000);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Mystery"),
+        &String::from_str(&env, "1963280000"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "UnknownBreed"),
+        &String::from_str(&env, "Black"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let age = client.get_pet_age_with_lifespan(&pet_id);
+    assert_eq!(age.years, 1);
+    assert_eq!(age.months, 2);
+    assert_eq!(age.lifespan_pct, None);
+}
+
+#[test]
+fn test_update_breed_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let breed_id = String::from_str(&env, "Labrador");
+
+    // Add initial metadata
+    client.add_breed_metadata(&admin, &breed_id, &String::from_str(&env, "Dog"), &11);
+
+    // Update metadata
+    client.update_breed_metadata(&admin, &breed_id, &String::from_str(&env, "Dog"), &12);
+
+    // Verify update worked
+    env.ledger().with_mut(|l| l.timestamp = 2_000_000_000);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "1963280000"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let age = client.get_pet_age_with_lifespan(&pet_id);
+    assert!(age.lifespan_pct.is_some());
+}
+
+#[test]
+fn test_delete_breed_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let breed_id = String::from_str(&env, "Poodle");
+
+    // Add and then delete metadata
+    client.add_breed_metadata(&admin, &breed_id, &String::from_str(&env, "Dog"), &15);
+    client.delete_breed_metadata(&admin, &breed_id);
+
+    // Verify deletion - should now return None for lifespan_pct
+    env.ledger().with_mut(|l| l.timestamp = 2_000_000_000);
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Fluffy"),
+        &String::from_str(&env, "1963280000"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Poodle"),
+        &String::from_str(&env, "White"),
+        &22u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let age = client.get_pet_age_with_lifespan(&pet_id);
+    assert_eq!(age.lifespan_pct, None);
+}
