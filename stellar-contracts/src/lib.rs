@@ -807,6 +807,10 @@ pub enum DataKey {
     PetCustodyCount(u64),         // pet_id -> count of custody records
     PetCustodyIndex((u64, u64)),  // (pet_id, index) -> record_id
 
+    // Decryption Delegation keys (Issue #625)
+    DecryptionToken((u64, Address)), // (pet_id, delegate) -> expires_at timestamp
+    PetDelegationCount(u64),         // pet_id -> count of active delegations
+
     // Vet stats and tracking
     VetStats(Address),
     VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
@@ -921,6 +925,7 @@ pub enum SystemKey {
     // Multisig keys
     Admins,
     AdminThreshold,
+    PendingConfig,           // Issue #626: Three-phase bootstrap
     Proposal(u64),
     ProposalCount,
 
@@ -1006,6 +1011,8 @@ pub struct AvailabilitySlot {
     pub start_time: u64,
     pub end_time: u64,
     pub available: bool,
+    pub start_ts: u64,        // Unix timestamp for slot start (Issue #624)
+    pub duration_minutes: u32, // Duration in minutes for overlap detection (Issue #624)
 }
 
 #[contracttype]
@@ -1786,6 +1793,104 @@ impl PetChainContract {
         );
     }
 
+    // --- THREE-PHASE BOOTSTRAP (Issue #626) ---
+
+    /// Phase 1: Propose initial admin configuration
+    pub fn propose_init(env: Env, admins: Vec<Address>, threshold: u32) {
+        // Reject if config already exists
+        if env.storage().instance().has(&DataKey::Admin)
+            || env.storage().instance().has(&SystemKey::Admins) {
+            panic_with_error!(&env, ContractError::AdminAlreadySet);
+        }
+
+        // Validate threshold
+        if threshold == 0 || threshold > admins.len() as u32 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        // Clear expired pending config if exists
+        if let Some(pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            let current_time = env.ledger().timestamp();
+            if current_time > pending.proposed_at.saturating_add(3600) {
+                // Timeout expired, clear and allow new proposal
+                env.storage().instance().remove(&SystemKey::PendingConfig);
+            } else {
+                // Already have an active pending config
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
+        }
+
+        let pending = PendingConfig {
+            admins: admins.clone(),
+            threshold,
+            confirmations: Vec::new(&env),
+            proposed_at: env.ledger().timestamp(),
+        };
+        env.storage().instance().set(&SystemKey::PendingConfig, &pending);
+    }
+
+    /// Phase 2: Confirm the pending admin configuration
+    pub fn confirm_init(env: Env, confirmer: Address) {
+        confirmer.require_auth();
+
+        if let Some(mut pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            let current_time = env.ledger().timestamp();
+            let timeout = pending.proposed_at.saturating_add(3600);
+
+            // Check timeout (1 hour = 3600 seconds)
+            if current_time >= timeout {
+                // Timeout expired, clear and return error
+                env.storage().instance().remove(&SystemKey::PendingConfig);
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
+
+            // Check if confirmer is in proposed admins
+            if !pending.admins.contains(&confirmer) {
+                panic_with_error!(&env, ContractError::NotAnAdmin);
+            }
+
+            // Check if already confirmed
+            if pending.confirmations.contains(&confirmer) {
+                panic_with_error!(&env, ContractError::AdminAlreadyApproved);
+            }
+
+            // Add confirmation
+            pending.confirmations.push_back(confirmer);
+            env.storage().instance().set(&SystemKey::PendingConfig, &pending);
+        } else {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+    }
+
+    /// Phase 3: Activate the admin configuration once threshold is met
+    pub fn activate_init(env: Env) {
+        if let Some(pending) = env.storage().instance().get::<SystemKey, PendingConfig>(&SystemKey::PendingConfig) {
+            // Check if enough confirmations
+            if (pending.confirmations.len() as u32) < pending.threshold {
+                panic_with_error!(&env, ContractError::ThresholdNotMet);
+            }
+
+            // Activate configuration
+            env.storage().instance().set(&SystemKey::Admins, &pending.admins);
+            env.storage().instance().set(&SystemKey::AdminThreshold, &pending.threshold);
+
+            // Clear pending config
+            env.storage().instance().remove(&SystemKey::PendingConfig);
+
+            // Set contract version
+            env.storage().instance().set(
+                &DataKey::ContractVersion,
+                &ContractVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                },
+            );
+        } else {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+    }
+
     pub fn get_admins(env: Env) -> Vec<Address> {
         if let Some(admin) = env
             .storage()
@@ -2040,12 +2145,13 @@ impl PetChainContract {
             String::from_str(&env, "Initial Registration"),
         );
 
-        let owner_pet_count: u64 = env
+        let prev_owner_count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0);
+        let owner_pet_count = prev_owner_count.checked_add(1) // Prevent overflow: fail if owner has u64::MAX pets
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &owner_pet_count);
@@ -2056,12 +2162,13 @@ impl PetChainContract {
 
         // Add to species index
         let species_key = PetChainContract::species_to_string(&env, &species);
-        let species_count: u64 = env
+        let prev_species_count: u64 = env
             .storage()
             .instance()
             .get(&DataKey::SpeciesPetCount(species_key.clone()))
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0);
+        let species_count = prev_species_count.checked_add(1) // Prevent overflow: fail if species has u64::MAX pets
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
         env.storage().instance().set(
             &DataKey::SpeciesPetCount(species_key.clone()),
             &species_count,
@@ -6919,11 +7026,21 @@ impl PetChainContract {
             .unwrap_or(0);
         let slot_index = safe_increment(slot_count);
 
+        // Calculate duration: convert seconds to minutes, saturating if necessary
+        let duration_seconds = if end_time > start_time {
+            end_time - start_time
+        } else {
+            0
+        };
+        let duration_minutes = (duration_seconds / 60).min(u32::MAX as u64) as u32; // Saturate duration to u32
+
         let slot = AvailabilitySlot {
             vet_address: vet_address.clone(),
             start_time,
             end_time,
             available: true,
+            start_ts: start_time,        // Use start_time as timestamp (Issue #624)
+            duration_minutes,            // Duration for overlap detection (Issue #624)
         };
 
         // Store the slot
@@ -7006,6 +7123,84 @@ impl PetChainContract {
 
         available_slots
     }
+
+    // --- DECRYPTION DELEGATION SYSTEM (Issue #625) ---
+
+    /// Delegate decryption key access to another address with time-bound token (Issue #625)
+    pub fn delegate_decryption(env: Env, pet_id: u64, owner: Address, delegate: Address, expires_at: u64) -> bool {
+        owner.require_auth();
+
+        // Verify owner of pet
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if pet.owner != owner {
+                panic_with_error!(&env, ContractError::NotPetOwner);
+            }
+        } else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+        let is_new_delegation = !env.storage().instance().has(&key);
+
+        // Check active delegations count (max 5) only for new delegations
+        if is_new_delegation {
+            let delegation_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+
+            if delegation_count >= 5 {
+                // Already at max delegations
+                panic_with_error!(&env, ContractError::TooManyItems);
+            }
+
+            // Increment delegation count for new delegation
+            let new_count = delegation_count.checked_add(1)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+            env.storage().instance().set(&DataKey::PetDelegationCount(pet_id), &new_count);
+        }
+
+        // Store/overwrite delegation token with expiration time
+        env.storage().instance().set(&key, &expires_at);
+
+        true
+    }
+
+    /// Revoke decryption delegation immediately
+    pub fn revoke_delegation(env: Env, pet_id: u64, owner: Address, delegate: Address) -> bool {
+        owner.require_auth();
+
+        // Verify owner of pet
+        if let Some(pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+            if pet.owner != owner {
+                panic_with_error!(&env, ContractError::NotPetOwner);
+            }
+        } else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if env.storage().instance().has(&key) {
+            env.storage().instance().remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if delegation token is valid (not expired)
+    pub fn check_delegation_token(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
+            // Token is valid if current time < expiration time
+            let current_time = env.ledger().timestamp();
+            current_time < expires_at
+        } else {
+            false // No token exists
+        }
+    }
+
     // --- CONSENT SYSTEM ---
 
     pub fn grant_consent(
@@ -7341,7 +7536,7 @@ impl PetChainContract {
         result
     }
 
-    /// Book a slot (mark as unavailable)
+    /// Book a slot (mark as unavailable) with conflict detection (Issue #624)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
         vet_address.require_auth();
         let key = SystemKey::VetAvailability((vet_address.clone(), slot_index));
@@ -7355,12 +7550,67 @@ impl PetChainContract {
                 panic_with_error!(&env, ContractError::SlotAlreadyBooked);
             }
 
+            // Check for overlapping slots with same provider (Issue #624)
+            let slot_count: u64 = env
+                .storage()
+                .instance()
+                .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+                .unwrap_or(0);
+
+            let slot_end_ts = slot.start_ts.saturating_add((slot.duration_minutes as u64).saturating_mul(60));
+
+            for i in 1..=slot_count {
+                if i == slot_index {
+                    continue; // Skip the slot being booked
+                }
+                let other_key = SystemKey::VetAvailability((vet_address.clone(), i));
+                if let Some(other_slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(&other_key) {
+                    if !other_slot.available {
+                        continue; // Skip already-booked slots
+                    }
+                    // Check for overlap: new.start < other.start + other.duration*60 AND new.start + new.duration*60 > other.start
+                    let other_end_ts = other_slot.start_ts.saturating_add((other_slot.duration_minutes as u64).saturating_mul(60));
+                    if slot.start_ts < other_end_ts && slot_end_ts > other_slot.start_ts {
+                        // Conflict detected: reject with InvalidState error
+                        panic_with_error!(&env, ContractError::InvalidState);
+                    }
+                }
+            }
+
             slot.available = false;
             env.storage().instance().set(&key, &slot);
             true
         } else {
             false
         }
+    }
+
+    /// Get slots in time range for a provider (Issue #624)
+    pub fn get_slots_in_range(
+        env: Env,
+        vet_address: Address,
+        start_ts: u64,
+        end_ts: u64,
+    ) -> Vec<AvailabilitySlot> {
+        let mut result = Vec::new(&env);
+
+        let slot_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::VetAvailabilityCount(vet_address.clone()))
+            .unwrap_or(0);
+
+        for i in 1..=slot_count {
+            let key = SystemKey::VetAvailability((vet_address.clone(), i));
+            if let Some(slot) = env.storage().instance().get::<SystemKey, AvailabilitySlot>(&key) {
+                // Return slots where slot.start_ts >= start_ts && slot.start_ts < end_ts
+                if slot.start_ts >= start_ts && slot.start_ts < end_ts {
+                    result.push_back(slot);
+                }
+            }
+        }
+
+        result
     }
 
     /// Cancel a booking (restore slot availability). Only the vet who owns the slot can cancel.
