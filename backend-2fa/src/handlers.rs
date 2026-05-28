@@ -2,8 +2,13 @@
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
-use crate::two_factor::{InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore};
+use crate::two_factor::{
+    AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
+    UserTwoFactorSummary,
+};
+use crate::webhooks::{SecurityEventType, WebhookManager};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::OnceLock;
@@ -421,4 +426,168 @@ pub(crate) fn overwrite_two_factor_data_for_tests(user_id: &str, data: TwoFactor
 #[cfg(test)]
 pub(crate) fn clear_two_factor_store_for_tests() {
     test_two_factor_store().clear();
+}
+
+// ---------------------------------------------------------------------------
+// Admin JWT scope check helper
+// ---------------------------------------------------------------------------
+
+/// Represents an authenticated admin caller (must have `admin` scope in JWT).
+/// In a real HTTP layer the JWT would be validated by middleware; here we model
+/// the scope as a field so handlers can enforce it without depending on a web
+/// framework.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthenticatedAdmin {
+    pub admin_id: String,
+}
+
+impl AuthenticatedAdmin {
+    pub fn new(admin_id: impl Into<String>) -> Self {
+        Self {
+            admin_id: admin_id.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #688 — Admin Dashboard Endpoint Suite
+// ---------------------------------------------------------------------------
+
+pub struct AdminDashboardHandlers;
+
+impl AdminDashboardHandlers {
+    /// GET /admin/users — paginated list of users with 2FA status.
+    /// Canary accounts are excluded from this listing.
+    pub fn list_users(
+        _admin: &AuthenticatedAdmin,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+        two_factor_store().list_users(page, page_size)
+    }
+
+    /// POST /admin/users/{id}/disable-2fa — force-disable with audit log entry.
+    pub fn disable_two_fa(
+        admin: &AuthenticatedAdmin,
+        user_id: &str,
+    ) -> Result<(), String> {
+        two_factor_store().admin_disable_two_fa(user_id, &admin.admin_id)
+    }
+
+    /// GET /admin/users/{id}/audit-log — full 2FA event history (paginated).
+    pub fn get_audit_log(
+        _admin: &AuthenticatedAdmin,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        two_factor_store().get_audit_log(user_id, page, page_size)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #713 — Canary Token Detection
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CreateCanaryRequest {
+    pub user_id: String,
+    pub email: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateCanaryResponse {
+    pub user_id: String,
+    pub secret: String,
+    pub qr_code: String,
+}
+
+pub struct CanaryHandlers {
+    webhook_manager: Arc<WebhookManager>,
+}
+
+impl CanaryHandlers {
+    pub fn new(webhook_manager: Arc<WebhookManager>) -> Self {
+        Self { webhook_manager }
+    }
+
+    /// Admin: create a canary TOTP account that looks real but triggers an
+    /// alert when any verification is attempted.
+    pub fn create_canary(
+        admin: &AuthenticatedAdmin,
+        req: CreateCanaryRequest,
+    ) -> Result<CreateCanaryResponse, String> {
+        let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
+
+        two_factor_store().save(
+            &req.user_id,
+            TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes.clone(),
+                enabled: true,
+            },
+        )?;
+
+        two_factor_store().set_canary(&req.user_id, true)?;
+
+        two_factor_store().append_audit_log(
+            &req.user_id,
+            "canary_created",
+            &admin.admin_id,
+            None,
+        )?;
+
+        Ok(CreateCanaryResponse {
+            user_id: req.user_id,
+            secret: setup.secret,
+            qr_code: setup.qr_code_base64,
+        })
+    }
+
+    /// Verify a TOTP token for a user. If the account is a canary, log a
+    /// `CanaryTriggered` audit event and fire the webhook immediately.
+    /// The canary account always returns `false` for the verification result
+    /// so the attacker gets no useful feedback.
+    pub fn verify_with_canary_check(
+        &self,
+        user_id: &str,
+        token: &str,
+        ip_address: Option<&str>,
+    ) -> Result<bool, String> {
+        let store = two_factor_store();
+
+        if store.is_canary(user_id) {
+            // Log the trigger event
+            let meta = ip_address.map(|ip| format!("ip={}", ip));
+            store.append_audit_log(
+                user_id,
+                "CanaryTriggered",
+                user_id,
+                meta.as_deref(),
+            )?;
+
+            // Fire webhook immediately
+            let mut metadata = HashMap::new();
+            if let Some(ip) = ip_address {
+                metadata.insert("ip".to_string(), ip.to_string());
+            }
+            metadata.insert("user_id".to_string(), user_id.to_string());
+            self.webhook_manager.fire(
+                SecurityEventType::CanaryTriggered,
+                user_id,
+                metadata,
+            );
+
+            // Return false — canary accounts never grant access
+            return Ok(false);
+        }
+
+        let data = store.get(user_id)?;
+        TwoFactorAuth::verify_token(&data.secret, token)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
+    test_two_factor_store()
 }
