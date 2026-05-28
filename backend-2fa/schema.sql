@@ -41,3 +41,24 @@ CREATE TABLE recovery_code_usage (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, code_index)
 );
+
+-- Audit log for 2FA admin actions and security events (Issue #688, #713)
+CREATE TABLE two_fa_audit_log (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    event VARCHAR(100) NOT NULL,
+    actor VARCHAR(255) NOT NULL,
+    metadata TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_audit_log_user_id ON two_fa_audit_log(user_id);
+CREATE INDEX idx_audit_log_timestamp ON two_fa_audit_log(timestamp DESC);
+
+-- Canary token accounts (Issue #713)
+-- Accounts in this table are excluded from normal user listings and trigger
+-- alerts on any verification attempt.
+CREATE TABLE canary_accounts (
+    user_id VARCHAR(255) PRIMARY KEY,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
