@@ -98,6 +98,10 @@ enum DataKey {
     OwnershipHistory(u64),
     OwnerPets(Address),
     CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
+    TrustedContract,
+    TrustedAdmins,
+    TrustedThreshold,
+    TrustedUpdateApprovals((Address, Address)),
 }
 
 /// ======================================================
@@ -109,6 +113,7 @@ const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
 const EVT_TRANSFER_ESCROWED: Symbol = symbol_short!("xfer_escr");
 const EVT_TRANSFER_FINALIZED: Symbol = symbol_short!("xfer_fin");
 const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
+const EVT_TRUSTED_UPDATED: Symbol = symbol_short!("trust_upd");
 
 /// ======================================================
 /// ERRORS
@@ -132,6 +137,11 @@ pub enum ContractError {
     NoEscrowedTransfer = 12,
     DisputeWindowNotElapsed = 13,
     TransferAlreadyDisputed = 14,
+    AlreadyInitialized = 15,
+    InvalidThreshold = 16,
+    NotMultisigAdmin = 17,
+    ThresholdNotMet = 18,
+    UntrustedContract = 19,
 }
 
 /// ======================================================
@@ -164,7 +174,13 @@ fn save_history(env: &Env, pet_id: u64, history: &Vec<OwnershipRecord>) {
         .set(&DataKey::OwnershipHistory(pet_id), history);
 }
 
-fn append_custody_entry(env: &Env, pet_id: u64, from: Address, to: Address, transfer_type: TransferType) {
+fn append_custody_entry(
+    env: &Env,
+    pet_id: u64,
+    from: Address,
+    to: Address,
+    transfer_type: TransferType,
+) {
     let mut chain: Vec<CustodyEntry> = env
         .storage()
         .persistent()
@@ -219,12 +235,138 @@ fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
     save_owner_pet_ids(env, owner, &updated_pet_ids);
 }
 
+fn get_trusted_contract(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::TrustedContract)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::UntrustedContract))
+}
+
+fn require_trusted_contract(env: &Env, callee: &Address) {
+    if &get_trusted_contract(env) != callee {
+        panic_with_error!(env, ContractError::UntrustedContract);
+    }
+}
+
+fn require_trusted_multisig_admin(env: &Env, signer: &Address) -> (Vec<Address>, u32) {
+    let admins: Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::TrustedAdmins)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::NotMultisigAdmin));
+    let threshold: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TrustedThreshold)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidThreshold));
+
+    if !admins.contains(signer) {
+        panic_with_error!(env, ContractError::NotMultisigAdmin);
+    }
+
+    signer.require_auth();
+    (admins, threshold)
+}
+
+fn clear_trusted_update_approvals(env: &Env, admins: &Vec<Address>, new_address: &Address) {
+    for admin in admins.iter() {
+        env.storage()
+            .instance()
+            .remove(&DataKey::TrustedUpdateApprovals((
+                new_address.clone(),
+                admin,
+            )));
+    }
+}
+
 /// ======================================================
 /// CONTRACT IMPLEMENTATION
 /// ======================================================
 
 #[contractimpl]
 impl PetOwnershipContract {
+    /// ----------------------------------
+    /// INITIALIZE TRUSTED MAIN CONTRACT
+    /// ----------------------------------
+
+    pub fn init_trusted_contract(
+        env: Env,
+        trusted_contract: Address,
+        admins: Vec<Address>,
+        threshold: u32,
+    ) {
+        if env.storage().instance().has(&DataKey::TrustedContract) {
+            panic_with_error!(&env, ContractError::AlreadyInitialized);
+        }
+
+        if threshold == 0 || threshold > admins.len() {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        let first_admin = admins
+            .get(0)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidThreshold));
+        first_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TrustedContract, &trusted_contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::TrustedAdmins, &admins);
+        env.storage()
+            .instance()
+            .set(&DataKey::TrustedThreshold, &threshold);
+    }
+
+    /// Approve a trusted main-contract address update. The new address is
+    /// stored once configured multisig approvals reach the configured threshold.
+    pub fn update_trusted_contract(env: Env, new_address: Address, signer: Address) -> bool {
+        let (admins, threshold) = require_trusted_multisig_admin(&env, &signer);
+        let approval_key = DataKey::TrustedUpdateApprovals((new_address.clone(), signer));
+
+        if !env.storage().instance().has(&approval_key) {
+            env.storage().instance().set(&approval_key, &true);
+        }
+
+        let mut approvals = 0u32;
+        for admin in admins.iter() {
+            if env
+                .storage()
+                .instance()
+                .has(&DataKey::TrustedUpdateApprovals((
+                    new_address.clone(),
+                    admin,
+                )))
+            {
+                approvals += 1;
+            }
+        }
+
+        if approvals < threshold {
+            return false;
+        }
+
+        let previous = get_trusted_contract(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::TrustedContract, &new_address);
+        clear_trusted_update_approvals(&env, &admins, &new_address);
+
+        env.events()
+            .publish((EVT_TRUSTED_UPDATED,), (previous, new_address));
+        true
+    }
+
+    pub fn get_trusted_contract_address(env: Env) -> Address {
+        get_trusted_contract(&env)
+    }
+
+    pub fn validate_trusted_contract(env: Env, callee: Address) -> bool {
+        require_trusted_contract(&env, &callee);
+        true
+    }
+
     /// ----------------------------------
     /// CREATE PET (bootstrap)
     /// ----------------------------------
@@ -378,7 +520,13 @@ impl PetOwnershipContract {
             .persistent()
             .remove(&DataKey::EscrowedTransfer(pet_id));
 
-        append_custody_entry(&env, pet_id, escrowed.from.clone(), escrowed.to.clone(), TransferType::Direct);
+        append_custody_entry(
+            &env,
+            pet_id,
+            escrowed.from.clone(),
+            escrowed.to.clone(),
+            TransferType::Direct,
+        );
 
         env.events().publish(
             (EVT_TRANSFER_FINALIZED, pet_id),
@@ -541,7 +689,8 @@ impl PetOwnershipContract {
         }
 
         // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
-        let owner = expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
+        let owner =
+            expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
 
         // Phase 2: authenticate the single owner once for the entire batch.
         owner.require_auth();
@@ -560,8 +709,10 @@ impl PetOwnershipContract {
                 .persistent()
                 .set(&DataKey::PendingTransfer(pet_id), &transfer);
 
-            env.events()
-                .publish((EVT_TRANSFER_INITIATED, pet_id), (owner.clone(), to.clone()));
+            env.events().publish(
+                (EVT_TRANSFER_INITIATED, pet_id),
+                (owner.clone(), to.clone()),
+            );
         }
     }
 
