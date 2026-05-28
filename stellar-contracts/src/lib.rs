@@ -135,6 +135,11 @@ use soroban_sdk::{
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
+const MAX_SEARCH_KEYWORD_LEN: u32 = 32;
+const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
+const MAX_SEARCH_NOTES_LEN: u32 = 512;
+const MAX_LINEAGE_DEPTH: u32 = 16;
+const MAX_LOG_ENTRIES: u32 = 1_000;
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -3756,6 +3761,13 @@ impl PetChainContract {
             .unwrap_or(0)
     }
 
+    pub fn get_weight_entry_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&NutritionKey::PetWeightCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool {
         let mut pet: Pet = env
             .storage()
@@ -6667,6 +6679,13 @@ impl PetChainContract {
         id
     }
 
+    pub fn get_lab_result_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
         env.storage()
             .instance()
@@ -9572,6 +9591,13 @@ impl PetChainContract {
         milestone_id
     }
 
+    pub fn get_training_milestone_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::PetMilestoneCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn mark_milestone_achieved(env: Env, milestone_id: u64) -> bool {
         if let Some(mut milestone) = env
             .storage()
@@ -10441,6 +10467,13 @@ impl PetChainContract {
         PetChainContract::update_activity_streak(&env, pet_id, now);
 
         record_id
+    }
+
+    pub fn get_activity_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0)
     }
 
     pub fn get_activity_history(env: Env, pet_id: u64) -> Vec<ActivityRecord> {
