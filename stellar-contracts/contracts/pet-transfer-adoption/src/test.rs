@@ -1,6 +1,6 @@
 use super::{
-    ContractError, DataKey, EscrowedTransfer, OwnershipRecord, PetOwnershipContract,
-    PetOwnershipContractClient, DISPUTE_WINDOW_SECONDS,
+    ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord, PetOwnershipContract,
+    PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
 };
 use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, Error, Vec};
 
@@ -498,4 +498,106 @@ fn double_dispute_is_rejected() {
             ContractError::TransferAlreadyDisputed as u32,
         )))
     );
+}
+
+// ======================================================
+// Chain-of-custody tests (Issue #637)
+// ======================================================
+
+#[test]
+fn finalize_transfer_appends_direct_custody_entry() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+    client.finalize_transfer(&pet_id);
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 1);
+
+    let entry = chain.get(0).unwrap();
+    assert_eq!(entry.from, owner);
+    assert_eq!(entry.to, new_owner);
+    assert_eq!(entry.transfer_type, TransferType::Direct);
+}
+
+#[test]
+fn multiple_finalizations_produce_ordered_chain() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let third_owner = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+
+    // First transfer
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    client.finalize_transfer(&pet_id);
+
+    // Second transfer
+    client.initiate_transfer(&pet_id, &third_owner);
+    client.accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    client.finalize_transfer(&pet_id);
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 2);
+
+    let first = chain.get(0).unwrap();
+    assert_eq!(first.from, owner);
+    assert_eq!(first.to, new_owner);
+
+    let second = chain.get(1).unwrap();
+    assert_eq!(second.from, new_owner);
+    assert_eq!(second.to, third_owner);
+
+    assert!(first.timestamp <= second.timestamp);
+}
+
+#[test]
+fn get_custody_chain_empty_before_any_transfer() {
+    let (env, owner, _, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 0);
+}
+
+#[test]
+fn custody_chain_is_append_only_no_delete_path() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    client.finalize_transfer(&pet_id);
+
+    // Chain has one entry; no contract function can remove it
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 1);
+
+    // A second transfer grows the chain, never shrinks it
+    let third_owner = Address::generate(&env);
+    client.initiate_transfer(&pet_id, &third_owner);
+    client.accept_transfer(&pet_id);
+    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    client.finalize_transfer(&pet_id);
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), 2);
 }
