@@ -188,6 +188,9 @@ pub enum ContractError {
     ProposalExpired = 82,
     ThresholdNotMet = 83,
     AdminAlreadyApproved = 84,
+    TimelockNotExpired = 85,
+    ProposalVetoed = 86,
+    ProposalNotExecutable = 87,
     InvalidRating = 90,
     DuplicateReview = 91,
     MedicationNotFound = 100,
@@ -847,6 +850,11 @@ pub enum SystemKey {
     Proposal(u64),
     ProposalCount,
 
+    // Timelock and veto keys
+    AdminTimelockConfig,
+    ProposalVeto((u64, Address)), // (proposal_id, admin) -> bool (has vetoed)
+    ProposalVetoCount(u64),        // proposal_id -> count of vetoes
+
     // Vet Availability keys
     VetAvailability((Address, u64)),
     VetAvailabilityCount(Address),
@@ -1145,6 +1153,16 @@ pub struct OwnershipRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalState {
+    Pending,           // Awaiting approvals
+    TimelockPending,   // Quorum reached, in timelock period
+    Executable,        // Timelock expired, ready to execute
+    Executed,          // Successfully executed
+    Vetoed,            // Vetoed during timelock
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalAction {
     UpgradeContract(BytesN<32>),
     VerifyVet(Address),
@@ -1163,6 +1181,9 @@ pub struct MultiSigProposal {
     pub created_at: u64,
     pub expires_at: u64,
     pub executed: bool,
+    pub state: ProposalState,
+    pub timelock_end: u64,
+    pub veto_count: u32,
 }
 
 /// Multi-signature configuration for a pet.
@@ -1177,6 +1198,17 @@ pub struct MultisigConfig {
     /// Minimum number of signatures required to execute a transfer
     pub threshold: u32,
     /// Whether multisig enforcement is enabled
+    pub enabled: bool,
+}
+
+/// Admin-level timelock configuration for upgrade proposals.
+/// Enforces a delay period and veto window for contract upgrades.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTimelockConfig {
+    /// Minimum timelock duration in seconds (enforced minimum: 86400 = 24 hours)
+    pub timelock_duration: u64,
+    /// Whether timelock is enabled
     pub enabled: bool,
 }
 
@@ -7636,6 +7668,9 @@ impl PetChainContract {
             created_at: now,
             expires_at: now + expires_in,
             executed: false,
+            state: ProposalState::Pending,
+            timelock_end: 0,
+            veto_count: 0,
         };
 
         env.storage()
@@ -7661,6 +7696,10 @@ impl PetChainContract {
             env.panic_with_error(ContractError::ProposalAlreadyExecuted);
         }
 
+        if proposal.state == ProposalState::Vetoed {
+            env.panic_with_error(ContractError::ProposalVetoed);
+        }
+
         if env.ledger().timestamp() > proposal.expires_at {
             env.panic_with_error(ContractError::ProposalExpired);
         }
@@ -7670,6 +7709,29 @@ impl PetChainContract {
         }
 
         proposal.approvals.push_back(admin);
+
+        // Check if quorum reached and transition to timelock
+        if proposal.approvals.len() >= proposal.required_approvals
+            && proposal.state == ProposalState::Pending
+        {
+            let timelock_config: AdminTimelockConfig = env
+                .storage()
+                .instance()
+                .get(&SystemKey::AdminTimelockConfig)
+                .unwrap_or(AdminTimelockConfig {
+                    timelock_duration: 86400, // Default 24 hours
+                    enabled: true,
+                });
+
+            if timelock_config.enabled {
+                let now = env.ledger().timestamp();
+                proposal.state = ProposalState::TimelockPending;
+                proposal.timelock_end = now + timelock_config.timelock_duration;
+            } else {
+                proposal.state = ProposalState::Executable;
+            }
+        }
+
         env.storage()
             .instance()
             .set(&SystemKey::Proposal(proposal_id), &proposal);
@@ -7686,12 +7748,29 @@ impl PetChainContract {
             env.panic_with_error(ContractError::ProposalAlreadyExecuted);
         }
 
+        if proposal.state == ProposalState::Vetoed {
+            env.panic_with_error(ContractError::ProposalVetoed);
+        }
+
         if env.ledger().timestamp() > proposal.expires_at {
             env.panic_with_error(ContractError::ProposalExpired);
         }
 
         if proposal.approvals.len() < proposal.required_approvals {
             env.panic_with_error(ContractError::ThresholdNotMet);
+        }
+
+        // Check timelock: if in TimelockPending, must wait for timelock to expire
+        if proposal.state == ProposalState::TimelockPending {
+            if env.ledger().timestamp() < proposal.timelock_end {
+                env.panic_with_error(ContractError::TimelockNotExpired);
+            }
+            proposal.state = ProposalState::Executable;
+        }
+
+        // Only execute if in Executable state
+        if proposal.state != ProposalState::Executable {
+            env.panic_with_error(ContractError::ProposalNotExecutable);
         }
 
         match proposal.action.clone() {
@@ -7721,6 +7800,7 @@ impl PetChainContract {
         }
 
         proposal.executed = true;
+        proposal.state = ProposalState::Executed;
         env.storage()
             .instance()
             .set(&SystemKey::Proposal(proposal_id), &proposal);
@@ -7730,6 +7810,105 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&SystemKey::Proposal(proposal_id))
+    }
+
+    /// Sets the timelock configuration for upgrade proposals.
+    /// Enforces minimum 24 hours (86400 seconds).
+    /// Only callable by admin.
+    pub fn set_timelock_config(env: Env, admin: Address, timelock_duration: u64, enabled: bool) {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        // Enforce minimum 24 hours
+        const MIN_TIMELOCK: u64 = 86400;
+        if enabled && timelock_duration < MIN_TIMELOCK {
+            env.panic_with_error(ContractError::InvalidInput);
+        }
+
+        let config = AdminTimelockConfig {
+            timelock_duration,
+            enabled,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::AdminTimelockConfig, &config);
+    }
+
+    /// Gets the current timelock configuration.
+    pub fn get_timelock_config(env: Env) -> AdminTimelockConfig {
+        env.storage()
+            .instance()
+            .get(&SystemKey::AdminTimelockConfig)
+            .unwrap_or(AdminTimelockConfig {
+                timelock_duration: 86400, // Default 24 hours
+                enabled: true,
+            })
+    }
+
+    /// Veto a proposal during the timelock window.
+    /// Only callable by admin during timelock period.
+    /// Cancels the proposal and prevents execution.
+    pub fn veto_proposal(env: Env, admin: Address, proposal_id: u64) {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::ProposalNotFound));
+
+        // Can only veto during timelock window
+        if proposal.state != ProposalState::TimelockPending {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        let now = env.ledger().timestamp();
+        if now >= proposal.timelock_end {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        // Check if admin already vetoed
+        if env
+            .storage()
+            .instance()
+            .has(&SystemKey::ProposalVeto((proposal_id, admin.clone())))
+        {
+            env.panic_with_error(ContractError::AdminAlreadyApproved);
+        }
+
+        // Record veto
+        env.storage()
+            .instance()
+            .set(&SystemKey::ProposalVeto((proposal_id, admin)), &true);
+
+        // Increment veto count
+        let veto_count = proposal.veto_count + 1;
+        proposal.veto_count = veto_count;
+
+        // If any admin vetoes, mark proposal as vetoed
+        proposal.state = ProposalState::Vetoed;
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+    }
+
+    /// Gets the number of vetoes for a proposal.
+    pub fn get_proposal_veto_count(env: Env, proposal_id: u64) -> u32 {
+        let proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::ProposalNotFound));
+
+        proposal.veto_count
+    }
+
+    /// Checks if a specific admin has vetoed a proposal.
+    pub fn has_admin_vetoed(env: Env, proposal_id: u64, admin: Address) -> bool {
+        env.storage()
+            .instance()
+            .get::<SystemKey, bool>(&SystemKey::ProposalVeto((proposal_id, admin.clone())))
+            .unwrap_or(false)
     }
 
     // --- VET REVIEWS ---
