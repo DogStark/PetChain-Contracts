@@ -794,6 +794,16 @@ pub enum ConsentKey {
 }
 
 #[contracttype]
+pub enum DisputeKey {
+    Dispute(u64),
+    DisputeCount,
+    PetDisputeIndex((u64, u64)),
+    PetDisputeCount(u64),
+    Arbitrator,
+    AppealWindow,
+}
+
+#[contracttype]
 pub enum SystemKey {
     // Ownership History keys
     PetOwnershipRecord(u64),
@@ -907,6 +917,49 @@ pub struct Consent {
     pub expires_at: Option<u64>,
     pub revoked_at: Option<u64>,
     pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeStatus {
+    Open,
+    EvidencePhase,
+    UnderReview,
+    Resolved,
+    Appealed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeOutcome {
+    InFavorOfClaimer,
+    InFavorOfTarget,
+    Split,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvidenceEntry {
+    pub submitted_by: Address,
+    pub ipfs_cid: String,
+    pub submitted_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dispute {
+    pub dispute_id: u64,
+    pub pet_id: u64,
+    pub claimer: Address,
+    pub target: Address,
+    pub amount: u64,
+    pub reason: String,
+    pub evidence_hash: String,
+    pub evidence: Vec<EvidenceEntry>,
+    pub status: DisputeStatus,
+    pub outcome: Option<u32>,
+    pub created_at: u64,
+    pub resolved_at: Option<u64>,
 }
 
 #[contracttype]
@@ -4268,6 +4321,263 @@ impl PetChainContract {
         } else {
             panic_with_error!(&env, ContractError::PetNotFound);
         }
+    }
+
+    // --- DISPUTE RESOLUTION ---
+
+    pub fn set_appeal_window(env: Env, admin: Address, window_seconds: u64) -> bool {
+        Self::require_admin_auth(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::AppealWindow, &window_seconds);
+        true
+    }
+
+    pub fn assign_arbitrator(env: Env, admin: Address, arbitrator: Address) -> bool {
+        Self::require_admin_auth(&env, &admin);
+        if admin == arbitrator {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Arbitrator, &arbitrator);
+        true
+    }
+
+    pub fn get_arbitrator(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DisputeKey::Arbitrator)
+    }
+
+    pub fn raise_dispute(
+        env: Env,
+        pet_id: u64,
+        claimer: Address,
+        target: Address,
+        amount: u64,
+        reason: String,
+        evidence_hash: String,
+    ) -> u64 {
+        claimer.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::DisputeCount)
+            .unwrap_or(0);
+        let dispute_id = count + 1;
+        let mut evidence = Vec::new(&env);
+        evidence.push_back(EvidenceEntry {
+            submitted_by: claimer.clone(),
+            ipfs_cid: evidence_hash.clone(),
+            submitted_at: env.ledger().timestamp(),
+        });
+
+        let dispute = Dispute {
+            dispute_id,
+            pet_id,
+            claimer,
+            target,
+            amount,
+            reason,
+            evidence_hash,
+            evidence,
+            status: DisputeStatus::Open,
+            outcome: None,
+            created_at: env.ledger().timestamp(),
+            resolved_at: None,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::DisputeCount, &dispute_id);
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = pet_count + 1;
+        env.storage()
+            .instance()
+            .set(&DisputeKey::PetDisputeCount(pet_id), &new_pet_count);
+        env.storage().instance().set(
+            &DisputeKey::PetDisputeIndex((pet_id, new_pet_count)),
+            &dispute_id,
+        );
+
+        dispute_id
+    }
+
+    pub fn submit_evidence(
+        env: Env,
+        dispute_id: u64,
+        submitter: Address,
+        ipfs_cid: String,
+    ) -> bool {
+        submitter.require_auth();
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        if submitter != dispute.claimer && submitter != dispute.target {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+        if dispute.status != DisputeStatus::Open && dispute.status != DisputeStatus::EvidencePhase {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        dispute.evidence.push_back(EvidenceEntry {
+            submitted_by: submitter,
+            ipfs_cid,
+            submitted_at: env.ledger().timestamp(),
+        });
+        dispute.status = DisputeStatus::EvidencePhase;
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn rule(env: Env, dispute_id: u64, arbitrator: Address, outcome: DisputeOutcome) -> bool {
+        arbitrator.require_auth();
+        let assigned: Address = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Arbitrator)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::Unauthorized));
+        if assigned != arbitrator {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        if dispute.status != DisputeStatus::UnderReview {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        dispute.status = DisputeStatus::Resolved;
+        dispute.outcome = Some(match outcome {
+            DisputeOutcome::InFavorOfClaimer => 1,
+            DisputeOutcome::InFavorOfTarget => 2,
+            DisputeOutcome::Split => 3,
+        });
+        dispute.resolved_at = Some(env.ledger().timestamp());
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn start_review(env: Env, dispute_id: u64, arbitrator: Address) -> bool {
+        arbitrator.require_auth();
+        let assigned: Address = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Arbitrator)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::Unauthorized));
+        if assigned != arbitrator {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        if dispute.status != DisputeStatus::EvidencePhase {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        dispute.status = DisputeStatus::UnderReview;
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn appeal(env: Env, dispute_id: u64, caller: Address) -> bool {
+        caller.require_auth();
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        if caller != dispute.claimer && caller != dispute.target {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+        if dispute.status != DisputeStatus::Resolved {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+        let resolved_at = dispute
+            .resolved_at
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidState));
+        let window: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::AppealWindow)
+            .unwrap_or(7 * 24 * 60 * 60);
+        if env.ledger().timestamp() > resolved_at.saturating_add(window) {
+            env.panic_with_error(ContractError::InvalidState);
+        }
+
+        dispute.status = DisputeStatus::Appealed;
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool {
+        Self::require_admin(&env);
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        dispute.status = status;
+        dispute.resolved_at = Some(env.ledger().timestamp());
+        env.storage()
+            .instance()
+            .set(&DisputeKey::Dispute(dispute_id), &dispute);
+        true
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
+        env.storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+    }
+
+    pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::PetDisputeCount(pet_id))
+            .unwrap_or(0);
+        let mut disputes = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(dispute_id) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, u64>(&DisputeKey::PetDisputeIndex((pet_id, i)))
+            {
+                if let Some(dispute) = env
+                    .storage()
+                    .instance()
+                    .get::<DisputeKey, Dispute>(&DisputeKey::Dispute(dispute_id))
+                {
+                    disputes.push_back(dispute);
+                }
+            }
+        }
+        disputes
     }
 
     // --- ACCESSIBLE PETS ---
