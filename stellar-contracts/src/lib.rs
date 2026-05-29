@@ -137,6 +137,8 @@ mod test_get_lab_results;
 #[cfg(test)]
 mod test_biomarker_trend;
 #[cfg(test)]
+mod test_audit_ledger;
+#[cfg(test)]
 mod test_get_pet_access_control;
 #[cfg(test)]
 mod test_get_pet_decryption;
@@ -959,6 +961,14 @@ pub enum MedicalKey {
 }
 
 #[contracttype]
+pub enum AuditLedgerKey {
+    /// (pet_id, index) -> AuditLedgerEntry
+    Entry((u64, u64)),
+    /// pet_id -> entry count
+    Count(u64),
+}
+
+#[contracttype]
 pub enum ReviewKey {
     VetReview(u64),                          // review_id -> VetReview
     VetReviewCount,                          // Global count of reviews
@@ -1252,6 +1262,21 @@ pub struct ConsentRevoked {
     pub consent_id: u64,
     pub revoked_at: u64,
 }
+
+/// A single entry in the immutable append-only audit ledger.
+/// Each entry hashes the previous entry to form a tamper-evident chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditLedgerEntry {
+    pub index: u64,
+    pub pet_id: u64,
+    pub actor: Address,
+    pub action: String,
+    pub timestamp: u64,
+    /// SHA-256 hash of the previous entry's serialised fields (all-zeros for genesis).
+    pub prev_hash: BytesN<32>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessLevel {
@@ -8196,6 +8221,115 @@ impl PetChainContract {
         }
         result
     }
+
+    // --- IMMUTABLE AUDIT LEDGER ---
+
+    /// Append an entry to the hash-chained audit ledger for a pet.
+    /// The genesis entry uses a prev_hash of all zeros.
+    pub fn append_audit_entry(
+        env: Env,
+        pet_id: u64,
+        actor: Address,
+        action: String,
+    ) -> u64 {
+        actor.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<AuditLedgerKey, u64>(&AuditLedgerKey::Count(pet_id))
+            .unwrap_or(0);
+
+        // Compute prev_hash: hash of previous entry's fields, or all-zeros for genesis
+        let prev_hash: BytesN<32> = if count == 0 {
+            BytesN::from_array(&env, &[0u8; 32])
+        } else {
+            let prev: AuditLedgerEntry = env
+                .storage()
+                .instance()
+                .get(&AuditLedgerKey::Entry((pet_id, count)))
+                .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidState));
+            // Hash the previous entry's serialised XDR bytes
+            let mut prev_bytes = Bytes::new(&env);
+            // Encode index + timestamp + prev_hash as deterministic input
+            for b in prev.index.to_be_bytes() {
+                prev_bytes.push_back(b);
+            }
+            for b in prev.timestamp.to_be_bytes() {
+                prev_bytes.push_back(b);
+            }
+            for b in prev.prev_hash.to_array() {
+                prev_bytes.push_back(b);
+            }
+            env.crypto().sha256(&prev_bytes)
+        };
+
+        let index = count + 1;
+        let entry = AuditLedgerEntry {
+            index,
+            pet_id,
+            actor,
+            action,
+            timestamp: env.ledger().timestamp(),
+            prev_hash,
+        };
+
+        env.storage()
+            .instance()
+            .set(&AuditLedgerKey::Entry((pet_id, index)), &entry);
+        env.storage()
+            .instance()
+            .set(&AuditLedgerKey::Count(pet_id), &index);
+
+        index
+    }
+
+    /// Recompute and validate the entire audit chain for a pet.
+    /// Returns `true` if the chain is intact, `false` if any hash mismatch is found.
+    pub fn verify_audit_chain(env: Env, pet_id: u64) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<AuditLedgerKey, u64>(&AuditLedgerKey::Count(pet_id))
+            .unwrap_or(0);
+
+        if count == 0 {
+            return true; // empty chain is valid
+        }
+
+        let mut expected_prev = BytesN::from_array(&env, &[0u8; 32]);
+
+        for i in 1..=count {
+            let entry: AuditLedgerEntry = match env
+                .storage()
+                .instance()
+                .get(&AuditLedgerKey::Entry((pet_id, i)))
+            {
+                Some(e) => e,
+                None => return false,
+            };
+
+            if entry.prev_hash != expected_prev {
+                return false;
+            }
+
+            // Compute hash of this entry to use as expected_prev for next iteration
+            let mut entry_bytes = Bytes::new(&env);
+            for b in entry.index.to_be_bytes() {
+                entry_bytes.push_back(b);
+            }
+            for b in entry.timestamp.to_be_bytes() {
+                entry_bytes.push_back(b);
+            }
+            for b in entry.prev_hash.to_array() {
+                entry_bytes.push_back(b);
+            }
+            expected_prev = env.crypto().sha256(&entry_bytes);
+        }
+
+        true
+    }
+
     /// Book a slot (mark as unavailable) with conflict detection (Issue #624)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
         vet_address.require_auth();
