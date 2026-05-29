@@ -11,17 +11,20 @@ pub mod webhooks;
 mod tests;
 
 pub use db::PostgresTwoFactorStore;
-pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, SecretProvider};
+pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, SecretProvider, PoolStats};
 pub use handlers::{
-    AdminDashboardHandlers, AdminScoreHandlers, AuthenticatedAdmin, AuthenticatedUser,
-    CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse, TwoFactorHandlers,
+    AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin,
+    AuthenticatedUser, CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse,
+    GrantUnlimitedRequest, PoolMetricsHandlers, PoolStatsResponse, SetUserQuotaRequest,
+    TwoFactorHandlers,
 };
 pub use leaderboard::{
     FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use rate_limiter::{
-    EndpointConfig, InMemoryRateLimiter, LiveRedisBackend, MockRedisBackend, RateLimitResult,
-    RateLimiter, RedisBackend, RedisRateLimiter, SlidingWindowRateLimiter,
+    DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter, LiveRedisBackend,
+    MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend, RedisRateLimiter,
+    SlidingWindowRateLimiter,
 };
 pub use metrics::{
     metrics, record_rate_limit_hit, record_recovery_code_use, record_totp_verification,
@@ -31,6 +34,7 @@ pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData,
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
+    TenantConfig, TenantRegistry, TenantScopedStore,
 };
 pub use webhooks::{
     DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog, WebhookManager,
