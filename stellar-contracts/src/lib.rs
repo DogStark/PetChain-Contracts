@@ -135,6 +135,8 @@ mod test_encryption_nonce;
 #[cfg(test)]
 mod test_get_lab_results;
 #[cfg(test)]
+mod test_biomarker_trend;
+#[cfg(test)]
 mod test_get_pet_access_control;
 #[cfg(test)]
 mod test_get_pet_decryption;
@@ -952,6 +954,8 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+    // Biomarker trend cache: (pet_id, biomarker_name) -> BiomarkerTrendCache
+    BiomarkerTrendCache((u64, String)),
 }
 
 #[contracttype]
@@ -1212,6 +1216,29 @@ pub struct LabDifference {
     pub value_b: i128,
     pub delta: i128,
     pub abnormal: bool,
+}
+
+/// Cached result of a biomarker moving-average computation (1-hour TTL).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BiomarkerTrendCache {
+    /// Moving average value (scaled by 1000 to avoid floats).
+    pub moving_avg: i128,
+    /// Ledger timestamp when this cache entry was computed.
+    pub computed_at: u64,
+    /// Whether a deteriorating trend (3 consecutive worsening results) was detected.
+    pub deteriorating: bool,
+}
+
+/// Event emitted when a deteriorating biomarker trend is detected.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BiomarkerTrendAlert {
+    pub version: u32,
+    pub pet_id: u64,
+    pub biomarker: String,
+    pub moving_avg: i128,
+    pub window: u32,
 }
 
 #[contracttype]
@@ -6964,6 +6991,105 @@ impl PetChainContract {
     }
 
     // --- BATCH OPERATIONS ---
+
+    pub fn get_biomarker_trend(
+        env: Env,
+        pet_id: u64,
+        biomarker: String,
+        window: u32,
+    ) -> BiomarkerTrendCache {
+        const TREND_CACHE_TTL: u64 = 3600; // 1-hour TTL
+
+        let cache_key = MedicalKey::BiomarkerTrendCache((pet_id, biomarker.clone()));
+        let now = env.ledger().timestamp();
+
+        // Return cached result if still fresh
+        if let Some(cached) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, BiomarkerTrendCache>(&cache_key)
+        {
+            if now.saturating_sub(cached.computed_at) < TREND_CACHE_TTL {
+                return cached;
+            }
+        }
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        let w = if window == 0 { 1 } else { window as u64 };
+        let start_idx = if count >= w { count - w + 1 } else { 1 };
+
+        // Collect the last `window` biomarker values
+        let mut values: Vec<i128> = Vec::new(&env);
+        for i in start_idx..=count {
+            if let Some(lid) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(r) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lid))
+                {
+                    if let Some(v) = r.biomarkers.get(biomarker.clone()) {
+                        values.push_back(v);
+                    }
+                }
+            }
+        }
+
+        let n = values.len() as i128;
+        let moving_avg = if n == 0 {
+            0
+        } else {
+            let mut sum: i128 = 0;
+            for v in values.iter() {
+                sum += v;
+            }
+            // Scale by 1000 for fixed-point representation
+            (sum * 1000) / n
+        };
+
+        // Detect deteriorating trend: 3 consecutive results moving away from reference (0)
+        let deteriorating = if values.len() >= 3 {
+            let len = values.len();
+            let a = values.get_unchecked(len - 3);
+            let b = values.get_unchecked(len - 2);
+            let c = values.get_unchecked(len - 1);
+            // Deteriorating if each successive value is further from 0 than the previous
+            (b.abs() > a.abs()) && (c.abs() > b.abs())
+        } else {
+            false
+        };
+
+        let result = BiomarkerTrendCache {
+            moving_avg,
+            computed_at: now,
+            deteriorating,
+        };
+
+        env.storage().instance().set(&cache_key, &result);
+
+        if deteriorating {
+            env.events().publish(
+                (Symbol::new(&env, "BiomarkerTrendAlert"), pet_id),
+                BiomarkerTrendAlert {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    biomarker,
+                    moving_avg,
+                    window,
+                },
+            );
+        }
+
+        result
+    }
 
     pub fn batch_add_vaccinations(
         env: Env,
