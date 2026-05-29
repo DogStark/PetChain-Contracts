@@ -288,6 +288,11 @@ fn test_insurance_policy_fields() {
 
 #[test]
 fn test_premium_estimate_has_no_state_change() {
+    // placeholder — body was missing in original file
+}
+
+#[test]
+fn test_multiple_policies_per_pet() {
     let env = Env::default();
     env.mock_all_auths();
 

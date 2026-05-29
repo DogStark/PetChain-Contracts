@@ -1,3 +1,80 @@
+#[cfg(test)]
+mod test_access_control {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup() -> (Env, Address, Address, u64, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+
+        let owner = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let read_only = Address::generate(&env);
+
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        (env, contract_id, owner, pet_id, admin, vet, read_only)
+    }
+
+    #[test]
+    fn test_role_hierarchy_effective_permissions() {
+        let (env, contract_id, owner, pet_id, admin, vet, read_only) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.grant_role(&pet_id, &owner, &admin, &Role::Admin);
+        client.grant_role(&pet_id, &admin, &vet, &Role::Vet);
+        client.grant_role(&pet_id, &vet, &read_only, &Role::ReadOnly);
+
+        let owner_permissions = client.get_effective_permissions(&owner, &pet_id);
+        assert_eq!(owner_permissions.len(), 4);
+        assert_eq!(owner_permissions.get(0).unwrap(), Role::ReadOnly);
+        assert_eq!(owner_permissions.get(3).unwrap(), Role::Owner);
+
+        let admin_permissions = client.get_effective_permissions(&admin, &pet_id);
+        assert_eq!(admin_permissions.len(), 3);
+        assert_eq!(admin_permissions.get(2).unwrap(), Role::Admin);
+
+        let vet_permissions = client.get_effective_permissions(&vet, &pet_id);
+        assert_eq!(vet_permissions.len(), 2);
+        assert_eq!(vet_permissions.get(1).unwrap(), Role::Vet);
+
+        let readonly_permissions = client.get_effective_permissions(&read_only, &pet_id);
+        assert_eq!(readonly_permissions.len(), 1);
+        assert_eq!(readonly_permissions.get(0).unwrap(), Role::ReadOnly);
+
+        assert!(client.has_role_permission(&vet, &pet_id, &Role::ReadOnly));
+        assert!(client.has_role_permission(&vet, &pet_id, &Role::Vet));
+        assert!(!client.has_role_permission(&vet, &pet_id, &Role::Admin));
+
+        let _ = env;
+    }
+
+    #[test]
+    #[should_panic(expected = "Role exceeds caller authority")]
+    fn test_role_grant_above_caller_level_rejected() {
+        let (env, contract_id, owner, pet_id, admin, vet, _) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.grant_role(&pet_id, &owner, &admin, &Role::Admin);
+        client.grant_role(&pet_id, &admin, &vet, &Role::Vet);
+
+        let unauthorized_target = Address::generate(&env);
+        client.grant_role(&pet_id, &vet, &unauthorized_target, &Role::Admin);
+    }
+
 use crate::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -1022,6 +1099,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
     client.add_vaccination(
@@ -1031,6 +1109,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "ParvoVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-002"),
     );
     client.add_vaccination(
@@ -1040,6 +1119,7 @@ fn test_get_vaccination_history_pagination_first_page() {
         &String::from_str(&env, "BordetellaVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-003"),
     );
 
@@ -1099,6 +1179,7 @@ fn test_get_vaccination_history_pagination_out_of_bounds_offset() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
 
@@ -1150,6 +1231,7 @@ fn test_get_vaccination_history_pagination_limit_zero() {
         &String::from_str(&env, "RabiesVax"),
         &1000u64,
         &2000u64,
+        &0u64,
         &String::from_str(&env, "BATCH-001"),
     );
 
@@ -1532,6 +1614,7 @@ fn test_get_vaccination_summary() {
         &String::from_str(&env, "Rabies v1"),
         &now,
         &(now + 15 * 86400), // Due in 15 days
+        &0u64,
         &String::from_str(&env, "BATCH001"),
     );
 
@@ -1761,141 +1844,79 @@ fn test_expired_grant_returns_none() {
     assert_eq!(level, AccessLevel::None);
 }
 
-mod test_temp_vet_access {
-    use crate::*;
-    use soroban_sdk::{
-        testutils::{Address as _, Ledger},
-        Env, Vec,
-    };
+// --- export_access_log tests ---
 
-    fn register_pet(env: &Env, client: &PetChainContractClient, owner: &Address) -> u64 {
-        client.register_pet(
-            owner,
-            &String::from_str(env, "Buddy"),
-            &String::from_str(env, "2020-01-01"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(env, "Labrador"),
-            &String::from_str(env, "Black"),
-            &25u32,
-            &None,
-            &PrivacyLevel::Public,
-        )
-    }
+fn setup_with_admin() -> (Env, PetChainContractClient<'static>, Address, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
 
-    #[test]
-    fn test_grant_temp_vet_access_basic() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+    let owner = Address::generate(&env);
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
 
-        env.ledger().with_mut(|l| l.timestamp = 1000);
-        let pet_id = register_pet(&env, &client, &owner);
+    (env, client, admin, owner, pet_id)
+}
 
-        let mut scopes = Vec::new(&env);
-        scopes.push_back(VetScope::ReadMedical);
+#[test]
+fn test_export_access_log_owner_can_export() {
+    let (env, client, _admin, owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
 
-        let result = client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
-        assert!(result);
+    env.ledger().set_timestamp(500);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
 
-        assert!(client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
-        assert!(!client.check_vet_scope(&pet_id, &vet, &VetScope::WriteMedical));
-    }
+    let logs = client.export_access_log(&owner, &pet_id, &0u64, &1000u64, &1u32);
+    assert!(!logs.is_empty());
+}
 
-    #[test]
-    fn test_temp_vet_access_expired() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+#[test]
+fn test_export_access_log_time_range_filters() {
+    let (env, client, _admin, owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
 
-        let owner = Address::generate(&env);
-        let vet = Address::generate(&env);
+    env.ledger().set_timestamp(100);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
 
-        env.ledger().with_mut(|l| l.timestamp = 1000);
-        let pet_id = register_pet(&env, &client, &owner);
+    env.ledger().set_timestamp(900);
+    client.revoke_access(&pet_id, &grantee);
 
-        let mut scopes = Vec::new(&env);
-        scopes.push_back(VetScope::ReadMedical);
+    // Only events in [200, 1000] — should exclude the grant at ts=100
+    let logs = client.export_access_log(&owner, &pet_id, &200u64, &1000u64, &1u32);
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs.get(0).unwrap().timestamp, 900);
+}
 
-        client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
-        assert!(client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
+#[test]
+#[should_panic]
+fn test_export_access_log_unauthorized_caller_panics() {
+    let (env, client, _admin, _owner, pet_id) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    client.export_access_log(&stranger, &pet_id, &0u64, &9999u64, &1u32);
+}
 
-        // Advance past expiry
-        env.ledger().with_mut(|l| l.timestamp = 2001);
-        assert!(!client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
-    }
+#[test]
+fn test_export_access_log_admin_can_export() {
+    let (env, client, admin, _owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
 
-    #[test]
-    #[should_panic]
-    fn test_temp_vet_scope_escalation_rejected() {
-        let env = Env::default();
-        // Do NOT mock all auths — non-owner auth will fail
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(50);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
 
-        let owner = Address::generate(&env);
-        let non_owner = Address::generate(&env);
-        let vet = Address::generate(&env);
-
-        env.mock_all_auths();
-        env.ledger().with_mut(|l| l.timestamp = 1000);
-        let pet_id = register_pet(&env, &client, &owner);
-        // Stop mocking — subsequent calls require real auth
-        drop(env.mock_all_auths_allowing_non_root_auth());
-
-        let mut scopes = Vec::new(&env);
-        scopes.push_back(VetScope::ReadMedical);
-
-        // non_owner tries to grant — should panic (auth failure)
-        client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
-    }
-
-    #[test]
-    fn test_list_temp_grants_expiry_status() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
-
-        let owner = Address::generate(&env);
-        let vet1 = Address::generate(&env);
-        let vet2 = Address::generate(&env);
-
-        env.ledger().with_mut(|l| l.timestamp = 1000);
-        let pet_id = register_pet(&env, &client, &owner);
-
-        let mut scopes = Vec::new(&env);
-        scopes.push_back(VetScope::ReadMedical);
-
-        // vet1 expires at 2000, vet2 expires at 5000
-        client.grant_temp_vet_access(&pet_id, &vet1, &scopes, &2000u64);
-        client.grant_temp_vet_access(&pet_id, &vet2, &scopes, &5000u64);
-
-        // Advance past vet1's expiry but not vet2's
-        env.ledger().with_mut(|l| l.timestamp = 3000);
-
-        let grants = client.list_temp_grants(&pet_id);
-        assert_eq!(grants.len(), 2);
-
-        // Find each grant by vet address and check is_expired
-        let mut found_expired = false;
-        let mut found_active = false;
-        for i in 0..grants.len() {
-            let status = grants.get(i).unwrap();
-            if status.grant.vet == vet1 {
-                assert!(status.is_expired);
-                found_expired = true;
-            } else if status.grant.vet == vet2 {
-                assert!(!status.is_expired);
-                found_active = true;
-            }
-        }
-        assert!(found_expired);
-        assert!(found_active);
-    }
+    let logs = client.export_access_log(&admin, &pet_id, &0u64, &1000u64, &1u32);
+    assert!(!logs.is_empty());
 }

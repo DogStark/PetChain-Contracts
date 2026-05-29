@@ -1,10 +1,10 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
 use crate::two_factor::{
     AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
-    UserTwoFactorSummary,
+    UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use serde::{Deserialize, Serialize};
@@ -41,16 +41,6 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
         .clone()
 }
 
-fn store_insert(user_id: &str, data: TwoFactorData) -> Result<(), String> {
-    two_factor_store().save(user_id, data)
-}
-
-fn store_get(user_id: &str) -> Result<TwoFactorData, String> {
-    two_factor_store()
-        .get(user_id)
-        .map_err(|_| format!("2FA not configured for user {}", user_id))
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -80,6 +70,7 @@ pub struct EnableTwoFactorRequest {
 #[derive(Debug, Serialize)]
 pub struct EnableTwoFactorResponse {
     pub secret: String,
+    pub otpauth_uri: String,
     pub qr_code: String,
     pub backup_codes: Vec<String>,
 }
@@ -111,6 +102,7 @@ pub struct RecoverWithBackupRequest {
 #[derive(Debug, Serialize)]
 pub struct RecoverWithBackupResponse {
     pub new_secret: String,
+    pub new_otpauth_uri: String,
     pub new_backup_codes: Vec<String>,
     pub enabled: bool,
 }
@@ -126,26 +118,67 @@ pub struct RecoveryUsageLogEntry {
 
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
+    store: Arc<dyn TwoFactorStore>,
+    issuer: String,
 }
 
 impl TwoFactorHandlers {
     pub fn new() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
+            store: two_factor_store(),
+            issuer: "PetChain".to_string(),
         }
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
-        Self { limiter }
+        Self {
+            limiter,
+            store: two_factor_store(),
+            issuer: "PetChain".to_string(),
+        }
+    }
+
+    pub fn with_store(store: Arc<dyn TwoFactorStore>) -> Self {
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+            store,
+            issuer: "PetChain".to_string(),
+        }
+    }
+
+    pub fn with_store_and_issuer(
+        store: Arc<dyn TwoFactorStore>,
+        issuer: impl Into<String>,
+    ) -> Self {
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+            store,
+            issuer: issuer.into(),
+        }
+    }
+
+    fn store_get(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        self.store
+            .get(user_id)
+            .map_err(|_| format!("2FA not configured for user {}", user_id))
     }
 
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
     ) -> Result<EnableTwoFactorResponse, String> {
+        Self::new().enroll(caller, req)
+    }
+
+    pub fn enroll(
+        &self,
+        caller: &AuthenticatedUser,
+        req: EnableTwoFactorRequest,
+    ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
-        if let Ok(existing) = store_get(&req.user_id) {
+        if let Ok(existing) = self.store_get(&req.user_id) {
             if existing.enabled {
                 return Err(
                     "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
@@ -153,9 +186,9 @@ impl TwoFactorHandlers {
             }
         }
 
-        let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
+        let setup = TwoFactorAuth::setup(&req.email, &self.issuer)?;
 
-        store_insert(
+        self.store.save(
             &req.user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
@@ -166,6 +199,7 @@ impl TwoFactorHandlers {
 
         Ok(EnableTwoFactorResponse {
             secret: setup.secret,
+            otpauth_uri: setup.otpauth_uri,
             qr_code: setup.qr_code_base64,
             backup_codes: setup.backup_codes,
         })
@@ -186,10 +220,10 @@ impl TwoFactorHandlers {
             ));
         }
 
-        let data = store_get(&req.user_id)?;
+        let data = self.store_get(&req.user_id)?;
         let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
         if result {
-            two_factor_store().update_enabled(&req.user_id, true)?;
+            self.store.update_enabled(&req.user_id, true)?;
         }
 
         if result {
@@ -214,7 +248,7 @@ impl TwoFactorHandlers {
             ));
         }
 
-        let data = store_get(&req.user_id)?;
+        let data = self.store_get(&req.user_id)?;
         if !data.enabled {
             return Ok(false);
         }
@@ -243,14 +277,14 @@ impl TwoFactorHandlers {
             ));
         }
 
-        let data = store_get(&req.user_id)?;
+        let data = self.store_get(&req.user_id)?;
         if !data.enabled {
             return Ok(false);
         }
 
         let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
         if result {
-            two_factor_store().update_enabled(&req.user_id, false)?;
+            self.store.update_enabled(&req.user_id, false)?;
         }
 
         if result {
@@ -264,7 +298,7 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
     ) -> Result<RecoverWithBackupResponse, String> {
-        Self::recover_with_backup_with_ip(caller, req, None)
+        Self::new().recover(caller, req, None)
     }
 
     pub fn recover_with_backup_with_ip(
@@ -272,9 +306,18 @@ impl TwoFactorHandlers {
         req: RecoverWithBackupRequest,
         ip_address: Option<&str>,
     ) -> Result<RecoverWithBackupResponse, String> {
+        Self::new().recover(caller, req, ip_address)
+    }
+
+    pub fn recover(
+        &self,
+        caller: &AuthenticatedUser,
+        req: RecoverWithBackupRequest,
+        ip_address: Option<&str>,
+    ) -> Result<RecoverWithBackupResponse, String> {
         caller.authorize(&req.user_id)?;
 
-        let data = store_get(&req.user_id)?;
+        let data = self.store_get(&req.user_id)?;
 
         if !data.enabled {
             return Err("2FA not enabled for user".to_string());
@@ -287,7 +330,6 @@ impl TwoFactorHandlers {
             None => {
                 // Even if code not in current list, check recovery log for single-use enforcement
                 // This handles the case where codes were already used in a previous recovery
-                let store = two_factor_store();
                 // Try to find this code in recovery log (this is expensive but ensures single-use)
                 // For now, just return the standard error
                 return Err("InvalidRecoveryCode".to_string());
@@ -295,8 +337,10 @@ impl TwoFactorHandlers {
         };
 
         // Check if code has already been used and log the usage atomically
-        let store = two_factor_store();
-        if let Err(e) = store.log_recovery_code_usage(&req.user_id, code_index, ip_address) {
+        if let Err(e) = self
+            .store
+            .log_recovery_code_usage(&req.user_id, code_index, ip_address)
+        {
             return Err(e);
         }
 
@@ -304,9 +348,9 @@ impl TwoFactorHandlers {
         let mut backup_codes = backup_codes.clone();
         TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code);
 
-        let setup = TwoFactorAuth::setup("recovery", "PetChain")?;
+        let setup = TwoFactorAuth::setup("recovery", &self.issuer)?;
 
-        store_insert(
+        self.store.save(
             &req.user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
@@ -317,6 +361,7 @@ impl TwoFactorHandlers {
 
         Ok(RecoverWithBackupResponse {
             new_secret: setup.secret,
+            new_otpauth_uri: setup.otpauth_uri,
             new_backup_codes: setup.backup_codes,
             enabled: true,
         })
@@ -379,12 +424,7 @@ impl AdminScoreHandlers {
     }
 
     /// Log a rejected score submission
-    pub fn log_rejected_submission(
-        &self,
-        user_id: String,
-        attempted_score: u64,
-        reason: String,
-    ) {
+    pub fn log_rejected_submission(&self, user_id: String, attempted_score: u64, reason: String) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -410,6 +450,56 @@ impl AdminScoreHandlers {
 impl Default for AdminScoreHandlers {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admin rate-limit quota management
+// ---------------------------------------------------------------------------
+
+/// Request / response types for quota admin endpoints.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SetUserQuotaRequest {
+    pub user_id: String,
+    pub requests_per_minute: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GrantUnlimitedRequest {
+    pub user_id: String,
+    /// Unix timestamp (seconds) until which the bypass is active.
+    pub expires_at: u64,
+}
+
+/// Admin handlers for per-user rate-limit quota management.
+pub struct AdminRateLimitHandlers {
+    pub quota_store: Arc<UserQuotaStore>,
+}
+
+impl AdminRateLimitHandlers {
+    pub fn new(quota_store: Arc<UserQuotaStore>) -> Self {
+        Self { quota_store }
+    }
+
+    /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
+    /// Takes effect on the user's next request window.
+    pub fn set_user_quota(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: SetUserQuotaRequest,
+    ) -> Result<(), String> {
+        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        Ok(())
+    }
+
+    /// POST /admin/rate-limits/unlimited — grant temporary unlimited bypass.
+    pub fn grant_unlimited(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: GrantUnlimitedRequest,
+    ) -> Result<(), String> {
+        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        Ok(())
     }
 }
 
@@ -467,10 +557,7 @@ impl AdminDashboardHandlers {
     }
 
     /// POST /admin/users/{id}/disable-2fa — force-disable with audit log entry.
-    pub fn disable_two_fa(
-        admin: &AuthenticatedAdmin,
-        user_id: &str,
-    ) -> Result<(), String> {
+    pub fn disable_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
         two_factor_store().admin_disable_two_fa(user_id, &admin.admin_id)
     }
 
@@ -559,12 +646,7 @@ impl CanaryHandlers {
         if store.is_canary(user_id) {
             // Log the trigger event
             let meta = ip_address.map(|ip| format!("ip={}", ip));
-            store.append_audit_log(
-                user_id,
-                "CanaryTriggered",
-                user_id,
-                meta.as_deref(),
-            )?;
+            store.append_audit_log(user_id, "CanaryTriggered", user_id, meta.as_deref())?;
 
             // Fire webhook immediately
             let mut metadata = HashMap::new();
@@ -572,11 +654,8 @@ impl CanaryHandlers {
                 metadata.insert("ip".to_string(), ip.to_string());
             }
             metadata.insert("user_id".to_string(), user_id.to_string());
-            self.webhook_manager.fire(
-                SecurityEventType::CanaryTriggered,
-                user_id,
-                metadata,
-            );
+            self.webhook_manager
+                .fire(SecurityEventType::CanaryTriggered, user_id, metadata);
 
             // Return false — canary accounts never grant access
             return Ok(false);
@@ -590,4 +669,198 @@ impl CanaryHandlers {
 #[cfg(test)]
 pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
     test_two_factor_store()
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenant support (Issue: multi-tenant 2FA)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProvisionTenantRequest {
+    pub tenant_id: String,
+    pub totp_issuer: String,
+    pub rate_limit_max_failures: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProvisionTenantResponse {
+    pub tenant_id: String,
+    pub totp_issuer: String,
+}
+
+/// Handlers that operate within a single tenant's namespace.
+/// All user data is scoped to the tenant; cross-tenant access is rejected
+/// at the `TenantScopedStore` level.
+pub struct MultiTenantHandlers {
+    store: TenantScopedStore,
+    limiter: Arc<dyn RateLimiter>,
+}
+
+impl MultiTenantHandlers {
+    pub fn new(store: TenantScopedStore) -> Self {
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+            store,
+        }
+    }
+
+    pub fn with_limiter(store: TenantScopedStore, limiter: Arc<dyn RateLimiter>) -> Self {
+        Self { store, limiter }
+    }
+
+    pub fn enable_two_factor(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        email: &str,
+    ) -> Result<EnableTwoFactorResponse, String> {
+        caller.authorize(user_id)?;
+
+        if let Ok(existing) = self.store.get(user_id) {
+            if existing.enabled {
+                return Err(
+                    "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
+                );
+            }
+        }
+
+        let setup = TwoFactorAuth::setup(email, self.store.issuer())?;
+
+        self.store.save(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes.clone(),
+                enabled: false,
+            },
+        )?;
+
+        Ok(EnableTwoFactorResponse {
+            secret: setup.secret,
+            qr_code: setup.qr_code_base64,
+            backup_codes: setup.backup_codes,
+        })
+    }
+
+    pub fn verify_and_activate(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        token: &str,
+    ) -> Result<bool, String> {
+        caller.authorize(user_id)?;
+
+        let max_failures = self.store.config.rate_limit_max_failures;
+        let key = format!(
+            "{}::verify::{}",
+            self.store.config.tenant_id, user_id
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
+        }
+        let _ = max_failures; // per-tenant config available for custom limiter wiring
+
+        let data = self.store.get(user_id)?;
+        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        if result {
+            self.store.update_enabled(user_id, true)?;
+            self.limiter.record_success(&key);
+        }
+        Ok(result)
+    }
+
+    pub fn disable_two_factor(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        token: &str,
+    ) -> Result<bool, String> {
+        caller.authorize(user_id)?;
+
+        let key = format!(
+            "{}::disable::{}",
+            self.store.config.tenant_id, user_id
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
+        }
+
+        let data = self.store.get(user_id)?;
+        if !data.enabled {
+            return Ok(false);
+        }
+        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        if result {
+            self.store.update_enabled(user_id, false)?;
+            self.limiter.record_success(&key);
+        }
+        Ok(result)
+    }
+}
+
+/// Super-admin handler for tenant provisioning.
+pub struct TenantProvisioningHandlers {
+    registry: Arc<TenantRegistry>,
+}
+
+impl TenantProvisioningHandlers {
+    pub fn new(registry: Arc<TenantRegistry>) -> Self {
+        Self { registry }
+    }
+
+    /// Provision a new tenant (super-admin only — caller must be verified externally).
+    pub fn provision_tenant(
+        &self,
+        _super_admin: &AuthenticatedAdmin,
+        req: ProvisionTenantRequest,
+    ) -> Result<ProvisionTenantResponse, String> {
+        let config = TenantConfig {
+            tenant_id: req.tenant_id.clone(),
+            totp_issuer: req.totp_issuer.clone(),
+            rate_limit_max_failures: req.rate_limit_max_failures,
+        };
+        self.registry.provision(config)?;
+        Ok(ProvisionTenantResponse {
+            tenant_id: req.tenant_id,
+            totp_issuer: req.totp_issuer,
+        })
+    }
+
+    pub fn get_tenant_config(&self, tenant_id: &str) -> Option<TenantConfig> {
+        self.registry.get_config(tenant_id)
+// Pool metrics endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PoolStatsResponse {
+    pub active: u32,
+    pub idle: u32,
+    pub max: u32,
+}
+
+pub struct PoolMetricsHandlers;
+
+#[cfg(not(test))]
+impl PoolMetricsHandlers {
+    /// Return current pool utilisation. Only available when backed by Postgres.
+    /// Requires `POOL_STATS_ENABLED=1` to be set; otherwise returns an error
+    /// to avoid coupling the handler to a concrete store type at runtime.
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string())
+    }
+}
+
+#[cfg(test)]
+impl PoolMetricsHandlers {
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        // In tests there is no real pool; return a fixed sentinel so the
+        // endpoint handler can be exercised without a database.
+        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+    }
 }

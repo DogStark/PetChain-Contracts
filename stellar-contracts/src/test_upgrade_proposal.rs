@@ -820,3 +820,57 @@ fn test_coverage_change_admin_proposal_with_timelock() {
     let proposal = client.get_proposal(&proposal_id).unwrap();
     assert!(proposal.executed);
 }
+
+// --- Rollback tests ---
+
+fn execute_upgrade(env: &Env, client: &PetChainContractClient, admin1: &Address, admin2: &Address) {
+    let action = ProposalAction::UpgradeContract(BytesN::from_array(env, &[0u8; 32]));
+    let proposal_id = client.propose_action(admin1, &action, &(86_400 * 2));
+    client.approve_proposal(admin2, &proposal_id);
+    // Advance past the 24-hour timelock
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    env.ledger().with_mut(|l| l.set_timestamp(proposal.timelock_end + 1));
+    client.execute_proposal(&proposal_id);
+}
+
+#[test]
+fn test_rollback_within_window_succeeds() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    execute_upgrade(&env, &client, &admin1, &admin2);
+
+    // Deadline should be set (current timestamp + 86400)
+    let deadline = client.get_rollback_deadline();
+    assert!(deadline > 0);
+
+    // Rollback within window (current time is well before deadline)
+    client.rollback_upgrade(&admin1);
+
+    // After rollback, deadline is cleared
+    assert_eq!(client.get_rollback_deadline(), 0);
+}
+
+#[test]
+#[should_panic]
+fn test_rollback_after_window_panics() {
+    let env = Env::default();
+    let (client, admin1, admin2) = setup(&env);
+
+    execute_upgrade(&env, &client, &admin1, &admin2);
+
+    // Advance past the 24-hour rollback window
+    let deadline = client.get_rollback_deadline();
+    env.ledger().with_mut(|l| l.set_timestamp(deadline + 1));
+
+    client.rollback_upgrade(&admin1);
+}
+
+#[test]
+#[should_panic]
+fn test_rollback_without_prior_upgrade_panics() {
+    let env = Env::default();
+    let (client, admin1, _admin2) = setup(&env);
+    // No upgrade executed — no previous hash stored
+    client.rollback_upgrade(&admin1);
+}

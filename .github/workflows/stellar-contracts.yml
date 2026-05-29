@@ -8,6 +8,11 @@ on:
 
 permissions: read-all
 
+env:
+  STELLAR_NETWORK: testnet
+  STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+  STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -73,3 +78,82 @@ jobs:
       - name: Test Stellar contracts
         working-directory: stellar-contracts
         run: cargo test
+
+  deploy-testnet:
+    runs-on: ubuntu-latest
+    needs: stellar-contracts
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Build contract WASM
+        working-directory: stellar-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Generate deployer keypair
+        run: |
+          stellar keys generate deployer --network testnet
+          stellar keys address deployer
+
+      - name: Fund deployer account via Friendbot
+        run: |
+          DEPLOYER_ADDRESS=$(stellar keys address deployer)
+          curl -s "https://friendbot.stellar.org?addr=${DEPLOYER_ADDRESS}" | jq .
+
+      - name: Deploy contract to testnet
+        id: deploy
+        run: |
+          WASM_PATH=$(find stellar-contracts/target/wasm32-unknown-unknown/release -name "*.wasm" | head -1)
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm "$WASM_PATH" \
+            --source deployer \
+            --network testnet \
+            --rpc-url "$STELLAR_RPC_URL" \
+            --network-passphrase "$STELLAR_NETWORK_PASSPHRASE")
+          echo "contract_id=${CONTRACT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Deployed contract: ${CONTRACT_ID}"
+
+      - name: Verify deployment via get_contract_version
+        run: |
+          stellar contract invoke \
+            --id "${{ steps.deploy.outputs.contract_id }}" \
+            --source deployer \
+            --network testnet \
+            --rpc-url "$STELLAR_RPC_URL" \
+            --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
+            -- get_contract_version
+
+      - name: Save contract ID artifact
+        run: echo "${{ steps.deploy.outputs.contract_id }}" > contract_id.txt
+
+      - name: Upload contract ID artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-contract-id
+          path: contract_id.txt
+          retention-days: 30
+
+      - name: Notify on deployment failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Testnet deployment failed — ${context.sha.slice(0, 7)}`,
+              body: `Deployment to Stellar testnet failed for commit ${context.sha}.\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['ci-failure'],
+            })
