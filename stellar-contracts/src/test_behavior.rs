@@ -1,3 +1,96 @@
+#[cfg(test)]
+mod test_behavior {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+
+    fn setup() -> (Env, Address, Address, u64, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+
+        let owner = Address::generate(&env);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        let admin = Address::generate(&env);
+        client.init_admin(&admin);
+
+        (env, contract_id, owner, pet_id, admin)
+    }
+
+    fn keyword_list(env: &Env, words: &[&str]) -> Vec<String> {
+        let mut list = Vec::new(env);
+        for word in words.iter() {
+            list.push_back(String::from_str(env, word));
+        }
+        list
+    }
+
+    #[test]
+    fn test_sentiment_score_computed_from_keywords() {
+        let (env, contract_id, _owner, pet_id, admin) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.set_behavior_keywords(
+            &admin,
+            &keyword_list(&env, &["good", "happy"]),
+            &keyword_list(&env, &["aggressive", "bark"]),
+        );
+
+        let record_id = client
+            .add_behavior_record(&pet_id, &String::from_str(&env, "good good aggressive dog"));
+
+        let record = client.get_behavior_record(&record_id).unwrap();
+        assert_eq!(record.sentiment_score, 250000);
+    }
+
+    #[test]
+    fn test_sentiment_trend_returns_average() {
+        let (env, contract_id, _owner, pet_id, admin) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.set_behavior_keywords(
+            &admin,
+            &keyword_list(&env, &["good", "happy"]),
+            &keyword_list(&env, &["aggressive", "bark"]),
+        );
+
+        let first = client.add_behavior_record(&pet_id, &String::from_str(&env, "good dog"));
+        let _second = client.add_behavior_record(&pet_id, &String::from_str(&env, ""));
+
+        let first_record = client.get_behavior_record(&first).unwrap();
+        assert_eq!(first_record.sentiment_score, 500000);
+
+        let trend = client.get_behavior_sentiment_trend(&pet_id, &30);
+        assert_eq!(trend, 250000);
+    }
+
+    #[test]
+    fn test_empty_notes_score_is_zero() {
+        let (env, contract_id, _owner, pet_id, admin) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.set_behavior_keywords(
+            &admin,
+            &keyword_list(&env, &["good", "happy"]),
+            &keyword_list(&env, &["aggressive", "bark"]),
+        );
+
+        let record_id = client.add_behavior_record(&pet_id, &String::from_str(&env, ""));
+        let record = client.get_behavior_record(&record_id).unwrap();
+        assert_eq!(record.sentiment_score, 0);
+    }
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
