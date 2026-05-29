@@ -905,3 +905,13 @@ impl PoolMetricsHandlers {
         Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
     }
 }
+
+/// WebSocket endpoint for real-time leaderboard updates.
+///
+/// Mount this at `GET /leaderboard/ws`.
+pub async fn leaderboard_ws(
+    req: HttpRequest,
+    stream: Payload,
+) -> Result<HttpResponse, Error> {
+    leaderboard_ws_endpoint(req, stream).await
+}
