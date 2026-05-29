@@ -1140,6 +1140,8 @@ pub struct Consent {
     pub revoked_at: Option<u64>,
     pub is_active: bool,
     pub scope: ConsentScope,
+    /// ID of the parent consent this was delegated from (None = root consent).
+    pub parent_consent_id: Option<u64>,
 }
 
 #[contracttype]
@@ -1241,6 +1243,15 @@ pub struct BiomarkerTrendAlert {
     pub window: u32,
 }
 
+/// Event emitted for each consent revoked during a cascade revocation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentRevoked {
+    pub version: u32,
+    pub pet_id: u64,
+    pub consent_id: u64,
+    pub revoked_at: u64,
+}
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessLevel {
@@ -7752,6 +7763,7 @@ impl PetChainContract {
             revoked_at: None,
             is_active: true,
             scope,
+            parent_consent_id: None,
         };
 
         env.storage()
@@ -7769,6 +7781,37 @@ impl PetChainContract {
             &ConsentKey::PetConsentIndex((pet_id, new_pet_count)),
             &consent_id,
         );
+
+        consent_id
+    }
+
+    /// Grant a consent that is a sub-delegation of an existing consent.
+    /// The `parent_consent_id` links this consent to its parent for cascade revocation.
+    pub fn grant_consent_with_parent(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+        scope: ConsentScope,
+        parent_consent_id: Option<u64>,
+    ) -> u64 {
+        let consent_id =
+            Self::grant_consent_with_expiry(env.clone(), pet_id, owner, consent_type, granted_to, None);
+
+        // Patch the stored consent to set parent_consent_id
+        if let Some(pid) = parent_consent_id {
+            if let Some(mut c) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+            {
+                c.parent_consent_id = Some(pid);
+                env.storage()
+                    .instance()
+                    .set(&ConsentKey::Consent(consent_id), &c);
+            }
+        }
 
         consent_id
     }
@@ -7852,6 +7895,182 @@ impl PetChainContract {
             true
         } else {
             false
+        }
+    }
+
+    /// Revoke a consent and recursively revoke all sub-consents granted by the
+    /// revoked party, up to a cascade depth of 3 (matching delegation chain max).
+    /// Emits a `ConsentRevoked` event for every consent revoked.
+    pub fn revoke_consent_cascade(env: Env, pet_id: u64, consent_id: u64, owner: Address) -> u32 {
+        owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        let mut revoked_count: u32 = 0;
+
+        // Revoke the root consent first
+        if let Some(mut root) = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            if root.owner != owner {
+                env.panic_with_error(ContractError::NotConsentOwner);
+            }
+            if !root.is_active {
+                env.panic_with_error(ContractError::ConsentAlreadyRevoked);
+            }
+            root.is_active = false;
+            root.revoked_at = Some(now);
+            env.storage()
+                .instance()
+                .set(&ConsentKey::Consent(consent_id), &root);
+
+            env.events().publish(
+                (Symbol::new(&env, "ConsentRevoked"), pet_id),
+                ConsentRevoked {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    consent_id,
+                    revoked_at: now,
+                },
+            );
+            revoked_count += 1;
+
+            // Cascade: revoke sub-consents granted by the revoked party, depth ≤ 3
+            let revoked_party = root.granted_to.clone();
+            revoked_count += Self::cascade_revoke_children(
+                &env, pet_id, consent_id, &revoked_party, now, 1,
+            );
+        }
+
+        revoked_count
+    }
+
+    /// Recursive helper: revoke all active consents whose `parent_consent_id`
+    /// matches `parent_id` and whose `owner` is `revoked_party`, up to `max_depth`.
+    fn cascade_revoke_children(
+        env: &Env,
+        pet_id: u64,
+        parent_id: u64,
+        revoked_party: &Address,
+        now: u64,
+        depth: u32,
+    ) -> u32 {
+        const MAX_CASCADE_DEPTH: u32 = 3;
+        if depth > MAX_CASCADE_DEPTH {
+            return 0;
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        let mut revoked = 0u32;
+        for i in 1..=count {
+            if let Some(cid) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(mut c) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    if c.is_active
+                        && c.parent_consent_id == Some(parent_id)
+                        && &c.owner == revoked_party
+                    {
+                        let child_grantee = c.granted_to.clone();
+                        c.is_active = false;
+                        c.revoked_at = Some(now);
+                        env.storage()
+                            .instance()
+                            .set(&ConsentKey::Consent(cid), &c);
+
+                        env.events().publish(
+                            (Symbol::new(env, "ConsentRevoked"), pet_id),
+                            ConsentRevoked {
+                                version: EVENT_SCHEMA_VERSION,
+                                pet_id,
+                                consent_id: cid,
+                                revoked_at: now,
+                            },
+                        );
+                        revoked += 1;
+
+                        revoked += Self::cascade_revoke_children(
+                            env, pet_id, cid, &child_grantee, now, depth + 1,
+                        );
+                    }
+                }
+            }
+        }
+        revoked
+    }
+
+    /// Preview which consent IDs would be revoked by `revoke_consent_cascade`
+    /// without making any state changes.
+    pub fn preview_revocation_cascade(env: Env, pet_id: u64, consent_id: u64) -> Vec<u64> {
+        let mut ids = Vec::new(&env);
+
+        let root = match env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            Some(c) if c.is_active => c,
+            _ => return ids,
+        };
+
+        ids.push_back(consent_id);
+        let revoked_party = root.granted_to.clone();
+        Self::collect_cascade_ids(&env, pet_id, consent_id, &revoked_party, 1, &mut ids);
+        ids
+    }
+
+    fn collect_cascade_ids(
+        env: &Env,
+        pet_id: u64,
+        parent_id: u64,
+        revoked_party: &Address,
+        depth: u32,
+        ids: &mut Vec<u64>,
+    ) {
+        const MAX_CASCADE_DEPTH: u32 = 3;
+        if depth > MAX_CASCADE_DEPTH {
+            return;
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(cid) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(c) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    if c.is_active
+                        && c.parent_consent_id == Some(parent_id)
+                        && &c.owner == revoked_party
+                    {
+                        let child_grantee = c.granted_to.clone();
+                        ids.push_back(cid);
+                        Self::collect_cascade_ids(env, pet_id, cid, &child_grantee, depth + 1, ids);
+                    }
+                }
+            }
         }
     }
 
@@ -7977,7 +8196,6 @@ impl PetChainContract {
         }
         result
     }
-
     /// Book a slot (mark as unavailable) with conflict detection (Issue #624)
     pub fn book_slot(env: Env, vet_address: Address, slot_index: u64) -> bool {
         vet_address.require_auth();
