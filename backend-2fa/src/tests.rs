@@ -490,6 +490,7 @@ mod tests {
                 secret,
                 backup_codes: vec![],
                 enabled: false,
+                algorithm: Algorithm::SHA1,
             },
         );
 
@@ -528,6 +529,7 @@ mod tests {
                 secret: resp.secret.clone(),
                 backup_codes: resp.backup_codes,
                 enabled: true,
+                algorithm: Algorithm::SHA1,
             },
         );
 
@@ -561,6 +563,7 @@ mod tests {
                 secret: stored_secret.clone(),
                 backup_codes: vec![],
                 enabled: true,
+                algorithm: Algorithm::SHA1,
             },
         );
 
@@ -870,6 +873,7 @@ mod tests {
                     secret: "AAAA".to_string(),
                     backup_codes: vec![],
                     enabled: true,
+                    algorithm: Algorithm::SHA1,
                 },
             );
             let disable_result = handlers.disable_two_factor(
@@ -1205,6 +1209,7 @@ mod tests {
                 secret: resp.secret,
                 backup_codes: resp.backup_codes,
                 enabled: true,
+                algorithm: Algorithm::SHA1,
             },
         );
 
@@ -2838,6 +2843,7 @@ mod admin_dashboard_tests {
                 secret: "JBSWY3DPEHPK3PXP".to_string(),
                 backup_codes: vec![],
                 enabled: true,
+                algorithm: Algorithm::SHA1,
             },
         );
     }
@@ -3077,15 +3083,16 @@ mod canary_tests {
 
         // Set up a normal user
         let store = get_two_factor_store_for_tests();
-        store
-            .save(
-                "normal-user",
-                crate::two_factor::TwoFactorData {
-                    secret: "JBSWY3DPEHPK3PXP".to_string(),
-                    backup_codes: vec![],
-                    enabled: true,
-                },
-            )
+            store
+                .save(
+                    "normal-user",
+                    crate::two_factor::TwoFactorData {
+                        secret: "JBSWY3DPEHPK3PXP".to_string(),
+                        backup_codes: vec![],
+                        enabled: true,
+                        algorithm: Algorithm::SHA1,
+                    },
+                )
             .unwrap();
 
         // Verification attempt on a normal user should NOT fire canary webhook

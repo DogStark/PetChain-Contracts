@@ -1,12 +1,16 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::leaderboard::{
+    leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission,
+};
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
 use crate::two_factor::{
-    AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, TotpConfig, TwoFactorAuth, TwoFactorData,
+    TwoFactorStore,
     UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
+use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -164,6 +168,13 @@ impl TwoFactorHandlers {
             .map_err(|_| format!("2FA not configured for user {}", user_id))
     }
 
+    fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+        TotpConfig {
+            algorithm,
+            ..TotpConfig::default()
+        }
+    }
+
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
@@ -194,6 +205,7 @@ impl TwoFactorHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: false,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -221,7 +233,11 @@ impl TwoFactorHandlers {
         }
 
         let data = self.store_get(&req.user_id)?;
-        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(&req.user_id, true)?;
         }
@@ -253,7 +269,11 @@ impl TwoFactorHandlers {
             return Ok(false);
         }
 
-        let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let is_valid = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
 
         if is_valid {
             self.limiter.record_success(&key);
@@ -282,7 +302,11 @@ impl TwoFactorHandlers {
             return Ok(false);
         }
 
-        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(&req.user_id, false)?;
         }
@@ -356,6 +380,7 @@ impl TwoFactorHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: true,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -612,6 +637,7 @@ impl CanaryHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: true,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -662,7 +688,11 @@ impl CanaryHandlers {
         }
 
         let data = store.get(user_id)?;
-        TwoFactorAuth::verify_token(&data.secret, token)
+        TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )
     }
 }
 
@@ -732,6 +762,7 @@ impl MultiTenantHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: false,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -764,7 +795,11 @@ impl MultiTenantHandlers {
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
         let data = self.store.get(user_id)?;
-        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(user_id, true)?;
             self.limiter.record_success(&key);
@@ -795,7 +830,11 @@ impl MultiTenantHandlers {
         if !data.enabled {
             return Ok(false);
         }
-        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(user_id, false)?;
             self.limiter.record_success(&key);
@@ -834,6 +873,8 @@ impl TenantProvisioningHandlers {
 
     pub fn get_tenant_config(&self, tenant_id: &str) -> Option<TenantConfig> {
         self.registry.get_config(tenant_id)
+    }
+}
 // Pool metrics endpoint
 // ---------------------------------------------------------------------------
 

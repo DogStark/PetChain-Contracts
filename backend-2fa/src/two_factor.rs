@@ -7,6 +7,16 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use totp_rs::{Algorithm, Secret, TOTP};
 
+/// HMAC algorithm used for TOTP generation and verification.
+///
+/// Existing enrollments that pre-date this field should be treated as SHA1
+/// until the user re-enrolls with a fresh secret.
+pub type HmacAlgorithm = Algorithm;
+
+fn default_hmac_algorithm() -> HmacAlgorithm {
+    HmacAlgorithm::SHA1
+}
+
 /// Configuration for TOTP parameters to ensure cryptographic agility
 #[derive(Debug, Clone)]
 pub struct TotpConfig {
@@ -61,6 +71,8 @@ pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
     pub enabled: bool,
+    #[serde(default = "default_hmac_algorithm")]
+    pub algorithm: HmacAlgorithm,
 }
 
 /// Returned after a successful backup-code recovery.
@@ -129,7 +141,7 @@ impl TwoFactorAuth {
             .collect()
     }
 
-    /// Setup 2FA with default configuration (SHA256)
+    /// Setup 2FA with default configuration (SHA1).
     pub fn setup(user_email: &str, issuer: &str) -> Result<TwoFactorSetup, String> {
         Self::setup_with_config(user_email, issuer, TotpConfig::default())
     }
@@ -171,7 +183,7 @@ impl TwoFactorAuth {
         })
     }
 
-    /// Verify token with default configuration (SHA256)
+    /// Verify token with default configuration (SHA1).
     pub fn verify_token(secret: &str, token: &str) -> Result<bool, String> {
         Self::verify_token_with_config(secret, token, TotpConfig::default())
     }
