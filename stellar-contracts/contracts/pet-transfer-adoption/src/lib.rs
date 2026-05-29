@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, Vec,
+    Env, Map, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -77,6 +77,49 @@ pub enum TransferType {
 }
 
 /// A single chain-of-custody entry appended on every ownership change.
+/// ======================================================
+/// ADOPTION WAITING PERIOD (Issue #653)
+/// ======================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptionConfig {
+    pub waiting_period_days: u32,
+}
+
+/// An adoption that has been signed but is still in the waiting period.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdoption {
+    pub pet_id: u64,
+    pub from: Address,
+    pub to: Address,
+    pub signed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdoptionState {
+    Signed,
+    Completed,
+    Waived,
+}
+
+/// A record tracking the full lifecycle of an adoption.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptionRecord {
+    pub pet_id: u64,
+    pub from: Address,
+    pub to: Address,
+    pub signed_at: u64,
+    pub completed_at: Option<u64>,
+    pub state: AdoptionState,
+    pub waiver_reason: Option<String>, // set when waived by admin
+    pub waived_by: Option<Address>,
+}
+
+/// A single chain-of-custody entry appended on every ownership change.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CustodyEntry {
@@ -98,6 +141,13 @@ enum DataKey {
     OwnershipHistory(u64),
     OwnerPets(Address),
     CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
+    // Adoption waiting period (Issue #653)
+    AdoptionConfig,               // global -> AdoptionConfig
+    PendingAdoption(u64),         // pet_id -> PendingAdoption
+    AdoptionRecord(u64),          // pet_id -> AdoptionRecord
+    AdoptionWaitingPeriod(u64),   // pet_id -> waiting_period_days (per-pet override, optional)
+    SpeciesAdoptionConfig(String), // species -> waiting_period_days
+    JurisdictionAdoptionConfig(String), // jurisdiction -> AdoptionConfig
 }
 
 /// ======================================================
@@ -132,6 +182,13 @@ pub enum ContractError {
     NoEscrowedTransfer = 12,
     DisputeWindowNotElapsed = 13,
     TransferAlreadyDisputed = 14,
+    // Adoption waiting period errors (Issue #653)
+    NoPendingAdoption = 15,
+    WaitingPeriodNotElapsed = 16,
+    AdoptionAlreadyCompleted = 17,
+    AdoptionNotConfigurable = 18,
+    InvalidWaitingPeriod = 19,
+    AdoptionConfigNotFound = 20,
 }
 
 /// ======================================================
@@ -225,6 +282,198 @@ fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
 
 #[contractimpl]
 impl PetOwnershipContract {
+    /// ----------------------------------
+    /// ADOPTION WAITING PERIOD (Issue #653)
+    /// ----------------------------------
+
+    /// Set the global adoption waiting period (in days).
+    /// Only configurable if no default config has been set yet.
+    pub fn set_adoption_config(env: Env, waiting_period_days: u32) {
+        if env.storage().persistent().has(&DataKey::AdoptionConfig) {
+            panic_with_error!(&env, ContractError::AdoptionNotConfigurable);
+        }
+        let config = AdoptionConfig { waiting_period_days };
+        env.storage().persistent().set(&DataKey::AdoptionConfig, &config);
+    }
+
+    /// Get the current adoption config.
+    pub fn get_adoption_config(env: Env) -> AdoptionConfig {
+        env.storage().persistent().get(&DataKey::AdoptionConfig)
+            .unwrap_or(AdoptionConfig { waiting_period_days: 0 })
+    }
+
+    /// Set a per-species adoption waiting period override.
+    pub fn set_species_adoption_config(env: Env, species: String, waiting_period_days: u32) {
+        env.storage().persistent().set(&DataKey::SpeciesAdoptionConfig(species), &waiting_period_days);
+    }
+
+    /// Sign an adoption agreement, entering the waiting period.
+    pub fn sign_adoption(env: Env, pet_id: u64, to: Address) {
+        let pet = get_pet(&env, pet_id);
+        pet.current_owner.require_auth();
+
+        if env.storage().persistent().has(&DataKey::PendingAdoption(pet_id)) {
+            panic_with_error!(&env, ContractError::TransferAlreadyPending);
+        }
+        if env.storage().persistent().has(&DataKey::PendingTransfer(pet_id)) {
+            panic_with_error!(&env, ContractError::TransferAlreadyPending);
+        }
+
+        let now = env.ledger().timestamp();
+        let pending = PendingAdoption {
+            pet_id,
+            from: pet.current_owner.clone(),
+            to: to.clone(),
+            signed_at: now,
+        };
+        let record = AdoptionRecord {
+            pet_id,
+            from: pet.current_owner.clone(),
+            to: to.clone(),
+            signed_at: now,
+            completed_at: None,
+            state: AdoptionState::Signed,
+            waiver_reason: None,
+            waived_by: None,
+        };
+
+        env.storage().persistent().set(&DataKey::PendingAdoption(pet_id), &pending);
+        env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
+
+        env.events().publish(
+            (Symbol::new(&env, "adoption_sign"), pet_id),
+            (pet.current_owner, to, now),
+        );
+    }
+
+    /// Complete the adoption after the waiting period has elapsed.
+    pub fn complete_adoption(env: Env, pet_id: u64) {
+        let pending: PendingAdoption = env.storage().persistent()
+            .get(&DataKey::PendingAdoption(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+
+        let now = env.ledger().timestamp();
+        let config: Option<AdoptionConfig> = env.storage().persistent().get(&DataKey::AdoptionConfig);
+        let wp_seconds = match config {
+            Some(c) => (c.waiting_period_days as u64).saturating_mul(86400),
+            None => 0,
+        };
+
+        if now.saturating_sub(pending.signed_at) < wp_seconds {
+            panic_with_error!(&env, ContractError::WaitingPeriodNotElapsed);
+        }
+
+        let mut record: AdoptionRecord = env.storage().persistent()
+            .get(&DataKey::AdoptionRecord(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        if record.state != AdoptionState::Signed {
+            panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+
+        let mut pet = get_pet(&env, pet_id);
+        if pet.current_owner != pending.from {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut history = get_history(&env, pet_id);
+        if history.len() == 0 {
+            panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+        }
+        let last = history.len() - 1;
+        let mut prev = history.get(last)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
+        prev.relinquished_at = Some(now);
+        history.set(last, prev);
+        history.push_back(OwnershipRecord {
+            owner: pending.to.clone(),
+            acquired_at: now,
+            relinquished_at: None,
+        });
+
+        remove_pet_from_owner(&env, &pending.from, pet_id);
+        add_pet_to_owner(&env, &pending.to, pet_id);
+        pet.current_owner = pending.to.clone();
+        record.state = AdoptionState::Completed;
+        record.completed_at = Some(now);
+
+        save_pet(&env, &pet);
+        save_history(&env, pet_id, &history);
+        env.storage().persistent().remove(&DataKey::PendingAdoption(pet_id));
+        env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
+        append_custody_entry(&env, pet_id, pending.from.clone(), pending.to.clone(), TransferType::Adoption);
+
+        env.events().publish(
+            (Symbol::new(&env, "adoption_cmpl"), pet_id),
+            (pending.from, pending.to, now),
+        );
+    }
+
+    /// Allow a multisig admin to waive the waiting period for a specific adoption.
+    pub fn waive_waiting_period(env: Env, pet_id: u64, admin: Address, reason: String) {
+        admin.require_auth();
+        let pending: PendingAdoption = env.storage().persistent()
+            .get(&DataKey::PendingAdoption(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+
+        let mut record: AdoptionRecord = env.storage().persistent()
+            .get(&DataKey::AdoptionRecord(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        if record.state != AdoptionState::Signed {
+            panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut pet = get_pet(&env, pet_id);
+        if pet.current_owner != pending.from {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut history = get_history(&env, pet_id);
+        if history.len() == 0 {
+            panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+        }
+        let last = history.len() - 1;
+        let mut prev = history.get(last)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
+        prev.relinquished_at = Some(now);
+        history.set(last, prev);
+        history.push_back(OwnershipRecord {
+            owner: pending.to.clone(),
+            acquired_at: now,
+            relinquished_at: None,
+        });
+
+        remove_pet_from_owner(&env, &pending.from, pet_id);
+        add_pet_to_owner(&env, &pending.to, pet_id);
+        pet.current_owner = pending.to.clone();
+
+        record.state = AdoptionState::Waived;
+        record.completed_at = Some(now);
+        record.waiver_reason = Some(reason.clone());
+        record.waived_by = Some(admin.clone());
+
+        save_pet(&env, &pet);
+        save_history(&env, pet_id, &history);
+        env.storage().persistent().remove(&DataKey::PendingAdoption(pet_id));
+        env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
+        append_custody_entry(&env, pet_id, pending.from.clone(), pending.to.clone(), TransferType::Adoption);
+
+        env.events().publish(
+            (Symbol::new(&env, "adoption_wavd"), pet_id),
+            (admin, pending.from, pending.to, reason, now),
+        );
+    }
+
+    /// Get the adoption record for a pet.
+    pub fn get_adoption_record(env: Env, pet_id: u64) -> Option<AdoptionRecord> {
+        env.storage().persistent().get(&DataKey::AdoptionRecord(pet_id))
+    }
+
+    /// Get the pending adoption for a pet.
+    pub fn get_pending_adoption(env: Env, pet_id: u64) -> Option<PendingAdoption> {
+        env.storage().persistent().get(&DataKey::PendingAdoption(pet_id))
+    }
+
     /// ----------------------------------
     /// CREATE PET (bootstrap)
     /// ----------------------------------
