@@ -1,5 +1,57 @@
 # API Overview
 
+## View Functions (pure reads — no storage writes or event emissions)
+
+The following functions are guaranteed to have no side effects. They do not write to storage, emit events, or update access timestamps.
+
+| Function | Description |
+|---|---|
+| `get_pet` | Returns decrypted pet profile; enforces privacy level |
+| `get_pet_data` | Returns minimal pet data (name, species, breed) |
+| `get_pet_age` | Computes age from birthday timestamp |
+| `get_pet_full_profile` | Returns full profile with vaccination/medication summary |
+| `is_pet_active` | Returns whether a pet is active |
+| `get_pet_owner` | Returns the owner address for a pet |
+| `get_pet_photos` | Returns all photo hashes for a pet |
+| `get_pet_photo_count` | Returns photo count |
+| `get_pet_photos_paginated` | Returns paginated photo hashes |
+| `get_total_pets` | Returns global pet count |
+| `get_species_count` | Returns pet count for a species |
+| `get_active_pets_count` | Returns count of active pets |
+| `get_vet_stats` | Returns vet treatment/vaccination statistics |
+| `get_vet_treatment_history` | Returns paginated treatment history for a vet |
+| `get_vet_vaccination_history` | Returns paginated vaccination history for a vet |
+| `get_pets_overdue_vaccinations` | Returns pet IDs with overdue vaccinations |
+| `get_admins` | Returns list of admin addresses |
+| `get_admin_threshold` | Returns multisig approval threshold |
+| `get_verified_vets` | Returns paginated list of verified vets |
+| `is_vet_registered` | Returns whether a vet address is registered |
+| `is_verified_vet` | Returns whether a vet is verified |
+| `get_vet` | Returns vet record by address |
+| `get_vet_by_license` | Returns vet record by license number |
+| `get_vaccinations` | Returns a vaccination record by ID |
+| `get_vaccination_history` | Returns paginated vaccination history for a pet |
+| `get_upcoming_vaccinations` | Returns upcoming vaccinations for a pet |
+| `is_vaccination_current` | Returns whether a vaccine type is current |
+| `get_medical_record` | Returns a medical record by ID |
+| `get_pet_medical_records` | Returns paginated medical records for a pet |
+| `search_medical_records` | Returns filtered medical records |
+| `get_attachments` | Returns attachments for a record (Malicious hidden from non-admins) |
+| `get_attachment_by_index` | Returns a single attachment by index |
+| `get_attachment_count` | Returns attachment count for a record |
+| `verify_attachment` | Verifies content hash of an attachment |
+| `is_owner_registered` | Returns whether an owner address is registered |
+| `get_pet_count_by_owner` | Returns pet count for an owner |
+| `get_pets_by_owner` | Returns paginated pets for an owner |
+| `get_pets_by_species` | Returns paginated pets by species |
+| `is_custody_valid` | Returns whether temporary custody is active |
+| `get_custody_history` | Returns custody history for a pet |
+| `get_access_logs` | Returns access logs for a pet (owner/admin only) |
+
+> **Audit note:** All `log_access` (storage write) calls were removed from the above functions. Write functions (`add_medical_record`, `update_pet_profile`, `grant_access`, `revoke_access`, `add_attachment`, etc.) retain their access log writes.
+
+---
+
 ## Smart Contracts
 
 ### Main contract

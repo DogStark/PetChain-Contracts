@@ -169,6 +169,7 @@ fn test_vet_stats_update_after_vaccination() {
         &String::from_str(&env, "Rabies"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH123"),
     );
 
@@ -242,6 +243,7 @@ fn test_vet_stats_multiple_operations_same_pet() {
         &String::from_str(&env, "Bordetella"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH456"),
     );
 
@@ -290,6 +292,7 @@ fn test_vet_stats_multiple_pets() {
         &String::from_str(&env, "Rabies"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH789"),
     );
 

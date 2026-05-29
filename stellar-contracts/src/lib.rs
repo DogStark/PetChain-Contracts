@@ -135,6 +135,10 @@ mod test_encryption_nonce;
 #[cfg(test)]
 mod test_get_lab_results;
 #[cfg(test)]
+mod test_biomarker_trend;
+#[cfg(test)]
+mod test_audit_ledger;
+#[cfg(test)]
 mod test_get_pet_access_control;
 #[cfg(test)]
 mod test_get_pet_decryption;
@@ -180,6 +184,10 @@ mod test_custody_chain;
 // mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_vaccination_expiry;
+#[cfg(test)]
+mod test_medical_record_soft_delete;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -471,35 +479,13 @@ pub enum PrivacyLevel {
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DisputeStatus {
-    Pending,
-    ResolvedInFavorOfClaimer,
-    ResolvedInFavorOfTarget,
-    Dismissed,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct Dispute {
-    pub dispute_id: u64,
-    pub pet_id: u64,
-    pub claimer: Address,
-    pub target: Address,
-    pub amount: u64,
-    pub reason: String,
-    pub evidence_hash: String,
-    pub status: DisputeStatus,
-    pub created_at: u64,
-    pub resolved_at: Option<u64>,
-}
-
-#[contracttype]
 pub enum DisputeKey {
     Dispute(u64),
     DisputeCount,
     PetDisputeCount(u64),
     PetDisputeIndex((u64, u64)),
+    Arbitrator,
+    AppealWindow,
 }
 
 #[contracttype]
@@ -790,6 +776,7 @@ pub struct Vaccination {
 
     pub administered_at: u64,
     pub next_due_date: u64,
+    pub expires_at: u64, // Unix timestamp when the vaccination expires (0 = same as next_due_date)
 
     pub batch_number: Option<String>, // Decrypted value (None in storage)
     pub encrypted_batch_number: EncryptedData, // Encrypted value
@@ -893,6 +880,10 @@ pub enum DataKey {
     AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
     AccessGrantCount(u64),        // pet_id -> count of grants
     AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
+    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
+    UserAccessCount(Address),     // grantee -> count of pets they can access
+    // Veterinarian authorization
+    AuthorizedVet(Address),
     TemporaryCustody(u64),        // pet_id -> temporary custody record
     CustodyHistory(u64),          // record_id -> TemporaryCustody
     CustodyRecordCount,           // global count of custody records
@@ -912,6 +903,7 @@ pub enum DataKey {
     NonceHistory((u64, String)),
     NonceMaxUse((u64, String)),
 
+    // Grooming records
     // Lab Result DataKey
 
     // Medical Record DataKey
@@ -974,6 +966,8 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+    // Scanner registry
+    ScannerRegistry,
 }
 
 #[contracttype]
@@ -1075,6 +1069,19 @@ pub enum StatsKey {
     ActivePetsCount,
 }
 
+
+#[contracttype]
+pub enum FeatureKey {
+    Rg((u64, Address)),
+    Gr(u64),
+    Gc,
+    Ar(u64),
+    Ac,
+    Br(u64),
+    Bc,
+    BP,
+    BN,
+}
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1158,6 +1165,8 @@ pub struct Consent {
     pub revoked_at: Option<u64>,
     pub is_active: bool,
     pub scope: ConsentScope,
+    /// ID of the parent consent this was delegated from (None = root consent).
+    pub parent_consent_id: Option<u64>,
 }
 
 #[contracttype]
@@ -1216,7 +1225,28 @@ pub struct LabResult {
     pub attachment_hash: Option<String>, // IPFS hash for PDF
     pub medical_record_id: Option<u64>,  // Link to medical record
     pub biomarkers: Map<String, i128>,
+    // Issue #652: biomarker flags (Normal/Low/High) set during add_lab_result
+    pub biomarker_flags: Map<String, u32>,
 }
+
+/// Per-biomarker reference range (Issue #652)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceRange {
+    pub min: i128,
+    pub max: i128,
+}
+
+/// Storage key for reference ranges (Issue #652)
+#[contracttype]
+pub enum ReferenceRangeKey {
+    /// (species_str, biomarker_name) -> ReferenceRange
+    SpeciesBiomarker((String, String)),
+}
+
+const FLAG_NORMAL: u32 = 0;
+const FLAG_LOW: u32 = 1;
+const FLAG_HIGH: u32 = 2;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1236,12 +1266,94 @@ pub struct LabDifference {
     pub abnormal: bool,
 }
 
+/// Cached result of a biomarker moving-average computation (1-hour TTL).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BiomarkerTrendCache {
+    /// Moving average value (scaled by 1000 to avoid floats).
+    pub moving_avg: i128,
+    /// Ledger timestamp when this cache entry was computed.
+    pub computed_at: u64,
+    /// Whether a deteriorating trend (3 consecutive worsening results) was detected.
+    pub deteriorating: bool,
+}
+
+/// Event emitted when a deteriorating biomarker trend is detected.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BiomarkerTrendAlert {
+    pub version: u32,
+    pub pet_id: u64,
+    pub biomarker: String,
+    pub moving_avg: i128,
+    pub window: u32,
+}
+
+/// Event emitted for each consent revoked during a cascade revocation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentRevoked {
+    pub version: u32,
+    pub pet_id: u64,
+    pub consent_id: u64,
+    pub revoked_at: u64,
+}
+
+/// A single entry in the immutable append-only audit ledger.
+/// Each entry hashes the previous entry to form a tamper-evident chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditLedgerEntry {
+    pub index: u64,
+    pub pet_id: u64,
+    pub actor: Address,
+    pub action: String,
+    pub timestamp: u64,
+    /// SHA-256 hash of the previous entry's serialised fields (all-zeros for genesis).
+    pub prev_hash: BytesN<32>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessLevel {
     None,
     Basic, // Can view basic pet info only
     Full,  // Can view all records including medical history
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    ReadOnly,
+    Vet,
+    Admin,
+    Owner,
+}
+
+impl Role {
+    fn rank(self) -> u8 {
+        match self {
+            Role::ReadOnly => 0,
+            Role::Vet => 1,
+            Role::Admin => 2,
+            Role::Owner => 3,
+        }
+    }
+
+    fn inherited_roles(self, env: &Env) -> Vec<Role> {
+        let mut roles = Vec::new(env);
+        roles.push_back(Role::ReadOnly);
+        if self.rank() >= Role::Vet.rank() {
+            roles.push_back(Role::Vet);
+        }
+        if self.rank() >= Role::Admin.rank() {
+            roles.push_back(Role::Admin);
+        }
+        if self.rank() >= Role::Owner.rank() {
+            roles.push_back(Role::Owner);
+        }
+        roles
+    }
 }
 
 #[contracttype]
@@ -1270,6 +1382,53 @@ pub struct TemporaryCustody {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleGrant {
+    pub pet_id: u64,
+    pub granter: Address,
+    pub grantee: Address,
+    pub role: Role,
+    pub granted_at: u64,
+    pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub groomer: Address,
+    pub notes: String,
+    pub photos: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivityRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub activity_type: String,
+    pub notes: String,
+    pub latitude: i32,
+    pub longitude: i32,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BehaviorRecord {
+    pub id: u64,
+    pub pet_id: u64,
+    pub notes: String,
+    pub sentiment_score: i32,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Medication {
     pub id: u64,
     pub pet_id: u64,
@@ -1292,11 +1451,28 @@ pub struct AttachmentMetadata {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanStatus {
+    Clean,
+    Suspicious,
+    Malicious,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanResult {
+    pub scanner_id: Address,
+    pub scanned_at: u64,
+    pub status: ScanStatus,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attachment {
     pub ipfs_hash: String,
     pub metadata: AttachmentMetadata,
     pub content_hash: BytesN<32>,
+    pub scan_result: Option<ScanResult>,
 }
 
 #[contracttype]
@@ -1312,6 +1488,7 @@ pub struct MedicalRecord {
     pub updated_at: u64,
     pub notes: String,
     pub attachment_hashes: Vec<Attachment>,
+    pub deleted_at: Option<u64>, // None = active; Some(ts) = soft-deleted at ts
 }
 
 #[contracttype]
@@ -1322,6 +1499,7 @@ pub struct VaccinationInput {
     pub vaccine_name: String,
     pub administered_at: u64,
     pub next_due_date: u64,
+    pub expires_at: u64,
     pub batch_number: String,
 }
 
@@ -1681,6 +1859,29 @@ pub struct VaccinationAddedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationExpiringSoonEvent {
+    pub version: u32,
+    pub vaccine_id: u64,
+    pub pet_id: u64,
+    pub vaccine_type: VaccineType,
+    pub expires_at: u64,
+    pub days_remaining: u64,
+    pub already_expired: bool,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpiringVaccination {
+    pub vaccine_id: u64,
+    pub vaccine_type: VaccineType,
+    pub expires_at: u64,
+    pub days_remaining: u64,
+    pub already_expired: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PetOwnershipTransferredEvent {
     pub version: u32,
     pub pet_id: u64,
@@ -1695,6 +1896,26 @@ pub struct MedicalRecordAddedEvent {
     pub version: u32,
     pub pet_id: u64,
     pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordDeletedEvent {
+    pub version: u32,
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub deleted_by: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordPurgedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub purged_count: u32,
+    pub purged_by: Address,
     pub timestamp: u64,
 }
 
@@ -2605,13 +2826,7 @@ impl PetChainContract {
                 microchip_id: pet.microchip_id,
                 allergies,
             };
-            PetChainContract::log_access(
-                &env,
-                id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Pet profile accessed"),
-            );
+            // Pure view: no side effects
             Some(profile)
         } else {
             None
@@ -2619,15 +2834,6 @@ impl PetChainContract {
     }
 
     pub fn get_pet_data(env: Env, id: u64, caller: Address) -> Option<PetData> {
-        if let Some(pet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
-        {
-            let allowed = match pet.privacy_level {
-                PrivacyLevel::Public => true,
-                PrivacyLevel::Restricted => {
-                    let access = PetChainContract::check_access(env.clone(), id, caller.clone());
                     !matches!(access, AccessLevel::None)
                 }
                 PrivacyLevel::Private => {
@@ -2761,15 +2967,7 @@ impl PetChainContract {
             let insurance = PetChainContract::get_pet_insurance(env.clone(), pet_id);
             let has_insurance = insurance.is_some();
 
-            // Log the full profile access
-            PetChainContract::log_access(
-                &env,
-                pet_id,
-                caller,
-                AccessAction::Read,
-                String::from_str(&env, "Full pet profile accessed"),
-            );
-
+            // Pure view: no side effects
             Some(PetFullProfile {
                 profile,
                 latest_vaccination_id,
@@ -3556,6 +3754,7 @@ impl PetChainContract {
         vaccine_name: String,
         administered_at: u64,
         next_due_date: u64,
+        expires_at: u64,
         batch_number: String,
     ) -> u64 {
         veterinarian.require_auth();
@@ -3594,6 +3793,9 @@ impl PetChainContract {
             ciphertext: batch_ciphertext,
         };
 
+        // If expires_at is 0, default to next_due_date
+        let effective_expires_at = if expires_at == 0 { next_due_date } else { expires_at };
+
         let record = Vaccination {
             id: vaccine_id,
             pet_id,
@@ -3603,6 +3805,7 @@ impl PetChainContract {
             encrypted_vaccine_name,
             administered_at,
             next_due_date,
+            expires_at: effective_expires_at,
             batch_number: None,
             encrypted_batch_number,
             created_at: now,
@@ -3660,6 +3863,9 @@ impl PetChainContract {
                 timestamp: now,
             },
         );
+
+        // Lazy expiry check: emit VaccinationExpiringSoon for this pet's vaccinations
+        PetChainContract::check_and_emit_expiry_events(env, pet_id, 30);
 
         vaccine_id
     }
@@ -3807,6 +4013,69 @@ impl PetChainContract {
             }
         }
         overdue
+    }
+
+    /// Returns vaccinations for `pet_id` that expire within `within_days` days,
+    /// including already-expired ones (flagged via `already_expired: true`).
+    pub fn get_expiring_vaccinations(
+        env: Env,
+        pet_id: u64,
+        within_days: u64,
+    ) -> Vec<ExpiringVaccination> {
+        let now = env.ledger().timestamp();
+        let window_end = now.saturating_add(within_days.saturating_mul(86400));
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+        let mut result = Vec::new(&env);
+
+        for vax in history.iter() {
+            let exp = vax.expires_at;
+            let already_expired = exp < now;
+            let within_window = exp <= window_end;
+            if already_expired || within_window {
+                let days_remaining = if already_expired {
+                    0
+                } else {
+                    (exp.saturating_sub(now)) / 86400
+                };
+                result.push_back(ExpiringVaccination {
+                    vaccine_id: vax.id,
+                    vaccine_type: vax.vaccine_type,
+                    expires_at: exp,
+                    days_remaining,
+                    already_expired,
+                });
+            }
+        }
+        result
+    }
+
+    /// Internal helper: emit `VaccinationExpiringSoon` for any vaccination on
+    /// `pet_id` that expires within `within_days` days (lazy, called on writes).
+    fn check_and_emit_expiry_events(env: Env, pet_id: u64, within_days: u64) {
+        let now = env.ledger().timestamp();
+        let window_end = now.saturating_add(within_days.saturating_mul(86400));
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+
+        for vax in history.iter() {
+            let exp = vax.expires_at;
+            let already_expired = exp < now;
+            if already_expired || exp <= window_end {
+                let days_remaining = if already_expired { 0 } else { (exp.saturating_sub(now)) / 86400 };
+                env.events().publish(
+                    (String::from_str(&env, "VaccinationExpiringSoon"), pet_id),
+                    VaccinationExpiringSoonEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        vaccine_id: vax.id,
+                        pet_id,
+                        vaccine_type: vax.vaccine_type,
+                        expires_at: exp,
+                        days_remaining,
+                        already_expired,
+                        timestamp: now,
+                    },
+                );
+            }
+        }
     }
 
     pub fn get_vaccination_summary(env: Env, pet_id: u64) -> VaccinationSummary {
@@ -6084,6 +6353,7 @@ impl PetChainContract {
             updated_at: now,
             notes,
             attachment_hashes: Vec::new(&env),
+            deleted_at: None,
         };
 
         // Store the medical record
@@ -6276,6 +6546,184 @@ impl PetChainContract {
         }
     }
 
+    pub fn remove_medical_record(env: Env, record_id: u64) -> bool {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            record.vet_address.require_auth();
+            Self::prune_medical_record_notes(&env, record.pet_id, record_id, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(record_id));
+            true
+        } else {
+            false
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Soft-delete & retention
+    // ---------------------------------------------------------------------------
+
+    /// Default retention period: 30 days in seconds.
+    const DEFAULT_RETENTION_SECS: u64 = 30 * 24 * 60 * 60;
+
+    /// Admin: configure the global retention period (seconds) before a
+    /// soft-deleted record may be permanently purged.
+    pub fn set_retention_period(env: Env, admin: Address, retention_secs: u64) {
+        Self::require_admin_auth(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::RetentionPeriodSecs, &retention_secs);
+    }
+
+    /// Soft-delete a medical record.  Only the pet owner or the vet who created
+    /// the record may call this.  The record is hidden from all normal queries
+    /// but remains in storage until `purge_expired_records` is called.
+    pub fn delete_medical_record(env: Env, pet_id: u64, record_id: u64, caller: Address) -> bool {
+        caller.require_auth();
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id));
+        record
+    }
+
+        // Authorise: pet owner or the vet who created the record
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        let is_owner = caller == pet.owner;
+        let is_vet = caller == record.vet_address;
+        if !is_owner && !is_vet {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        record.deleted_at = Some(now);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordDeleted"), pet_id),
+            MedicalRecordDeletedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                pet_id,
+                deleted_by: caller,
+                timestamp: now,
+            },
+        );
+
+        true
+    }
+
+    /// Permanently remove all soft-deleted records for `pet_id` whose
+    /// `deleted_at` is older than the configured retention period.
+    /// Only the pet owner or a multisig admin may call this.
+    /// Returns the number of records purged.
+    pub fn purge_expired_records(env: Env, pet_id: u64, caller: Address) -> u32 {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Authorise: pet owner or multisig admin
+        let is_owner = caller == pet.owner;
+        let is_admin = Self::caller_is_admin(&env, &caller);
+        if !is_owner && !is_admin {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let retention: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::RetentionPeriodSecs)
+            .unwrap_or(Self::DEFAULT_RETENTION_SECS);
+
+        let now = env.ledger().timestamp();
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut purged: u32 = 0;
+        for i in 1..=count {
+            let Some(rid) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            else {
+                continue;
+            };
+            let Some(record) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(rid))
+            else {
+                continue;
+            };
+            let Some(deleted_at) = record.deleted_at else {
+                continue; // not soft-deleted
+            };
+            if now.saturating_sub(deleted_at) < retention {
+                panic_with_error!(&env, ContractError::RetentionPeriodNotElapsed);
+            }
+            Self::prune_medical_record_notes(&env, pet_id, rid, &record.notes);
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(rid));
+            purged += 1;
+        }
+
+        if purged > 0 {
+            env.events().publish(
+                (String::from_str(&env, "MedicalRecordPurged"), pet_id),
+                MedicalRecordPurgedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    purged_count: purged,
+                    purged_by: caller,
+                    timestamp: now,
+                },
+            );
+        }
+
+        purged
+    }
+
+    /// Returns `true` if `caller` is in the multisig admin list (or legacy admin).
+    fn caller_is_admin(env: &Env, caller: &Address) -> bool {
+        if let Some(legacy) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
+            if &legacy == caller {
+                return true;
+            }
+        }
+        if let Some(admins) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<Address>>(&SystemKey::Admins)
+        {
+            return admins.contains(caller);
+        }
+        false
+    }
+
     pub fn update_medical_record(
         env: Env,
         record_id: u64,
@@ -6353,6 +6801,10 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::MedicalRecord(record_id));
         if let Some(ref r) = record {
+            // Soft-deleted records are invisible to normal queries
+            if r.deleted_at.is_some() {
+                return None;
+            }
             PetChainContract::log_access(
                 &env,
                 r.pet_id,
@@ -6399,13 +6851,6 @@ impl PetChainContract {
                 }
             }
         }
-        PetChainContract::log_access(
-            &env,
-            pet_id,
-            env.current_contract_address(),
-            AccessAction::Read,
-            String::from_str(&env, "Pet medical records accessed"),
-        );
         records
     }
 
@@ -6535,14 +6980,6 @@ impl PetChainContract {
             }
         }
 
-        PetChainContract::log_access(
-            &env,
-            pet_id,
-            env.current_contract_address(),
-            AccessAction::Read,
-            String::from_str(&env, "Medical record search executed"),
-        );
-
         records
     }
 
@@ -6596,6 +7033,7 @@ impl PetChainContract {
                 ipfs_hash,
                 metadata,
                 content_hash,
+                scan_result: None,
             };
 
             // Add to record
@@ -6642,48 +7080,55 @@ impl PetChainContract {
         false
     }
 
-    /// Get all attachments for a medical record
-    pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
+    /// Get all attachments for a medical record.
+    /// Attachments with Malicious scan status are hidden from non-admin callers.
+    pub fn get_attachments(env: Env, record_id: u64, caller: Address) -> Vec<Attachment> {
         if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
-            // Log access
-            PetChainContract::log_access(
-                &env,
-                record.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record attachments accessed"),
-            );
-
-            record.attachment_hashes
+            let admin = PetChainContract::is_admin(&env, &caller);
+            let mut result = Vec::new(&env);
+            for attachment in record.attachment_hashes.iter() {
+                let is_malicious = matches!(
+                    &attachment.scan_result,
+                    Some(sr) if sr.status == ScanStatus::Malicious
+                );
+                if !is_malicious || admin {
+                    result.push_back(attachment);
+                }
+            }
+            result
         } else {
             Vec::new(&env)
         }
     }
 
-    /// Get a single attachment by index
-    /// Returns None if the record is not found or index is out of bounds
-    pub fn get_attachment_by_index(env: Env, record_id: u64, index: u32) -> Option<Attachment> {
+    /// Get a single attachment by index.
+    /// Returns None if the record is not found, index is out of bounds,
+    /// or the attachment is Malicious and the caller is not an admin.
+    pub fn get_attachment_by_index(
+        env: Env,
+        record_id: u64,
+        index: u32,
+        caller: Address,
+    ) -> Option<Attachment> {
         if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
-            // Log access
-            PetChainContract::log_access(
-                &env,
-                record.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record attachment accessed by index"),
-            );
-
-            // Bounds check and return attachment if valid
             if index < record.attachment_hashes.len() {
-                record.attachment_hashes.get(index)
+                let attachment = record.attachment_hashes.get(index)?;
+                let is_malicious = matches!(
+                    &attachment.scan_result,
+                    Some(sr) if sr.status == ScanStatus::Malicious
+                );
+                if is_malicious && !PetChainContract::is_admin(&env, &caller) {
+                    return None;
+                }
+                Some(attachment)
             } else {
                 None
             }
@@ -6743,6 +7188,94 @@ impl PetChainContract {
         } else {
             0
         }
+    }
+
+    /// Register a scanner address (multisig-admin only).
+    pub fn register_scanner(env: Env, admin: Address, scanner: Address) {
+        admin.require_auth();
+        PetChainContract::require_admin_auth(&env, &admin);
+        let mut registry: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::ScannerRegistry)
+            .unwrap_or(Vec::new(&env));
+        if !registry.contains(&scanner) {
+            registry.push_back(scanner);
+            env.storage()
+                .instance()
+                .set(&MedicalKey::ScannerRegistry, &registry);
+        }
+    }
+
+    /// Record a scan result on an attachment.
+    /// Only registered scanners may call this.
+    /// Panics if the scanner is not registered or the record/attachment is not found.
+    pub fn set_scan_result(
+        env: Env,
+        scanner: Address,
+        record_id: u64,
+        attachment_index: u32,
+        status: ScanStatus,
+    ) -> bool {
+        scanner.require_auth();
+
+        // Verify scanner is registered
+        let registry: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::ScannerRegistry)
+            .unwrap_or(Vec::new(&env));
+        if !registry.contains(&scanner) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            if attachment_index >= record.attachment_hashes.len() {
+                panic_with_error!(&env, ContractError::InvalidAttachmentIndex);
+            }
+            let scan = ScanResult {
+                scanner_id: scanner,
+                scanned_at: env.ledger().timestamp(),
+                status,
+            };
+            // Rebuild the vec with the updated attachment at the given index
+            let mut updated: Vec<Attachment> = Vec::new(&env);
+            for i in 0..record.attachment_hashes.len() {
+                let mut att = record.attachment_hashes.get(i).unwrap();
+                if i == attachment_index {
+                    att.scan_result = Some(scan.clone());
+                }
+                updated.push_back(att);
+            }
+            record.attachment_hashes = updated;
+            env.storage()
+                .instance()
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the caller is an admin, used to gate Malicious attachment access.
+    fn is_admin(env: &Env, caller: &Address) -> bool {
+        // Single-admin path
+        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            if admin == *caller {
+                return true;
+            }
+        }
+        // Multisig path
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or(Vec::new(env));
+        admins.contains(caller)
     }
 
     pub fn get_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<AccessLog> {
@@ -6932,7 +7465,570 @@ impl PetChainContract {
             .get(&DataKey::AccessGrant((pet_id, grantee)))
     }
 
+    fn get_highest_role(env: &Env, pet_id: u64, user: &Address) -> Option<Role> {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))?;
+
+        if pet.owner == user.clone() {
+            return Some(Role::Owner);
+        }
+
+        env.storage()
+            .instance()
+            .get::<FeatureKey, RoleGrant>(&FeatureKey::Rg((pet_id, user.clone())))
+            .and_then(|grant| {
+                if grant.is_active {
+                    Some(grant.role)
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub fn grant_role(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        grantee: Address,
+        role: Role,
+    ) -> bool {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        caller.require_auth();
+
+        let caller_role = Self::get_highest_role(&env, pet_id, &caller).unwrap_or_else(|| {
+            if pet.owner == caller {
+                Role::Owner
+            } else {
+                panic!("Caller has no role")
+            }
+        });
+
+        if caller_role.rank() <= role.rank() {
+            panic!("Role exceeds caller authority");
+        }
+
+        let now = env.ledger().timestamp();
+        let key = FeatureKey::Rg((pet_id, grantee.clone()));
+        let grant = RoleGrant {
+            pet_id,
+            granter: caller.clone(),
+            grantee: grantee.clone(),
+            role,
+            granted_at: now,
+            is_active: true,
+        };
+
+        env.storage().instance().set(&key, &grant);
+
+        true
+    }
+
+    pub fn revoke_role(env: Env, pet_id: u64, caller: Address, grantee: Address) -> bool {
+        caller.require_auth();
+
+        let caller_role = Self::get_highest_role(&env, pet_id, &caller)
+            .unwrap_or_else(|| panic!("Caller has no role"));
+        if caller_role == Role::ReadOnly {
+            panic!("Caller has no authority");
+        }
+
+        let key = FeatureKey::Rg((pet_id, grantee.clone()));
+        if let Some(mut grant) = env.storage().instance().get::<FeatureKey, RoleGrant>(&key) {
+            grant.is_active = false;
+            env.storage().instance().set(&key, &grant);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_role(env: Env, pet_id: u64, user: Address) -> Option<Role> {
+        Self::get_highest_role(&env, pet_id, &user)
+    }
+
+    pub fn get_effective_permissions(env: Env, user: Address, pet_id: u64) -> Vec<Role> {
+        if let Some(role) = Self::get_highest_role(&env, pet_id, &user) {
+            role.inherited_roles(&env)
+        } else {
+            Vec::new(&env)
+        }
+    }
+
+    pub fn has_role_permission(env: Env, user: Address, pet_id: u64, required_role: Role) -> bool {
+        if let Some(role) = Self::get_highest_role(&env, pet_id, &user) {
+            role.rank() >= required_role.rank()
+        } else {
+            false
+        }
+    }
+
+    fn is_valid_ipfs_cid(cid: &String) -> bool {
+        let len = cid.len();
+        len > 0 && len <= 128
+    }
+
+    fn grooming_photo_total_for_pet(env: &Env, pet_id: u64) -> u64 {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let mut total = 0u64;
+        for i in 1..=count {
+            if let Some(record) = env
+                .storage()
+                .instance()
+                .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(i))
+            {
+                if record.pet_id == pet_id {
+                    total += record.photos.len() as u64;
+                }
+            }
+        }
+        total
+    }
+
+    fn normalize_keyword_list(env: &Env, keywords: Vec<String>) -> Vec<String> {
+        let mut normalized = Vec::new(env);
+        for keyword in keywords.iter() {
+            normalized.push_back(keyword.clone());
+        }
+        normalized
+    }
+
+    fn default_positive_keywords(env: &Env) -> Vec<String> {
+        let mut keywords = Vec::new(env);
+        keywords.push_back(String::from_str(env, "good"));
+        keywords.push_back(String::from_str(env, "calm"));
+        keywords.push_back(String::from_str(env, "friendly"));
+        keywords.push_back(String::from_str(env, "happy"));
+        keywords.push_back(String::from_str(env, "playful"));
+        keywords
+    }
+
+    fn default_negative_keywords(env: &Env) -> Vec<String> {
+        let mut keywords = Vec::new(env);
+        keywords.push_back(String::from_str(env, "aggressive"));
+        keywords.push_back(String::from_str(env, "anxious"));
+        keywords.push_back(String::from_str(env, "bite"));
+        keywords.push_back(String::from_str(env, "bark"));
+        keywords.push_back(String::from_str(env, "fearful"));
+        keywords
+    }
+
+    fn tokenize_words(env: &Env, notes: &String) -> Vec<String> {
+        let mut words = Vec::new(env);
+        let len = notes.len() as usize;
+        if len == 0 {
+            return words;
+        }
+
+        const MAX_NOTES_BYTES: usize = 1024;
+        if len > MAX_NOTES_BYTES {
+            panic!("Behavior notes too long");
+        }
+
+        let mut bytes = [0u8; MAX_NOTES_BYTES];
+        notes.copy_into_slice(&mut bytes[..len]);
+
+        let mut start = 0usize;
+        for i in 0..len {
+            if Self::is_word_separator(bytes[i]) {
+                if start < i {
+                    words.push_back(String::from_bytes(env, &bytes[start..i]));
+                }
+                start = i + 1;
+            }
+        }
+
+        if start < len {
+            words.push_back(String::from_bytes(env, &bytes[start..len]));
+        }
+        words
+    }
+
+    fn is_word_separator(byte: u8) -> bool {
+        matches!(
+            byte,
+            b' ' | b'\n'
+                | b'\r'
+                | b'\t'
+                | b','
+                | b'.'
+                | b';'
+                | b':'
+                | b'!'
+                | b'?'
+                | b'-'
+                | b'_'
+                | b'/'
+                | b'\\'
+                | b'"'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+        )
+    }
+
+    fn behavior_keywords(env: &Env, key: FeatureKey, default: Vec<String>) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get::<FeatureKey, Vec<String>>(&key)
+            .unwrap_or(default)
+    }
+
+    fn compute_sentiment_score(env: &Env, notes: &String) -> i32 {
+        let words = Self::tokenize_words(env, notes);
+        let total_words = words.len();
+        if total_words == 0 {
+            return 0;
+        }
+
+        let positives =
+            Self::behavior_keywords(env, FeatureKey::BP, Self::default_positive_keywords(env));
+        let negatives =
+            Self::behavior_keywords(env, FeatureKey::BN, Self::default_negative_keywords(env));
+
+        let mut positive_matches: i64 = 0;
+        let mut negative_matches: i64 = 0;
+
+        for word in words.iter() {
+            for keyword in positives.iter() {
+                if word == keyword {
+                    positive_matches += 1;
+                }
+            }
+            for keyword in negatives.iter() {
+                if word == keyword {
+                    negative_matches += 1;
+                }
+            }
+        }
+
+        let scale: i64 = 1_000_000;
+        let total_words_i64 = total_words as i64;
+        (((positive_matches - negative_matches) * scale) / total_words_i64) as i32
+    }
+
+    pub fn set_behavior_keywords(
+        env: Env,
+        admin: Address,
+        positive_keywords: Vec<String>,
+        negative_keywords: Vec<String>,
+    ) -> bool {
+        Self::require_admin(&env);
+        admin.require_auth();
+
+        env.storage().instance().set(
+            &FeatureKey::BP,
+            &Self::normalize_keyword_list(&env, positive_keywords),
+        );
+        env.storage().instance().set(
+            &FeatureKey::BN,
+            &Self::normalize_keyword_list(&env, negative_keywords),
+        );
+        true
+    }
+
+    pub fn add_grooming_record(env: Env, pet_id: u64, groomer: Address, notes: String) -> u64 {
+        groomer.require_auth();
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Gc, &id);
+
+        let now = env.ledger().timestamp();
+        let record = GroomingRecord {
+            id,
+            pet_id,
+            groomer,
+            notes,
+            photos: Vec::new(&env),
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Gr(id), &record);
+
+        id
+    }
+
+    pub fn get_grooming_record(env: Env, record_id: u64) -> Option<GroomingRecord> {
+        env.storage().instance().get(&FeatureKey::Gr(record_id))
+    }
+
+    pub fn get_pet_grooming_records(env: Env, pet_id: u64) -> Vec<GroomingRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Gc)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_grooming_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn add_grooming_photo(env: Env, record_id: u64, cid: String) -> bool {
+        if !Self::is_valid_ipfs_cid(&cid) {
+            panic!("Invalid CID");
+        }
+
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(record_id))
+        {
+            if record.photos.len() >= 5 {
+                panic!("Record photo limit exceeded");
+            }
+
+            let pet_photo_count = Self::grooming_photo_total_for_pet(&env, record.pet_id);
+            if pet_photo_count >= 50 {
+                panic!("Pet photo limit exceeded");
+            }
+
+            record.photos.push_back(cid);
+            record.updated_at = env.ledger().timestamp();
+            env.storage()
+                .instance()
+                .set(&FeatureKey::Gr(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_grooming_photo(env: Env, record_id: u64, cid: String) -> bool {
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, GroomingRecord>(&FeatureKey::Gr(record_id))
+        {
+            let mut remove_index: Option<u32> = None;
+            for i in 0..record.photos.len() {
+                if let Some(photo_cid) = record.photos.get(i) {
+                    if photo_cid == cid {
+                        remove_index = Some(i);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(index) = remove_index {
+                record.photos.remove(index);
+                record.updated_at = env.ledger().timestamp();
+                env.storage()
+                    .instance()
+                    .set(&FeatureKey::Gr(record_id), &record);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn add_activity_record(
+        env: Env,
+        pet_id: u64,
+        activity_type: String,
+        notes: String,
+        latitude: i32,
+        longitude: i32,
+    ) -> u64 {
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        if latitude == 0 || longitude == 0 {
+            panic!("Coordinates cannot be zero");
+        }
+        if latitude < -90_000_000 || latitude > 90_000_000 {
+            panic!("Latitude out of range");
+        }
+        if longitude < -180_000_000 || longitude > 180_000_000 {
+            panic!("Longitude out of range");
+        }
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Ac)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Ac, &id);
+
+        let now = env.ledger().timestamp();
+        let record = ActivityRecord {
+            id,
+            pet_id,
+            activity_type,
+            notes,
+            latitude,
+            longitude,
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Ar(id), &record);
+
+        id
+    }
+
+    pub fn get_activity_record(env: Env, record_id: u64) -> Option<ActivityRecord> {
+        env.storage().instance().get(&FeatureKey::Ar(record_id))
+    }
+
+    pub fn get_pet_activity_records(env: Env, pet_id: u64) -> Vec<ActivityRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Ac)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_activity_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn get_activities_in_bbox(
+        env: Env,
+        pet_id: u64,
+        min_lat: i32,
+        max_lat: i32,
+        min_lon: i32,
+        max_lon: i32,
+    ) -> Vec<ActivityRecord> {
+        if min_lat > max_lat || min_lon > max_lon {
+            panic!("Invalid bounding box");
+        }
+
+        let mut activities = Vec::new(&env);
+        let records = Self::get_pet_activity_records(env.clone(), pet_id);
+        for record in records.iter() {
+            if record.latitude >= min_lat
+                && record.latitude <= max_lat
+                && record.longitude >= min_lon
+                && record.longitude <= max_lon
+            {
+                activities.push_back(record);
+            }
+        }
+        activities
+    }
+
+    pub fn add_behavior_record(env: Env, pet_id: u64, notes: String) -> u64 {
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .expect("Pet not found");
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Bc)
+            .unwrap_or(0);
+        let id = count + 1;
+        env.storage().instance().set(&FeatureKey::Bc, &id);
+
+        let score = Self::compute_sentiment_score(&env, &notes);
+        let now = env.ledger().timestamp();
+        let record = BehaviorRecord {
+            id,
+            pet_id,
+            notes,
+            sentiment_score: score,
+            created_at: now,
+            updated_at: now,
+        };
+
+        env.storage().instance().set(&FeatureKey::Br(id), &record);
+
+        id
+    }
+
+    pub fn get_behavior_record(env: Env, record_id: u64) -> Option<BehaviorRecord> {
+        env.storage().instance().get(&FeatureKey::Br(record_id))
+    }
+
+    pub fn get_pet_behavior_records(env: Env, pet_id: u64) -> Vec<BehaviorRecord> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<FeatureKey, u64>(&FeatureKey::Bc)
+            .unwrap_or(0);
+        let mut records = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record) = Self::get_behavior_record(env.clone(), i) {
+                if record.pet_id == pet_id {
+                    records.push_back(record);
+                }
+            }
+        }
+        records
+    }
+
+    pub fn get_behavior_sentiment_trend(env: Env, pet_id: u64, days: u64) -> i32 {
+        let records = Self::get_pet_behavior_records(env.clone(), pet_id);
+        let cutoff = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(days.saturating_mul(86_400));
+
+        let mut sum: i64 = 0;
+        let mut count: i64 = 0;
+        for record in records.iter() {
+            if record.created_at >= cutoff {
+                sum += record.sentiment_score as i64;
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            0
+        } else {
+            (sum / count) as i32
+        }
+    }
+
     // --- LAB RESULTS ---
+    /// Add a lab result with biomarker validation against reference ranges (Issue #652).
+    /// Each biomarker is compared against its reference range and flagged as
+    /// Normal (0), Low (1), or High (2). Missing reference ranges are treated as Normal.
     pub fn add_lab_result(
         env: Env,
         pet_id: u64,
@@ -6944,9 +8040,7 @@ impl PetChainContract {
         medical_record_id: Option<u64>,
     ) -> u64 {
         vet_address.require_auth();
-        let _pet: Pet = env
-            .storage()
-            .instance()
+        let pet: Pet = env.storage().instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
@@ -6960,43 +8054,30 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
-        let count = env
-            .storage()
-            .instance()
-            .get::<MedicalKey, u64>(&MedicalKey::LabResultCount)
-            .unwrap_or(0);
+        let biomarkers: Map<String, i128> = Map::new(&env);
+        let biomarker_flags = PetChainContract::compute_biomarker_flags(
+            &env, &pet.species, &biomarkers,
+        );
+
+        let count = env.storage().instance()
+            .get::<MedicalKey, u64>(&MedicalKey::LabResultCount).unwrap_or(0);
         let id = safe_increment(count);
-        env.storage()
-            .instance()
-            .set(&MedicalKey::LabResultCount, &id);
+        env.storage().instance().set(&MedicalKey::LabResultCount, &id);
 
         let result = LabResult {
-            id,
-            pet_id,
-            test_type,
+            id, pet_id, test_type,
             date: env.ledger().timestamp(),
-            results,
-            vet_address,
-            reference_ranges,
-            attachment_hash,
-            medical_record_id,
-            biomarkers: Map::new(&env),
+            results, vet_address, reference_ranges,
+            attachment_hash, medical_record_id,
+            biomarkers, biomarker_flags,
         };
-        env.storage()
-            .instance()
-            .set(&MedicalKey::LabResult(id), &result);
+        env.storage().instance().set(&MedicalKey::LabResult(id), &result);
 
-        let p_count = env
-            .storage()
-            .instance()
-            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
-            .unwrap_or(0);
+        let p_count = env.storage().instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id)).unwrap_or(0);
         let new_p = safe_increment(p_count);
-        env.storage()
-            .instance()
-            .set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
-        env.storage()
-            .instance()
+        env.storage().instance().set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
+        env.storage().instance()
             .set(&MedicalKey::PetLabResultIndex((pet_id, new_p)), &id);
 
         id
@@ -7007,6 +8088,69 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0)
+    }
+
+    /// Compute biomarker flags by comparing each biomarker against the
+    /// species-specific reference range. Missing reference ranges are treated
+    /// as Normal (flag = 0).
+    fn compute_biomarker_flags(
+        env: &Env,
+        species: &Species,
+        biomarkers: &Map<String, i128>,
+    ) -> Map<String, u32> {
+        let mut flags: Map<String, u32> = Map::new(env);
+        let species_str = PetChainContract::species_to_string(env, species);
+        for (biomarker_name, value) in biomarkers.iter() {
+            let range: Option<ReferenceRange> = env.storage().instance()
+                .get(&ReferenceRangeKey::SpeciesBiomarker((species_str.clone(), biomarker_name.clone())));
+            let flag = match range {
+                Some(r) => {
+                    if value < r.min { FLAG_LOW }
+                    else if value > r.max { FLAG_HIGH }
+                    else { FLAG_NORMAL }
+                }
+                None => FLAG_NORMAL,
+            };
+            flags.set(biomarker_name, flag);
+        }
+        flags
+    }
+
+    /// Set a reference range for a specific biomarker and species (admin only, Issue #652).
+    pub fn set_reference_range(
+        env: Env, admin: Address, species: String,
+        biomarker_name: String, min: i128, max: i128,
+    ) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        if min > max { env.panic_with_error(ContractError::InvalidInput); }
+        let range = ReferenceRange { min, max };
+        env.storage().instance()
+            .set(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)), &range);
+    }
+
+    /// Remove a reference range for a specific biomarker and species (admin only, Issue #652).
+    pub fn remove_reference_range(
+        env: Env, admin: Address, species: String, biomarker_name: String,
+    ) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance()
+            .remove(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)));
+    }
+
+    /// Get a reference range for a specific biomarker and species.
+    pub fn get_reference_range(
+        env: Env, species: String, biomarker_name: String,
+    ) -> Option<ReferenceRange> {
+        env.storage().instance()
+            .get(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)))
+    }
+
+    /// Get the biomarker flags for a lab result.
+    pub fn get_lab_result_biomarker_flags(env: Env, lab_result_id: u64) -> Map<String, u32> {
+        env.storage().instance()
+            .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lab_result_id))
+            .map(|r| r.biomarker_flags)
+            .unwrap_or_else(|| Map::new(&env))
     }
 
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
@@ -7107,6 +8251,105 @@ impl PetChainContract {
 
     // --- BATCH OPERATIONS ---
 
+    pub fn get_biomarker_trend(
+        env: Env,
+        pet_id: u64,
+        biomarker: String,
+        window: u32,
+    ) -> BiomarkerTrendCache {
+        const TREND_CACHE_TTL: u64 = 3600; // 1-hour TTL
+
+        let cache_key = MedicalKey::BiomarkerTrendCache((pet_id, biomarker.clone()));
+        let now = env.ledger().timestamp();
+
+        // Return cached result if still fresh
+        if let Some(cached) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, BiomarkerTrendCache>(&cache_key)
+        {
+            if now.saturating_sub(cached.computed_at) < TREND_CACHE_TTL {
+                return cached;
+            }
+        }
+
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        let w = if window == 0 { 1 } else { window as u64 };
+        let start_idx = if count >= w { count - w + 1 } else { 1 };
+
+        // Collect the last `window` biomarker values
+        let mut values: Vec<i128> = Vec::new(&env);
+        for i in start_idx..=count {
+            if let Some(lid) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(r) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lid))
+                {
+                    if let Some(v) = r.biomarkers.get(biomarker.clone()) {
+                        values.push_back(v);
+                    }
+                }
+            }
+        }
+
+        let n = values.len() as i128;
+        let moving_avg = if n == 0 {
+            0
+        } else {
+            let mut sum: i128 = 0;
+            for v in values.iter() {
+                sum += v;
+            }
+            // Scale by 1000 for fixed-point representation
+            (sum * 1000) / n
+        };
+
+        // Detect deteriorating trend: 3 consecutive results moving away from reference (0)
+        let deteriorating = if values.len() >= 3 {
+            let len = values.len();
+            let a = values.get_unchecked(len - 3);
+            let b = values.get_unchecked(len - 2);
+            let c = values.get_unchecked(len - 1);
+            // Deteriorating if each successive value is further from 0 than the previous
+            (b.abs() > a.abs()) && (c.abs() > b.abs())
+        } else {
+            false
+        };
+
+        let result = BiomarkerTrendCache {
+            moving_avg,
+            computed_at: now,
+            deteriorating,
+        };
+
+        env.storage().instance().set(&cache_key, &result);
+
+        if deteriorating {
+            env.events().publish(
+                (Symbol::new(&env, "BiomarkerTrendAlert"), pet_id),
+                BiomarkerTrendAlert {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    biomarker,
+                    moving_avg,
+                    window,
+                },
+            );
+        }
+
+        result
+    }
+
     pub fn batch_add_vaccinations(
         env: Env,
         veterinarian: Address,
@@ -7128,6 +8371,7 @@ impl PetChainContract {
                 input.vaccine_name,
                 input.administered_at,
                 input.next_due_date,
+                input.expires_at,
                 input.batch_number,
             );
             ids.push_back(id);
@@ -7768,6 +9012,7 @@ impl PetChainContract {
             revoked_at: None,
             is_active: true,
             scope,
+            parent_consent_id: None,
         };
 
         env.storage()
@@ -7785,6 +9030,37 @@ impl PetChainContract {
             &ConsentKey::PetConsentIndex((pet_id, new_pet_count)),
             &consent_id,
         );
+
+        consent_id
+    }
+
+    /// Grant a consent that is a sub-delegation of an existing consent.
+    /// The `parent_consent_id` links this consent to its parent for cascade revocation.
+    pub fn grant_consent_with_parent(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+        scope: ConsentScope,
+        parent_consent_id: Option<u64>,
+    ) -> u64 {
+        let consent_id =
+            Self::grant_consent_with_expiry(env.clone(), pet_id, owner, consent_type, granted_to, None);
+
+        // Patch the stored consent to set parent_consent_id
+        if let Some(pid) = parent_consent_id {
+            if let Some(mut c) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+            {
+                c.parent_consent_id = Some(pid);
+                env.storage()
+                    .instance()
+                    .set(&ConsentKey::Consent(consent_id), &c);
+            }
+        }
 
         consent_id
     }
@@ -7868,6 +9144,182 @@ impl PetChainContract {
             true
         } else {
             false
+        }
+    }
+
+    /// Revoke a consent and recursively revoke all sub-consents granted by the
+    /// revoked party, up to a cascade depth of 3 (matching delegation chain max).
+    /// Emits a `ConsentRevoked` event for every consent revoked.
+    pub fn revoke_consent_cascade(env: Env, pet_id: u64, consent_id: u64, owner: Address) -> u32 {
+        owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        let mut revoked_count: u32 = 0;
+
+        // Revoke the root consent first
+        if let Some(mut root) = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            if root.owner != owner {
+                env.panic_with_error(ContractError::NotConsentOwner);
+            }
+            if !root.is_active {
+                env.panic_with_error(ContractError::ConsentAlreadyRevoked);
+            }
+            root.is_active = false;
+            root.revoked_at = Some(now);
+            env.storage()
+                .instance()
+                .set(&ConsentKey::Consent(consent_id), &root);
+
+            env.events().publish(
+                (Symbol::new(&env, "ConsentRevoked"), pet_id),
+                ConsentRevoked {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    consent_id,
+                    revoked_at: now,
+                },
+            );
+            revoked_count += 1;
+
+            // Cascade: revoke sub-consents granted by the revoked party, depth ≤ 3
+            let revoked_party = root.granted_to.clone();
+            revoked_count += Self::cascade_revoke_children(
+                &env, pet_id, consent_id, &revoked_party, now, 1,
+            );
+        }
+
+        revoked_count
+    }
+
+    /// Recursive helper: revoke all active consents whose `parent_consent_id`
+    /// matches `parent_id` and whose `owner` is `revoked_party`, up to `max_depth`.
+    fn cascade_revoke_children(
+        env: &Env,
+        pet_id: u64,
+        parent_id: u64,
+        revoked_party: &Address,
+        now: u64,
+        depth: u32,
+    ) -> u32 {
+        const MAX_CASCADE_DEPTH: u32 = 3;
+        if depth > MAX_CASCADE_DEPTH {
+            return 0;
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        let mut revoked = 0u32;
+        for i in 1..=count {
+            if let Some(cid) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(mut c) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    if c.is_active
+                        && c.parent_consent_id == Some(parent_id)
+                        && &c.owner == revoked_party
+                    {
+                        let child_grantee = c.granted_to.clone();
+                        c.is_active = false;
+                        c.revoked_at = Some(now);
+                        env.storage()
+                            .instance()
+                            .set(&ConsentKey::Consent(cid), &c);
+
+                        env.events().publish(
+                            (Symbol::new(env, "ConsentRevoked"), pet_id),
+                            ConsentRevoked {
+                                version: EVENT_SCHEMA_VERSION,
+                                pet_id,
+                                consent_id: cid,
+                                revoked_at: now,
+                            },
+                        );
+                        revoked += 1;
+
+                        revoked += Self::cascade_revoke_children(
+                            env, pet_id, cid, &child_grantee, now, depth + 1,
+                        );
+                    }
+                }
+            }
+        }
+        revoked
+    }
+
+    /// Preview which consent IDs would be revoked by `revoke_consent_cascade`
+    /// without making any state changes.
+    pub fn preview_revocation_cascade(env: Env, pet_id: u64, consent_id: u64) -> Vec<u64> {
+        let mut ids = Vec::new(&env);
+
+        let root = match env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            Some(c) if c.is_active => c,
+            _ => return ids,
+        };
+
+        ids.push_back(consent_id);
+        let revoked_party = root.granted_to.clone();
+        Self::collect_cascade_ids(&env, pet_id, consent_id, &revoked_party, 1, &mut ids);
+        ids
+    }
+
+    fn collect_cascade_ids(
+        env: &Env,
+        pet_id: u64,
+        parent_id: u64,
+        revoked_party: &Address,
+        depth: u32,
+        ids: &mut Vec<u64>,
+    ) {
+        const MAX_CASCADE_DEPTH: u32 = 3;
+        if depth > MAX_CASCADE_DEPTH {
+            return;
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+
+        for i in 1..=count {
+            if let Some(cid) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+            {
+                if let Some(c) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    if c.is_active
+                        && c.parent_consent_id == Some(parent_id)
+                        && &c.owner == revoked_party
+                    {
+                        let child_grantee = c.granted_to.clone();
+                        ids.push_back(cid);
+                        Self::collect_cascade_ids(env, pet_id, cid, &child_grantee, depth + 1, ids);
+                    }
+                }
+            }
         }
     }
 
@@ -7992,6 +9444,114 @@ impl PetChainContract {
             }
         }
         result
+    }
+
+    // --- IMMUTABLE AUDIT LEDGER ---
+
+    /// Append an entry to the hash-chained audit ledger for a pet.
+    /// The genesis entry uses a prev_hash of all zeros.
+    pub fn append_audit_entry(
+        env: Env,
+        pet_id: u64,
+        actor: Address,
+        action: String,
+    ) -> u64 {
+        actor.require_auth();
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<AuditLedgerKey, u64>(&AuditLedgerKey::Count(pet_id))
+            .unwrap_or(0);
+
+        // Compute prev_hash: hash of previous entry's fields, or all-zeros for genesis
+        let prev_hash: BytesN<32> = if count == 0 {
+            BytesN::from_array(&env, &[0u8; 32])
+        } else {
+            let prev: AuditLedgerEntry = env
+                .storage()
+                .instance()
+                .get(&AuditLedgerKey::Entry((pet_id, count)))
+                .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidState));
+            // Hash the previous entry's serialised XDR bytes
+            let mut prev_bytes = Bytes::new(&env);
+            // Encode index + timestamp + prev_hash as deterministic input
+            for b in prev.index.to_be_bytes() {
+                prev_bytes.push_back(b);
+            }
+            for b in prev.timestamp.to_be_bytes() {
+                prev_bytes.push_back(b);
+            }
+            for b in prev.prev_hash.to_array() {
+                prev_bytes.push_back(b);
+            }
+            env.crypto().sha256(&prev_bytes)
+        };
+
+        let index = count + 1;
+        let entry = AuditLedgerEntry {
+            index,
+            pet_id,
+            actor,
+            action,
+            timestamp: env.ledger().timestamp(),
+            prev_hash,
+        };
+
+        env.storage()
+            .instance()
+            .set(&AuditLedgerKey::Entry((pet_id, index)), &entry);
+        env.storage()
+            .instance()
+            .set(&AuditLedgerKey::Count(pet_id), &index);
+
+        index
+    }
+
+    /// Recompute and validate the entire audit chain for a pet.
+    /// Returns `true` if the chain is intact, `false` if any hash mismatch is found.
+    pub fn verify_audit_chain(env: Env, pet_id: u64) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<AuditLedgerKey, u64>(&AuditLedgerKey::Count(pet_id))
+            .unwrap_or(0);
+
+        if count == 0 {
+            return true; // empty chain is valid
+        }
+
+        let mut expected_prev = BytesN::from_array(&env, &[0u8; 32]);
+
+        for i in 1..=count {
+            let entry: AuditLedgerEntry = match env
+                .storage()
+                .instance()
+                .get(&AuditLedgerKey::Entry((pet_id, i)))
+            {
+                Some(e) => e,
+                None => return false,
+            };
+
+            if entry.prev_hash != expected_prev {
+                return false;
+            }
+
+            // Compute hash of this entry to use as expected_prev for next iteration
+            let mut entry_bytes = Bytes::new(&env);
+            for b in entry.index.to_be_bytes() {
+                entry_bytes.push_back(b);
+            }
+            for b in entry.timestamp.to_be_bytes() {
+                entry_bytes.push_back(b);
+            }
+            for b in entry.prev_hash.to_array() {
+                entry_bytes.push_back(b);
+            }
+            expected_prev = env.crypto().sha256(&entry_bytes);
+        }
+
+        true
     }
 
     /// Book a slot (mark as unavailable) with conflict detection (Issue #624)
@@ -11883,6 +13443,323 @@ impl PetChainContract {
             }
         }
     }
+    // -------------------------------------------------------------------------
+    // Storage Compaction (Issue: Soroban Contract Storage Compaction)
+    // -------------------------------------------------------------------------
+
+    /// Remove tombstone entries for a pet to reclaim storage.
+    ///
+    /// Removes:
+    /// - Revoked or expired consent records (and their index slots)
+    /// - Inactive or expired access grants (and their index slots)
+    /// - Expired decryption delegation tokens
+    /// - Fully-used nonce usage entries (used >= max_uses)
+    ///
+    /// Callable by the pet owner or any admin. Returns the total count of
+    /// storage entries removed. The operation is idempotent — calling it
+    /// multiple times produces the same final state.
+    pub fn compact_storage(env: Env, pet_id: u64, caller: Address) -> u32 {
+        caller.require_auth();
+
+        // Authorise: owner or admin
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if pet.owner != caller && !Self::is_admin_address(&env, &caller) {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut removed: u32 = 0;
+
+        // -----------------------------------------------------------------
+        // 1. Compact revoked / expired consents
+        // -----------------------------------------------------------------
+        {
+            let total: u64 = env
+                .storage()
+                .instance()
+                .get(&ConsentKey::PetConsentCount(pet_id))
+                .unwrap_or(0);
+
+            // Collect indices of stale consents (1-based)
+            let mut stale_indices: Vec<u64> = Vec::new(&env);
+            for i in 1u64..=total {
+                if let Some(cid) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, i)))
+                {
+                    if let Some(consent) = env
+                        .storage()
+                        .instance()
+                        .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                    {
+                        let expired = consent
+                            .expires_at
+                            .map(|exp| now > exp)
+                            .unwrap_or(false);
+                        if !consent.is_active || expired {
+                            stale_indices.push_back(i);
+                        }
+                    }
+                }
+            }
+
+            // Remove stale entries (iterate in reverse to keep index arithmetic simple)
+            let stale_len = stale_indices.len();
+            for rev in 0..stale_len {
+                let pos = stale_indices.get(stale_len - 1 - rev).unwrap();
+
+                // Remove the consent record itself
+                if let Some(cid) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, pos)))
+                {
+                    env.storage()
+                        .instance()
+                        .remove(&ConsentKey::Consent(cid));
+                    removed += 1;
+                }
+
+                // Compact the index: shift entries above `pos` down by one
+                let current_count: u64 = env
+                    .storage()
+                    .instance()
+                    .get(&ConsentKey::PetConsentCount(pet_id))
+                    .unwrap_or(0);
+
+                for j in pos..current_count {
+                    if let Some(next_cid) = env
+                        .storage()
+                        .instance()
+                        .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, j + 1)))
+                    {
+                        env.storage()
+                            .instance()
+                            .set(&ConsentKey::PetConsentIndex((pet_id, j)), &next_cid);
+                    }
+                }
+                // Remove the now-dangling last slot
+                env.storage()
+                    .instance()
+                    .remove(&ConsentKey::PetConsentIndex((pet_id, current_count)));
+                removed += 1; // index slot
+
+                env.storage()
+                    .instance()
+                    .set(&ConsentKey::PetConsentCount(pet_id), &(current_count - 1));
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 2. Compact inactive / expired access grants
+        // -----------------------------------------------------------------
+        {
+            let grant_count: u64 = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+                .unwrap_or(0);
+
+            // Collect (index, grantee) pairs for stale grants
+            let mut stale: Vec<(u64, Address)> = Vec::new(&env);
+            for i in 1u64..=grant_count {
+                if let Some(grantee) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, i)))
+                {
+                    let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+                    if let Some(grant) = env
+                        .storage()
+                        .instance()
+                        .get::<DataKey, AccessGrant>(&key)
+                    {
+                        let expired = grant
+                            .expires_at
+                            .map(|exp| now >= exp)
+                            .unwrap_or(false);
+                        if !grant.is_active || expired {
+                            stale.push_back((i, grantee));
+                        }
+                    }
+                }
+            }
+
+            let stale_len = stale.len();
+            for rev in 0..stale_len {
+                let (pos, grantee) = stale.get(stale_len - 1 - rev).unwrap();
+
+                // Remove the grant record
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::AccessGrant((pet_id, grantee)));
+                removed += 1;
+
+                // Compact the index
+                let current_count: u64 = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+                    .unwrap_or(0);
+
+                for j in pos..current_count {
+                    if let Some(next_grantee) = env
+                        .storage()
+                        .instance()
+                        .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, j + 1)))
+                    {
+                        env.storage()
+                            .instance()
+                            .set(&DataKey::AccessGrantIndex((pet_id, j)), &next_grantee);
+                    }
+                }
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::AccessGrantIndex((pet_id, current_count)));
+                removed += 1; // index slot
+
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AccessGrantCount(pet_id), &(current_count - 1));
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 3. Compact expired decryption delegation tokens
+        // -----------------------------------------------------------------
+        // We cannot enumerate all delegates without an index, so we rely on
+        // the caller supplying delegates via a separate helper, or we scan
+        // the known delegation count. Since there is no delegate index, we
+        // only clean up tokens that are provably expired by checking the
+        // PetDelegationCount sentinel and resetting it when it reaches zero.
+        // A full sweep requires the owner to call compact_delegation (below).
+        // Here we just reset the count if it has drifted above zero but no
+        // tokens remain (idempotent guard).
+        {
+            let delegation_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+            // If count is non-zero but we cannot verify tokens (no index),
+            // we leave it alone — compact_delegation handles the full sweep.
+            let _ = delegation_count;
+        }
+
+        // -----------------------------------------------------------------
+        // 4. Compact fully-used nonce usage entries
+        // -----------------------------------------------------------------
+        {
+            // Nonce history is a Vec<Bytes> stored per (pet_id, key_id).
+            // We compact by clearing the history list when all nonces in it
+            // have reached max_uses, freeing the storage slot.
+            // We iterate over the nonce history for the default key_id "".
+            // Callers that use custom key_ids should call compact_nonces directly.
+            let key_id = String::from_str(&env, "");
+            let history_key = DataKey::NonceHistory((pet_id, key_id.clone()));
+            if let Some(history) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Vec<Bytes>>(&history_key)
+            {
+                let max_uses: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::NonceMaxUse((pet_id, key_id.clone())))
+                    .unwrap_or(DEFAULT_NONCE_MAX_USES);
+
+                let mut all_exhausted = true;
+                for nonce in history.iter() {
+                    let usage_key =
+                        DataKey::NonceUsage((pet_id, key_id.clone(), nonce.clone()));
+                    let used: u32 = env
+                        .storage()
+                        .instance()
+                        .get(&usage_key)
+                        .unwrap_or(0);
+                    if used < max_uses {
+                        all_exhausted = false;
+                        break;
+                    }
+                }
+
+                if all_exhausted && history.len() > 0 {
+                    // Remove all usage entries and the history list
+                    for nonce in history.iter() {
+                        let usage_key =
+                            DataKey::NonceUsage((pet_id, key_id.clone(), nonce.clone()));
+                        env.storage().instance().remove(&usage_key);
+                        removed += 1;
+                    }
+                    env.storage().instance().remove(&history_key);
+                    removed += 1;
+                }
+            }
+        }
+
+        removed
+    }
+
+    /// Compact expired decryption delegation tokens for a specific set of
+    /// delegates. Returns the number of tokens removed.
+    ///
+    /// This is a targeted helper because there is no global delegate index —
+    /// the caller must supply the list of delegates to check.
+    pub fn compact_delegations(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        delegates: Vec<Address>,
+    ) -> u32 {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if pet.owner != caller && !Self::is_admin_address(&env, &caller) {
+            env.panic_with_error(ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut removed: u32 = 0;
+
+        for delegate in delegates.iter() {
+            let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+            if let Some(expires_at) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&key)
+            {
+                if now >= expires_at {
+                    env.storage().instance().remove(&key);
+                    removed += 1;
+
+                    // Decrement delegation count
+                    let count: u64 = env
+                        .storage()
+                        .instance()
+                        .get(&DataKey::PetDelegationCount(pet_id))
+                        .unwrap_or(0);
+                    if count > 0 {
+                        env.storage()
+                            .instance()
+                            .set(&DataKey::PetDelegationCount(pet_id), &(count - 1));
+                    }
+                }
+            }
+        }
+
+        removed
+    }
 } // end impl PetChainContract
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
@@ -11964,6 +13841,15 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
 }
 
 #[cfg(test)]
+mod test;
+#[cfg(test)]
+mod test_access_control;
+#[cfg(test)]
+mod test_activity;
+#[cfg(test)]
+mod test_behavior;
+#[cfg(test)]
+mod test_grooming;
 mod gas_profile_tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};

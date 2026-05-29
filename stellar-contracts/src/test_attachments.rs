@@ -90,7 +90,7 @@ fn test_add_attachment_success() {
     assert!(result);
 
     // Verify attachment was added
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments.get(0).unwrap().ipfs_hash, ipfs_hash);
     assert_eq!(
@@ -119,7 +119,7 @@ fn test_add_multiple_attachments() {
     client.add_attachment(&record_id, &ipfs_hash3, &metadata3, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Verify all attachments were added
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 3);
     assert_eq!(
         attachments.get(0).unwrap().metadata.filename,
@@ -139,7 +139,7 @@ fn test_add_multiple_attachments() {
 fn test_get_attachments_empty() {
     let (_env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 0);
 }
 
@@ -147,7 +147,7 @@ fn test_get_attachments_empty() {
 fn test_get_attachments_nonexistent_record() {
     let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
 
-    let attachments = client.get_attachments(&999u64);
+    let attachments = client.get_attachments(&999u64, &_owner);
     assert_eq!(attachments.len(), 0);
 }
 
@@ -166,7 +166,7 @@ fn test_attachment_metadata_storage() {
 
     client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
 
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     let stored_attachment = attachments.get(0).unwrap();
 
     assert_eq!(
@@ -268,14 +268,14 @@ fn test_remove_attachment_success() {
     client.add_attachment(&record_id, &ipfs_hash2, &metadata2, &BytesN::from_array(&env, &[1u8; 32]));
 
     // Verify both attachments exist
-    assert_eq!(client.get_attachments(&record_id).len(), 2);
+    assert_eq!(client.get_attachments(&record_id, &_owner).len(), 2);
 
     // Remove first attachment
     let result = client.remove_attachment(&record_id, &0u32);
     assert!(result);
 
     // Verify only one attachment remains
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 1);
     assert_eq!(
         attachments.get(0).unwrap().metadata.filename,
@@ -369,7 +369,7 @@ fn test_attachment_with_various_file_types() {
         client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     }
 
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 6);
 }
 
@@ -384,7 +384,7 @@ fn test_attachment_with_large_file_size() {
     let result = client.add_attachment(&record_id, &ipfs_hash, &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     assert!(result);
 
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.get(0).unwrap().metadata.size, 104857600);
 }
 
@@ -426,7 +426,7 @@ fn test_medical_record_with_attachments_integration() {
     assert_eq!(record.attachment_hashes.len(), 3);
 
     // Verify attachments can be retrieved
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.len(), 3);
     assert_eq!(
         attachments.get(0).unwrap().metadata.filename,
@@ -484,8 +484,8 @@ fn test_multiple_records_with_attachments() {
     assert_eq!(client.get_attachment_count(&record1_id), 1);
     assert_eq!(client.get_attachment_count(&record2_id), 1);
 
-    let attachments1 = client.get_attachments(&record1_id);
-    let attachments2 = client.get_attachments(&record2_id);
+    let attachments1 = client.get_attachments(&record1_id, &_owner);
+    let attachments2 = client.get_attachments(&record2_id, &_owner);
 
     assert_eq!(
         attachments1.get(0).unwrap().metadata.filename,
@@ -524,7 +524,7 @@ fn test_attachment_timestamp_tracking() {
     );
 
     // Verify timestamps are different
-    let attachments = client.get_attachments(&record_id);
+    let attachments = client.get_attachments(&record_id, &_owner);
     assert_eq!(attachments.get(0).unwrap().metadata.uploaded_date, 1000);
     assert_eq!(attachments.get(1).unwrap().metadata.uploaded_date, 2000);
 }
@@ -553,7 +553,7 @@ fn test_get_attachment_by_index_first() {
     );
 
     // Get first attachment by index
-    let attachment = client.get_attachment_by_index(&record_id, &0u32);
+    let attachment = client.get_attachment_by_index(&record_id, &0u32, &_owner);
     assert!(attachment.is_some());
 
     let att = attachment.unwrap();
@@ -586,11 +586,11 @@ fn test_get_attachment_by_index_last() {
         };
 
         let metadata = create_test_metadata(&env, filename, "type/type", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hash_str), &metadata);
+        client.add_attachment(&record_id, &String::from_str(&env, hash_str), &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     }
 
     // Get last attachment (index 2)
-    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    let attachment = client.get_attachment_by_index(&record_id, &2u32, &_owner);
     assert!(attachment.is_some());
 
     let att = attachment.unwrap();
@@ -611,7 +611,7 @@ fn test_get_attachment_by_index_out_of_bounds() {
     );
 
     // Try to get index that's out of bounds
-    let attachment = client.get_attachment_by_index(&record_id, &5u32);
+    let attachment = client.get_attachment_by_index(&record_id, &5u32, &_owner);
     assert!(attachment.is_none());
 }
 
@@ -620,7 +620,7 @@ fn test_get_attachment_by_index_empty_attachments() {
     let (_env, client, _owner, _vet, _pet_id, record_id) = setup_test_env();
 
     // Try to get from empty record
-    let attachment = client.get_attachment_by_index(&record_id, &0u32);
+    let attachment = client.get_attachment_by_index(&record_id, &0u32, &_owner);
     assert!(attachment.is_none());
 }
 
@@ -629,7 +629,7 @@ fn test_get_attachment_by_index_nonexistent_record() {
     let (_env, client, _owner, _vet, _pet_id, _record_id) = setup_test_env();
 
     // Try to get from non-existent record
-    let attachment = client.get_attachment_by_index(&999u64, &0u32);
+    let attachment = client.get_attachment_by_index(&999u64, &0u32, &_owner);
     assert!(attachment.is_none());
 }
 
@@ -656,11 +656,11 @@ fn test_get_attachment_by_index_middle() {
     for i in 0..5 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     }
 
     // Get middle attachment (index 2)
-    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    let attachment = client.get_attachment_by_index(&record_id, &2u32, &_owner);
     assert!(attachment.is_some());
 
     let att = attachment.unwrap();
@@ -682,7 +682,7 @@ fn test_get_attachment_by_index_after_removal() {
     for i in 0..3 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata, &BytesN::from_array(&env, &[1u8; 32]));
     }
 
     // Verify we have 3 attachments
@@ -695,14 +695,14 @@ fn test_get_attachment_by_index_after_removal() {
     assert_eq!(client.get_attachment_count(&record_id), 2);
 
     // Old index 1 should now return what was at index 2
-    let attachment = client.get_attachment_by_index(&record_id, &1u32);
+    let attachment = client.get_attachment_by_index(&record_id, &1u32, &_owner);
     assert!(attachment.is_some());
 
     let att = attachment.unwrap();
     assert_eq!(att.metadata.filename, String::from_str(&env, "file2.jpg"));
 
     // Old index 2 should now be out of bounds
-    let attachment = client.get_attachment_by_index(&record_id, &2u32);
+    let attachment = client.get_attachment_by_index(&record_id, &2u32, &_owner);
     assert!(attachment.is_none());
 }
 
@@ -736,4 +736,157 @@ fn test_add_attachment_zero_hash_rejected() {
     let ipfs_hash = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
     client.add_attachment(&record_id, &ipfs_hash, &metadata, &zero_hash);
+}
+
+// ---- scan result tests ----
+
+fn setup_with_scanner() -> (
+    Env,
+    PetChainContractClient<'static>,
+    Address, // owner
+    Address, // admin
+    Address, // scanner
+    u64,     // record_id
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let scanner = Address::generate(&env);
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr. Jones"),
+        &String::from_str(&env, "VET99999"),
+        &String::from_str(&env, "Radiology"),
+    );
+    client.init_admin(&admin);
+    client.verify_vet(&admin, &vet);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2021-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let record_id = client.add_medical_record(
+        &pet_id,
+        &vet,
+        &String::from_str(&env, "Scan check"),
+        &String::from_str(&env, "Pending"),
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+
+    client.add_attachment(
+        &record_id,
+        &String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"),
+        &create_test_metadata(&env, "scan.jpg", "image/jpeg", 1024),
+        &BytesN::from_array(&env, &[1u8; 32]),
+    );
+
+    client.register_scanner(&admin, &scanner);
+
+    (env, client, owner, admin, scanner, record_id)
+}
+
+#[test]
+fn test_registered_scanner_can_set_scan_result() {
+    let (env, client, owner, _admin, scanner, record_id) = setup_with_scanner();
+
+    let result = client.set_scan_result(&scanner, &record_id, &0u32, &ScanStatus::Clean);
+    assert!(result);
+
+    let attachment = client
+        .get_attachment_by_index(&record_id, &0u32, &owner)
+        .unwrap();
+    let sr = attachment.scan_result.unwrap();
+    assert_eq!(sr.status, ScanStatus::Clean);
+    assert_eq!(sr.scanner_id, scanner);
+}
+
+#[test]
+#[should_panic]
+fn test_unregistered_scanner_rejected() {
+    let (env, client, _owner, _admin, _scanner, record_id) = setup_with_scanner();
+    let rogue = Address::generate(&env);
+    client.set_scan_result(&rogue, &record_id, &0u32, &ScanStatus::Clean);
+}
+
+#[test]
+fn test_malicious_attachment_hidden_from_non_admin() {
+    let (env, client, owner, _admin, scanner, record_id) = setup_with_scanner();
+
+    client.set_scan_result(&scanner, &record_id, &0u32, &ScanStatus::Malicious);
+
+    // Non-admin caller should not see the malicious attachment
+    let attachments = client.get_attachments(&record_id, &owner);
+    assert_eq!(attachments.len(), 0);
+
+    let by_index = client.get_attachment_by_index(&record_id, &0u32, &owner);
+    assert!(by_index.is_none());
+}
+
+#[test]
+fn test_malicious_attachment_visible_to_admin() {
+    let (_env, client, _owner, admin, scanner, record_id) = setup_with_scanner();
+
+    client.set_scan_result(&scanner, &record_id, &0u32, &ScanStatus::Malicious);
+
+    // Admin can still see it
+    let attachments = client.get_attachments(&record_id, &admin);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(
+        attachments.get(0).unwrap().scan_result.unwrap().status,
+        ScanStatus::Malicious
+    );
+}
+
+#[test]
+fn test_scan_result_stored_and_retrievable() {
+    let (env, client, owner, _admin, scanner, record_id) = setup_with_scanner();
+
+    env.ledger().with_mut(|l| l.timestamp = 5000);
+    client.set_scan_result(&scanner, &record_id, &0u32, &ScanStatus::Suspicious);
+
+    let attachment = client
+        .get_attachment_by_index(&record_id, &0u32, &owner)
+        .unwrap();
+    let sr = attachment.scan_result.unwrap();
+    assert_eq!(sr.status, ScanStatus::Suspicious);
+    assert_eq!(sr.scanned_at, 5000);
+    assert_eq!(sr.scanner_id, scanner);
+}
+
+#[test]
+fn test_clean_attachment_visible_to_all() {
+    let (env, client, owner, _admin, scanner, record_id) = setup_with_scanner();
+
+    client.set_scan_result(&scanner, &record_id, &0u32, &ScanStatus::Clean);
+
+    let attachments = client.get_attachments(&record_id, &owner);
+    assert_eq!(attachments.len(), 1);
+}
+
+#[test]
+fn test_new_attachment_has_no_scan_result() {
+    let (env, client, owner, _admin, _scanner, record_id) = setup_with_scanner();
+
+    // The attachment added in setup has no scan result yet
+    let attachment = client
+        .get_attachment_by_index(&record_id, &0u32, &owner)
+        .unwrap();
+    assert!(attachment.scan_result.is_none());
 }
