@@ -188,6 +188,8 @@ mod test_upgrade_proposal;
 mod test_vaccination_expiry;
 #[cfg(test)]
 mod test_medical_record_soft_delete;
+#[cfg(test)]
+mod test_event_subscriptions;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -202,6 +204,7 @@ const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
 const MAX_SEARCH_NOTES_LEN: u32 = 512;
 const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
+const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -972,6 +975,37 @@ pub enum TreatmentKey {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventType {
+    PetRegistered,
+    TreatmentAdded,
+    MedicalRecordAdded,
+    VaccinationAdded,
+    AccessGranted,
+    AccessRevoked,
+    InsuranceClaimSubmitted,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventSubscription {
+    pub id: u64,
+    pub subscriber: Address,
+    pub event_types: Vec<EventType>,
+    pub pet_ids: Vec<u64>,
+    pub expires_at: u64,
+    pub created_at: u64,
+}
+
+#[contracttype]
+pub enum SubscriptionKey {
+    Subscription(u64),
+    SubscriptionCount,
+    SubscriberSubscriptionCount(Address),
+    SubscriberSubscriptionIndex((Address, u64)),
+}
+
+#[contracttype]
 pub enum TagKey {
     // Tag Linking System keys
     Tag(soroban_sdk::BytesN<32>), // tag_id -> PetTag (reverse lookup for QR scan)
@@ -1716,6 +1750,7 @@ pub struct TreatmentAddedEvent {
     pub vet_address: Address,
     pub treatment_type: TreatmentType,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 // --- EVENTS ---
@@ -1885,6 +1920,7 @@ pub struct PetRegisteredEvent {
     pub name: String,
     pub species: Species,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1897,6 +1933,7 @@ pub struct VaccinationAddedEvent {
     pub vaccine_type: VaccineType,
     pub next_due_date: u64,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1939,6 +1976,7 @@ pub struct MedicalRecordAddedEvent {
     pub pet_id: u64,
     pub updated_by: Address,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1990,6 +2028,136 @@ pub struct PetChainContract;
 #[contractimpl]
 impl PetChainContract {
     // --- CONTRACT STATISTICS ---
+
+    pub fn register_subscription(
+        env: Env,
+        subscriber: Address,
+        event_types: Vec<EventType>,
+        pet_ids: Vec<u64>,
+        ttl: u64,
+    ) -> u64 {
+        subscriber.require_auth();
+
+        if event_types.len() == 0 || pet_ids.len() == 0 || ttl == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let now = env.ledger().timestamp();
+        let existing_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriberSubscriptionCount(subscriber.clone()))
+            .unwrap_or(0);
+        let mut active_count = 0u32;
+        for i in 1..=existing_count {
+            let Some(subscription_id) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, u64>(&SubscriptionKey::SubscriberSubscriptionIndex((
+                    subscriber.clone(),
+                    i,
+                )))
+            else {
+                continue;
+            };
+            if let Some(subscription) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, EventSubscription>(&SubscriptionKey::Subscription(
+                    subscription_id,
+                ))
+            {
+                if subscription.expires_at > now {
+                    active_count += 1;
+                }
+            }
+        }
+
+        if active_count >= MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
+        let current_id: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriptionCount)
+            .unwrap_or(0);
+        let subscription_id = safe_increment(current_id);
+        let expires_at = now.saturating_add(ttl);
+        let subscription = EventSubscription {
+            id: subscription_id,
+            subscriber: subscriber.clone(),
+            event_types,
+            pet_ids,
+            expires_at,
+            created_at: now,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SubscriptionKey::Subscription(subscription_id), &subscription);
+        env.storage()
+            .instance()
+            .set(&SubscriptionKey::SubscriptionCount, &subscription_id);
+
+        let new_subscriber_count = safe_increment(existing_count);
+        env.storage().instance().set(
+            &SubscriptionKey::SubscriberSubscriptionCount(subscriber.clone()),
+            &new_subscriber_count,
+        );
+        env.storage().instance().set(
+            &SubscriptionKey::SubscriberSubscriptionIndex((subscriber, new_subscriber_count)),
+            &subscription_id,
+        );
+
+        subscription_id
+    }
+
+    pub fn get_subscription(env: Env, subscription_id: u64) -> Option<EventSubscription> {
+        env.storage()
+            .instance()
+            .get(&SubscriptionKey::Subscription(subscription_id))
+    }
+
+    pub fn get_matching_subscription_ids(
+        env: Env,
+        event_type: EventType,
+        pet_id: u64,
+    ) -> Vec<u64> {
+        Self::matching_subscription_ids(&env, event_type, pet_id)
+    }
+
+    fn matching_subscription_ids(env: &Env, event_type: EventType, pet_id: u64) -> Vec<u64> {
+        let now = env.ledger().timestamp();
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriptionCount)
+            .unwrap_or(0);
+        let mut matches = Vec::new(env);
+
+        for subscription_id in 1..=count {
+            let Some(subscription) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, EventSubscription>(&SubscriptionKey::Subscription(
+                    subscription_id,
+                ))
+            else {
+                continue;
+            };
+
+            if subscription.expires_at <= now {
+                continue;
+            }
+            if subscription.event_types.contains(&event_type) && subscription.pet_ids.contains(&pet_id)
+            {
+                matches.push_back(subscription.id);
+            }
+        }
+
+        matches
+    }
 
     /// Returns the total number of pets ever registered in the contract.
     pub fn get_total_pets(env: Env) -> u64 {
@@ -2762,6 +2930,11 @@ impl PetChainContract {
                 name: String::from_str(&env, "PROTECTED"), // Masking name in event for safety
                 species,
                 timestamp,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::PetRegistered,
+                    pet_id,
+                ),
             },
         );
 
@@ -4047,6 +4220,11 @@ impl PetChainContract {
                 vaccine_type,
                 next_due_date,
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::VaccinationAdded,
+                    pet_id,
+                ),
             },
         );
 
@@ -6725,9 +6903,15 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 pet_id,
                 updated_by: vet_address.clone(),
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::MedicalRecordAdded,
+                    pet_id,
+                ),
             },
         );
         PetChainContract::log_access(
@@ -11106,6 +11290,11 @@ impl PetChainContract {
                 vet_address,
                 treatment_type,
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::TreatmentAdded,
+                    pet_id,
+                ),
             },
         );
 
