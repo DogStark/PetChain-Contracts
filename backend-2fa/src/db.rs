@@ -1,5 +1,5 @@
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, RecoveryCodeUsageLog, TwoFactorData, TwoFactorStore,
+    AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
     UserTwoFactorSummary,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -492,6 +492,79 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         )
         .map(|c| c > 0)
         .unwrap_or(false)
+    }
+
+    fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            failed_attempts: i32,
+            locked: bool,
+            locked_at: Option<i64>,
+            updated_at: i64,
+        }
+
+        let row = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT failed_attempts, locked,
+                       EXTRACT(EPOCH FROM locked_at)::bigint AS locked_at,
+                       EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at
+                FROM two_fa_lockouts
+                WHERE user_id = $1
+                "#,
+            )
+            .bind(user_id)
+            .fetch_optional(&self.pool),
+        )?;
+
+        Ok(row
+            .map(|r| TwoFactorLockoutState {
+                failed_attempts: r.failed_attempts.max(0) as u32,
+                locked: r.locked,
+                locked_at: r.locked_at.map(|ts| ts as u64),
+                updated_at: r.updated_at as u64,
+            })
+            .unwrap_or_default())
+    }
+
+    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        self.block_on(
+            sqlx::query(
+                r#"
+                INSERT INTO two_fa_lockouts (user_id, failed_attempts, locked, locked_at, updated_at)
+                VALUES ($1, 1, FALSE, NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    failed_attempts = two_fa_lockouts.failed_attempts + 1,
+                    locked = (two_fa_lockouts.failed_attempts + 1) >= 10,
+                    locked_at = CASE
+                        WHEN (two_fa_lockouts.failed_attempts + 1) >= 10
+                             AND two_fa_lockouts.locked_at IS NULL
+                        THEN CURRENT_TIMESTAMP
+                        ELSE two_fa_lockouts.locked_at
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+            )
+            .bind(user_id)
+            .execute(&self.pool),
+        )?;
+        self.get_lockout_state(user_id)
+    }
+
+    fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
+        self.block_on(
+            sqlx::query("DELETE FROM two_fa_lockouts WHERE user_id = $1")
+                .bind(user_id)
+                .execute(&self.pool),
+        )?;
+        Ok(())
+    }
+
+    fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
+        self.reset_two_fa_failures(user_id)?;
+        self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
+        Ok(())
     }
 }
 

@@ -267,6 +267,14 @@ pub struct AuditLogEntry {
     pub metadata: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct TwoFactorLockoutState {
+    pub failed_attempts: u32,
+    pub locked: bool,
+    pub locked_at: Option<u64>,
+    pub updated_at: u64,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -324,6 +332,18 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Check whether a user account is a canary.
     fn is_canary(&self, user_id: &str) -> bool;
+
+    /// Persistent lockout state, used after Redis restarts.
+    fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
+
+    /// Increment failed 2FA attempts and persist lockout after the tenth failure.
+    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
+
+    /// Reset failed attempts after a successful TOTP verification or recovery.
+    fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String>;
+
+    /// Admin/recovery unlock for fully locked accounts.
+    fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -333,6 +353,7 @@ pub struct InMemoryStore {
     recovery_log: Arc<Mutex<Vec<RecoveryCodeUsageLog>>>,
     audit_log: Arc<Mutex<Vec<AuditLogEntry>>>,
     canary_flags: Arc<Mutex<HashMap<String, bool>>>,
+    lockouts: Arc<Mutex<HashMap<String, TwoFactorLockoutState>>>,
 }
 
 impl InMemoryStore {
@@ -565,6 +586,43 @@ impl TwoFactorStore for InMemoryStore {
             .copied()
             .unwrap_or(false)
     }
+
+    fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        Ok(self
+            .lockouts
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        let mut lockouts = self.lockouts.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let state = lockouts.entry(user_id.to_string()).or_default();
+        state.failed_attempts = state.failed_attempts.saturating_add(1);
+        state.updated_at = now;
+        if state.failed_attempts >= 10 {
+            state.locked = true;
+            state.locked_at = Some(now);
+        }
+        Ok(state.clone())
+    }
+
+    fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
+        self.lockouts.lock().unwrap().remove(user_id);
+        Ok(())
+    }
+
+    fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
+        self.reset_two_fa_failures(user_id)?;
+        self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +722,25 @@ impl TenantScopedStore {
 
     pub fn is_canary(&self, user_id: &str) -> bool {
         self.inner.is_canary(&self.key(user_id))
+    }
+
+    pub fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        self.inner.get_lockout_state(&self.key(user_id))
+    }
+
+    pub fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+    ) -> Result<TwoFactorLockoutState, String> {
+        self.inner.record_failed_two_fa_attempt(&self.key(user_id))
+    }
+
+    pub fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
+        self.inner.reset_two_fa_failures(&self.key(user_id))
+    }
+
+    pub fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
+        self.inner.unlock_two_fa_account(&self.key(user_id), actor)
     }
 
     /// TOTP issuer name for this tenant (used when generating QR codes).

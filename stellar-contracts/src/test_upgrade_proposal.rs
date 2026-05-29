@@ -437,6 +437,7 @@ fn test_proposal_enters_timelock_after_quorum() {
 }
 
 #[test]
+#[should_panic]
 fn test_execution_rejected_before_timelock_expiry() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -446,10 +447,7 @@ fn test_execution_rejected_before_timelock_expiry() {
     client.approve_proposal(&admin2, &proposal_id);
 
     // Try to execute immediately (should fail - timelock not expired)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.execute_proposal(&proposal_id);
-    }));
-    assert!(result.is_err());
+    client.execute_proposal(&proposal_id);
 }
 
 #[test]
@@ -501,6 +499,7 @@ fn test_veto_during_timelock_cancels_proposal() {
 }
 
 #[test]
+#[should_panic]
 fn test_veto_after_timelock_rejected() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -519,13 +518,11 @@ fn test_veto_after_timelock_rejected() {
     });
 
     // Try to veto after timelock expired (should fail)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.veto_proposal(&admin1, &proposal_id);
-    }));
-    assert!(result.is_err());
+    client.veto_proposal(&admin1, &proposal_id);
 }
 
 #[test]
+#[should_panic]
 fn test_execution_rejected_if_vetoed() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -547,22 +544,17 @@ fn test_execution_rejected_if_vetoed() {
     });
 
     // Try to execute vetoed proposal (should fail)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.execute_proposal(&proposal_id);
-    }));
-    assert!(result.is_err());
+    client.execute_proposal(&proposal_id);
 }
 
 #[test]
+#[should_panic]
 fn test_timelock_config_enforces_minimum_24_hours() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
     // Try to set timelock less than 24 hours (should fail)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.set_timelock_config(&admin1, &3600, &true); // 1 hour
-    }));
-    assert!(result.is_err());
+    client.set_timelock_config(&admin1, &3600, &true); // 1 hour
 }
 
 #[test]
@@ -653,6 +645,7 @@ fn test_has_admin_vetoed() {
 }
 
 #[test]
+#[should_panic]
 fn test_veto_prevents_duplicate_veto_from_same_admin() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -665,10 +658,7 @@ fn test_veto_prevents_duplicate_veto_from_same_admin() {
     client.veto_proposal(&admin1, &proposal_id);
 
     // Second veto from same admin should fail
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.veto_proposal(&admin1, &proposal_id);
-    }));
-    assert!(result.is_err());
+    client.veto_proposal(&admin1, &proposal_id);
 }
 
 #[test]
@@ -709,6 +699,7 @@ fn test_timelock_duration_applies_correctly() {
 }
 
 #[test]
+#[should_panic]
 fn test_veto_cannot_happen_on_pending_proposal() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
@@ -717,13 +708,11 @@ fn test_veto_cannot_happen_on_pending_proposal() {
     let proposal_id = client.propose_action(&admin1, &action, &3600);
 
     // Try to veto while still pending (should fail)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.veto_proposal(&admin1, &proposal_id);
-    }));
-    assert!(result.is_err());
+    client.veto_proposal(&admin1, &proposal_id);
 }
 
 #[test]
+#[should_panic]
 fn test_approval_rejected_on_vetoed_proposal() {
     let env = Env::default();
     let (client, admin1, admin2) = setup(&env);
@@ -736,10 +725,7 @@ fn test_approval_rejected_on_vetoed_proposal() {
     client.veto_proposal(&admin1, &proposal_id);
 
     // Try to approve vetoed proposal (should fail)
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.approve_proposal(&admin2, &proposal_id);
-    }));
-    assert!(result.is_err());
+    client.approve_proposal(&admin2, &proposal_id);
 }
 
 #[test]

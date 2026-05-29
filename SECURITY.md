@@ -44,3 +44,14 @@ This replaces the previous static all-zero key. As a result:
 - encrypted storage no longer mirrors plaintext by default
 - key material is contract-scoped and not hardcoded
 - rotating admin configuration can change derived key context, so migrations/rollouts should account for backward compatibility expectations
+
+## Audit Record
+
+| Field    | Value |
+|----------|-------|
+| **Date** | 2026-05-29 |
+| **Scope** | `stellar-contracts/src/lib.rs` |
+| **Auditor** | Internal |
+| **Result** | All 23 security checklist items pass. Fixed: temp vet access expiry now enforced on all read paths via `check_and_expire_access`; scope escalation prevented in `grant_temp_vet_access` with explicit `ScopeEscalation` error. |
+
+See [docs/security-audit.md](docs/security-audit.md) for the full checklist.

@@ -53,6 +53,62 @@ pub trait RedisBackend: Send + Sync {
     fn set_ex(&self, key: &str, value: &str, ttl_secs: u64);
     /// Delete one or more keys.
     fn del(&self, keys: &[&str]);
+    /// Increment a string counter and set TTL on first write.
+    fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> u64 {
+        let _ = (key, ttl_secs);
+        0
+    }
+    /// Read a string counter.
+    fn get_u64(&self, key: &str) -> Option<u64> {
+        let _ = key;
+        None
+    }
+}
+
+pub fn progressive_delay_secs(attempt: u32) -> Option<u64> {
+    if attempt == 0 || attempt >= 10 {
+        None
+    } else {
+        Some(1u64 << (attempt - 1).min(8))
+    }
+}
+
+pub struct RedisTwoFactorFailureCounter<B: RedisBackend> {
+    backend: B,
+    key_prefix: String,
+    ttl_secs: u64,
+}
+
+impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
+    pub fn new(backend: B, key_prefix: impl Into<String>, ttl_secs: u64) -> Self {
+        Self {
+            backend,
+            key_prefix: key_prefix.into(),
+            ttl_secs,
+        }
+    }
+
+    fn key(&self, user_id: &str) -> String {
+        format!("{}2fa:failures:{}", self.key_prefix, user_id)
+    }
+
+    pub fn record_failure(&self, user_id: &str) -> u32 {
+        self.backend
+            .incr_with_ttl(&self.key(user_id), self.ttl_secs)
+            .min(u32::MAX as u64) as u32
+    }
+
+    pub fn get_failures(&self, user_id: &str) -> u32 {
+        self.backend
+            .get_u64(&self.key(user_id))
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32
+    }
+
+    pub fn reset(&self, user_id: &str) {
+        let key = self.key(user_id);
+        self.backend.del(&[&key]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +170,23 @@ impl RedisBackend for LiveRedisBackend {
             let _: Result<(), _> = redis::cmd("DEL").arg(keys).query(&mut con);
         }
     }
+
+    fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> u64 {
+        let mut con = match self.client.get_connection() {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        let count: u64 = redis::cmd("INCR").arg(key).query(&mut con).unwrap_or(0);
+        if count == 1 {
+            let _: Result<(), _> = redis::cmd("EXPIRE").arg(key).arg(ttl_secs).query(&mut con);
+        }
+        count
+    }
+
+    fn get_u64(&self, key: &str) -> Option<u64> {
+        let mut con = self.client.get_connection().ok()?;
+        redis::cmd("GET").arg(key).query(&mut con).ok()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +198,7 @@ struct MockEntry {
     zset: Vec<(u64, String)>,
     /// Expiry in mock-clock milliseconds (None = no expiry)
     expires_at_ms: Option<u64>,
+    value: Option<u64>,
 }
 
 /// In-process mock that faithfully implements the sorted-set sliding window.
@@ -184,6 +258,7 @@ impl RedisBackend for MockRedisBackend {
         let entry = store.entry(key.to_string()).or_insert(MockEntry {
             zset: Vec::new(),
             expires_at_ms: None,
+            value: None,
         });
         // Evict if the key itself has expired
         if let Some(exp) = entry.expires_at_ms {
@@ -207,6 +282,7 @@ impl RedisBackend for MockRedisBackend {
         store.insert(key.to_string(), MockEntry {
             zset: vec![(0, value.to_string())],
             expires_at_ms: Some(now_ms + ttl_secs * 1_000),
+            value: None,
         });
     }
 
@@ -214,6 +290,34 @@ impl RedisBackend for MockRedisBackend {
         let mut store = self.store.lock().unwrap();
         for k in keys {
             store.remove(*k);
+        }
+    }
+
+    fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> u64 {
+        let now_ms = self.current_ms();
+        let mut store = self.store.lock().unwrap();
+        let entry = store.entry(key.to_string()).or_insert(MockEntry {
+            zset: Vec::new(),
+            expires_at_ms: Some(now_ms + ttl_secs * 1_000),
+            value: Some(0),
+        });
+        if entry.expires_at_ms.map(|exp| now_ms >= exp).unwrap_or(false) {
+            entry.value = Some(0);
+        }
+        let value = entry.value.unwrap_or(0).saturating_add(1);
+        entry.value = Some(value);
+        entry.expires_at_ms = Some(now_ms + ttl_secs * 1_000);
+        value
+    }
+
+    fn get_u64(&self, key: &str) -> Option<u64> {
+        let now_ms = self.current_ms();
+        let store = self.store.lock().unwrap();
+        let entry = store.get(key)?;
+        if entry.expires_at_ms.map(|exp| now_ms >= exp).unwrap_or(false) {
+            None
+        } else {
+            entry.value
         }
     }
 }

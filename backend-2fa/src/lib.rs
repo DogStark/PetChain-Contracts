@@ -25,7 +25,7 @@ pub use leaderboard::{
 pub use rate_limiter::{
     DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter, LiveRedisBackend,
     MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend, RedisRateLimiter,
-    SlidingWindowRateLimiter,
+    RedisTwoFactorFailureCounter, SlidingWindowRateLimiter, progressive_delay_secs,
 };
 pub use metrics::{
     metrics, record_rate_limit_hit, record_recovery_code_use, record_totp_verification,
@@ -34,7 +34,7 @@ pub use metrics::{
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData,
-    TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
+    TwoFactorLockoutState, TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
     TenantConfig, TenantRegistry, TenantScopedStore,
 };
 pub use webhooks::{
