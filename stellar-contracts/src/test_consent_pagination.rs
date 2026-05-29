@@ -320,3 +320,115 @@ fn test_get_consents_by_scope_pagination() {
         assert_eq!(consent.scope, ConsentScope::ReadMedical);
     }
 }
+
+// ============================================================
+// CASCADE REVOCATION TESTS
+// ============================================================
+
+#[test]
+fn test_revoke_consent_cascade_no_children() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    let root_id = client.grant_consent(
+        &pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical,
+    );
+
+    // No sub-consents — cascade should revoke only the root (count = 1)
+    let count = client.revoke_consent_cascade(&pet_id, &root_id, &owner);
+    assert_eq!(count, 1);
+    assert!(!client.is_consent_active(&root_id));
+}
+
+#[test]
+fn test_revoke_consent_cascade_with_one_child() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+    let sub_grantee = Address::generate(&env);
+
+    // Root consent granted by owner to grantee
+    let root_id = client.grant_consent(
+        &pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical,
+    );
+
+    // Sub-consent: grantee delegates to sub_grantee (parent = root_id)
+    let sub_id = client.grant_consent_with_parent(
+        &pet_id, &grantee, &ConsentType::Research, &sub_grantee,
+        &ConsentScope::ReadMedical, &Some(root_id),
+    );
+
+    // Cascade revoke from root
+    let count = client.revoke_consent_cascade(&pet_id, &root_id, &owner);
+    assert_eq!(count, 2);
+    assert!(!client.is_consent_active(&root_id));
+    assert!(!client.is_consent_active(&sub_id));
+}
+
+#[test]
+fn test_revoke_consent_cascade_depth_limit() {
+    let (env, client, pet_id, owner) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let d = Address::generate(&env);
+
+    // Chain: owner -> a -> b -> c -> d (depth 4 from root)
+    let id0 = client.grant_consent(
+        &pet_id, &owner, &ConsentType::Research, &a, &ConsentScope::ReadMedical,
+    );
+    let id1 = client.grant_consent_with_parent(
+        &pet_id, &a, &ConsentType::Research, &b, &ConsentScope::ReadMedical, &Some(id0),
+    );
+    let id2 = client.grant_consent_with_parent(
+        &pet_id, &b, &ConsentType::Research, &c, &ConsentScope::ReadMedical, &Some(id1),
+    );
+    let id3 = client.grant_consent_with_parent(
+        &pet_id, &c, &ConsentType::Research, &d, &ConsentScope::ReadMedical, &Some(id2),
+    );
+
+    // Cascade depth is limited to 3, so id3 (depth 4) should NOT be revoked
+    let count = client.revoke_consent_cascade(&pet_id, &id0, &owner);
+    assert_eq!(count, 3); // id0, id1, id2 revoked; id3 beyond depth limit
+    assert!(!client.is_consent_active(&id0));
+    assert!(!client.is_consent_active(&id1));
+    assert!(!client.is_consent_active(&id2));
+    assert!(client.is_consent_active(&id3)); // depth 4 — not revoked
+}
+
+#[test]
+fn test_preview_revocation_cascade_no_state_change() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+    let sub_grantee = Address::generate(&env);
+
+    let root_id = client.grant_consent(
+        &pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical,
+    );
+    let sub_id = client.grant_consent_with_parent(
+        &pet_id, &grantee, &ConsentType::Research, &sub_grantee,
+        &ConsentScope::ReadMedical, &Some(root_id),
+    );
+
+    let preview = client.preview_revocation_cascade(&pet_id, &root_id);
+    assert_eq!(preview.len(), 2);
+    assert!(preview.contains(&root_id));
+    assert!(preview.contains(&sub_id));
+
+    // No state change — both consents still active
+    assert!(client.is_consent_active(&root_id));
+    assert!(client.is_consent_active(&sub_id));
+}
+
+#[test]
+fn test_preview_revocation_cascade_root_only() {
+    let (env, client, pet_id, owner) = setup();
+    let grantee = Address::generate(&env);
+
+    let root_id = client.grant_consent(
+        &pet_id, &owner, &ConsentType::Research, &grantee, &ConsentScope::ReadMedical,
+    );
+
+    let preview = client.preview_revocation_cascade(&pet_id, &root_id);
+    assert_eq!(preview.len(), 1);
+    assert!(preview.contains(&root_id));
+}
