@@ -586,7 +586,12 @@ fn test_get_attachment_by_index_last() {
         };
 
         let metadata = create_test_metadata(&env, filename, "type/type", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hash_str), &metadata);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hash_str),
+            &metadata,
+            &BytesN::from_array(&env, &[1u8; 32]),
+        );
     }
 
     // Get last attachment (index 2)
@@ -656,7 +661,12 @@ fn test_get_attachment_by_index_middle() {
     for i in 0..5 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
+            &BytesN::from_array(&env, &[1u8; 32]),
+        );
     }
 
     // Get middle attachment (index 2)
@@ -682,7 +692,12 @@ fn test_get_attachment_by_index_after_removal() {
     for i in 0..3 {
         let metadata =
             create_test_metadata(&env, &std::format!("file{}.jpg", i), "image/jpeg", 1024000);
-        client.add_attachment(&record_id, &String::from_str(&env, hashes[i]), &metadata);
+        client.add_attachment(
+            &record_id,
+            &String::from_str(&env, hashes[i]),
+            &metadata,
+            &BytesN::from_array(&env, &[1u8; 32]),
+        );
     }
 
     // Verify we have 3 attachments

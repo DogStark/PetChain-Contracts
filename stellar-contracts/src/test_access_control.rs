@@ -1760,3 +1760,142 @@ fn test_expired_grant_returns_none() {
     let level = client.check_access(&pet_id, &grantee);
     assert_eq!(level, AccessLevel::None);
 }
+
+mod test_temp_vet_access {
+    use crate::*;
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Env, Vec,
+    };
+
+    fn register_pet(env: &Env, client: &PetChainContractClient, owner: &Address) -> u64 {
+        client.register_pet(
+            owner,
+            &String::from_str(env, "Buddy"),
+            &String::from_str(env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(env, "Labrador"),
+            &String::from_str(env, "Black"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        )
+    }
+
+    #[test]
+    fn test_grant_temp_vet_access_basic() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let pet_id = register_pet(&env, &client, &owner);
+
+        let mut scopes = Vec::new(&env);
+        scopes.push_back(VetScope::ReadMedical);
+
+        let result = client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
+        assert!(result);
+
+        assert!(client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
+        assert!(!client.check_vet_scope(&pet_id, &vet, &VetScope::WriteMedical));
+    }
+
+    #[test]
+    fn test_temp_vet_access_expired() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let pet_id = register_pet(&env, &client, &owner);
+
+        let mut scopes = Vec::new(&env);
+        scopes.push_back(VetScope::ReadMedical);
+
+        client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
+        assert!(client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
+
+        // Advance past expiry
+        env.ledger().with_mut(|l| l.timestamp = 2001);
+        assert!(!client.check_vet_scope(&pet_id, &vet, &VetScope::ReadMedical));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_temp_vet_scope_escalation_rejected() {
+        let env = Env::default();
+        // Do NOT mock all auths — non-owner auth will fail
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let non_owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let pet_id = register_pet(&env, &client, &owner);
+        // Stop mocking — subsequent calls require real auth
+        drop(env.mock_all_auths_allowing_non_root_auth());
+
+        let mut scopes = Vec::new(&env);
+        scopes.push_back(VetScope::ReadMedical);
+
+        // non_owner tries to grant — should panic (auth failure)
+        client.grant_temp_vet_access(&pet_id, &vet, &scopes, &2000u64);
+    }
+
+    #[test]
+    fn test_list_temp_grants_expiry_status() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let vet1 = Address::generate(&env);
+        let vet2 = Address::generate(&env);
+
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let pet_id = register_pet(&env, &client, &owner);
+
+        let mut scopes = Vec::new(&env);
+        scopes.push_back(VetScope::ReadMedical);
+
+        // vet1 expires at 2000, vet2 expires at 5000
+        client.grant_temp_vet_access(&pet_id, &vet1, &scopes, &2000u64);
+        client.grant_temp_vet_access(&pet_id, &vet2, &scopes, &5000u64);
+
+        // Advance past vet1's expiry but not vet2's
+        env.ledger().with_mut(|l| l.timestamp = 3000);
+
+        let grants = client.list_temp_grants(&pet_id);
+        assert_eq!(grants.len(), 2);
+
+        // Find each grant by vet address and check is_expired
+        let mut found_expired = false;
+        let mut found_active = false;
+        for i in 0..grants.len() {
+            let status = grants.get(i).unwrap();
+            if status.grant.vet == vet1 {
+                assert!(status.is_expired);
+                found_expired = true;
+            } else if status.grant.vet == vet2 {
+                assert!(!status.is_expired);
+                found_active = true;
+            }
+        }
+        assert!(found_expired);
+        assert!(found_active);
+    }
+}

@@ -288,13 +288,13 @@ fn test_insurance_policy_fields() {
 
 #[test]
 fn test_premium_estimate_has_no_state_change() {
-fn test_multiple_policies_per_pet() {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
+
     let pet_id = client.register_pet(
         &owner,
         &String::from_str(&env, "Quote"),
@@ -307,6 +307,7 @@ fn test_multiple_policies_per_pet() {
         &None,
         &PrivacyLevel::Public,
     );
+
     let expiry = env.ledger().timestamp() + 31536000;
     client.add_insurance_policy(
         &pet_id,
@@ -314,7 +315,25 @@ fn test_multiple_policies_per_pet() {
         &String::from_str(&env, "PetGuard"),
         &String::from_str(&env, "Basic"),
         &1000,
+        &50000,
+        &expiry,
+    );
 
+    let before = client.get_pet_insurance(&pet_id).unwrap().premium;
+    let estimate = client.get_premium_estimate(&pet_id, &PremiumTier::Premium);
+    let after = client.get_pet_insurance(&pet_id).unwrap().premium;
+
+    assert!(estimate > before);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn test_multiple_policies_per_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
 
     let pet_id = client.register_pet(
@@ -332,58 +351,15 @@ fn test_multiple_policies_per_pet() {
 
     let expiry = env.ledger().timestamp() + 31536000;
 
-    // Add first policy
-    let r1 = client.add_insurance_policy(
-        &pet_id,
-        &String::from_str(&env, "POL-001"),
-        &String::from_str(&env, "Provider A"),
-        &String::from_str(&env, "Basic"),
-        &1000,
-        &50000,
-        &expiry,
-    );
-    assert_eq!(r1, true);
+    assert!(client.add_insurance_policy(&pet_id, &String::from_str(&env, "POL-001"), &String::from_str(&env, "Provider A"), &String::from_str(&env, "Basic"), &1000, &50000, &expiry));
+    assert!(client.add_insurance_policy(&pet_id, &String::from_str(&env, "POL-002"), &String::from_str(&env, "Provider B"), &String::from_str(&env, "Premium"), &2000, &100000, &expiry));
+    assert!(client.add_insurance_policy(&pet_id, &String::from_str(&env, "POL-003"), &String::from_str(&env, "Provider C"), &String::from_str(&env, "Comprehensive"), &3000, &200000, &expiry));
 
-    // Add second policy
-    let r2 = client.add_insurance_policy(
-        &pet_id,
-        &String::from_str(&env, "POL-002"),
-        &String::from_str(&env, "Provider B"),
-        &String::from_str(&env, "Premium"),
-        &2000,
-        &100000,
-        &expiry,
-    );
-    assert_eq!(r2, true);
-
-    // Add third policy
-    let r3 = client.add_insurance_policy(
-        &pet_id,
-        &String::from_str(&env, "POL-003"),
-        &String::from_str(&env, "Provider C"),
-        &String::from_str(&env, "Comprehensive"),
-        &3000,
-        &200000,
-        &expiry,
-    );
-    assert_eq!(r3, true);
-
-    // get_all_pet_policies returns all three
     let policies = client.get_all_pet_policies(&pet_id);
     assert_eq!(policies.len(), 3);
-
-    assert_eq!(
-        policies.get(0).unwrap().policy_id,
-        String::from_str(&env, "POL-001")
-    );
-    assert_eq!(
-        policies.get(1).unwrap().policy_id,
-        String::from_str(&env, "POL-002")
-    );
-    assert_eq!(
-        policies.get(2).unwrap().policy_id,
-        String::from_str(&env, "POL-003")
-    );
+    assert_eq!(policies.get(0).unwrap().policy_id, String::from_str(&env, "POL-001"));
+    assert_eq!(policies.get(1).unwrap().policy_id, String::from_str(&env, "POL-002"));
+    assert_eq!(policies.get(2).unwrap().policy_id, String::from_str(&env, "POL-003"));
 }
 
 #[test]
@@ -431,6 +407,28 @@ fn test_get_pet_insurance_returns_latest_policy() {
 
 #[test]
 fn test_premium_estimate_increases_by_tier() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Nemo"),
+        &String::from_str(&env, "2023-03-15"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &5,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let expiry = env.ledger().timestamp() + 31536000;
+
     client.add_insurance_policy(
         &pet_id,
         &String::from_str(&env, "LATEST-002"),
@@ -441,7 +439,6 @@ fn test_premium_estimate_increases_by_tier() {
         &expiry,
     );
 
-    // get_pet_insurance returns the most recently added policy
     let policy = client.get_pet_insurance(&pet_id).unwrap();
     assert_eq!(policy.policy_id, String::from_str(&env, "LATEST-002"));
     assert_eq!(policy.provider, String::from_str(&env, "New Provider"));
@@ -454,16 +451,6 @@ fn test_get_all_pet_policies_empty() {
 
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let pet_id = client.register_pet(
-        &owner,
-        &String::from_str(&env, "Tier"),
-        &String::from_str(&env, "2021-01-01"),
-        &Gender::Female,
-        &Species::Dog,
-        &String::from_str(&env, "Gold"),
-        &String::from_str(&env, "Retriever"),
-
     let owner = Address::generate(&env);
 
     let pet_id = client.register_pet(
@@ -479,9 +466,6 @@ fn test_get_all_pet_policies_empty() {
         &PrivacyLevel::Public,
     );
 
-    let basic = client.get_premium_estimate(&pet_id, &PremiumTier::Basic);
-    let premium = client.get_premium_estimate(&pet_id, &PremiumTier::Premium);
-    assert!(premium > basic);
     let policies = client.get_all_pet_policies(&pet_id);
     assert_eq!(policies.len(), 0);
 }

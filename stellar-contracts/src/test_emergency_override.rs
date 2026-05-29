@@ -9,6 +9,7 @@ fn valid_contacts(env: &Env) -> Vec<EmergencyContact> {
         email: String::from_str(env, "emergency@test.com"),
         relationship: String::from_str(env, "Owner"),
         is_primary: true,
+        priority: 1,
     });
     contacts
 }
@@ -41,6 +42,7 @@ fn test_owner_can_read_emergency_info() {
         email: String::from_str(&env, "emergency@test.com"),
         relationship: String::from_str(&env, "Friend"),
         is_primary: true,
+        priority: 1,
     });
 
     client.set_emergency_contacts(
@@ -90,6 +92,7 @@ fn test_approved_responder_can_read_emergency_info() {
         email: String::from_str(&env, "dr@vet.com"),
         relationship: String::from_str(&env, "Vet"),
         is_primary: true,
+        priority: 1,
     });
 
     client.set_emergency_contacts(
@@ -400,6 +403,7 @@ fn test_owner_can_retrieve_emergency_access_logs() {
         email: String::from_str(&env, "emergency@test.com"),
         relationship: String::from_str(&env, "Friend"),
         is_primary: true,
+        priority: 1,
     });
 
     client.set_emergency_contacts(
@@ -482,6 +486,7 @@ fn test_responder_cannot_retrieve_emergency_access_logs() {
         email: String::from_str(&env, "dr@vet.com"),
         relationship: String::from_str(&env, "Vet"),
         is_primary: true,
+        priority: 1,
     });
 
     client.set_emergency_contacts(
@@ -544,6 +549,7 @@ fn test_emergency_access_logs_contain_correct_data() {
         email: String::from_str(&env, "emergency@test.com"),
         relationship: String::from_str(&env, "Friend"),
         is_primary: true,
+        priority: 1,
     });
 
     client.set_emergency_contacts(

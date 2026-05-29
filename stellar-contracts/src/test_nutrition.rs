@@ -751,7 +751,20 @@ fn test_nutrition_version_pruning_at_limit() {
 
     // Create 12 versions (exceeds 10 limit)
     for i in 1..=12 {
-        let food_type = format!(&env, "Food Type {}", i);
+        let food_type = match i {
+            1 => String::from_str(&env, "Food Type 1"),
+            2 => String::from_str(&env, "Food Type 2"),
+            3 => String::from_str(&env, "Food Type 3"),
+            4 => String::from_str(&env, "Food Type 4"),
+            5 => String::from_str(&env, "Food Type 5"),
+            6 => String::from_str(&env, "Food Type 6"),
+            7 => String::from_str(&env, "Food Type 7"),
+            8 => String::from_str(&env, "Food Type 8"),
+            9 => String::from_str(&env, "Food Type 9"),
+            10 => String::from_str(&env, "Food Type 10"),
+            11 => String::from_str(&env, "Food Type 11"),
+            _ => String::from_str(&env, "Food Type 12"),
+        };
         client.set_nutrition_version(
             &pet_id,
             &food_type,
@@ -859,6 +872,7 @@ fn test_nutrition_version_nonexistent_pet_returns_none() {
 }
 
 #[test]
+#[should_panic]
 fn test_rollback_to_nonexistent_version_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -894,10 +908,7 @@ fn test_rollback_to_nonexistent_version_fails() {
     );
 
     // Try to rollback to non-existent version 5
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.rollback_nutrition(&pet_id, &5u64);
-    }));
-    assert!(result.is_err());
+    client.rollback_nutrition(&pet_id, &5u64);
 }
 
 #[test]
@@ -981,7 +992,11 @@ fn test_multiple_rollbacks_create_new_versions() {
 
     // Create versions 1, 2, 3
     for i in 1..=3 {
-        let food = format!(&env, "Food {}", i);
+        let food = match i {
+            1 => String::from_str(&env, "Food 1"),
+            2 => String::from_str(&env, "Food 2"),
+            _ => String::from_str(&env, "Food 3"),
+        };
         client.set_nutrition_version(
             &pet_id,
             &food,
