@@ -37,6 +37,8 @@ fn test_set_and_get_diet_plan() {
         &String::from_str(&env, "Dry Kibble"),
         &String::from_str(&env, "200g"),
         &String::from_str(&env, "Twice daily"),
+        &350u32,
+        &1200u32,
         &restrictions,
         &allergies,
     );
@@ -48,6 +50,8 @@ fn test_set_and_get_diet_plan() {
     let plan = history.get(0).unwrap();
     assert_eq!(plan.pet_id, pet_id);
     assert_eq!(plan.food_type, String::from_str(&env, "Dry Kibble"));
+    assert_eq!(plan.calories_per_serving, 350u32);
+    assert_eq!(plan.daily_target_calories, 1200u32);
 }
 
 #[test]
@@ -346,6 +350,8 @@ fn test_get_diet_plan_count() {
         &String::from_str(&env, "Dry Kibble"),
         &String::from_str(&env, "200g"),
         &String::from_str(&env, "Twice daily"),
+        &300u32,
+        &1200u32,
         &restrictions,
         &allergies,
     );
@@ -357,6 +363,8 @@ fn test_get_diet_plan_count() {
         &String::from_str(&env, "Wet Food"),
         &String::from_str(&env, "150g"),
         &String::from_str(&env, "Three times daily"),
+        &200u32,
+        &1000u32,
         &restrictions,
         &allergies,
     );
@@ -364,6 +372,60 @@ fn test_get_diet_plan_count() {
 
     // Count for a non-existent pet returns 0
     assert_eq!(client.get_diet_plan_count(&9999u64), 0);
+}
+
+#[test]
+fn test_log_feeding_updates_daily_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let restrictions = Vec::new(&env);
+    let allergies = Vec::new(&env);
+
+    client.set_diet_plan(
+        &pet_id,
+        &String::from_str(&env, "Dry Kibble"),
+        &String::from_str(&env, "200g"),
+        &String::from_str(&env, "Twice daily"),
+        &300u32,
+        &1000u32,
+        &restrictions,
+        &allergies,
+    );
+
+    let current_day = env.ledger().timestamp() / 86_400;
+
+    let before = client.get_daily_summary(&pet_id, &current_day).unwrap();
+    assert_eq!(before.total_calories, 0u32);
+    assert_eq!(before.target_calories, 1000u32);
+
+    assert!(client.log_feeding(&pet_id, &1u64, &1u32));
+
+    let after = client.get_daily_summary(&pet_id, &current_day).unwrap();
+    assert_eq!(after.total_calories, 300u32);
+    assert_eq!(after.target_calories, 1000u32);
+
+    assert!(client.log_feeding(&pet_id, &1u64, &2u32));
+    let later = client.get_daily_summary(&pet_id, &current_day).unwrap();
+    assert_eq!(later.total_calories, 900u32);
+    assert_eq!(later.target_calories, 1000u32);
 }
 
 #[test]
@@ -512,6 +574,8 @@ fn test_set_nutrition_version_creates_version() {
         &String::from_str(&env, "Dry Kibble"),
         &String::from_str(&env, "200g"),
         &String::from_str(&env, "Twice daily"),
+        &300u32,
+        &1200u32,
         &restrictions,
         &allergies,
     );
@@ -559,6 +623,8 @@ fn test_nutrition_version_history_preserved() {
         &String::from_str(&env, "Dry Kibble"),
         &String::from_str(&env, "200g"),
         &String::from_str(&env, "Twice daily"),
+        &300u32,
+        &1200u32,
         &restrictions1,
         &allergies1,
     );
@@ -576,6 +642,8 @@ fn test_nutrition_version_history_preserved() {
         &String::from_str(&env, "Wet Food"),
         &String::from_str(&env, "150g"),
         &String::from_str(&env, "Three times daily"),
+        &250u32,
+        &1200u32,
         &restrictions2,
         &allergies2,
     );
@@ -629,6 +697,8 @@ fn test_list_nutrition_versions_returns_all_versions() {
             &food_type,
             &String::from_str(&env, "200g"),
             &String::from_str(&env, "Twice daily"),
+            &300u32,
+            &1200u32,
             &empty_restrictions,
             &empty_allergies,
         );
@@ -679,6 +749,8 @@ fn test_rollback_nutrition_restores_correct_state() {
         &String::from_str(&env, "Dry Kibble"),
         &String::from_str(&env, "200g"),
         &String::from_str(&env, "Twice daily"),
+        &300u32,
+        &1200u32,
         &empty_restrictions,
         &empty_allergies,
     );
@@ -689,6 +761,8 @@ fn test_rollback_nutrition_restores_correct_state() {
         &String::from_str(&env, "Wet Food"),
         &String::from_str(&env, "150g"),
         &String::from_str(&env, "Three times daily"),
+        &250u32,
+        &1200u32,
         &empty_restrictions,
         &empty_allergies,
     );
@@ -699,6 +773,8 @@ fn test_rollback_nutrition_restores_correct_state() {
         &String::from_str(&env, "Mixed Diet"),
         &String::from_str(&env, "175g"),
         &String::from_str(&env, "Twice daily"),
+        &280u32,
+        &1200u32,
         &empty_restrictions,
         &empty_allergies,
     );
@@ -751,12 +827,27 @@ fn test_nutrition_version_pruning_at_limit() {
 
     // Create 12 versions (exceeds 10 limit)
     for i in 1..=12 {
-        let food_type = format!(&env, "Food Type {}", i);
+        let food_type = match i {
+            1 => String::from_str(&env, "Food Type 1"),
+            2 => String::from_str(&env, "Food Type 2"),
+            3 => String::from_str(&env, "Food Type 3"),
+            4 => String::from_str(&env, "Food Type 4"),
+            5 => String::from_str(&env, "Food Type 5"),
+            6 => String::from_str(&env, "Food Type 6"),
+            7 => String::from_str(&env, "Food Type 7"),
+            8 => String::from_str(&env, "Food Type 8"),
+            9 => String::from_str(&env, "Food Type 9"),
+            10 => String::from_str(&env, "Food Type 10"),
+            11 => String::from_str(&env, "Food Type 11"),
+            _ => String::from_str(&env, "Food Type 12"),
+        };
         client.set_nutrition_version(
             &pet_id,
             &food_type,
             &String::from_str(&env, "200g"),
             &String::from_str(&env, "Twice daily"),
+            &300u32,
+            &1200u32,
             &empty_restrictions,
             &empty_allergies,
         );
@@ -778,7 +869,7 @@ fn test_nutrition_version_pruning_at_limit() {
     let versions = client.list_nutrition_versions(&pet_id);
     assert_eq!(versions.len(), 10);
     assert_eq!(versions.get(0).unwrap().version, 12u64); // Newest first
-    assert_eq!(versions.get(9).unwrap().version, 3u64);  // Oldest in list (v1 and v2 pruned)
+    assert_eq!(versions.get(9).unwrap().version, 3u64); // Oldest in list (v1 and v2 pruned)
 }
 
 #[test]
@@ -816,6 +907,8 @@ fn test_get_current_nutrition_version_returns_active() {
         &String::from_str(&env, "Premium Kibble"),
         &String::from_str(&env, "300g"),
         &String::from_str(&env, "Twice daily"),
+        &320u32,
+        &1400u32,
         &empty_restrictions,
         &empty_allergies,
     );
@@ -830,6 +923,8 @@ fn test_get_current_nutrition_version_returns_active() {
         &String::from_str(&env, "Organic Food"),
         &String::from_str(&env, "280g"),
         &String::from_str(&env, "Twice daily"),
+        &310u32,
+        &1400u32,
         &empty_restrictions,
         &empty_allergies,
     );
@@ -859,6 +954,7 @@ fn test_nutrition_version_nonexistent_pet_returns_none() {
 }
 
 #[test]
+#[should_panic]
 fn test_rollback_to_nonexistent_version_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -889,15 +985,14 @@ fn test_rollback_to_nonexistent_version_fails() {
         &String::from_str(&env, "Cat Food"),
         &String::from_str(&env, "100g"),
         &String::from_str(&env, "Twice daily"),
+        &200u32,
+        &900u32,
         &empty_restrictions,
         &empty_allergies,
     );
 
     // Try to rollback to non-existent version 5
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.rollback_nutrition(&pet_id, &5u64);
-    }));
-    assert!(result.is_err());
+    client.rollback_nutrition(&pet_id, &5u64);
 }
 
 #[test]
@@ -937,6 +1032,8 @@ fn test_nutrition_version_with_restrictions_and_allergies() {
         &String::from_str(&env, "Hypoallergenic Food"),
         &String::from_str(&env, "250g"),
         &String::from_str(&env, "Twice daily"),
+        &280u32,
+        &1300u32,
         &restrictions,
         &allergies,
     );
@@ -981,12 +1078,18 @@ fn test_multiple_rollbacks_create_new_versions() {
 
     // Create versions 1, 2, 3
     for i in 1..=3 {
-        let food = format!(&env, "Food {}", i);
+        let food = match i {
+            1 => String::from_str(&env, "Food 1"),
+            2 => String::from_str(&env, "Food 2"),
+            _ => String::from_str(&env, "Food 3"),
+        };
         client.set_nutrition_version(
             &pet_id,
             &food,
             &String::from_str(&env, "100g"),
             &String::from_str(&env, "Twice daily"),
+            &200u32,
+            &900u32,
             &empty_restrictions,
             &empty_allergies,
         );

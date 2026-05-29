@@ -5,6 +5,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 fn test_keyword_index_is_per_pet() {
     let env = Env::default();
     env.mock_all_auths();
+
     let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
@@ -68,19 +69,18 @@ fn test_keyword_index_is_per_pet() {
         pet_one_results.get(0).unwrap().diagnosis,
         String::from_str(&env, "Pet one")
     );
+    assert_eq!(
+        pet_one_results.get(0).unwrap().notes,
+        String::from_str(&env, "shared keyword")
+    );
+}
+
 #[cfg(test)]
 mod test_medical_records_pagination {
     use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-    fn setup() -> (
-        Env,
-        PetChainContractClient<'static>,
-        Address,
-        Address,
-        Address,
-        u64,
-    ) {
+    fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, Address, u64) {
         let env = Env::default();
         let admin = Address::generate(&env);
         env.mock_all_auths();
