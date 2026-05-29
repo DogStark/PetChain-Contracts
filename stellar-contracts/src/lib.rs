@@ -952,6 +952,8 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+    // Scanner registry
+    ScannerRegistry,
 }
 
 #[contracttype]
@@ -1270,11 +1272,28 @@ pub struct AttachmentMetadata {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanStatus {
+    Clean,
+    Suspicious,
+    Malicious,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanResult {
+    pub scanner_id: Address,
+    pub scanned_at: u64,
+    pub status: ScanStatus,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attachment {
     pub ipfs_hash: String,
     pub metadata: AttachmentMetadata,
     pub content_hash: BytesN<32>,
+    pub scan_result: Option<ScanResult>,
 }
 
 #[contracttype]
@@ -6454,6 +6473,7 @@ impl PetChainContract {
                 ipfs_hash,
                 metadata,
                 content_hash,
+                scan_result: None,
             };
 
             // Add to record
@@ -6500,48 +6520,55 @@ impl PetChainContract {
         false
     }
 
-    /// Get all attachments for a medical record
-    pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
+    /// Get all attachments for a medical record.
+    /// Attachments with Malicious scan status are hidden from non-admin callers.
+    pub fn get_attachments(env: Env, record_id: u64, caller: Address) -> Vec<Attachment> {
         if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
-            // Log access
-            PetChainContract::log_access(
-                &env,
-                record.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record attachments accessed"),
-            );
-
-            record.attachment_hashes
+            let admin = PetChainContract::is_admin(&env, &caller);
+            let mut result = Vec::new(&env);
+            for attachment in record.attachment_hashes.iter() {
+                let is_malicious = matches!(
+                    &attachment.scan_result,
+                    Some(sr) if sr.status == ScanStatus::Malicious
+                );
+                if !is_malicious || admin {
+                    result.push_back(attachment);
+                }
+            }
+            result
         } else {
             Vec::new(&env)
         }
     }
 
-    /// Get a single attachment by index
-    /// Returns None if the record is not found or index is out of bounds
-    pub fn get_attachment_by_index(env: Env, record_id: u64, index: u32) -> Option<Attachment> {
+    /// Get a single attachment by index.
+    /// Returns None if the record is not found, index is out of bounds,
+    /// or the attachment is Malicious and the caller is not an admin.
+    pub fn get_attachment_by_index(
+        env: Env,
+        record_id: u64,
+        index: u32,
+        caller: Address,
+    ) -> Option<Attachment> {
         if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
-            // Log access
-            PetChainContract::log_access(
-                &env,
-                record.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record attachment accessed by index"),
-            );
-
-            // Bounds check and return attachment if valid
             if index < record.attachment_hashes.len() {
-                record.attachment_hashes.get(index)
+                let attachment = record.attachment_hashes.get(index)?;
+                let is_malicious = matches!(
+                    &attachment.scan_result,
+                    Some(sr) if sr.status == ScanStatus::Malicious
+                );
+                if is_malicious && !PetChainContract::is_admin(&env, &caller) {
+                    return None;
+                }
+                Some(attachment)
             } else {
                 None
             }
@@ -6601,6 +6628,94 @@ impl PetChainContract {
         } else {
             0
         }
+    }
+
+    /// Register a scanner address (multisig-admin only).
+    pub fn register_scanner(env: Env, admin: Address, scanner: Address) {
+        admin.require_auth();
+        PetChainContract::require_admin_auth(&env, &admin);
+        let mut registry: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::ScannerRegistry)
+            .unwrap_or(Vec::new(&env));
+        if !registry.contains(&scanner) {
+            registry.push_back(scanner);
+            env.storage()
+                .instance()
+                .set(&MedicalKey::ScannerRegistry, &registry);
+        }
+    }
+
+    /// Record a scan result on an attachment.
+    /// Only registered scanners may call this.
+    /// Panics if the scanner is not registered or the record/attachment is not found.
+    pub fn set_scan_result(
+        env: Env,
+        scanner: Address,
+        record_id: u64,
+        attachment_index: u32,
+        status: ScanStatus,
+    ) -> bool {
+        scanner.require_auth();
+
+        // Verify scanner is registered
+        let registry: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::ScannerRegistry)
+            .unwrap_or(Vec::new(&env));
+        if !registry.contains(&scanner) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        if let Some(mut record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            if attachment_index >= record.attachment_hashes.len() {
+                panic_with_error!(&env, ContractError::InvalidAttachmentIndex);
+            }
+            let scan = ScanResult {
+                scanner_id: scanner,
+                scanned_at: env.ledger().timestamp(),
+                status,
+            };
+            // Rebuild the vec with the updated attachment at the given index
+            let mut updated: Vec<Attachment> = Vec::new(&env);
+            for i in 0..record.attachment_hashes.len() {
+                let mut att = record.attachment_hashes.get(i).unwrap();
+                if i == attachment_index {
+                    att.scan_result = Some(scan.clone());
+                }
+                updated.push_back(att);
+            }
+            record.attachment_hashes = updated;
+            env.storage()
+                .instance()
+                .set(&MedicalKey::MedicalRecord(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the caller is an admin, used to gate Malicious attachment access.
+    fn is_admin(env: &Env, caller: &Address) -> bool {
+        // Single-admin path
+        if let Some(admin) = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+            if admin == *caller {
+                return true;
+            }
+        }
+        // Multisig path
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or(Vec::new(env));
+        admins.contains(caller)
     }
 
     pub fn get_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<AccessLog> {
