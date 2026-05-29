@@ -6,7 +6,10 @@ mod tests {
         EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
         TwoFactorHandlers, VerifyTwoFactorRequest,
     };
-    use crate::two_factor::{TotpConfig, TwoFactorAuth, TwoFactorData};
+    use crate::two_factor::{
+        MockStoreConfig, MockStoreFailure, MockTwoFactorStore, TotpConfig, TwoFactorAuth,
+        TwoFactorData,
+    };
     use totp_rs::{Algorithm, Secret, TOTP};
 
     fn caller(id: &str) -> AuthenticatedUser {
@@ -16,7 +19,7 @@ mod tests {
     fn generate_token(secret: &str) -> String {
         use totp_rs::{Algorithm, Secret, TOTP};
         TOTP::new(
-            Algorithm::SHA256,
+            Algorithm::SHA1,
             6,
             1,
             30,
@@ -43,7 +46,7 @@ mod tests {
     #[test]
     fn test_totp_config_default() {
         let config = TotpConfig::default();
-        assert_eq!(config.algorithm, Algorithm::SHA256);
+        assert_eq!(config.algorithm, Algorithm::SHA1);
         assert_eq!(config.digits, 6);
         assert_eq!(config.period, 30);
         assert_eq!(config.window, 1);
@@ -75,7 +78,27 @@ mod tests {
         assert!(!setup.secret.is_empty());
         assert!(!setup.qr_code_base64.is_empty());
         assert_eq!(setup.backup_codes.len(), 8);
-        assert_eq!(setup.config.algorithm, Algorithm::SHA256);
+        assert_eq!(setup.config.algorithm, Algorithm::SHA1);
+        assert!(setup
+            .otpauth_uri
+            .starts_with("otpauth://totp/PetChain:test%40petchain.com?"));
+        assert!(setup.otpauth_uri.contains("secret="));
+        assert!(setup.otpauth_uri.contains("&issuer=PetChain"));
+        assert!(setup.otpauth_uri.contains("&algorithm=SHA1"));
+        assert!(setup.otpauth_uri.contains("&digits=6"));
+        assert!(setup.otpauth_uri.contains("&period=30"));
+    }
+
+    #[test]
+    fn test_otpauth_uri_url_encodes_issuer_and_account() {
+        let setup = TwoFactorAuth::setup("first.last+pet@example.com", "Pet Chain: Ops").unwrap();
+        assert!(setup
+            .otpauth_uri
+            .starts_with("otpauth://totp/Pet%20Chain%3A%20Ops:first.last%2Bpet%40example.com?"));
+        assert!(setup.otpauth_uri.contains("&issuer=Pet%20Chain%3A%20Ops"));
+        assert!(setup
+            .otpauth_uri
+            .contains("&algorithm=SHA1&digits=6&period=30"));
     }
 
     #[test]
@@ -226,7 +249,12 @@ mod tests {
     fn test_algorithm_mismatch() {
         let secret = TwoFactorAuth::generate_secret();
         let sha1_config = TotpConfig::legacy_sha1();
-        let sha256_config = TotpConfig::default();
+        let sha256_config = TotpConfig {
+            algorithm: Algorithm::SHA256,
+            digits: 6,
+            period: 30,
+            window: 1,
+        };
 
         // Generate token with SHA1
         let totp_sha1 = TOTP::new(
@@ -553,6 +581,106 @@ mod tests {
             !result,
             "placeholder token must not validate against the stored secret"
         );
+    }
+
+    #[test]
+    fn test_handlers_use_configurable_mock_store_for_enroll_verify_disable_recover() {
+        let store = std::sync::Arc::new(MockTwoFactorStore::new());
+        let handlers = TwoFactorHandlers::with_store_and_issuer(store.clone(), "Pet Chain: Ops");
+        let user_id = "mock-user";
+
+        let enrollment = handlers
+            .enroll(
+                &caller(user_id),
+                EnableTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    email: "mock+user@example.com".to_string(),
+                },
+            )
+            .unwrap();
+
+        assert!(enrollment
+            .otpauth_uri
+            .starts_with("otpauth://totp/Pet%20Chain%3A%20Ops:mock%2Buser%40example.com?"));
+        assert!(enrollment
+            .otpauth_uri
+            .contains("&issuer=Pet%20Chain%3A%20Ops"));
+
+        let activated = handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enrollment.secret),
+                },
+            )
+            .unwrap();
+        assert!(activated);
+        assert!(store.get_data(user_id).unwrap().enabled);
+
+        let disabled = handlers
+            .disable_two_factor(
+                &caller(user_id),
+                DisableTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enrollment.secret),
+                },
+            )
+            .unwrap();
+        assert!(disabled);
+
+        let mut data = store.get_data(user_id).unwrap();
+        data.enabled = true;
+        let backup_code = data.backup_codes[0].clone();
+        store.seed(user_id, data);
+
+        let recovered = handlers
+            .recover(
+                &caller(user_id),
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code,
+                },
+                Some("127.0.0.1"),
+            )
+            .unwrap();
+        assert!(recovered.enabled);
+        assert!(recovered.new_otpauth_uri.starts_with("otpauth://totp/"));
+    }
+
+    #[test]
+    fn test_mock_store_error_and_timeout_injection() {
+        let failing_save = std::sync::Arc::new(MockTwoFactorStore::with_config(MockStoreConfig {
+            save: Some(MockStoreFailure::Error("save failed".to_string())),
+            ..Default::default()
+        }));
+        let handlers = TwoFactorHandlers::with_store(failing_save);
+        let err = handlers
+            .enroll(
+                &caller("mock-fail"),
+                EnableTwoFactorRequest {
+                    user_id: "mock-fail".to_string(),
+                    email: "mock-fail@example.com".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, "save failed");
+
+        let timeout_get = std::sync::Arc::new(MockTwoFactorStore::with_config(MockStoreConfig {
+            get: Some(MockStoreFailure::Timeout),
+            ..Default::default()
+        }));
+        let handlers = TwoFactorHandlers::with_store(timeout_get);
+        let err = handlers
+            .verify_and_activate(
+                &caller("mock-timeout"),
+                VerifyTwoFactorRequest {
+                    user_id: "mock-timeout".to_string(),
+                    token: "123456".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -1139,7 +1267,7 @@ mod integration_tests {
 
     fn generate_token(secret: &str) -> String {
         TOTP::new(
-            Algorithm::SHA256,
+            Algorithm::SHA1,
             6,
             1,
             30,
@@ -1578,7 +1706,10 @@ mod integration_tests {
                 flags: "01".to_string(),
             };
             let header = tc.to_header();
-            assert_eq!(header, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+            assert_eq!(
+                header,
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            );
         }
 
         #[test]
@@ -2043,7 +2174,9 @@ mod redis_rate_limiter_tests {
         }
         assert!(matches!(
             mock_record_failure(&state, "user:b", now_ms + 3, 3, 60, 300),
-            RateLimitResult::Blocked { retry_after_secs: 300 }
+            RateLimitResult::Blocked {
+                retry_after_secs: 300
+            }
         ));
     }
 
@@ -2405,11 +2538,7 @@ mod redis_rate_limiter_tests {
         #[test]
         fn admin_log_rejected_submission() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Exceeds delta".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
 
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged.len(), 1);
@@ -2421,16 +2550,8 @@ mod redis_rate_limiter_tests {
         #[test]
         fn admin_get_flagged_by_user() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Exceeds delta".into(),
-            );
-            admin.log_rejected_submission(
-                "user2".into(),
-                3000,
-                "Suspicious".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+            admin.log_rejected_submission("user2".into(), 3000, "Suspicious".into());
 
             let user1_flagged = admin.get_flagged_by_user("user1");
             let user2_flagged = admin.get_flagged_by_user("user2");
@@ -2444,16 +2565,8 @@ mod redis_rate_limiter_tests {
         #[test]
         fn admin_get_flagged_by_user_multiple_submissions() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Exceeds delta".into(),
-            );
-            admin.log_rejected_submission(
-                "user1".into(),
-                6000,
-                "Another violation".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+            admin.log_rejected_submission("user1".into(), 6000, "Another violation".into());
 
             let user1_flagged = admin.get_flagged_by_user("user1");
             assert_eq!(user1_flagged.len(), 2);
@@ -2464,11 +2577,7 @@ mod redis_rate_limiter_tests {
         #[test]
         fn admin_get_flagged_by_nonexistent_user() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Exceeds delta".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
 
             let user2_flagged = admin.get_flagged_by_user("user2");
             assert!(user2_flagged.is_empty());
@@ -2497,10 +2606,7 @@ mod redis_rate_limiter_tests {
 
             for i in 0..5 {
                 assert_eq!(all_flagged[i].user_id, format!("user{}", i));
-                assert_eq!(
-                    all_flagged[i].attempted_score,
-                    1000 + (i as u64 * 100)
-                );
+                assert_eq!(all_flagged[i].attempted_score, 1000 + (i as u64 * 100));
             }
         }
 
@@ -2508,16 +2614,8 @@ mod redis_rate_limiter_tests {
         #[cfg(test)]
         fn admin_clear_flagged() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Exceeds delta".into(),
-            );
-            admin.log_rejected_submission(
-                "user2".into(),
-                3000,
-                "Suspicious".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+            admin.log_rejected_submission("user2".into(), 3000, "Suspicious".into());
 
             assert_eq!(admin.get_all_flagged().len(), 2);
 
@@ -2528,11 +2626,7 @@ mod redis_rate_limiter_tests {
         #[test]
         fn admin_timestamp_is_set() {
             let admin = AdminScoreHandlers::new();
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                "Test".into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, "Test".into());
 
             let flagged = admin.get_all_flagged();
             assert!(flagged[0].timestamp > 0);
@@ -2542,11 +2636,7 @@ mod redis_rate_limiter_tests {
         fn admin_reason_is_preserved() {
             let admin = AdminScoreHandlers::new();
             let reason = "Custom reason for suspension";
-            admin.log_rejected_submission(
-                "user1".into(),
-                5000,
-                reason.into(),
-            );
+            admin.log_rejected_submission("user1".into(), 5000, reason.into());
 
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].reason, reason);
@@ -2556,11 +2646,7 @@ mod redis_rate_limiter_tests {
         fn admin_large_score_values() {
             let admin = AdminScoreHandlers::new();
             let max_score = u64::MAX;
-            admin.log_rejected_submission(
-                "user1".into(),
-                max_score,
-                "Max score".into(),
-            );
+            admin.log_rejected_submission("user1".into(), max_score, "Max score".into());
 
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].attempted_score, max_score);
@@ -2579,7 +2665,11 @@ mod mock_redis_tests {
     };
     use std::sync::Arc;
 
-    fn limiter(max: u32, window_secs: u64, lockout_secs: u64) -> SlidingWindowRateLimiter<MockRedisBackend> {
+    fn limiter(
+        max: u32,
+        window_secs: u64,
+        lockout_secs: u64,
+    ) -> SlidingWindowRateLimiter<MockRedisBackend> {
         SlidingWindowRateLimiter::new(
             MockRedisBackend::new(),
             EndpointConfig::new(window_secs, max, lockout_secs),
@@ -2592,17 +2682,24 @@ mod mock_redis_tests {
     fn allows_requests_below_limit() {
         let l = limiter(3, 60, 300);
         for i in 1u32..3 {
-            assert_eq!(l.record_failure("u:a"), RateLimitResult::Allowed { remaining: 3 - i });
+            assert_eq!(
+                l.record_failure("u:a"),
+                RateLimitResult::Allowed { remaining: 3 - i }
+            );
         }
     }
 
     #[test]
     fn blocks_at_limit_with_accurate_retry_after() {
         let l = limiter(3, 60, 120);
-        for _ in 0..3 { l.record_failure("u:b"); }
+        for _ in 0..3 {
+            l.record_failure("u:b");
+        }
         assert_eq!(
             l.record_failure("u:b"),
-            RateLimitResult::Blocked { retry_after_secs: 120 },
+            RateLimitResult::Blocked {
+                retry_after_secs: 120
+            },
         );
     }
 
@@ -2614,7 +2711,10 @@ mod mock_redis_tests {
         l.record_failure("u:c");
         l.record_failure("u:c");
         l.record_success("u:c");
-        assert_eq!(l.record_failure("u:c"), RateLimitResult::Allowed { remaining: 2 });
+        assert_eq!(
+            l.record_failure("u:c"),
+            RateLimitResult::Allowed { remaining: 2 }
+        );
     }
 
     #[test]
@@ -2626,7 +2726,10 @@ mod mock_redis_tests {
         // Advance clock past the 60-second window — entries are evicted on next call
         l.backend_advance_ms(61_000);
         // Window has expired; the two old entries are outside the cutoff, so Allowed with remaining=2
-        assert_eq!(l.record_failure("u:d"), RateLimitResult::Allowed { remaining: 2 });
+        assert_eq!(
+            l.record_failure("u:d"),
+            RateLimitResult::Allowed { remaining: 2 }
+        );
     }
 
     // --- concurrent / independent keys ---
@@ -2636,7 +2739,10 @@ mod mock_redis_tests {
         let l = limiter(2, 60, 300);
         l.record_failure("u:e");
         l.record_failure("u:e");
-        assert!(matches!(l.record_failure("u:f"), RateLimitResult::Allowed { .. }));
+        assert!(matches!(
+            l.record_failure("u:f"),
+            RateLimitResult::Allowed { .. }
+        ));
     }
 
     #[test]
@@ -2649,7 +2755,9 @@ mod mock_redis_tests {
                 thread::spawn(move || l.record_failure(&format!("u:thread:{i}")))
             })
             .collect();
-        for h in handles { h.join().expect("thread panicked"); }
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
     }
 
     // --- per-endpoint config ---
@@ -2685,10 +2793,15 @@ mod mock_redis_tests {
     fn sliding_window_prevents_boundary_burst() {
         let l = limiter(3, 60, 300);
         // 3 failures just before the 60-second boundary
-        for _ in 0..3 { l.record_failure("u:g"); }
+        for _ in 0..3 {
+            l.record_failure("u:g");
+        }
         // Advance to exactly the boundary — entries are still within the window
         l.backend_advance_ms(59_999);
-        assert!(matches!(l.record_failure("u:g"), RateLimitResult::Blocked { .. }));
+        assert!(matches!(
+            l.record_failure("u:g"),
+            RateLimitResult::Blocked { .. }
+        ));
     }
 }
 
@@ -2711,7 +2824,7 @@ mod admin_dashboard_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
         AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
     };
-    use crate::two_factor::TwoFactorData;
+    use crate::two_factor::{TwoFactorData, TwoFactorStore};
 
     fn admin() -> AuthenticatedAdmin {
         AuthenticatedAdmin::new("admin-001")
@@ -2814,6 +2927,7 @@ mod canary_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
         CanaryHandlers, CreateCanaryRequest,
     };
+    use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -2827,16 +2941,18 @@ mod canary_tests {
     impl RecordingHttpClient {
         fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            (Self { calls: calls.clone() }, calls)
+            (
+                Self {
+                    calls: calls.clone(),
+                },
+                calls,
+            )
         }
     }
 
     impl HttpClient for RecordingHttpClient {
         fn post(&self, url: &str, body: &str) -> Result<(), String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("{}:{}", url, body));
+            self.calls.lock().unwrap().push(format!("{}:{}", url, body));
             Ok(())
         }
     }
@@ -2899,9 +3015,16 @@ mod canary_tests {
 
         let store = get_two_factor_store_for_tests();
         let log = store.get_audit_log("canary-002", 1, 10).unwrap();
-        let triggered: Vec<_> = log.iter().filter(|e| e.event == "CanaryTriggered").collect();
+        let triggered: Vec<_> = log
+            .iter()
+            .filter(|e| e.event == "CanaryTriggered")
+            .collect();
         assert!(!triggered.is_empty());
-        assert!(triggered[0].metadata.as_deref().unwrap_or("").contains("10.0.0.1"));
+        assert!(triggered[0]
+            .metadata
+            .as_deref()
+            .unwrap_or("")
+            .contains("10.0.0.1"));
     }
 
     #[test]

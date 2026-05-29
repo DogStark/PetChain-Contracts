@@ -1,3 +1,104 @@
+#[cfg(test)]
+mod test_activity {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup() -> (Env, Address, Address, u64) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+
+        let owner = Address::generate(&env);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        (env, contract_id, owner, pet_id)
+    }
+
+    #[test]
+    fn test_bbox_query_returns_subset() {
+        let (env, contract_id, _owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let first = client.add_activity_record(
+            &pet_id,
+            &String::from_str(&env, "Walk"),
+            &String::from_str(&env, "Morning walk"),
+            &37_774_900,
+            &-122_419_400,
+        );
+        let _second = client.add_activity_record(
+            &pet_id,
+            &String::from_str(&env, "Park"),
+            &String::from_str(&env, "Park time"),
+            &37_780_000,
+            &-122_420_000,
+        );
+        let _third = client.add_activity_record(
+            &pet_id,
+            &String::from_str(&env, "Vet"),
+            &String::from_str(&env, "Clinic visit"),
+            &40_000_000,
+            &-100_000_000,
+        );
+
+        let results = client.get_activities_in_bbox(
+            &pet_id,
+            &37_770_000,
+            &37_780_500,
+            &-122_421_000,
+            &-122_418_000,
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.get(0).unwrap().id, first);
+        assert_eq!(
+            results.get(1).unwrap().activity_type,
+            String::from_str(&env, "Park")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Latitude out of range")]
+    fn test_out_of_range_coordinates_rejected() {
+        let (env, contract_id, _owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.add_activity_record(
+            &pet_id,
+            &String::from_str(&env, "Walk"),
+            &String::from_str(&env, "Bad latitude"),
+            &91_000_000,
+            &10_000_000,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Coordinates cannot be zero")]
+    fn test_zero_coordinate_rejected() {
+        let (env, contract_id, _owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.add_activity_record(
+            &pet_id,
+            &String::from_str(&env, "Walk"),
+            &String::from_str(&env, "Unset coordinates"),
+            &0,
+            &10_000_000,
+        );
+    }
+}
+
 use crate::{
     ActivityType, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
 };
