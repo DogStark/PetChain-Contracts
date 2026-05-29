@@ -101,6 +101,7 @@ mod test_activity {
 
 use crate::{
     ActivityType, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
+    TreatmentType,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
@@ -141,6 +142,64 @@ fn test_add_activity_record() {
     );
 
     assert_eq!(activity_id, 1);
+}
+
+#[test]
+fn test_get_treatment_count_returns_total_for_pet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &30,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr Avery"),
+        &String::from_str(&env, "VET-COUNT-1"),
+        &String::from_str(&env, "General Practice"),
+    );
+    assert!(client.verify_vet(&admin, &vet));
+
+    assert_eq!(client.get_treatment_count(&pet_id), 0);
+
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Routine,
+        &env.ledger().timestamp(),
+        &String::from_str(&env, "Annual wellness exam"),
+        &None,
+        &String::from_str(&env, "Healthy"),
+    );
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Therapy,
+        &env.ledger().timestamp(),
+        &String::from_str(&env, "Physical therapy"),
+        &Some(100),
+        &String::from_str(&env, "Improving"),
+    );
+
+    assert_eq!(client.get_treatment_count(&pet_id), 2);
 }
 
 #[test]
