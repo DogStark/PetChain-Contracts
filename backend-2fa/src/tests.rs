@@ -2997,3 +2997,101 @@ mod webhook_handler_tests {
         assert_eq!(log[0].event_type, "failed_two_fa");
     }
 }
+
+// ============================================================================
+// DistributedRateLimiter tests
+// ============================================================================
+
+#[cfg(test)]
+mod distributed_rate_limiter_tests {
+    use crate::rate_limiter::{DistributedRateLimiter, RateLimitResult, RateLimiter};
+
+    /// No Redis URL → always uses in-memory fallback.
+    #[test]
+    fn fallback_allows_below_limit() {
+        let limiter = DistributedRateLimiter::new(None, 3, 60, "test:");
+        for i in 1..=3u32 {
+            match limiter.record_failure("user:fallback") {
+                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 3 - i),
+                RateLimitResult::Blocked { .. } => panic!("should not block below limit"),
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_blocks_at_limit() {
+        let limiter = DistributedRateLimiter::new(None, 2, 60, "test:");
+        limiter.record_failure("user:block");
+        limiter.record_failure("user:block");
+        assert!(matches!(
+            limiter.record_failure("user:block"),
+            RateLimitResult::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn fallback_success_resets_counter() {
+        let limiter = DistributedRateLimiter::new(None, 2, 60, "test:");
+        limiter.record_failure("user:reset");
+        limiter.record_success("user:reset");
+        // After reset, should be allowed again
+        assert!(matches!(
+            limiter.record_failure("user:reset"),
+            RateLimitResult::Allowed { .. }
+        ));
+    }
+
+    /// Bad Redis URL → fails open (returns Allowed via fallback).
+    #[test]
+    fn redis_unavailable_falls_back_to_in_memory() {
+        let limiter =
+            DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
+        assert!(matches!(
+            limiter.record_failure("user:fallback-redis"),
+            RateLimitResult::Allowed { .. }
+        ));
+    }
+
+    /// Key prefix isolation: two limiters with different prefixes track independently.
+    #[test]
+    fn key_prefix_isolation() {
+        let limiter_a = DistributedRateLimiter::new(None, 1, 60, "svc-a:");
+        let limiter_b = DistributedRateLimiter::new(None, 1, 60, "svc-b:");
+
+        // Exhaust limiter_a for "user:x"
+        limiter_a.record_failure("user:x");
+        assert!(matches!(
+            limiter_a.record_failure("user:x"),
+            RateLimitResult::Blocked { .. }
+        ));
+
+        // limiter_b for same key is unaffected
+        assert!(matches!(
+            limiter_b.record_failure("user:x"),
+            RateLimitResult::Allowed { .. }
+        ));
+    }
+
+    /// Concurrent calls: simulate multiple threads hitting the limiter.
+    #[test]
+    fn concurrent_fallback_does_not_allow_over_limit() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let limiter = Arc::new(DistributedRateLimiter::new(None, 5, 60, "concurrent:"));
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let l = Arc::clone(&limiter);
+            handles.push(thread::spawn(move || l.record_failure("user:concurrent")));
+        }
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let blocked = results
+            .iter()
+            .filter(|r| matches!(r, RateLimitResult::Blocked { .. }))
+            .count();
+        // At least some requests must be blocked when limit is 5 and 10 arrive
+        assert!(blocked >= 5, "expected at least 5 blocked, got {blocked}");
+    }
+}
