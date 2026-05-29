@@ -2596,13 +2596,7 @@ impl PetChainContract {
                 microchip_id: pet.microchip_id,
                 allergies,
             };
-            PetChainContract::log_access(
-                &env,
-                id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Pet profile accessed"),
-            );
+            // Pure view: no side effects
             Some(profile)
         } else {
             None
@@ -2610,15 +2604,6 @@ impl PetChainContract {
     }
 
     pub fn get_pet_data(env: Env, id: u64, caller: Address) -> Option<PetData> {
-        if let Some(pet) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Pet>(&DataKey::Pet(id))
-        {
-            let allowed = match pet.privacy_level {
-                PrivacyLevel::Public => true,
-                PrivacyLevel::Restricted => {
-                    let access = PetChainContract::check_access(env.clone(), id, caller.clone());
                     !matches!(access, AccessLevel::None)
                 }
                 PrivacyLevel::Private => {
@@ -2752,15 +2737,7 @@ impl PetChainContract {
             let insurance = PetChainContract::get_pet_insurance(env.clone(), pet_id);
             let has_insurance = insurance.is_some();
 
-            // Log the full profile access
-            PetChainContract::log_access(
-                &env,
-                pet_id,
-                caller,
-                AccessAction::Read,
-                String::from_str(&env, "Full pet profile accessed"),
-            );
-
+            // Pure view: no side effects
             Some(PetFullProfile {
                 profile,
                 latest_vaccination_id,
@@ -6229,15 +6206,6 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&MedicalKey::MedicalRecord(record_id));
-        if let Some(ref r) = record {
-            PetChainContract::log_access(
-                &env,
-                r.pet_id,
-                env.current_contract_address(),
-                AccessAction::Read,
-                String::from_str(&env, "Medical record accessed"),
-            );
-        }
         record
     }
 
@@ -6276,13 +6244,6 @@ impl PetChainContract {
                 }
             }
         }
-        PetChainContract::log_access(
-            &env,
-            pet_id,
-            env.current_contract_address(),
-            AccessAction::Read,
-            String::from_str(&env, "Pet medical records accessed"),
-        );
         records
     }
 
@@ -6411,14 +6372,6 @@ impl PetChainContract {
                 break;
             }
         }
-
-        PetChainContract::log_access(
-            &env,
-            pet_id,
-            env.current_contract_address(),
-            AccessAction::Read,
-            String::from_str(&env, "Medical record search executed"),
-        );
 
         records
     }
