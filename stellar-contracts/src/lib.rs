@@ -760,9 +760,12 @@ pub struct ClinicInfo {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Specialization {
-    pub name: String,
-    pub certified_date: u64,
+pub enum Specialization {
+    GeneralPractice,
+    Surgery,
+    Dermatology,
+    Oncology,
+    Dentistry,
 }
 
 #[contracttype]
@@ -901,6 +904,7 @@ pub enum DataKey {
     /// `verify_vet_license()`. Presence of this key is the authoritative
     /// signal used by `grant_access` to allow vet access grants.
     VetLicenseVerified(Address), // vet_address -> verified license_id (String)
+    VetSpecializations(Address), // vet_address -> Vec<Specialization>, admin verified
 
     // Contract Upgrade keys
     ContractVersion,
@@ -3780,6 +3784,70 @@ impl PetChainContract {
         PetChainContract::_verify_vet_internal(&env, vet_address)
     }
 
+    pub fn register_vet_specializations(
+        env: Env,
+        admin: Address,
+        vet_address: Address,
+        specializations: Vec<Specialization>,
+    ) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        let vet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VetNotFound));
+
+        if !vet.verified {
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
+        }
+
+        if specializations.len() == 0 || specializations.len() > 5 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let mut verified = Vec::new(&env);
+        for specialization in specializations.iter() {
+            if !verified.contains(&specialization) {
+                verified.push_back(specialization);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VetSpecializations(vet_address), &verified);
+        true
+    }
+
+    pub fn get_vet_specializations(env: Env, vet_address: Address) -> Vec<Specialization> {
+        env.storage()
+            .instance()
+            .get(&DataKey::VetSpecializations(vet_address))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    fn vet_has_specialization(
+        env: &Env,
+        vet_address: &Address,
+        specialization: Specialization,
+    ) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, Vec<Specialization>>(&DataKey::VetSpecializations(vet_address.clone()))
+            .map(|specializations| specializations.contains(&specialization))
+            .unwrap_or(false)
+    }
+
+    fn require_vet_specialization(
+        env: &Env,
+        vet_address: &Address,
+        specialization: Specialization,
+    ) {
+        if !Self::vet_has_specialization(env, vet_address, specialization) {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
+    }
+
     fn _verify_vet_internal(env: &Env, vet_address: Address) -> bool {
         if let Some(mut vet) = env
             .storage()
@@ -6575,6 +6643,9 @@ impl PetChainContract {
         // Verify vet is verified
         if !PetChainContract::is_verified_vet(env.clone(), vet_address.clone()) {
             panic!("Veterinarian not verified");
+        }
+        if treatment == String::from_str(&env, "Surgery") {
+            Self::require_vet_specialization(&env, &vet_address, Specialization::Surgery);
         }
 
         // Verify pet exists
@@ -10965,6 +11036,10 @@ impl PetChainContract {
 
         if !PetChainContract::is_verified_vet(env.clone(), vet_address.clone()) {
             panic!("Veterinarian not verified");
+        }
+
+        if treatment_type == TreatmentType::Surgery {
+            Self::require_vet_specialization(&env, &vet_address, Specialization::Surgery);
         }
 
         let _pet: Pet = env
