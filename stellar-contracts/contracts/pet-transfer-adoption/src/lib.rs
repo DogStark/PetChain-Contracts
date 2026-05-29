@@ -159,6 +159,7 @@ const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
 const EVT_TRANSFER_ESCROWED: Symbol = symbol_short!("xfer_escr");
 const EVT_TRANSFER_FINALIZED: Symbol = symbol_short!("xfer_fin");
 const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
+const EVT_TRUSTED_UPDATED: Symbol = symbol_short!("trust_upd");
 
 /// ======================================================
 /// ERRORS
@@ -182,6 +183,11 @@ pub enum ContractError {
     NoEscrowedTransfer = 12,
     DisputeWindowNotElapsed = 13,
     TransferAlreadyDisputed = 14,
+    AlreadyInitialized = 15,
+    InvalidThreshold = 16,
+    NotMultisigAdmin = 17,
+    ThresholdNotMet = 18,
+    UntrustedContract = 19,
     // Adoption waiting period errors (Issue #653)
     NoPendingAdoption = 15,
     WaitingPeriodNotElapsed = 16,
@@ -221,7 +227,13 @@ fn save_history(env: &Env, pet_id: u64, history: &Vec<OwnershipRecord>) {
         .set(&DataKey::OwnershipHistory(pet_id), history);
 }
 
-fn append_custody_entry(env: &Env, pet_id: u64, from: Address, to: Address, transfer_type: TransferType) {
+fn append_custody_entry(
+    env: &Env,
+    pet_id: u64,
+    from: Address,
+    to: Address,
+    transfer_type: TransferType,
+) {
     let mut chain: Vec<CustodyEntry> = env
         .storage()
         .persistent()
@@ -274,6 +286,50 @@ fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
     }
 
     save_owner_pet_ids(env, owner, &updated_pet_ids);
+}
+
+fn get_trusted_contract(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::TrustedContract)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::UntrustedContract))
+}
+
+fn require_trusted_contract(env: &Env, callee: &Address) {
+    if &get_trusted_contract(env) != callee {
+        panic_with_error!(env, ContractError::UntrustedContract);
+    }
+}
+
+fn require_trusted_multisig_admin(env: &Env, signer: &Address) -> (Vec<Address>, u32) {
+    let admins: Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::TrustedAdmins)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::NotMultisigAdmin));
+    let threshold: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TrustedThreshold)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidThreshold));
+
+    if !admins.contains(signer) {
+        panic_with_error!(env, ContractError::NotMultisigAdmin);
+    }
+
+    signer.require_auth();
+    (admins, threshold)
+}
+
+fn clear_trusted_update_approvals(env: &Env, admins: &Vec<Address>, new_address: &Address) {
+    for admin in admins.iter() {
+        env.storage()
+            .instance()
+            .remove(&DataKey::TrustedUpdateApprovals((
+                new_address.clone(),
+                admin,
+            )));
+    }
 }
 
 /// ======================================================
@@ -627,7 +683,13 @@ impl PetOwnershipContract {
             .persistent()
             .remove(&DataKey::EscrowedTransfer(pet_id));
 
-        append_custody_entry(&env, pet_id, escrowed.from.clone(), escrowed.to.clone(), TransferType::Direct);
+        append_custody_entry(
+            &env,
+            pet_id,
+            escrowed.from.clone(),
+            escrowed.to.clone(),
+            TransferType::Direct,
+        );
 
         env.events().publish(
             (EVT_TRANSFER_FINALIZED, pet_id),
@@ -790,7 +852,8 @@ impl PetOwnershipContract {
         }
 
         // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
-        let owner = expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
+        let owner =
+            expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
 
         // Phase 2: authenticate the single owner once for the entire batch.
         owner.require_auth();
@@ -809,8 +872,10 @@ impl PetOwnershipContract {
                 .persistent()
                 .set(&DataKey::PendingTransfer(pet_id), &transfer);
 
-            env.events()
-                .publish((EVT_TRANSFER_INITIATED, pet_id), (owner.clone(), to.clone()));
+            env.events().publish(
+                (EVT_TRANSFER_INITIATED, pet_id),
+                (owner.clone(), to.clone()),
+            );
         }
     }
 
