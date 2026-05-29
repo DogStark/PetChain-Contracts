@@ -1,6 +1,15 @@
+use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
+use actix_web::error::{ErrorBadRequest, ErrorTooManyRequests};
+use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
+use actix_web_actors::ws;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Timeframe {
@@ -195,6 +204,218 @@ pub struct LeaderboardEntry {
     pub user_id: String,
     pub decayed_score: f64,
     pub percentile: f64,
+}
+
+/// Score update payload pushed to websocket subscribers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeaderboardScoreUpdate {
+    pub user_id: String,
+    pub new_score: u64,
+    pub rank: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum LeaderboardSubscriptionCommand {
+    Subscribe { user_ids: Vec<String> },
+    Unsubscribe { user_ids: Vec<String> },
+    Replace { user_ids: Vec<String> },
+    Clear,
+}
+
+#[derive(Debug)]
+pub struct LeaderboardWsHub {
+    broadcaster: broadcast::Sender<LeaderboardScoreUpdate>,
+    connections_by_ip: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl LeaderboardWsHub {
+    pub fn global() -> Arc<Self> {
+        static HUB: OnceLock<Arc<LeaderboardWsHub>> = OnceLock::new();
+        HUB.get_or_init(|| {
+            let (broadcaster, _) = broadcast::channel(256);
+            Arc::new(Self {
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+            })
+        })
+        .clone()
+    }
+
+    pub fn connect(self: &Arc<Self>, ip: IpAddr) -> Result<LeaderboardConnectionGuard, String> {
+        let mut connections = self
+            .connections_by_ip
+            .lock()
+            .map_err(|_| "Leaderboard connection state is unavailable".to_string())?;
+        let count = connections.get(&ip).copied().unwrap_or(0);
+        if count >= 5 {
+            return Err(format!("Connection limit exceeded for IP {}", ip));
+        }
+        connections.insert(ip, count + 1);
+        Ok(LeaderboardConnectionGuard {
+            hub: Arc::clone(self),
+            ip,
+        })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<LeaderboardScoreUpdate> {
+        self.broadcaster.subscribe()
+    }
+
+    pub fn publish_score_update(&self, update: LeaderboardScoreUpdate) {
+        let _ = self.broadcaster.send(update);
+    }
+
+    fn disconnect(&self, ip: IpAddr) {
+        if let Ok(mut connections) = self.connections_by_ip.lock() {
+            if let Some(current) = connections.get_mut(&ip) {
+                if *current <= 1 {
+                    connections.remove(&ip);
+                } else {
+                    *current -= 1;
+                }
+            }
+        }
+    }
+}
+
+pub struct LeaderboardConnectionGuard {
+    hub: Arc<LeaderboardWsHub>,
+    ip: IpAddr,
+}
+
+impl Drop for LeaderboardConnectionGuard {
+    fn drop(&mut self) {
+        self.hub.disconnect(self.ip);
+    }
+}
+
+pub struct LeaderboardWsSession {
+    hub: Arc<LeaderboardWsHub>,
+    _connection: LeaderboardConnectionGuard,
+    subscriptions: HashSet<String>,
+}
+
+impl LeaderboardWsSession {
+    pub fn new(hub: Arc<LeaderboardWsHub>, connection: LeaderboardConnectionGuard) -> Self {
+        Self {
+            hub,
+            _connection: connection,
+            subscriptions: HashSet::new(),
+        }
+    }
+
+    fn should_forward(&self, update: &LeaderboardScoreUpdate) -> bool {
+        self.subscriptions.is_empty() || self.subscriptions.contains(&update.user_id)
+    }
+
+    fn apply_command(&mut self, command: LeaderboardSubscriptionCommand) {
+        match command {
+            LeaderboardSubscriptionCommand::Subscribe { user_ids } => {
+                for user_id in user_ids {
+                    self.subscriptions.insert(user_id);
+                }
+            }
+            LeaderboardSubscriptionCommand::Unsubscribe { user_ids } => {
+                for user_id in user_ids {
+                    self.subscriptions.remove(&user_id);
+                }
+            }
+            LeaderboardSubscriptionCommand::Replace { user_ids } => {
+                self.subscriptions.clear();
+                for user_id in user_ids {
+                    self.subscriptions.insert(user_id);
+                }
+            }
+            LeaderboardSubscriptionCommand::Clear => {
+                self.subscriptions.clear();
+            }
+        }
+    }
+}
+
+impl Actor for LeaderboardWsSession {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        let receiver = self.hub.subscribe();
+        ctx.add_stream(BroadcastStream::new(receiver));
+    }
+}
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for LeaderboardWsSession {
+    fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match item {
+            Ok(ws::Message::Text(text)) => {
+                if let Ok(command) = serde_json::from_str::<LeaderboardSubscriptionCommand>(&text) {
+                    self.apply_command(command);
+                    ctx.text(r#"{"status":"ok"}"#);
+                } else {
+                    ctx.text(r#"{"status":"error","reason":"invalid_subscription_message"}"#);
+                }
+            }
+            Ok(ws::Message::Ping(payload)) => ctx.pong(&payload),
+            Ok(ws::Message::Pong(_)) => {}
+            Ok(ws::Message::Close(reason)) => {
+                ctx.close(reason);
+                ctx.stop();
+            }
+            Ok(ws::Message::Binary(_)) => {
+                ctx.text(r#"{"status":"error","reason":"binary_not_supported"}"#);
+            }
+            Ok(ws::Message::Continuation(_)) => {}
+            Ok(ws::Message::Nop) => {}
+            Err(_) => {
+                ctx.stop();
+            }
+        }
+    }
+}
+
+impl StreamHandler<Result<LeaderboardScoreUpdate, tokio_stream::wrappers::errors::BroadcastStreamRecvError>>
+    for LeaderboardWsSession
+{
+    fn handle(
+        &mut self,
+        item: Result<LeaderboardScoreUpdate, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
+        ctx: &mut Self::Context,
+    ) {
+        match item {
+            Ok(update) if self.should_forward(&update) => {
+                if let Ok(payload) = serde_json::to_string(&update) {
+                    ctx.text(payload);
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+}
+
+/// Broadcast a score update to all connected websocket clients.
+pub fn broadcast_score_update(user_id: impl Into<String>, new_score: u64, rank: u64) {
+    LeaderboardWsHub::global().publish_score_update(LeaderboardScoreUpdate {
+        user_id: user_id.into(),
+        new_score,
+        rank,
+    });
+}
+
+/// Actix-web websocket endpoint for `GET /leaderboard/ws`.
+pub async fn leaderboard_ws_endpoint(
+    req: HttpRequest,
+    stream: Payload,
+) -> Result<HttpResponse, Error> {
+    let peer_ip = req
+        .peer_addr()
+        .map(|addr| addr.ip())
+        .ok_or_else(|| ErrorBadRequest("Missing peer address for leaderboard websocket"))?;
+
+    let hub = LeaderboardWsHub::global();
+    let connection = hub
+        .connect(peer_ip)
+        .map_err(|err| ErrorTooManyRequests(err))?;
+    ws::start(LeaderboardWsSession::new(hub, connection), &req, stream)
 }
 
 /// Get decay lambda from environment variable with sensible default

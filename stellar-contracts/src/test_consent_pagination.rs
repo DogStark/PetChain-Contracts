@@ -1,5 +1,5 @@
 use crate::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Env, Vec};
 
 fn setup() -> (Env, PetChainContractClient<'static>, u64, Address) {
     let env = Env::default();
@@ -431,4 +431,88 @@ fn test_preview_revocation_cascade_root_only() {
     let preview = client.preview_revocation_cascade(&pet_id, &root_id);
     assert_eq!(preview.len(), 1);
     assert!(preview.contains(&root_id));
+}
+
+#[test]
+fn test_delegate_consent_chain_allows_access_with_valid_chain() {
+    let (env, client, pet_id, owner) = setup();
+    let trusted = Address::generate(&env);
+    let sub_delegate = Address::generate(&env);
+
+    let root_id = client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &trusted,
+        &ConsentScope::ReadMedical,
+    );
+
+    let scopes = Vec::from_array(&env, [ConsentScope::ReadMedical]);
+    let delegated = client.delegate_consent(&pet_id, &trusted, &sub_delegate, &scopes, &3);
+    assert_eq!(delegated.len(), 1);
+    assert!(client.check_consent_access(&pet_id, &sub_delegate, &ConsentScope::ReadMedical));
+    assert!(client.is_consent_active(&root_id));
+}
+
+#[test]
+#[should_panic]
+fn test_delegate_consent_scope_escalation_rejected() {
+    let (env, client, pet_id, owner) = setup();
+    let trusted = Address::generate(&env);
+    let sub_delegate = Address::generate(&env);
+
+    client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &trusted,
+        &ConsentScope::ReadMedical,
+    );
+
+    let scopes = Vec::from_array(&env, [ConsentScope::WriteMedical]);
+    let _ = client.delegate_consent(&pet_id, &trusted, &sub_delegate, &scopes, &3);
+}
+
+#[test]
+#[should_panic]
+fn test_delegate_consent_depth_limit_enforced() {
+    let (env, client, pet_id, owner) = setup();
+    let level1 = Address::generate(&env);
+    let level2 = Address::generate(&env);
+    let level3 = Address::generate(&env);
+    let level4 = Address::generate(&env);
+
+    client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &level1,
+        &ConsentScope::ReadMedical,
+    );
+
+    let scopes = Vec::from_array(&env, [ConsentScope::ReadMedical]);
+    let _ = client.delegate_consent(&pet_id, &level1, &level2, &scopes, &3);
+    let _ = client.delegate_consent(&pet_id, &level2, &level3, &scopes, &3);
+    let _ = client.delegate_consent(&pet_id, &level3, &level4, &scopes, &3);
+}
+
+#[test]
+fn test_consent_access_fails_when_parent_chain_is_revoked() {
+    let (env, client, pet_id, owner) = setup();
+    let trusted = Address::generate(&env);
+    let sub_delegate = Address::generate(&env);
+
+    let root_id = client.grant_consent(
+        &pet_id,
+        &owner,
+        &ConsentType::Research,
+        &trusted,
+        &ConsentScope::ReadMedical,
+    );
+    let scopes = Vec::from_array(&env, [ConsentScope::ReadMedical]);
+    let _ = client.delegate_consent(&pet_id, &trusted, &sub_delegate, &scopes, &3);
+
+    assert!(client.check_consent_access(&pet_id, &sub_delegate, &ConsentScope::ReadMedical));
+    client.revoke_consent(&root_id, &owner);
+    assert!(!client.check_consent_access(&pet_id, &sub_delegate, &ConsentScope::ReadMedical));
 }

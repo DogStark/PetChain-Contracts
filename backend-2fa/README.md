@@ -16,14 +16,14 @@ Configurable TOTP-based Two-Factor Authentication for PetChain backend with cryp
 ## Configuration Options
 
 ### Default Configuration (Recommended)
-- **Algorithm**: SHA256 (secure, modern)
+- **Algorithm**: SHA1 by default for legacy compatibility; SHA256 or SHA512 can be selected for new enrollments
 - **Digits**: 6 (standard)
 - **Period**: 30 seconds (standard)
 - **Window**: 1 (minimal clock skew tolerance)
 
 ### Available Configurations
 ```rust
-// Default (SHA256)
+// Default (SHA1)
 let setup = TwoFactorAuth::setup("user@example.com", "PetChain")?;
 
 // Legacy SHA1 (backward compatibility)

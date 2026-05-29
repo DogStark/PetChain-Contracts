@@ -5,10 +5,12 @@ use crate::rate_limiter::{
     progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
 };
 use crate::two_factor::{
-    AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, TotpConfig, TwoFactorAuth, TwoFactorData,
+    TwoFactorStore,
     UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
+use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -218,6 +220,7 @@ impl TwoFactorHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: false,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -239,7 +242,11 @@ impl TwoFactorHandlers {
         self.ensure_not_locked(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
-        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(&req.user_id, true)?;
             self.store.reset_two_fa_failures(&req.user_id)?;
@@ -265,7 +272,11 @@ impl TwoFactorHandlers {
             return Ok(false);
         }
 
-        let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let is_valid = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
 
         if is_valid {
             self.store.reset_two_fa_failures(&req.user_id)?;
@@ -291,7 +302,11 @@ impl TwoFactorHandlers {
             return Ok(false);
         }
 
-        let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(&req.user_id, false)?;
             self.store.reset_two_fa_failures(&req.user_id)?;
@@ -365,6 +380,7 @@ impl TwoFactorHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: true,
+                algorithm: setup.config.algorithm,
             },
         )?;
         self.store
@@ -628,6 +644,7 @@ impl CanaryHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: true,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -678,7 +695,11 @@ impl CanaryHandlers {
         }
 
         let data = store.get(user_id)?;
-        TwoFactorAuth::verify_token(&data.secret, token)
+        TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )
     }
 }
 
@@ -748,6 +769,7 @@ impl MultiTenantHandlers {
                 secret: setup.secret.clone(),
                 backup_codes: setup.backup_codes.clone(),
                 enabled: false,
+                algorithm: setup.config.algorithm,
             },
         )?;
 
@@ -780,7 +802,11 @@ impl MultiTenantHandlers {
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
         let data = self.store.get(user_id)?;
-        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(user_id, true)?;
             self.limiter.record_success(&key);
@@ -811,7 +837,11 @@ impl MultiTenantHandlers {
         if !data.enabled {
             return Ok(false);
         }
-        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        let result = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            token,
+            Self::verification_config(data.algorithm),
+        )?;
         if result {
             self.store.update_enabled(user_id, false)?;
             self.limiter.record_success(&key);
@@ -850,6 +880,8 @@ impl TenantProvisioningHandlers {
 
     pub fn get_tenant_config(&self, tenant_id: &str) -> Option<TenantConfig> {
         self.registry.get_config(tenant_id)
+    }
+}
 // Pool metrics endpoint
 // ---------------------------------------------------------------------------
 
@@ -879,4 +911,14 @@ impl PoolMetricsHandlers {
         // endpoint handler can be exercised without a database.
         Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
     }
+}
+
+/// WebSocket endpoint for real-time leaderboard updates.
+///
+/// Mount this at `GET /leaderboard/ws`.
+pub async fn leaderboard_ws(
+    req: HttpRequest,
+    stream: Payload,
+) -> Result<HttpResponse, Error> {
+    leaderboard_ws_endpoint(req, stream).await
 }
