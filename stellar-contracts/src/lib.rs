@@ -67,6 +67,10 @@ pub enum ActivityKey {
     // Streak tracking
     PetActivityStreak(u64),        // pet_id -> ActivityStreak
     PetStreakLastRecordDate(u64),  // pet_id -> last activity date (for gap detection)
+    
+    // Idempotency tracking (Issue #685)
+    ActivityIdempotencyKey(Bytes), // hash(pet_id, activity_type, start_ts) -> timestamp
+    IdempotencyWindow,             // Configurable time window in seconds (default 60)
 }
 
 #[contracttype]
@@ -175,6 +179,12 @@ mod test_search_medical_records;
 #[cfg(test)]
 mod test_statistics;
 #[cfg(test)]
+mod test_storage_quota;
+#[cfg(test)]
+mod test_error_registry;
+#[cfg(test)]
+mod test_activity_idempotency;
+#[cfg(test)]
 mod test_disputes;
 #[cfg(test)]
 mod test_fuzz_regression;
@@ -202,6 +212,9 @@ const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
 const MAX_SEARCH_NOTES_LEN: u32 = 512;
 const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
+
+// --- STORAGE QUOTA CONSTANTS ---
+const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -329,15 +342,34 @@ pub enum ContractError {
     CircularDependency = 142,
     CrossPetComparison = 143,
     BreedingRecordNotFound = 150,
+    StorageQuotaExceeded = 160,
+    ErrorMessageNotFound = 170,
+    DuplicateActivity = 180,
     // Issue: Pet profile schema validation
-    InvalidPetName = 160,
-    InvalidBreed = 161,
+    InvalidPetName = 190,
+    InvalidBreed = 191,
     // Issue: Nonce-based replay protection
-    InvalidCallerNonce = 163,
+    InvalidCallerNonce = 193,
     // Issue: IPFS claim documents
-    ClaimNotFound = 164,
-    ClaimDocumentLimitReached = 165,
-    ClaimImmutable = 166,
+    ClaimNotFound = 194,
+    ClaimDocumentLimitReached = 195,
+    ClaimImmutable = 196,
+}
+
+// --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ErrorMessage {
+    pub code: u32,
+    pub language: String,
+    pub message: String,
+}
+
+#[contracttype]
+pub enum ErrorRegistryKey {
+    ErrorMessage((u32, String)), // (error_code, language) -> message
+    SupportedLanguages,           // Vec<String> of supported languages
 }
 
 #[contracttype]
@@ -584,6 +616,7 @@ pub enum NutritionKey {
     NutritionVersion((u64, u64)), // (pet_id, version) -> NutritionVersion
     PetNutritionVersionCount(u64), // pet_id -> current version count
     CurrentNutritionVersion(u64),  // pet_id -> current active version
+    DailyNutritionSummary((u64, u64)), // (pet_id, date) -> DailyNutritionSummary
 }
 
 #[contracttype]
@@ -593,6 +626,8 @@ pub struct DietPlan {
     pub food_type: String,
     pub portion_size: String,
     pub feeding_frequency: String,
+    pub calories_per_serving: u32,
+    pub daily_target_calories: u32,
     pub dietary_restrictions: Vec<String>,
     pub allergies: Vec<String>,
     pub created_by: Address,
@@ -607,11 +642,23 @@ pub struct NutritionVersion {
     pub food_type: String,
     pub portion_size: String,
     pub feeding_frequency: String,
+    pub calories_per_serving: u32,
+    pub daily_target_calories: u32,
     pub dietary_restrictions: Vec<String>,
     pub allergies: Vec<String>,
     pub created_by: Address,
     pub created_at: u64,
     pub is_active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DailyNutritionSummary {
+    pub pet_id: u64,
+    pub date: u64,
+    pub total_calories: u32,
+    pub target_calories: u32,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -956,6 +1003,11 @@ pub enum DataKey {
     CallerNonce(Address),        // caller -> current nonce (u64)
     // Issue: IPFS claim documents
     ClaimDocuments(u64),         // claim_id -> Vec<String> of IPFS CIDs
+
+    // Storage Quota keys (Issue #676)
+    PetStorageUsage(u64),        // pet_id -> current storage entry count
+    PetStorageQuota(u64),        // pet_id -> custom quota (if set)
+    GlobalStorageQuota,          // global default quota
 }
 
 #[contracttype]
@@ -1107,7 +1159,6 @@ pub enum StatsKey {
     ActivePetsCount,
 }
 
-
 #[contracttype]
 pub enum FeatureKey {
     Rg((u64, Address)),
@@ -1120,6 +1171,16 @@ pub enum FeatureKey {
     BP,
     BN,
 }
+
+// --- STORAGE QUOTA SYSTEM (Issue #676) ---
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageUsage {
+    pub pet_id: u64,
+    pub current_count: u64,
+    pub quota: u64,
+}
+
 // --- LOST PET ALERT SYSTEM ---
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2584,6 +2645,342 @@ impl PetChainContract {
             .set(&VetKey::VetStats(vet.clone()), &stats);
     }
 
+    // --- STORAGE QUOTA SYSTEM (Issue #676) ---
+
+    /// Get the effective storage quota for a pet (custom or global default)
+    fn get_pet_quota(env: &Env, pet_id: u64) -> u64 {
+        // Check for per-pet custom quota first
+        if let Some(custom_quota) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetStorageQuota(pet_id))
+        {
+            return custom_quota;
+        }
+
+        // Fall back to global default
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::GlobalStorageQuota)
+            .unwrap_or(DEFAULT_STORAGE_QUOTA)
+    }
+
+    /// Get current storage usage for a pet
+    fn get_pet_storage_count(env: &Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetStorageUsage(pet_id))
+            .unwrap_or(0)
+    }
+
+    /// Increment storage usage for a pet and check quota
+    /// Returns true if within quota, panics with StorageQuotaExceeded if over
+    fn increment_pet_storage(env: &Env, pet_id: u64) {
+        let current = Self::get_pet_storage_count(env, pet_id);
+        let quota = Self::get_pet_quota(env, pet_id);
+
+        // Check if adding one more entry would exceed quota
+        if current >= quota {
+            panic_with_error!(env, ContractError::StorageQuotaExceeded);
+        }
+
+        let new_count = current
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::CounterOverflow));
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetStorageUsage(pet_id), &new_count);
+    }
+
+    /// Check if a pet can add more storage entries without incrementing
+    fn check_pet_storage_quota(env: &Env, pet_id: u64) -> bool {
+        let current = Self::get_pet_storage_count(env, pet_id);
+        let quota = Self::get_pet_quota(env, pet_id);
+        current < quota
+    }
+
+    /// Set global default storage quota (admin only)
+    pub fn set_global_storage_quota(env: Env, admin: Address, quota: u64) {
+        Self::require_admin_auth(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::GlobalStorageQuota, &quota);
+
+        env.events().publish(
+            (Symbol::new(&env, "GlobalStorageQuotaSet"),),
+            quota,
+        );
+    }
+
+    /// Set custom storage quota for a specific pet (admin only)
+    pub fn set_pet_storage_quota(env: Env, admin: Address, pet_id: u64, quota: u64) {
+        Self::require_admin_auth(&env, &admin);
+
+        // Verify pet exists
+        if !env.storage().instance().has(&DataKey::Pet(pet_id)) {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PetStorageQuota(pet_id), &quota);
+
+        env.events().publish(
+            (Symbol::new(&env, "PetStorageQuotaSet"), pet_id),
+            quota,
+        );
+    }
+
+    /// Get storage usage information for a pet
+    pub fn get_storage_usage(env: Env, pet_id: u64) -> StorageUsage {
+        // Verify pet exists
+        if !env.storage().instance().has(&DataKey::Pet(pet_id)) {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+
+        let current_count = Self::get_pet_storage_count(&env, pet_id);
+        let quota = Self::get_pet_quota(&env, pet_id);
+
+        StorageUsage {
+            pet_id,
+            current_count,
+            quota,
+        }
+    }
+
+    // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
+
+    /// Set an error message for a specific error code and language
+    /// Only callable by admin
+    pub fn set_error_message(
+        env: Env,
+        admin: Address,
+        error_code: u32,
+        language: String,
+        message: String,
+    ) {
+        Self::require_admin_auth(&env, &admin);
+
+        // Validate inputs
+        if language.len() == 0 || language.len() > 10 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if message.len() == 0 || message.len() > 500 {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        // Store the error message
+        env.storage().instance().set(
+            &ErrorRegistryKey::ErrorMessage((error_code, language.clone())),
+            &message,
+        );
+
+        // Add language to supported languages if not already present
+        let mut supported_langs: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&ErrorRegistryKey::SupportedLanguages)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if !supported_langs.contains(&language) {
+            supported_langs.push_back(language.clone());
+            env.storage()
+                .instance()
+                .set(&ErrorRegistryKey::SupportedLanguages, &supported_langs);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "ErrorMessageSet"), error_code),
+            (language, message),
+        );
+    }
+
+    /// Get an error message for a specific error code and language
+    /// Returns the message if found, or None if not found
+    pub fn get_error_message(env: Env, error_code: u32, language: String) -> Option<String> {
+        env.storage()
+            .instance()
+            .get(&ErrorRegistryKey::ErrorMessage((error_code, language)))
+    }
+
+    /// Get all supported languages in the error registry
+    pub fn get_supported_languages(env: Env) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get(&ErrorRegistryKey::SupportedLanguages)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Batch set error messages for multiple languages
+    /// Only callable by admin
+    pub fn batch_set_error_messages(
+        env: Env,
+        admin: Address,
+        messages: Vec<ErrorMessage>,
+    ) {
+        Self::require_admin_auth(&env, &admin);
+
+        for msg in messages.iter() {
+            // Validate inputs
+            if msg.language.len() == 0 || msg.language.len() > 10 {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+            if msg.message.len() == 0 || msg.message.len() > 500 {
+                panic_with_error!(&env, ContractError::InputStringTooLong);
+            }
+
+            // Store the error message
+            env.storage().instance().set(
+                &ErrorRegistryKey::ErrorMessage((msg.code, msg.language.clone())),
+                &msg.message,
+            );
+
+            // Add language to supported languages if not already present
+            let mut supported_langs: Vec<String> = env
+                .storage()
+                .instance()
+                .get(&ErrorRegistryKey::SupportedLanguages)
+                .unwrap_or_else(|| Vec::new(&env));
+
+            if !supported_langs.contains(&msg.language) {
+                supported_langs.push_back(msg.language.clone());
+                env.storage()
+                    .instance()
+                    .set(&ErrorRegistryKey::SupportedLanguages, &supported_langs);
+            }
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "ErrorMessagesBatchSet"),),
+            messages.len(),
+        );
+    }
+
+    /// Initialize default error messages in English and Spanish
+    /// Only callable by admin
+    pub fn initialize_error_messages(env: Env, admin: Address) {
+        Self::require_admin_auth(&env, &admin);
+
+        let mut messages = Vec::new(&env);
+
+        // English messages
+        messages.push_back(ErrorMessage {
+            code: 1,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Unauthorized access"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 2,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Admin not initialized"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 3,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Pet not found"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 4,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Veterinarian not found"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 5,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Veterinarian not verified"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 6,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Veterinarian already registered"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 7,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "License already registered"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 8,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Input string too long"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 160,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Storage quota exceeded"),
+        });
+
+        // Spanish messages
+        messages.push_back(ErrorMessage {
+            code: 1,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Acceso no autorizado"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 2,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Administrador no inicializado"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 3,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Mascota no encontrada"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 4,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Veterinario no encontrado"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 5,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Veterinario no verificado"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 6,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Veterinario ya registrado"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 7,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Licencia ya registrada"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 8,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Cadena de entrada demasiado larga"),
+        });
+        messages.push_back(ErrorMessage {
+            code: 160,
+            language: String::from_str(&env, "es"),
+            message: String::from_str(&env, "Cuota de almacenamiento excedida"),
+        });
+
+        Self::batch_set_error_messages(env, admin, messages);
+    }
+
+    /// Remove an error message for a specific error code and language
+    /// Only callable by admin
+    pub fn remove_error_message(
+        env: Env,
+        admin: Address,
+        error_code: u32,
+        language: String,
+    ) {
+        Self::require_admin_auth(&env, &admin);
+
+        env.storage()
+            .instance()
+            .remove(&ErrorRegistryKey::ErrorMessage((error_code, language.clone())));
+
+        env.events().publish(
+            (Symbol::new(&env, "ErrorMessageRemoved"), error_code),
+            language,
+        );
+    }
+
     // Pet Management Functions
     #[allow(clippy::too_many_arguments)]
     pub fn register_pet(
@@ -3886,6 +4283,9 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
+
         let vaccine_count: u64 = env
             .storage()
             .instance()
@@ -4214,6 +4614,8 @@ impl PetChainContract {
         food_type: String,
         portion_size: String,
         frequency: String,
+        calories_per_serving: u32,
+        daily_target_calories: u32,
         restrictions: Vec<String>,
         allergies: Vec<String>,
     ) -> bool {
@@ -4239,6 +4641,8 @@ impl PetChainContract {
             food_type,
             portion_size,
             feeding_frequency: frequency,
+            calories_per_serving,
+            daily_target_calories,
             dietary_restrictions: restrictions,
             allergies,
             created_by: pet.owner.clone(),
@@ -4331,6 +4735,122 @@ impl PetChainContract {
             .unwrap_or(0)
     }
 
+    fn current_nutrition_day(env: &Env) -> u64 {
+        env.ledger().timestamp() / 86_400
+    }
+
+    pub fn log_feeding(env: Env, pet_id: u64, plan_id: u64, servings: u32) -> bool {
+        let plan: DietPlan = env
+            .storage()
+            .instance()
+            .get(&NutritionKey::DietPlan(plan_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        if plan.pet_id != pet_id {
+            env.panic_with_error(ContractError::InvalidInput)
+        }
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        pet.owner.require_auth();
+
+        let calories = plan
+            .calories_per_serving
+            .checked_mul(servings)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+
+        let day = PetChainContract::current_nutrition_day(&env);
+        let now = env.ledger().timestamp();
+
+        let mut summary = env
+            .storage()
+            .instance()
+            .get::<NutritionKey, DailyNutritionSummary>(&NutritionKey::DailyNutritionSummary((pet_id, day)))
+            .unwrap_or(DailyNutritionSummary {
+                pet_id,
+                date: day,
+                total_calories: 0,
+                target_calories: plan.daily_target_calories,
+                updated_at: now,
+            });
+
+        summary.total_calories = summary.total_calories.saturating_add(calories);
+        summary.target_calories = plan.daily_target_calories;
+        summary.updated_at = now;
+
+        env.storage()
+            .instance()
+            .set(&NutritionKey::DailyNutritionSummary((pet_id, day)), &summary);
+
+        if summary.target_calories > 0 {
+            let lower_threshold = summary.target_calories * 80 / 100;
+            let upper_threshold = summary.target_calories * 120 / 100;
+            let status = if summary.total_calories > upper_threshold {
+                Some(String::from_str(&env, "AboveTarget"))
+            } else if summary.total_calories < lower_threshold {
+                Some(String::from_str(&env, "BelowTarget"))
+            } else {
+                None
+            };
+
+            if let Some(status_text) = status {
+                env.events().publish(
+                    (Symbol::new(&env, "NutritionAlert"),),
+                    (
+                        pet_id,
+                        day,
+                        plan_id,
+                        summary.total_calories,
+                        summary.target_calories,
+                        status_text,
+                    ),
+                );
+            }
+        }
+
+        true
+    }
+
+    pub fn get_daily_summary(
+        env: Env,
+        pet_id: u64,
+        date: u64,
+    ) -> Option<DailyNutritionSummary> {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return None;
+        }
+
+        let summary = env
+            .storage()
+            .instance()
+            .get::<NutritionKey, DailyNutritionSummary>(&NutritionKey::DailyNutritionSummary((pet_id, date)));
+
+        if summary.is_some() {
+            return summary;
+        }
+
+        let target = PetChainContract::get_current_diet_plan(env.clone(), pet_id)
+            .map(|plan| plan.daily_target_calories)
+            .unwrap_or(0);
+
+        Some(DailyNutritionSummary {
+            pet_id,
+            date,
+            total_calories: 0,
+            target_calories: target,
+            updated_at: env.ledger().timestamp(),
+        })
+    }
+
     pub fn get_weight_entry_count(env: Env, pet_id: u64) -> u64 {
         env.storage()
             .instance()
@@ -4346,6 +4866,9 @@ impl PetChainContract {
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
         pet.owner.require_auth();
+
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
 
         let weight_count: u64 = env
             .storage()
@@ -4444,6 +4967,8 @@ impl PetChainContract {
         food_type: String,
         portion_size: String,
         frequency: String,
+        calories_per_serving: u32,
+        daily_target_calories: u32,
         restrictions: Vec<String>,
         allergies: Vec<String>,
     ) -> u64 {
@@ -4469,6 +4994,8 @@ impl PetChainContract {
             food_type,
             portion_size,
             feeding_frequency: frequency,
+            calories_per_serving,
+            daily_target_calories,
             dietary_restrictions: restrictions,
             allergies,
             created_by: pet.owner.clone(),
@@ -4609,6 +5136,8 @@ impl PetChainContract {
             food_type: target.food_type,
             portion_size: target.portion_size,
             feeding_frequency: target.feeding_frequency,
+            calories_per_serving: target.calories_per_serving,
+            daily_target_calories: target.daily_target_calories,
             dietary_restrictions: target.dietary_restrictions,
             allergies: target.allergies,
             created_by: pet.owner.clone(),
@@ -6584,6 +7113,9 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
+
         // Get and increment medical record count
         let count = env
             .storage()
@@ -8297,6 +8829,9 @@ impl PetChainContract {
         let pet: Pet = env.storage().instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
 
         if test_type.len() > PetChainContract::MAX_STR_SHORT {
             panic_with_error!(&env, ContractError::InputStringTooLong);
@@ -10794,6 +11329,9 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
+
         if name.len() > PetChainContract::MAX_STR_SHORT {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
@@ -10973,6 +11511,9 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
+
         if notes.len() > PetChainContract::MAX_STR_LONG {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
@@ -11139,6 +11680,9 @@ impl PetChainContract {
         {
             return false;
         }
+
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
 
         let start_date = env.ledger().timestamp();
         let tier = Self::premium_tier_from_coverage(&coverage_type);
@@ -11703,6 +12247,8 @@ impl PetChainContract {
         severity: u32,
         description: String,
     ) -> u64 {
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
         let pet: Pet = env
             .storage()
             .instance()
@@ -11805,6 +12351,8 @@ impl PetChainContract {
         milestone_name: String,
         notes: String,
     ) -> u64 {
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
         let pet: Pet = env
             .storage()
             .instance()
@@ -12615,6 +13163,92 @@ impl PetChainContract {
 
     // --- ACTIVITY TRACKING SYSTEM ---
 
+    /// Helper function to generate idempotency key for activity records (Issue #685)
+    fn generate_activity_idempotency_key(
+        env: &Env,
+        pet_id: u64,
+        activity_type: &ActivityType,
+        start_ts: u64,
+    ) -> Bytes {
+        let mut data = Bytes::new(env);
+        
+        // Add pet_id bytes
+        for byte in pet_id.to_be_bytes() {
+            data.push_back(byte);
+        }
+        
+        // Add activity_type discriminant
+        let type_discriminant: u32 = match activity_type {
+            ActivityType::Walk => 0,
+            ActivityType::Run => 1,
+            ActivityType::Play => 2,
+            ActivityType::Training => 3,
+            ActivityType::Other => 4,
+        };
+        for byte in type_discriminant.to_be_bytes() {
+            data.push_back(byte);
+        }
+        
+        // Add start_ts bytes
+        for byte in start_ts.to_be_bytes() {
+            data.push_back(byte);
+        }
+        
+        // Hash the data
+        env.crypto().sha256(&data).into()
+    }
+
+    /// Get the idempotency window duration in seconds (Issue #685)
+    fn get_idempotency_window(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&ActivityKey::IdempotencyWindow)
+            .unwrap_or(60) // Default 60 seconds
+    }
+
+    /// Set the idempotency window duration (admin only) (Issue #685)
+    pub fn set_activity_idempotency_window(env: Env, admin: Address, window_seconds: u64) {
+        Self::require_admin_auth(&env, &admin);
+        
+        env.storage()
+            .instance()
+            .set(&ActivityKey::IdempotencyWindow, &window_seconds);
+        
+        env.events().publish(
+            (Symbol::new(&env, "IdempotencyWindowSet"),),
+            window_seconds,
+        );
+    }
+
+    /// Check and record idempotency key for activity (Issue #685)
+    fn check_activity_idempotency(
+        env: &Env,
+        pet_id: u64,
+        activity_type: &ActivityType,
+        start_ts: u64,
+    ) {
+        let idempotency_key = Self::generate_activity_idempotency_key(env, pet_id, activity_type, start_ts);
+        let current_time = env.ledger().timestamp();
+        let window = Self::get_idempotency_window(env);
+        
+        // Check if this key exists and is still within the window
+        if let Some(recorded_ts) = env
+            .storage()
+            .instance()
+            .get::<ActivityKey, u64>(&ActivityKey::ActivityIdempotencyKey(idempotency_key.clone()))
+        {
+            // Check if within window
+            if current_time < recorded_ts.saturating_add(window) {
+                panic_with_error!(env, ContractError::DuplicateActivity);
+            }
+        }
+        
+        // Record this idempotency key with current timestamp
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityIdempotencyKey(idempotency_key), &current_time);
+    }
+
     pub fn add_activity_record(
         env: Env,
         pet_id: u64,
@@ -12630,6 +13264,13 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
         pet.owner.require_auth();
+
+        // Check for duplicate activity within idempotency window (Issue #685)
+        let start_ts = env.ledger().timestamp();
+        Self::check_activity_idempotency(&env, pet_id, &activity_type, start_ts);
+
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
 
         if intensity > 10 {
             env.panic_with_error(ContractError::IntensityOutOfRange);
@@ -12652,7 +13293,7 @@ impl PetChainContract {
             duration_minutes,
             intensity,
             distance_meters,
-            recorded_at: env.ledger().timestamp(),
+            recorded_at: start_ts,
             notes,
         };
 
@@ -12984,6 +13625,11 @@ impl PetChainContract {
             .get(&DataKey::Pet(sire_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::SireNotFound));
         sire.owner.require_auth();
+
+        // Check storage quota for both sire and dam (Issue #676)
+        Self::increment_pet_storage(&env, sire_id);
+        Self::increment_pet_storage(&env, dam_id);
+
         let count: u64 = env
             .storage()
             .instance()
@@ -13331,6 +13977,10 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
         pet.owner.require_auth();
+
+        // Check storage quota (Issue #676)
+        Self::increment_pet_storage(&env, pet_id);
+
         let count: u64 = env
             .storage()
             .instance()

@@ -395,6 +395,8 @@ mod test_overflow {
             &String::from_str(&env, "Dry food"),
             &String::from_str(&env, "200g"),
             &String::from_str(&env, "Twice daily"),
+            &100u32,
+            &1200u32,
             &soroban_sdk::Vec::new(&env),
             &soroban_sdk::Vec::new(&env),
         );
