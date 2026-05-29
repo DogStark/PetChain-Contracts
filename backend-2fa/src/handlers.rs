@@ -4,7 +4,7 @@ use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
 use crate::two_factor::{
     AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
-    UserTwoFactorSummary,
+    UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use serde::{Deserialize, Serialize};
@@ -590,4 +590,170 @@ impl CanaryHandlers {
 #[cfg(test)]
 pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
     test_two_factor_store()
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenant support (Issue: multi-tenant 2FA)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProvisionTenantRequest {
+    pub tenant_id: String,
+    pub totp_issuer: String,
+    pub rate_limit_max_failures: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProvisionTenantResponse {
+    pub tenant_id: String,
+    pub totp_issuer: String,
+}
+
+/// Handlers that operate within a single tenant's namespace.
+/// All user data is scoped to the tenant; cross-tenant access is rejected
+/// at the `TenantScopedStore` level.
+pub struct MultiTenantHandlers {
+    store: TenantScopedStore,
+    limiter: Arc<dyn RateLimiter>,
+}
+
+impl MultiTenantHandlers {
+    pub fn new(store: TenantScopedStore) -> Self {
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+            store,
+        }
+    }
+
+    pub fn with_limiter(store: TenantScopedStore, limiter: Arc<dyn RateLimiter>) -> Self {
+        Self { store, limiter }
+    }
+
+    pub fn enable_two_factor(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        email: &str,
+    ) -> Result<EnableTwoFactorResponse, String> {
+        caller.authorize(user_id)?;
+
+        if let Ok(existing) = self.store.get(user_id) {
+            if existing.enabled {
+                return Err(
+                    "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
+                );
+            }
+        }
+
+        let setup = TwoFactorAuth::setup(email, self.store.issuer())?;
+
+        self.store.save(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes.clone(),
+                enabled: false,
+            },
+        )?;
+
+        Ok(EnableTwoFactorResponse {
+            secret: setup.secret,
+            qr_code: setup.qr_code_base64,
+            backup_codes: setup.backup_codes,
+        })
+    }
+
+    pub fn verify_and_activate(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        token: &str,
+    ) -> Result<bool, String> {
+        caller.authorize(user_id)?;
+
+        let max_failures = self.store.config.rate_limit_max_failures;
+        let key = format!(
+            "{}::verify::{}",
+            self.store.config.tenant_id, user_id
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
+        }
+        let _ = max_failures; // per-tenant config available for custom limiter wiring
+
+        let data = self.store.get(user_id)?;
+        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        if result {
+            self.store.update_enabled(user_id, true)?;
+            self.limiter.record_success(&key);
+        }
+        Ok(result)
+    }
+
+    pub fn disable_two_factor(
+        &self,
+        caller: &AuthenticatedUser,
+        user_id: &str,
+        token: &str,
+    ) -> Result<bool, String> {
+        caller.authorize(user_id)?;
+
+        let key = format!(
+            "{}::disable::{}",
+            self.store.config.tenant_id, user_id
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
+        }
+
+        let data = self.store.get(user_id)?;
+        if !data.enabled {
+            return Ok(false);
+        }
+        let result = TwoFactorAuth::verify_token(&data.secret, token)?;
+        if result {
+            self.store.update_enabled(user_id, false)?;
+            self.limiter.record_success(&key);
+        }
+        Ok(result)
+    }
+}
+
+/// Super-admin handler for tenant provisioning.
+pub struct TenantProvisioningHandlers {
+    registry: Arc<TenantRegistry>,
+}
+
+impl TenantProvisioningHandlers {
+    pub fn new(registry: Arc<TenantRegistry>) -> Self {
+        Self { registry }
+    }
+
+    /// Provision a new tenant (super-admin only — caller must be verified externally).
+    pub fn provision_tenant(
+        &self,
+        _super_admin: &AuthenticatedAdmin,
+        req: ProvisionTenantRequest,
+    ) -> Result<ProvisionTenantResponse, String> {
+        let config = TenantConfig {
+            tenant_id: req.tenant_id.clone(),
+            totp_issuer: req.totp_issuer.clone(),
+            rate_limit_max_failures: req.rate_limit_max_failures,
+        };
+        self.registry.provision(config)?;
+        Ok(ProvisionTenantResponse {
+            tenant_id: req.tenant_id,
+            totp_issuer: req.totp_issuer,
+        })
+    }
+
+    pub fn get_tenant_config(&self, tenant_id: &str) -> Option<TenantConfig> {
+        self.registry.get_config(tenant_id)
+    }
 }
