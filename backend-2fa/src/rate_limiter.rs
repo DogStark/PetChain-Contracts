@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use redis::Commands;
 
@@ -415,5 +415,105 @@ impl RateLimiter for RedisRateLimiter {
     }
     fn record_success(&self, key: &str) {
         self.inner.record_success(key)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DistributedRateLimiter — atomic INCR+EXPIRE via Lua, fallback to in-memory
+// ---------------------------------------------------------------------------
+
+/// Lua script: atomically increment a counter and set TTL on first use.
+/// Returns the new counter value.
+/// KEYS[1] = rate-limit key, ARGV[1] = window_secs, ARGV[2] = max_requests
+const INCR_EXPIRE_SCRIPT: &str = r#"
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+"#;
+
+/// Distributed rate limiter using Redis INCR + EXPIRE (Lua atomic script).
+///
+/// Falls back to an in-memory limiter with a warning log when Redis is
+/// unavailable.  A configurable `key_prefix` isolates counters per service
+/// instance (e.g. `"svc-a:"` vs `"svc-b:"`).
+pub struct DistributedRateLimiter {
+    client: Option<redis::Client>,
+    fallback: InMemoryRateLimiter,
+    max_requests: u32,
+    window_secs: u64,
+    key_prefix: String,
+}
+
+impl DistributedRateLimiter {
+    /// Create a new `DistributedRateLimiter`.
+    ///
+    /// * `redis_url`    — Redis connection URL; `None` forces in-memory fallback.
+    /// * `max_requests` — Maximum requests allowed per window.
+    /// * `window_secs`  — Sliding window duration in seconds.
+    /// * `key_prefix`   — Prefix prepended to every Redis key (e.g. `"api:"`).
+    pub fn new(
+        redis_url: Option<&str>,
+        max_requests: u32,
+        window_secs: u64,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let client = redis_url.and_then(|url| redis::Client::open(url).ok());
+        Self {
+            client,
+            fallback: InMemoryRateLimiter::new(max_requests, window_secs, window_secs),
+            max_requests,
+            window_secs,
+            key_prefix: key_prefix.into(),
+        }
+    }
+
+    fn redis_key(&self, key: &str) -> String {
+        format!("{}rl:{}", self.key_prefix, key)
+    }
+
+    fn try_redis(&self, key: &str) -> Option<RateLimitResult> {
+        let client = self.client.as_ref()?;
+        let mut con = client.get_connection().ok()?;
+
+        let redis_key = self.redis_key(key);
+        let count: u64 = redis::Script::new(INCR_EXPIRE_SCRIPT)
+            .key(&redis_key)
+            .arg(self.window_secs)
+            .arg(self.max_requests)
+            .invoke(&mut con)
+            .ok()?;
+
+        if count > self.max_requests as u64 {
+            Some(RateLimitResult::Blocked { retry_after_secs: self.window_secs })
+        } else {
+            Some(RateLimitResult::Allowed {
+                remaining: self.max_requests.saturating_sub(count as u32),
+            })
+        }
+    }
+}
+
+impl RateLimiter for DistributedRateLimiter {
+    fn record_failure(&self, key: &str) -> RateLimitResult {
+        match self.try_redis(key) {
+            Some(result) => result,
+            None => {
+                eprintln!("[DistributedRateLimiter] Redis unavailable, falling back to in-memory for key={key}");
+                self.fallback.record_failure(key)
+            }
+        }
+    }
+
+    fn record_success(&self, key: &str) {
+        if let Some(client) = &self.client {
+            if let Ok(mut con) = client.get_connection() {
+                let redis_key = self.redis_key(key);
+                let _: Result<(), _> = redis::cmd("DEL").arg(&redis_key).query(&mut con);
+                return;
+            }
+        }
+        self.fallback.record_success(key);
     }
 }
