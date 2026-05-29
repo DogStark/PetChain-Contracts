@@ -3121,6 +3121,188 @@ mod webhook_handler_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Multi-tenant tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod multi_tenant_tests {
+    use crate::handlers::{
+        AuthenticatedAdmin, AuthenticatedUser, MultiTenantHandlers, ProvisionTenantRequest,
+        TenantProvisioningHandlers,
+    };
+    use crate::two_factor::{InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore};
+    use std::sync::Arc;
+
+    fn make_registry() -> Arc<TenantRegistry> {
+        Arc::new(TenantRegistry::default())
+    }
+
+    fn make_store() -> Arc<InMemoryStore> {
+        Arc::new(InMemoryStore::default())
+    }
+
+    fn scoped(registry: &TenantRegistry, tenant_id: &str, store: Arc<InMemoryStore>) -> TenantScopedStore {
+        registry.scoped_store(tenant_id, store).unwrap()
+    }
+
+    #[test]
+    fn test_provision_tenant_success() {
+        let registry = make_registry();
+        let handler = TenantProvisioningHandlers::new(registry.clone());
+        let admin = AuthenticatedAdmin::new("super-admin");
+
+        let resp = handler
+            .provision_tenant(
+                &admin,
+                ProvisionTenantRequest {
+                    tenant_id: "acme".to_string(),
+                    totp_issuer: "Acme Corp".to_string(),
+                    rate_limit_max_failures: 3,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(resp.tenant_id, "acme");
+        assert_eq!(resp.totp_issuer, "Acme Corp");
+
+        let config = registry.get_config("acme").unwrap();
+        assert_eq!(config.rate_limit_max_failures, 3);
+    }
+
+    #[test]
+    fn test_provision_tenant_duplicate_rejected() {
+        let registry = make_registry();
+        let handler = TenantProvisioningHandlers::new(registry.clone());
+        let admin = AuthenticatedAdmin::new("super-admin");
+
+        handler
+            .provision_tenant(
+                &admin,
+                ProvisionTenantRequest {
+                    tenant_id: "acme".to_string(),
+                    totp_issuer: "Acme".to_string(),
+                    rate_limit_max_failures: 5,
+                },
+            )
+            .unwrap();
+
+        let err = handler
+            .provision_tenant(
+                &admin,
+                ProvisionTenantRequest {
+                    tenant_id: "acme".to_string(),
+                    totp_issuer: "Acme".to_string(),
+                    rate_limit_max_failures: 5,
+                },
+            )
+            .unwrap_err();
+
+        assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn test_cross_tenant_data_access_rejected() {
+        let registry = make_registry();
+        let store = make_store();
+
+        // Provision two tenants
+        registry
+            .provision(TenantConfig {
+                tenant_id: "tenant_a".to_string(),
+                totp_issuer: "A".to_string(),
+                rate_limit_max_failures: 5,
+            })
+            .unwrap();
+        registry
+            .provision(TenantConfig {
+                tenant_id: "tenant_b".to_string(),
+                totp_issuer: "B".to_string(),
+                rate_limit_max_failures: 5,
+            })
+            .unwrap();
+
+        let scoped_a = scoped(&registry, "tenant_a", store.clone());
+        let scoped_b = scoped(&registry, "tenant_b", store.clone());
+
+        // Save data under tenant_a
+        scoped_a
+            .save(
+                "user1",
+                crate::two_factor::TwoFactorData {
+                    secret: "SECRET_A".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                },
+            )
+            .unwrap();
+
+        // tenant_b cannot see tenant_a's user1
+        let result = scoped_b.get("user1");
+        assert!(result.is_err(), "Cross-tenant access must be rejected");
+    }
+
+    #[test]
+    fn test_unknown_tenant_scoped_store_rejected() {
+        let registry = make_registry();
+        let store = make_store();
+
+        let result = registry.scoped_store("nonexistent", store);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown tenant"));
+    }
+
+    #[test]
+    fn test_per_tenant_totp_issuer_applied() {
+        let registry = make_registry();
+        registry
+            .provision(TenantConfig {
+                tenant_id: "petco".to_string(),
+                totp_issuer: "PetCo Vet".to_string(),
+                rate_limit_max_failures: 5,
+            })
+            .unwrap();
+
+        let store = make_store();
+        let scoped = scoped(&registry, "petco", store);
+        assert_eq!(scoped.issuer(), "PetCo Vet");
+    }
+
+    #[test]
+    fn test_multi_tenant_handler_enable_and_verify() {
+        let registry = make_registry();
+        registry
+            .provision(TenantConfig::new("myapp"))
+            .unwrap();
+
+        let store = make_store();
+        let scoped = scoped(&registry, "myapp", store);
+        let handler = MultiTenantHandlers::new(scoped);
+        let caller = AuthenticatedUser::new("alice");
+
+        let resp = handler
+            .enable_two_factor(&caller, "alice", "alice@example.com")
+            .unwrap();
+
+        assert!(!resp.secret.is_empty());
+        assert!(!resp.backup_codes.is_empty());
+    }
+
+    #[test]
+    fn test_multi_tenant_handler_cross_user_forbidden() {
+        let registry = make_registry();
+        registry.provision(TenantConfig::new("myapp")).unwrap();
+
+        let store = make_store();
+        let scoped = scoped(&registry, "myapp", store);
+        let handler = MultiTenantHandlers::new(scoped);
+
+        // caller is "alice" but tries to act as "bob"
+        let caller = AuthenticatedUser::new("alice");
+        let err = handler
+            .enable_two_factor(&caller, "bob", "bob@example.com")
+            .unwrap_err();
+
+        assert!(err.contains("Forbidden"));
 // ===========================================================================
 // Pool health check, retry logic, and pool stats tests
 // ===========================================================================

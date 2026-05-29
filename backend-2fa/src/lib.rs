@@ -30,6 +30,7 @@ pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData,
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
+    TenantConfig, TenantRegistry, TenantScopedStore,
 };
 pub use webhooks::{
     DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog, WebhookManager,

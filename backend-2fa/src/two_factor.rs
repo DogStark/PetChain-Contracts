@@ -555,148 +555,145 @@ impl TwoFactorStore for InMemoryStore {
     }
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub enum MockStoreFailure {
-    Error(String),
-    Timeout,
+// ---------------------------------------------------------------------------
+// Multi-tenant support
+// ---------------------------------------------------------------------------
+
+/// Per-tenant configuration: TOTP issuer name and rate-limit max failures.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TenantConfig {
+    pub tenant_id: String,
+    pub totp_issuer: String,
+    pub rate_limit_max_failures: u32,
 }
 
-#[cfg(test)]
-impl MockStoreFailure {
-    fn message(&self) -> String {
-        match self {
-            Self::Error(message) => message.clone(),
-            Self::Timeout => "mock store timeout".to_string(),
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, Default)]
-pub struct MockStoreConfig {
-    pub save: Option<MockStoreFailure>,
-    pub get: Option<MockStoreFailure>,
-    pub delete: Option<MockStoreFailure>,
-    pub update_enabled: Option<MockStoreFailure>,
-    pub update_backup_codes: Option<MockStoreFailure>,
-    pub log_recovery_code_usage: Option<MockStoreFailure>,
-}
-
-#[cfg(test)]
-#[derive(Default, Clone)]
-pub struct MockTwoFactorStore {
-    inner: InMemoryStore,
-    config: Arc<Mutex<MockStoreConfig>>,
-}
-
-#[cfg(test)]
-impl MockTwoFactorStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_config(config: MockStoreConfig) -> Self {
+impl TenantConfig {
+    pub fn new(tenant_id: impl Into<String>) -> Self {
         Self {
-            inner: InMemoryStore::default(),
-            config: Arc::new(Mutex::new(config)),
-        }
-    }
-
-    pub fn seed(&self, user_id: &str, data: TwoFactorData) {
-        let _ = self.inner.save(user_id, data);
-    }
-
-    pub fn get_data(&self, user_id: &str) -> Option<TwoFactorData> {
-        self.inner.get(user_id).ok()
-    }
-
-    fn fail(&self, failure: &Option<MockStoreFailure>) -> Result<(), String> {
-        match failure {
-            Some(failure) => Err(failure.message()),
-            None => Ok(()),
+            tenant_id: tenant_id.into(),
+            totp_issuer: "PetChain".to_string(),
+            rate_limit_max_failures: 5,
         }
     }
 }
 
-#[cfg(test)]
-impl TwoFactorStore for MockTwoFactorStore {
-    fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
-        self.fail(&self.config.lock().unwrap().save)?;
-        self.inner.save(user_id, data)
+/// A namespaced key that scopes any store operation to a specific tenant.
+/// All store methods that accept a `user_id` are prefixed with `{tenant_id}::`
+/// so data is fully isolated between tenants.
+#[derive(Clone, Debug)]
+pub struct TenantScopedStore {
+    inner: Arc<dyn TwoFactorStore>,
+    pub config: TenantConfig,
+}
+
+impl TenantScopedStore {
+    pub fn new(inner: Arc<dyn TwoFactorStore>, config: TenantConfig) -> Self {
+        Self { inner, config }
     }
 
-    fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
-        self.fail(&self.config.lock().unwrap().get)?;
-        self.inner.get(user_id)
+    /// Produce a namespaced user key: `"{tenant_id}::{user_id}"`.
+    fn key(&self, user_id: &str) -> String {
+        format!("{}::{}", self.config.tenant_id, user_id)
     }
 
-    fn delete(&self, user_id: &str) -> Result<(), String> {
-        self.fail(&self.config.lock().unwrap().delete)?;
-        self.inner.delete(user_id)
+    pub fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+        self.inner.save(&self.key(user_id), data)
     }
 
-    fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
-        self.fail(&self.config.lock().unwrap().update_enabled)?;
-        self.inner.update_enabled(user_id, enabled)
+    pub fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        self.inner.get(&self.key(user_id))
     }
 
-    fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
-        self.fail(&self.config.lock().unwrap().update_backup_codes)?;
-        self.inner.update_backup_codes(user_id, codes)
+    pub fn delete(&self, user_id: &str) -> Result<(), String> {
+        self.inner.delete(&self.key(user_id))
     }
 
-    fn log_recovery_code_usage(
+    pub fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
+        self.inner.update_enabled(&self.key(user_id), enabled)
+    }
+
+    pub fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
+        self.inner.update_backup_codes(&self.key(user_id), codes)
+    }
+
+    pub fn log_recovery_code_usage(
         &self,
         user_id: &str,
         code_index: i32,
         ip_address: Option<&str>,
     ) -> Result<(), String> {
-        self.fail(&self.config.lock().unwrap().log_recovery_code_usage)?;
         self.inner
-            .log_recovery_code_usage(user_id, code_index, ip_address)
+            .log_recovery_code_usage(&self.key(user_id), code_index, ip_address)
     }
 
-    fn get_recovery_usage_log(
-        &self,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<RecoveryCodeUsageLog>, String> {
-        self.inner.get_recovery_usage_log(page, page_size)
-    }
-
-    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String> {
-        self.inner.list_users(page, page_size)
-    }
-
-    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String> {
-        self.inner.admin_disable_two_fa(user_id, admin_id)
-    }
-
-    fn get_audit_log(
-        &self,
-        user_id: &str,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<AuditLogEntry>, String> {
-        self.inner.get_audit_log(user_id, page, page_size)
-    }
-
-    fn append_audit_log(
+    pub fn append_audit_log(
         &self,
         user_id: &str,
         event: &str,
         actor: &str,
         metadata: Option<&str>,
     ) -> Result<(), String> {
-        self.inner.append_audit_log(user_id, event, actor, metadata)
+        self.inner
+            .append_audit_log(&self.key(user_id), event, actor, metadata)
     }
 
-    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
-        self.inner.set_canary(user_id, is_canary)
+    pub fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        self.inner.get_audit_log(&self.key(user_id), page, page_size)
     }
 
-    fn is_canary(&self, user_id: &str) -> bool {
-        self.inner.is_canary(user_id)
+    pub fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        self.inner.set_canary(&self.key(user_id), is_canary)
+    }
+
+    pub fn is_canary(&self, user_id: &str) -> bool {
+        self.inner.is_canary(&self.key(user_id))
+    }
+
+    /// TOTP issuer name for this tenant (used when generating QR codes).
+    pub fn issuer(&self) -> &str {
+        &self.config.totp_issuer
+    }
+}
+
+/// Registry of tenants. Super-admin provisions tenants; all lookups are
+/// scoped so cross-tenant access is structurally impossible.
+#[derive(Default, Clone)]
+pub struct TenantRegistry {
+    tenants: Arc<Mutex<HashMap<String, TenantConfig>>>,
+}
+
+impl TenantRegistry {
+    /// Provision a new tenant. Returns `Err` if the tenant already exists.
+    pub fn provision(&self, config: TenantConfig) -> Result<(), String> {
+        let mut map = self.tenants.lock().unwrap();
+        if map.contains_key(&config.tenant_id) {
+            return Err(format!("Tenant '{}' already exists", config.tenant_id));
+        }
+        map.insert(config.tenant_id.clone(), config);
+        Ok(())
+    }
+
+    /// Retrieve a scoped store for the given tenant. Returns `Err` if the
+    /// tenant does not exist, preventing cross-tenant access.
+    pub fn scoped_store(
+        &self,
+        tenant_id: &str,
+        inner: Arc<dyn TwoFactorStore>,
+    ) -> Result<TenantScopedStore, String> {
+        let map = self.tenants.lock().unwrap();
+        let config = map
+            .get(tenant_id)
+            .cloned()
+            .ok_or_else(|| format!("Unknown tenant: {}", tenant_id))?;
+        Ok(TenantScopedStore::new(inner, config))
+    }
+
+    pub fn get_config(&self, tenant_id: &str) -> Option<TenantConfig> {
+        self.tenants.lock().unwrap().get(tenant_id).cloned()
     }
 }
