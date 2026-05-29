@@ -304,6 +304,9 @@ pub enum ContractError {
     NotPetOwner = 60,
     NotConsentOwner = 61,
     ConsentAlreadyRevoked = 62,
+    InvalidConsentChain = 63,
+    ConsentScopeEscalation = 64,
+    DelegationDepthExceeded = 65,
     SlotAlreadyBooked = 70,
     SlotNotBooked = 71,
     ProposalNotFound = 80,
@@ -1026,6 +1029,12 @@ pub enum ConsentKey {
     ConsentCount,
     PetConsentIndex((u64, u64)),
     PetConsentCount(u64),
+}
+
+#[contracttype]
+pub enum CrossChainKey {
+    PetChainMapping((u64, String)),
+    ChainLookup((String, String)),
 }
 
 #[contracttype]
@@ -9159,25 +9168,114 @@ impl PetChainContract {
 
     // --- CONSENT SYSTEM ---
 
-    pub fn grant_consent(
-        env: Env,
-        pet_id: u64,
-        owner: Address,
-        consent_type: ConsentType,
-        granted_to: Address,
-        scope: ConsentScope,
-    ) -> u64 {
-        Self::grant_consent_with_expiry(env, pet_id, owner, consent_type, granted_to, None)
+    fn scope_allows(parent_scope: &ConsentScope, child_scope: &ConsentScope) -> bool {
+        parent_scope == child_scope
     }
 
-    pub fn grant_consent_with_expiry(
+    fn consent_chain_is_valid(env: &Env, consent_id: u64) -> bool {
+        let mut chain = Vec::new(env);
+        let mut current_id = Some(consent_id);
+
+        while let Some(id) = current_id {
+            let consent = match env
+                .storage()
+                .instance()
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(id))
+            {
+                Some(consent) => consent,
+                None => return false,
+            };
+
+            chain.push_back(consent.clone());
+            if chain.len() > 3 {
+                return false;
+            }
+            current_id = consent.parent_consent_id;
+        }
+
+        let total = chain.len();
+        if total == 0 {
+            return false;
+        }
+
+        let pet = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(chain.get(total - 1).unwrap().pet_id))
+        {
+            Some(pet) => pet,
+            None => return false,
+        };
+
+        for i in 0..total {
+            let consent = chain.get(i).unwrap();
+            if !Self::is_consent_active_at(env, &consent) {
+                return false;
+            }
+
+            let depth_from_root = total - i;
+            if depth_from_root > consent.max_depth as u32 {
+                return false;
+            }
+
+            if i + 1 < total {
+                let parent = chain.get(i + 1).unwrap();
+                if consent.pet_id != parent.pet_id {
+                    return false;
+                }
+                if consent.parent_consent_id != Some(parent.id) {
+                    return false;
+                }
+                if consent.owner != parent.granted_to {
+                    return false;
+                }
+                if !Self::scope_allows(&parent.scope, &consent.scope) {
+                    return false;
+                }
+            } else if consent.owner != pet.owner {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn find_delegate_parent(
+        env: &Env,
+        pet_id: u64,
+        delegator: &Address,
+        scope: &ConsentScope,
+    ) -> Option<Consent> {
+        let history = Self::get_consent_history(env.clone(), pet_id);
+        let mut index = history.len();
+        while index > 0 {
+            index -= 1;
+            if let Some(consent) = history.get(index) {
+                if consent.granted_to == *delegator
+                    && Self::scope_allows(&consent.scope, scope)
+                    && Self::consent_chain_is_valid(env, consent.id)
+                {
+                    return Some(consent);
+                }
+            }
+        }
+        None
+    }
+
+    fn grant_consent_record(
         env: Env,
         pet_id: u64,
         owner: Address,
         consent_type: ConsentType,
         granted_to: Address,
         expires_at: Option<u64>,
+        scope: ConsentScope,
+        parent_consent_id: Option<u64>,
+        max_depth: u32,
     ) -> u64 {
+        const MAX_CONSENTS_PER_PET: u64 = 50;
+        const MAX_CONSENT_CHAIN_DEPTH: u32 = 3;
+
         owner.require_auth();
 
         let pet: Pet = env
@@ -9185,11 +9283,33 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
-        if pet.owner != owner {
+
+        if parent_consent_id.is_none() && pet.owner != owner {
             env.panic_with_error(ContractError::NotPetOwner);
         }
 
-        const MAX_CONSENTS_PER_PET: u64 = 50;
+        let allowed_max_depth = core::cmp::min(max_depth, MAX_CONSENT_CHAIN_DEPTH);
+
+        if let Some(parent_id) = parent_consent_id {
+            let parent = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(parent_id))
+                .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidConsentChain));
+
+            if parent.pet_id != pet_id || parent.granted_to != owner {
+                env.panic_with_error(ContractError::InvalidConsentChain);
+            }
+            if !Self::consent_chain_is_valid(&env, parent_id) {
+                env.panic_with_error(ContractError::InvalidConsentChain);
+            }
+            if !Self::scope_allows(&parent.scope, &scope) {
+                env.panic_with_error(ContractError::ConsentScopeEscalation);
+            }
+            if parent.max_depth == 0 {
+                env.panic_with_error(ContractError::DelegationDepthExceeded);
+            }
+        }
 
         let count: u64 = env
             .storage()
@@ -9212,7 +9332,6 @@ impl PetChainContract {
                         .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
                     {
                         if !Self::is_consent_active_at(&env, &c) {
-                            // Shift remaining indices down
                             for j in i..count {
                                 if let Some(next_cid) =
                                     env.storage().instance().get::<ConsentKey, u64>(
@@ -9266,7 +9385,12 @@ impl PetChainContract {
             revoked_at: None,
             is_active: true,
             scope,
-            parent_consent_id: None,
+            parent_consent_id,
+            max_depth: if parent_consent_id.is_some() {
+                allowed_max_depth
+            } else {
+                MAX_CONSENT_CHAIN_DEPTH
+            },
         };
 
         env.storage()
@@ -9288,6 +9412,48 @@ impl PetChainContract {
         consent_id
     }
 
+    pub fn grant_consent(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+        scope: ConsentScope,
+    ) -> u64 {
+        Self::grant_consent_record(
+            env,
+            pet_id,
+            owner,
+            consent_type,
+            granted_to,
+            None,
+            scope,
+            None,
+            3,
+        )
+    }
+
+    pub fn grant_consent_with_expiry(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        consent_type: ConsentType,
+        granted_to: Address,
+        expires_at: Option<u64>,
+    ) -> u64 {
+        Self::grant_consent_record(
+            env,
+            pet_id,
+            owner,
+            consent_type,
+            granted_to,
+            expires_at,
+            ConsentScope::ReadMedical,
+            None,
+            3,
+        )
+    }
+
     /// Grant a consent that is a sub-delegation of an existing consent.
     /// The `parent_consent_id` links this consent to its parent for cascade revocation.
     pub fn grant_consent_with_parent(
@@ -9299,24 +9465,101 @@ impl PetChainContract {
         scope: ConsentScope,
         parent_consent_id: Option<u64>,
     ) -> u64 {
-        let consent_id =
-            Self::grant_consent_with_expiry(env.clone(), pet_id, owner, consent_type, granted_to, None);
-
-        // Patch the stored consent to set parent_consent_id
-        if let Some(pid) = parent_consent_id {
-            if let Some(mut c) = env
+        let max_depth = if let Some(pid) = parent_consent_id {
+            if let Some(parent) = env
                 .storage()
                 .instance()
-                .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(pid))
             {
-                c.parent_consent_id = Some(pid);
-                env.storage()
-                    .instance()
-                    .set(&ConsentKey::Consent(consent_id), &c);
+                let parent_depth = Self::consent_history_depth(&env, pid);
+                if parent.granted_to != owner
+                    || parent.pet_id != pet_id
+                    || !Self::consent_chain_is_valid(&env, pid)
+                    || !Self::scope_allows(&parent.scope, &scope)
+                {
+                    env.panic_with_error(ContractError::InvalidConsentChain);
+                }
+                if parent_depth + 1 > parent.max_depth {
+                    env.panic_with_error(ContractError::DelegationDepthExceeded);
+                }
+                core::cmp::min(parent.max_depth, 3)
+            } else {
+                env.panic_with_error(ContractError::InvalidConsentChain);
             }
+        } else {
+            3
+        };
+
+        Self::grant_consent_record(
+            env,
+            pet_id,
+            owner,
+            consent_type,
+            granted_to,
+            None,
+            scope,
+            parent_consent_id,
+            max_depth,
+        )
+    }
+
+    /// Delegate one or more scopes from the caller's active consent chain to a
+    /// trusted party. Each delegated scope must remain within the delegator's
+    /// own permission scope, and the resulting chain cannot exceed depth 3.
+    pub fn delegate_consent(
+        env: Env,
+        pet_id: u64,
+        delegator: Address,
+        delegate: Address,
+        scopes: Vec<ConsentScope>,
+        max_depth: u32,
+    ) -> Vec<u64> {
+        delegator.require_auth();
+
+        let mut results = Vec::new(&env);
+        let effective_max_depth = core::cmp::min(max_depth, 3);
+
+        for scope in scopes.iter() {
+            let parent = Self::find_delegate_parent(&env, pet_id, &delegator, scope)
+                .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidConsentChain));
+            let parent_depth = Self::consent_history_depth(&env, parent.id);
+            if parent_depth + 1 > effective_max_depth || parent_depth >= parent.max_depth {
+                env.panic_with_error(ContractError::DelegationDepthExceeded);
+            }
+
+            let consent_id = Self::grant_consent_record(
+                env.clone(),
+                pet_id,
+                delegator.clone(),
+                parent.consent_type.clone(),
+                delegate.clone(),
+                None,
+                scope,
+                Some(parent.id),
+                effective_max_depth,
+            );
+            results.push_back(consent_id);
         }
 
-        consent_id
+        results
+    }
+
+    fn consent_history_depth(env: &Env, consent_id: u64) -> u32 {
+        let mut depth = 0u32;
+        let mut current_id = Some(consent_id);
+        while let Some(id) = current_id {
+            let consent = match env
+                .storage()
+                .instance()
+                .get::<ConsentKey, Consent>(&ConsentKey::Consent(id))
+            {
+                Some(consent) => consent,
+                None => return 0,
+            };
+            depth += 1;
+            current_id = consent.parent_consent_id;
+        }
+        depth
     }
 
     fn is_consent_active_at(env: &Env, consent: &Consent) -> bool {
@@ -9339,6 +9582,33 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    /// Check whether a user has a valid consent chain for the requested scope.
+    /// Every hop in the chain is validated, including ownership, scope and
+    /// branch-depth constraints.
+    pub fn check_consent_access(
+        env: Env,
+        pet_id: u64,
+        user: Address,
+        scope: ConsentScope,
+    ) -> bool {
+        let history = Self::get_consent_history(env.clone(), pet_id);
+        let mut index = history.len();
+
+        while index > 0 {
+            index -= 1;
+            if let Some(consent) = history.get(index) {
+                if consent.granted_to == user
+                    && consent.scope == scope
+                    && Self::consent_chain_is_valid(&env, consent.id)
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     pub fn extend_consent(
@@ -14173,6 +14443,8 @@ mod test;
 mod test_access_control;
 #[cfg(test)]
 mod test_activity;
+#[cfg(test)]
+mod test_consent_pagination;
 #[cfg(test)]
 mod test_behavior;
 #[cfg(test)]
