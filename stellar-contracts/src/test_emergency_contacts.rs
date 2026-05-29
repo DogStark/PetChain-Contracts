@@ -8,7 +8,7 @@ fn valid_contact(
     email: &str,
     relationship: &str,
     is_primary: bool,
-    priority: u8,
+    priority: u32,
 ) -> EmergencyContact {
     EmergencyContact {
         name: String::from_str(env, name),
