@@ -341,6 +341,8 @@ pub enum ContractError {
     ClaimNotFound = 164,
     ClaimDocumentLimitReached = 165,
     ClaimImmutable = 166,
+    CrossChainIdentityAlreadyRegistered = 167,
+    CrossChainIdentityNotFound = 168,
 }
 
 #[contracttype]
@@ -1214,6 +1216,8 @@ pub struct Consent {
     pub scope: ConsentScope,
     /// ID of the parent consent this was delegated from (None = root consent).
     pub parent_consent_id: Option<u64>,
+    /// Maximum delegation depth allowed for this consent branch.
+    pub max_depth: u32,
 }
 
 #[contracttype]
@@ -1344,6 +1348,17 @@ pub struct ConsentRevoked {
     pub pet_id: u64,
     pub consent_id: u64,
     pub revoked_at: u64,
+}
+
+/// Event emitted when a pet is linked to an external chain identity.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossChainIdentityRegistered {
+    pub version: u32,
+    pub pet_id: u64,
+    pub chain_id: String,
+    pub external_id: String,
+    pub registered_at: u64,
 }
 
 /// A single entry in the immutable append-only audit ledger.
@@ -9892,8 +9907,6 @@ impl PetChainContract {
         active
     }
 
-    pub fn get_consent_history_page(env: Env, pet_id: u64, page: u64, page_size: u32) -> Vec<Consent> {
-        let size = if page_size == 0 { 50u32 } else { page_size };
     pub fn get_consent_history_page(
         env: Env,
         pet_id: u64,
@@ -9968,6 +9981,66 @@ impl PetChainContract {
             }
         }
         result
+    }
+
+    pub fn register_cross_chain_id(
+        env: Env,
+        pet_id: u64,
+        owner: Address,
+        chain_id: String,
+        external_id: String,
+    ) -> bool {
+        owner.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        if pet.owner != owner {
+            env.panic_with_error(ContractError::NotPetOwner);
+        }
+
+        if env
+            .storage()
+            .instance()
+            .has(&CrossChainKey::PetChainMapping((pet_id, chain_id.clone())))
+            || env
+                .storage()
+                .instance()
+                .has(&CrossChainKey::ChainLookup((chain_id.clone(), external_id.clone())))
+        {
+            env.panic_with_error(ContractError::CrossChainIdentityAlreadyRegistered);
+        }
+
+        env.storage().instance().set(
+            &CrossChainKey::PetChainMapping((pet_id, chain_id.clone())),
+            &external_id,
+        );
+        env.storage().instance().set(
+            &CrossChainKey::ChainLookup((chain_id.clone(), external_id.clone())),
+            &pet_id,
+        );
+
+        let registered_at = env.ledger().timestamp();
+        env.events().publish(
+            (Symbol::new(&env, "CrossChainIdentityRegistered"), pet_id),
+            CrossChainIdentityRegistered {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                chain_id,
+                external_id,
+                registered_at,
+            },
+        );
+
+        true
+    }
+
+    pub fn resolve_cross_chain(env: Env, chain_id: String, external_id: String) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get::<CrossChainKey, u64>(&CrossChainKey::ChainLookup((chain_id, external_id)))
     }
 
     // --- IMMUTABLE AUDIT LEDGER ---
@@ -14449,6 +14522,8 @@ mod test_consent_pagination;
 mod test_behavior;
 #[cfg(test)]
 mod test_grooming;
+#[cfg(test)]
+mod test_cross_chain_identity;
 mod gas_profile_tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
