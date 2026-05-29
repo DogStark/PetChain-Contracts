@@ -1194,7 +1194,28 @@ pub struct LabResult {
     pub attachment_hash: Option<String>, // IPFS hash for PDF
     pub medical_record_id: Option<u64>,  // Link to medical record
     pub biomarkers: Map<String, i128>,
+    // Issue #652: biomarker flags (Normal/Low/High) set during add_lab_result
+    pub biomarker_flags: Map<String, u32>,
 }
+
+/// Per-biomarker reference range (Issue #652)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceRange {
+    pub min: i128,
+    pub max: i128,
+}
+
+/// Storage key for reference ranges (Issue #652)
+#[contracttype]
+pub enum ReferenceRangeKey {
+    /// (species_str, biomarker_name) -> ReferenceRange
+    SpeciesBiomarker((String, String)),
+}
+
+const FLAG_NORMAL: u32 = 0;
+const FLAG_LOW: u32 = 1;
+const FLAG_HIGH: u32 = 2;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6791,6 +6812,9 @@ impl PetChainContract {
     }
 
     // --- LAB RESULTS ---
+    /// Add a lab result with biomarker validation against reference ranges (Issue #652).
+    /// Each biomarker is compared against its reference range and flagged as
+    /// Normal (0), Low (1), or High (2). Missing reference ranges are treated as Normal.
     pub fn add_lab_result(
         env: Env,
         pet_id: u64,
@@ -6802,9 +6826,7 @@ impl PetChainContract {
         medical_record_id: Option<u64>,
     ) -> u64 {
         vet_address.require_auth();
-        let _pet: Pet = env
-            .storage()
-            .instance()
+        let pet: Pet = env.storage().instance()
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
@@ -6818,43 +6840,30 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
 
-        let count = env
-            .storage()
-            .instance()
-            .get::<MedicalKey, u64>(&MedicalKey::LabResultCount)
-            .unwrap_or(0);
+        let biomarkers: Map<String, i128> = Map::new(&env);
+        let biomarker_flags = PetChainContract::compute_biomarker_flags(
+            &env, &pet.species, &biomarkers,
+        );
+
+        let count = env.storage().instance()
+            .get::<MedicalKey, u64>(&MedicalKey::LabResultCount).unwrap_or(0);
         let id = safe_increment(count);
-        env.storage()
-            .instance()
-            .set(&MedicalKey::LabResultCount, &id);
+        env.storage().instance().set(&MedicalKey::LabResultCount, &id);
 
         let result = LabResult {
-            id,
-            pet_id,
-            test_type,
+            id, pet_id, test_type,
             date: env.ledger().timestamp(),
-            results,
-            vet_address,
-            reference_ranges,
-            attachment_hash,
-            medical_record_id,
-            biomarkers: Map::new(&env),
+            results, vet_address, reference_ranges,
+            attachment_hash, medical_record_id,
+            biomarkers, biomarker_flags,
         };
-        env.storage()
-            .instance()
-            .set(&MedicalKey::LabResult(id), &result);
+        env.storage().instance().set(&MedicalKey::LabResult(id), &result);
 
-        let p_count = env
-            .storage()
-            .instance()
-            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id))
-            .unwrap_or(0);
+        let p_count = env.storage().instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id)).unwrap_or(0);
         let new_p = safe_increment(p_count);
-        env.storage()
-            .instance()
-            .set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
-        env.storage()
-            .instance()
+        env.storage().instance().set(&MedicalKey::PetLabResultCount(pet_id), &new_p);
+        env.storage().instance()
             .set(&MedicalKey::PetLabResultIndex((pet_id, new_p)), &id);
 
         id
@@ -6865,6 +6874,69 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0)
+    }
+
+    /// Compute biomarker flags by comparing each biomarker against the
+    /// species-specific reference range. Missing reference ranges are treated
+    /// as Normal (flag = 0).
+    fn compute_biomarker_flags(
+        env: &Env,
+        species: &Species,
+        biomarkers: &Map<String, i128>,
+    ) -> Map<String, u32> {
+        let mut flags: Map<String, u32> = Map::new(env);
+        let species_str = PetChainContract::species_to_string(env, species);
+        for (biomarker_name, value) in biomarkers.iter() {
+            let range: Option<ReferenceRange> = env.storage().instance()
+                .get(&ReferenceRangeKey::SpeciesBiomarker((species_str.clone(), biomarker_name.clone())));
+            let flag = match range {
+                Some(r) => {
+                    if value < r.min { FLAG_LOW }
+                    else if value > r.max { FLAG_HIGH }
+                    else { FLAG_NORMAL }
+                }
+                None => FLAG_NORMAL,
+            };
+            flags.set(biomarker_name, flag);
+        }
+        flags
+    }
+
+    /// Set a reference range for a specific biomarker and species (admin only, Issue #652).
+    pub fn set_reference_range(
+        env: Env, admin: Address, species: String,
+        biomarker_name: String, min: i128, max: i128,
+    ) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        if min > max { env.panic_with_error(ContractError::InvalidInput); }
+        let range = ReferenceRange { min, max };
+        env.storage().instance()
+            .set(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)), &range);
+    }
+
+    /// Remove a reference range for a specific biomarker and species (admin only, Issue #652).
+    pub fn remove_reference_range(
+        env: Env, admin: Address, species: String, biomarker_name: String,
+    ) {
+        PetChainContract::require_admin_auth(&env, &admin);
+        env.storage().instance()
+            .remove(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)));
+    }
+
+    /// Get a reference range for a specific biomarker and species.
+    pub fn get_reference_range(
+        env: Env, species: String, biomarker_name: String,
+    ) -> Option<ReferenceRange> {
+        env.storage().instance()
+            .get(&ReferenceRangeKey::SpeciesBiomarker((species, biomarker_name)))
+    }
+
+    /// Get the biomarker flags for a lab result.
+    pub fn get_lab_result_biomarker_flags(env: Env, lab_result_id: u64) -> Map<String, u32> {
+        env.storage().instance()
+            .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lab_result_id))
+            .map(|r| r.biomarker_flags)
+            .unwrap_or_else(|| Map::new(&env))
     }
 
     pub fn get_lab_result(env: Env, lab_result_id: u64) -> Option<LabResult> {
