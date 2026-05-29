@@ -48,7 +48,7 @@ TotpConfig::high_security()
 ### Setup with Default Configuration
 ```rust
 let setup = TwoFactorAuth::setup("user@example.com", "MyApp")?;
-// Uses SHA256 by default
+// Uses SHA1 by default for backward compatibility
 ```
 
 ### Setup with Custom Configuration
@@ -59,7 +59,7 @@ let setup = TwoFactorAuth::setup_with_config("user@example.com", "MyApp", config
 
 ### Token Verification
 ```rust
-// Default verification (SHA256)
+// Default verification (SHA1)
 let is_valid = TwoFactorAuth::verify_token(&secret, &token)?;
 
 // Custom configuration verification
@@ -79,11 +79,14 @@ let setup = TwoFactorAuth::setup("user@example.com", "MyApp")?;
 
 **After (Backward Compatible):**
 ```rust
-// Option 1: Use default (SHA256 - recommended)
+// Option 1: Use default (SHA1 for legacy compatibility)
 let setup = TwoFactorAuth::setup("user@example.com", "MyApp")?;
 
-// Option 2: Explicit SHA1 for backward compatibility
-let config = TotpConfig::legacy_sha1();
+// Option 2: Explicit SHA256 or SHA512 for stronger new enrollments
+let config = TotpConfig {
+    algorithm: totp_rs::Algorithm::SHA256,
+    ..TotpConfig::default()
+};
 let setup = TwoFactorAuth::setup_with_config("user@example.com", "MyApp", config)?;
 ```
 
@@ -97,9 +100,16 @@ struct TwoFactorData {
     secret: String,
     backup_codes: Vec<String>,
     enabled: bool,
-    config: TotpConfig,  // Store the configuration used
+    algorithm: HmacAlgorithm, // Store the algorithm used for this enrollment
 }
 ```
+
+### Migration Path
+
+Existing rows that do not yet have an `algorithm` column should be treated as
+`SHA1` until the user re-enrolls. New enrollments persist the selected
+algorithm in the database, so SHA256 and SHA512 users verify with the same
+hash they enrolled with.
 
 ## Security Considerations
 

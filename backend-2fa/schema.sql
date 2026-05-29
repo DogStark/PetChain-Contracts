@@ -15,6 +15,7 @@ CREATE TABLE user_two_factor (
     secret TEXT NOT NULL,
     backup_codes TEXT NOT NULL, -- JSON array of backup codes
     enabled BOOLEAN DEFAULT FALSE,
+    algorithm VARCHAR(16) NOT NULL DEFAULT 'SHA1',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (tenant_id, user_id)

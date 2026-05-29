@@ -16,10 +16,11 @@ pub use handlers::{
     AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin,
     AuthenticatedUser, CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse,
     GrantUnlimitedRequest, PoolMetricsHandlers, PoolStatsResponse, SetUserQuotaRequest,
-    TwoFactorHandlers,
+    TwoFactorHandlers, leaderboard_ws,
 };
 pub use leaderboard::{
-    FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
+    broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, LeaderboardEntry,
+    LeaderboardScoreUpdate, LeaderboardWsHub, ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use rate_limiter::{
     DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter, LiveRedisBackend,

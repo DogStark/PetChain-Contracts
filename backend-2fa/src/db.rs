@@ -156,13 +156,14 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             self.block_on(
                 sqlx::query(
                     r#"
-            INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled, algorithm)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (user_id)
             DO UPDATE SET
                 secret = EXCLUDED.secret,
                 backup_codes = EXCLUDED.backup_codes,
                 enabled = EXCLUDED.enabled,
+                algorithm = EXCLUDED.algorithm,
                 updated_at = CURRENT_TIMESTAMP
             "#,
                 )
@@ -170,6 +171,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 .bind(&data.secret)
                 .bind(&backup_codes)
                 .bind(data.enabled)
+                .bind(Self::algorithm_to_db(data.algorithm))
                 .execute(&self.pool),
             )?;
             Ok(())
@@ -180,9 +182,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         let user_id = user_id.to_string();
         let row = self.with_retry(|| {
             self.block_on(
-                sqlx::query_as::<_, (String, String, bool)>(
+                sqlx::query_as::<_, (String, String, bool, Option<String>)>(
                     r#"
-            SELECT secret, backup_codes, enabled
+            SELECT secret, backup_codes, enabled, algorithm
             FROM user_two_factor
             WHERE user_id = $1
             "#,
@@ -192,7 +194,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             )
         })?;
 
-        let (secret, backup_codes, enabled) =
+        let (secret, backup_codes, enabled, algorithm) =
             row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
         let backup_codes = serde_json::from_str(&backup_codes).map_err(|e| e.to_string())?;
 
@@ -200,6 +202,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             secret,
             backup_codes,
             enabled,
+            algorithm: Self::algorithm_from_db(algorithm.as_deref()),
         })
     }
 
@@ -565,6 +568,24 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     }
 }
 
+impl PostgresTwoFactorStore {
+    fn algorithm_to_db(algorithm: HmacAlgorithm) -> String {
+        match algorithm {
+            HmacAlgorithm::SHA1 => "SHA1".to_string(),
+            HmacAlgorithm::SHA256 => "SHA256".to_string(),
+            HmacAlgorithm::SHA512 => "SHA512".to_string(),
+        }
+    }
+
+    fn algorithm_from_db(value: Option<&str>) -> HmacAlgorithm {
+        match value {
+            Some("SHA256") => HmacAlgorithm::SHA256,
+            Some("SHA512") => HmacAlgorithm::SHA512,
+            _ => HmacAlgorithm::SHA1,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,6 +595,7 @@ mod tests {
             secret: "JBSWY3DPEHPK3PXP".to_string(),
             backup_codes: vec!["1111-2222".to_string(), "3333-4444".to_string()],
             enabled: false,
+            algorithm: HmacAlgorithm::SHA1,
         }
     }
 
