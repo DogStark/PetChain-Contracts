@@ -19,8 +19,9 @@ pub use leaderboard::{
     FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use rate_limiter::{
-    EndpointConfig, InMemoryRateLimiter, LiveRedisBackend, MockRedisBackend, RateLimitResult,
-    RateLimiter, RedisBackend, RedisRateLimiter, SlidingWindowRateLimiter,
+    DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter, LiveRedisBackend,
+    MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend, RedisRateLimiter,
+    SlidingWindowRateLimiter,
 };
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
