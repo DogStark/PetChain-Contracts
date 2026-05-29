@@ -11043,6 +11043,13 @@ impl PetChainContract {
             .get::<TreatmentKey, Treatment>(&TreatmentKey::Treatment(treatment_id))
     }
 
+    pub fn get_treatment_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&TreatmentKey::PetTreatmentCount(pet_id))
+            .unwrap_or(0)
+    }
+
     pub fn get_treatment_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Treatment> {
         if env
             .storage()
