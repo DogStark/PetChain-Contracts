@@ -1,3 +1,80 @@
+#[cfg(test)]
+mod test_access_control {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup() -> (Env, Address, Address, u64, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+
+        let owner = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let read_only = Address::generate(&env);
+
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        (env, contract_id, owner, pet_id, admin, vet, read_only)
+    }
+
+    #[test]
+    fn test_role_hierarchy_effective_permissions() {
+        let (env, contract_id, owner, pet_id, admin, vet, read_only) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.grant_role(&pet_id, &owner, &admin, &Role::Admin);
+        client.grant_role(&pet_id, &admin, &vet, &Role::Vet);
+        client.grant_role(&pet_id, &vet, &read_only, &Role::ReadOnly);
+
+        let owner_permissions = client.get_effective_permissions(&owner, &pet_id);
+        assert_eq!(owner_permissions.len(), 4);
+        assert_eq!(owner_permissions.get(0).unwrap(), Role::ReadOnly);
+        assert_eq!(owner_permissions.get(3).unwrap(), Role::Owner);
+
+        let admin_permissions = client.get_effective_permissions(&admin, &pet_id);
+        assert_eq!(admin_permissions.len(), 3);
+        assert_eq!(admin_permissions.get(2).unwrap(), Role::Admin);
+
+        let vet_permissions = client.get_effective_permissions(&vet, &pet_id);
+        assert_eq!(vet_permissions.len(), 2);
+        assert_eq!(vet_permissions.get(1).unwrap(), Role::Vet);
+
+        let readonly_permissions = client.get_effective_permissions(&read_only, &pet_id);
+        assert_eq!(readonly_permissions.len(), 1);
+        assert_eq!(readonly_permissions.get(0).unwrap(), Role::ReadOnly);
+
+        assert!(client.has_role_permission(&vet, &pet_id, &Role::ReadOnly));
+        assert!(client.has_role_permission(&vet, &pet_id, &Role::Vet));
+        assert!(!client.has_role_permission(&vet, &pet_id, &Role::Admin));
+
+        let _ = env;
+    }
+
+    #[test]
+    #[should_panic(expected = "Role exceeds caller authority")]
+    fn test_role_grant_above_caller_level_rejected() {
+        let (env, contract_id, owner, pet_id, admin, vet, _) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        client.grant_role(&pet_id, &owner, &admin, &Role::Admin);
+        client.grant_role(&pet_id, &admin, &vet, &Role::Vet);
+
+        let unauthorized_target = Address::generate(&env);
+        client.grant_role(&pet_id, &vet, &unauthorized_target, &Role::Admin);
+    }
+
 use crate::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
