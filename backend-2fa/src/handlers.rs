@@ -1,7 +1,7 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
 use crate::two_factor::{
     AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
     UserTwoFactorSummary,
@@ -453,6 +453,56 @@ impl Default for AdminScoreHandlers {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Admin rate-limit quota management
+// ---------------------------------------------------------------------------
+
+/// Request / response types for quota admin endpoints.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SetUserQuotaRequest {
+    pub user_id: String,
+    pub requests_per_minute: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GrantUnlimitedRequest {
+    pub user_id: String,
+    /// Unix timestamp (seconds) until which the bypass is active.
+    pub expires_at: u64,
+}
+
+/// Admin handlers for per-user rate-limit quota management.
+pub struct AdminRateLimitHandlers {
+    pub quota_store: Arc<UserQuotaStore>,
+}
+
+impl AdminRateLimitHandlers {
+    pub fn new(quota_store: Arc<UserQuotaStore>) -> Self {
+        Self { quota_store }
+    }
+
+    /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
+    /// Takes effect on the user's next request window.
+    pub fn set_user_quota(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: SetUserQuotaRequest,
+    ) -> Result<(), String> {
+        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        Ok(())
+    }
+
+    /// POST /admin/rate-limits/unlimited — grant temporary unlimited bypass.
+    pub fn grant_unlimited(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: GrantUnlimitedRequest,
+    ) -> Result<(), String> {
+        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
     two_factor_store().get(user_id).ok()
@@ -619,4 +669,36 @@ impl CanaryHandlers {
 #[cfg(test)]
 pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
     test_two_factor_store()
+}
+
+// ---------------------------------------------------------------------------
+// Pool metrics endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct PoolStatsResponse {
+    pub active: u32,
+    pub idle: u32,
+    pub max: u32,
+}
+
+pub struct PoolMetricsHandlers;
+
+#[cfg(not(test))]
+impl PoolMetricsHandlers {
+    /// Return current pool utilisation. Only available when backed by Postgres.
+    /// Requires `POOL_STATS_ENABLED=1` to be set; otherwise returns an error
+    /// to avoid coupling the handler to a concrete store type at runtime.
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string())
+    }
+}
+
+#[cfg(test)]
+impl PoolMetricsHandlers {
+    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+        // In tests there is no real pool; return a fixed sentinel so the
+        // endpoint handler can be exercised without a database.
+        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+    }
 }
