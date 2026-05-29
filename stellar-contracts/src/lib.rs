@@ -153,6 +153,12 @@ mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 #[cfg(test)]
+mod test_pet_validation;
+#[cfg(test)]
+mod test_caller_nonce;
+#[cfg(test)]
+mod test_claim_documents;
+#[cfg(test)]
 mod test_ipfs;
 #[cfg(test)]
 mod test_medical_records_pagination;
@@ -323,10 +329,15 @@ pub enum ContractError {
     CircularDependency = 142,
     CrossPetComparison = 143,
     BreedingRecordNotFound = 150,
-    RecordAlreadyDeleted = 160,
-    RecordNotDeleted = 161,
-    RetentionPeriodNotElapsed = 162,
-    MedicalRecordNotFound = 163,
+    // Issue: Pet profile schema validation
+    InvalidPetName = 160,
+    InvalidBreed = 161,
+    // Issue: Nonce-based replay protection
+    InvalidCallerNonce = 163,
+    // Issue: IPFS claim documents
+    ClaimNotFound = 164,
+    ClaimDocumentLimitReached = 165,
+    ClaimImmutable = 166,
 }
 
 #[contracttype]
@@ -336,6 +347,7 @@ pub enum Species {
     Dog,
     Cat,
     Bird,
+    Rabbit,
 }
 
 #[contracttype]
@@ -906,6 +918,12 @@ pub enum DataKey {
 
     // Breed Metadata keys
     BreedMetadata(String),       // breed_id -> BreedMetadata
+    // Issue: Pet profile schema validation — species-specific breed whitelists
+    SpeciesBreedList(String),    // species_key -> Vec<String> of allowed breeds
+    // Issue: Nonce-based replay protection — per-caller nonces
+    CallerNonce(Address),        // caller -> current nonce (u64)
+    // Issue: IPFS claim documents
+    ClaimDocuments(u64),         // claim_id -> Vec<String> of IPFS CIDs
 }
 
 #[contracttype]
@@ -1723,6 +1741,8 @@ pub struct InsuranceClaim {
     ///   bit 1 (0x02) — HIGH_FREQUENCY:     ≥ 2 claims within the last 7 days
     ///   bit 2 (0x04) — BEFORE_POLICY_START: claim date before policy start_date
     pub fraud_flags: u32,
+    /// IPFS CIDs of attached evidence documents (max 10).
+    pub documents: Vec<String>,
 }
 
 #[contracttype]
@@ -2465,6 +2485,8 @@ impl PetChainContract {
         if let Err(err) = PetChainContract::parse_birthday_timestamp(&birthday) {
             env.panic_with_error(err);
         }
+        Self::validate_pet_name(&env, &name);
+        Self::validate_breed(&env, &species, &breed);
 
         let pet_count: u64 = env
             .storage()
@@ -2647,6 +2669,8 @@ impl PetChainContract {
             if let Err(err) = PetChainContract::parse_birthday_timestamp(&birthday) {
                 env.panic_with_error(err);
             }
+            Self::validate_pet_name(&env, &name);
+            Self::validate_breed(&env, &species, &breed);
 
             let key = PetChainContract::get_encryption_key(&env);
 
@@ -4834,7 +4858,121 @@ impl PetChainContract {
             Species::Dog => String::from_str(env, "Dog"),
             Species::Cat => String::from_str(env, "Cat"),
             Species::Bird => String::from_str(env, "Bird"),
+            Species::Rabbit => String::from_str(env, "Rabbit"),
         }
+    }
+
+    // --- PET PROFILE SCHEMA VALIDATION ---
+
+    /// Validate pet name: 1-64 chars, alphanumeric + spaces + hyphens.
+    fn validate_pet_name(env: &Env, name: &String) {
+        let len = name.len() as usize;
+        if len == 0 || len > 64 {
+            panic_with_error!(env, ContractError::InvalidPetName);
+        }
+        let mut buf = [0u8; 64];
+        name.copy_into_slice(&mut buf[..len]);
+        for b in buf.iter().take(len) {
+            if !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b' ' | b'-') {
+                panic_with_error!(env, ContractError::InvalidPetName);
+            }
+        }
+    }
+
+    /// Validate breed against the species-specific whitelist stored on-chain.
+    /// If no whitelist has been set for the species, any non-empty breed is accepted.
+    fn validate_breed(env: &Env, species: &Species, breed: &String) {
+        let species_key = Self::species_to_string(env, species);
+        let list: Option<Vec<String>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SpeciesBreedList(species_key));
+        if let Some(allowed) = list {
+            if !allowed.contains(breed) {
+                panic_with_error!(env, ContractError::InvalidBreed);
+            }
+        }
+        // No whitelist set → any breed accepted
+    }
+
+    /// Admin: set the allowed breed list for a species.
+    /// Pass an empty Vec to clear the whitelist (allow any breed).
+    pub fn set_breed_list(env: Env, admin: Address, species: Species, breeds: Vec<String>) {
+        Self::require_admin_auth(&env, &admin);
+        let species_key = Self::species_to_string(&env, &species);
+        if breeds.is_empty() {
+            env.storage()
+                .instance()
+                .remove(&DataKey::SpeciesBreedList(species_key));
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::SpeciesBreedList(species_key), &breeds);
+        }
+    }
+
+    /// Get the allowed breed list for a species (empty Vec if no whitelist set).
+    pub fn get_breed_list(env: Env, species: Species) -> Vec<String> {
+        let species_key = Self::species_to_string(&env, &species);
+        env.storage()
+            .instance()
+            .get(&DataKey::SpeciesBreedList(species_key))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // --- CALLER NONCE REPLAY PROTECTION ---
+
+    /// Returns the current nonce for `caller`. The caller must supply this
+    /// value in any state-mutating call that uses nonce protection.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CallerNonce(caller))
+            .unwrap_or(0)
+    }
+
+    /// Internal: verify `supplied` matches the stored nonce for `caller`,
+    /// then atomically increment it.
+    fn consume_caller_nonce(env: &Env, caller: &Address, supplied: u64) {
+        let current: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CallerNonce(caller.clone()))
+            .unwrap_or(0);
+        if supplied != current {
+            panic_with_error!(env, ContractError::InvalidCallerNonce);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CallerNonce(caller.clone()), &(current + 1));
+    }
+
+    /// Nonce-protected pet registration. Caller supplies their current nonce;
+    /// the nonce is incremented atomically on success, preventing replay.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_pet_with_nonce(
+        env: Env,
+        owner: Address,
+        nonce: u64,
+        name: String,
+        birthday: String,
+        gender: Gender,
+        species: Species,
+        breed: String,
+        color: String,
+        weight: u32,
+        microchip_id: Option<String>,
+        privacy_level: PrivacyLevel,
+    ) -> u64 {
+        owner.require_auth();
+        Self::consume_caller_nonce(&env, &owner, nonce);
+        Self::validate_pet_name(&env, &name);
+        Self::validate_breed(&env, &species, &breed);
+        if let Err(err) = PetChainContract::parse_birthday_timestamp(&birthday) {
+            env.panic_with_error(err);
+        }
+        // Delegate to the core registration logic (reuse existing path)
+        PetChainContract::register_pet(env, owner, name, birthday, gender, species, breed, color, weight, microchip_id, privacy_level)
     }
 
     fn validate_ipfs_hash(_env: &Env, hash: &String) -> Result<(), ContractError> {
@@ -10982,6 +11120,9 @@ impl PetChainContract {
             date: timestamp,
             status: InsuranceClaimStatus::Pending,
             description,
+            flagged: false,
+            fraud_flags: 0,
+            documents: Vec::new(&env),
         };
 
         // Save claim globally
@@ -11044,6 +11185,63 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+    }
+
+    /// Attach an IPFS CID as evidence to a claim.
+    /// Only callable by the pet owner while the claim is in Pending status.
+    /// Documents become immutable once the claim enters UnderReview.
+    /// Maximum 10 documents per claim.
+    pub fn attach_claim_document(env: Env, claimant: Address, claim_id: u64, cid: String) {
+        claimant.require_auth();
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ClaimNotFound));
+
+        // Verify claimant owns the pet
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(claim.pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if pet.owner != claimant {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        // Documents are immutable once UnderReview (or beyond)
+        if matches!(
+            claim.status,
+            InsuranceClaimStatus::UnderReview
+                | InsuranceClaimStatus::Approved
+                | InsuranceClaimStatus::Rejected
+                | InsuranceClaimStatus::Paid
+        ) {
+            panic_with_error!(&env, ContractError::ClaimImmutable);
+        }
+
+        if claim.documents.len() >= 10 {
+            panic_with_error!(&env, ContractError::ClaimDocumentLimitReached);
+        }
+
+        if Self::validate_ipfs_hash(&env, &cid).is_err() {
+            panic_with_error!(&env, ContractError::InvalidIpfsHash);
+        }
+
+        claim.documents.push_back(cid);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+    }
+
+    /// Returns all IPFS CIDs attached to a claim.
+    pub fn get_claim_documents(env: Env, claim_id: u64) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .map(|c| c.documents)
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Updates the status of an insurance claim.

@@ -419,225 +419,101 @@ impl RateLimiter for RedisRateLimiter {
 }
 
 // ---------------------------------------------------------------------------
-// Per-user quota store
+// DistributedRateLimiter — atomic INCR+EXPIRE via Lua, fallback to in-memory
 // ---------------------------------------------------------------------------
 
-/// Per-user rate-limit configuration.
-#[derive(Clone, Debug)]
-pub struct UserQuota {
-    /// Maximum requests allowed per 60-second window.  `None` means fall back
-    /// to the global default enforced by the inner limiter.
-    pub requests_per_minute: Option<u32>,
-    /// If set and still in the future, the user bypasses all rate limits.
-    pub unlimited_until: Option<u64>, // Unix timestamp (seconds)
-}
+/// Lua script: atomically increment a counter and set TTL on first use.
+/// Returns the new counter value.
+/// KEYS[1] = rate-limit key, ARGV[1] = window_secs, ARGV[2] = max_requests
+const INCR_EXPIRE_SCRIPT: &str = r#"
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+"#;
 
-/// Thread-safe store for per-user quota overrides.
-pub struct UserQuotaStore {
-    quotas: Mutex<HashMap<String, UserQuota>>,
-}
-
-impl UserQuotaStore {
-    pub fn new() -> Self {
-        Self { quotas: Mutex::new(HashMap::new()) }
-    }
-
-    /// Set a per-user requests-per-minute limit.  Takes effect on the next
-    /// request window (the inner limiter's current window is not reset).
-    pub fn set_quota(&self, user_id: &str, requests_per_minute: u32) {
-        let mut map = self.quotas.lock().unwrap();
-        let entry = map.entry(user_id.to_string()).or_insert(UserQuota {
-            requests_per_minute: None,
-            unlimited_until: None,
-        });
-        entry.requests_per_minute = Some(requests_per_minute);
-    }
-
-    /// Grant a temporary unlimited bypass until `expires_at` (Unix seconds).
-    pub fn grant_unlimited(&self, user_id: &str, expires_at: u64) {
-        let mut map = self.quotas.lock().unwrap();
-        let entry = map.entry(user_id.to_string()).or_insert(UserQuota {
-            requests_per_minute: None,
-            unlimited_until: None,
-        });
-        entry.unlimited_until = Some(expires_at);
-    }
-
-    /// Returns the quota for `user_id`, or `None` if no override is stored.
-    pub fn get(&self, user_id: &str) -> Option<UserQuota> {
-        self.quotas.lock().unwrap().get(user_id).cloned()
-    }
-}
-
-impl Default for UserQuotaStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Quota-aware rate limiter
-// ---------------------------------------------------------------------------
-
-/// Wraps any [`RateLimiter`] and applies per-user quota overrides.
+/// Distributed rate limiter using Redis INCR + EXPIRE (Lua atomic script).
 ///
-/// Key convention: the `key` passed to `record_failure` / `record_success`
-/// must start with `"<prefix>:<user_id>"` (e.g. `"login:user42"`).  The
-/// user_id is extracted as the second colon-delimited segment.
-///
-/// Behaviour:
-/// - If the user has an active unlimited grant → always `Allowed`.
-/// - If the user has a `requests_per_minute` override → enforce that limit
-///   using an independent in-memory sliding window (60-second window, no
-///   lockout — just block for the remainder of the minute).
-/// - Otherwise → delegate to the inner limiter unchanged.
-pub struct QuotaAwareRateLimiter {
-    inner: Arc<dyn RateLimiter>,
-    pub quota_store: Arc<UserQuotaStore>,
-    /// Per-user per-minute counters: (count, window_start_secs)
-    counters: Mutex<HashMap<String, (u32, u64)>>,
+/// Falls back to an in-memory limiter with a warning log when Redis is
+/// unavailable.  A configurable `key_prefix` isolates counters per service
+/// instance (e.g. `"svc-a:"` vs `"svc-b:"`).
+pub struct DistributedRateLimiter {
+    client: Option<redis::Client>,
+    fallback: InMemoryRateLimiter,
+    max_requests: u32,
+    window_secs: u64,
+    key_prefix: String,
 }
 
-impl QuotaAwareRateLimiter {
-    pub fn new(inner: Arc<dyn RateLimiter>, quota_store: Arc<UserQuotaStore>) -> Self {
-        Self { inner, quota_store, counters: Mutex::new(HashMap::new()) }
+impl DistributedRateLimiter {
+    /// Create a new `DistributedRateLimiter`.
+    ///
+    /// * `redis_url`    — Redis connection URL; `None` forces in-memory fallback.
+    /// * `max_requests` — Maximum requests allowed per window.
+    /// * `window_secs`  — Sliding window duration in seconds.
+    /// * `key_prefix`   — Prefix prepended to every Redis key (e.g. `"api:"`).
+    pub fn new(
+        redis_url: Option<&str>,
+        max_requests: u32,
+        window_secs: u64,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let client = redis_url.and_then(|url| redis::Client::open(url).ok());
+        Self {
+            client,
+            fallback: InMemoryRateLimiter::new(max_requests, window_secs, window_secs),
+            max_requests,
+            window_secs,
+            key_prefix: key_prefix.into(),
+        }
     }
 
-    fn now_secs() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    fn redis_key(&self, key: &str) -> String {
+        format!("{}rl:{}", self.key_prefix, key)
     }
 
-    /// Extract user_id as the second colon-segment of `key`, e.g.
-    /// `"login:alice"` → `"alice"`, `"verify:bob:extra"` → `"bob"`.
-    fn user_id_from_key(key: &str) -> &str {
-        let mut parts = key.splitn(3, ':');
-        parts.next(); // prefix
-        parts.next().unwrap_or(key)
+    fn try_redis(&self, key: &str) -> Option<RateLimitResult> {
+        let client = self.client.as_ref()?;
+        let mut con = client.get_connection().ok()?;
+
+        let redis_key = self.redis_key(key);
+        let count: u64 = redis::Script::new(INCR_EXPIRE_SCRIPT)
+            .key(&redis_key)
+            .arg(self.window_secs)
+            .arg(self.max_requests)
+            .invoke(&mut con)
+            .ok()?;
+
+        if count > self.max_requests as u64 {
+            Some(RateLimitResult::Blocked { retry_after_secs: self.window_secs })
+        } else {
+            Some(RateLimitResult::Allowed {
+                remaining: self.max_requests.saturating_sub(count as u32),
+            })
+        }
     }
 }
 
-impl RateLimiter for QuotaAwareRateLimiter {
+impl RateLimiter for DistributedRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
-        let now = Self::now_secs();
-        let user_id = Self::user_id_from_key(key);
-
-        if let Some(quota) = self.quota_store.get(user_id) {
-            // Unlimited bypass takes priority
-            if let Some(exp) = quota.unlimited_until {
-                if now < exp {
-                    return RateLimitResult::Allowed { remaining: u32::MAX };
-                }
-            }
-
-            // Per-user requests-per-minute quota
-            if let Some(rpm) = quota.requests_per_minute {
-                let mut counters = self.counters.lock().unwrap();
-                let entry = counters.entry(user_id.to_string()).or_insert((0, now));
-                // Reset window if 60 seconds have elapsed
-                if now.saturating_sub(entry.1) >= 60 {
-                    *entry = (0, now);
-                }
-                entry.0 += 1;
-                if entry.0 > rpm {
-                    let retry_after = 60u64.saturating_sub(now.saturating_sub(entry.1)).max(1);
-                    return RateLimitResult::Blocked { retry_after_secs: retry_after };
-                }
-                let remaining = rpm.saturating_sub(entry.0);
-                return RateLimitResult::Allowed { remaining };
+        match self.try_redis(key) {
+            Some(result) => result,
+            None => {
+                eprintln!("[DistributedRateLimiter] Redis unavailable, falling back to in-memory for key={key}");
+                self.fallback.record_failure(key)
             }
         }
-
-        self.inner.record_failure(key)
     }
 
     fn record_success(&self, key: &str) {
-        self.inner.record_success(key);
-    }
-}
-
-#[cfg(test)]
-mod quota_tests {
-    use super::*;
-    use std::sync::Arc;
-
-    fn make_limiter(rpm: Option<u32>) -> (Arc<QuotaAwareRateLimiter>, Arc<UserQuotaStore>) {
-        let inner = Arc::new(InMemoryRateLimiter::new(100, 60, 300));
-        let store = Arc::new(UserQuotaStore::new());
-        if let Some(r) = rpm {
-            store.set_quota("alice", r);
+        if let Some(client) = &self.client {
+            if let Ok(mut con) = client.get_connection() {
+                let redis_key = self.redis_key(key);
+                let _: Result<(), _> = redis::cmd("DEL").arg(&redis_key).query(&mut con);
+                return;
+            }
         }
-        let ql = Arc::new(QuotaAwareRateLimiter::new(inner, store.clone()));
-        (ql, store)
-    }
-
-    #[test]
-    fn per_user_quota_overrides_global_default() {
-        let (limiter, _store) = make_limiter(Some(2));
-        // First two requests allowed
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Allowed { .. }));
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Allowed { .. }));
-        // Third request blocked
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Blocked { .. }));
-        // Different user still uses global (100 failures before block)
-        assert!(matches!(limiter.record_failure("login:bob"), RateLimitResult::Allowed { .. }));
-    }
-
-    #[test]
-    fn unlimited_grant_bypasses_rate_limit() {
-        let (limiter, store) = make_limiter(Some(1));
-        let future = now_secs() + 3600;
-        store.grant_unlimited("alice", future);
-        // Should always be allowed regardless of quota
-        for _ in 0..10 {
-            assert!(matches!(
-                limiter.record_failure("login:alice"),
-                RateLimitResult::Allowed { remaining: u32::MAX }
-            ));
-        }
-    }
-
-    #[test]
-    fn unlimited_grant_expires() {
-        let (limiter, store) = make_limiter(Some(1));
-        // Grant that is already expired
-        let past = now_secs().saturating_sub(1);
-        store.grant_unlimited("alice", past);
-        // First request allowed (within quota of 1)
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Allowed { .. }));
-        // Second request blocked by quota
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Blocked { .. }));
-    }
-
-    #[test]
-    fn quota_change_takes_effect_on_next_window() {
-        let inner = Arc::new(InMemoryRateLimiter::new(100, 60, 300));
-        let store = Arc::new(UserQuotaStore::new());
-        // Start with quota of 3
-        store.set_quota("alice", 3);
-        let limiter = QuotaAwareRateLimiter::new(inner, store.clone());
-
-        // Use up the quota
-        limiter.record_failure("login:alice");
-        limiter.record_failure("login:alice");
-        limiter.record_failure("login:alice");
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Blocked { .. }));
-
-        // Admin raises quota to 10 — takes effect next window.
-        // Simulate window reset by manipulating the counter directly.
-        store.set_quota("alice", 10);
-        {
-            // Force window reset by clearing the counter
-            let mut counters = limiter.counters.lock().unwrap();
-            counters.remove("alice");
-        }
-        // Now 10 requests should be allowed
-        for _ in 0..10 {
-            assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Allowed { .. }));
-        }
-        assert!(matches!(limiter.record_failure("login:alice"), RateLimitResult::Blocked { .. }));
-    }
-
-    fn now_secs() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        self.fallback.record_success(key);
     }
 }
