@@ -21,6 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 redis = "0.27"
+prometheus = { version = "0.13", features = ["process"] }
 
 [[example]]
 name = "example_integration"
