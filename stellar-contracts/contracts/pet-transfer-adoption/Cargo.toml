@@ -14,4 +14,12 @@ soroban-sdk = "21.7.7"
 [dev-dependencies]
 soroban-sdk = { version = "21.7.7", features = ["testutils"] }
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+debug = 0
+strip = "symbols"
+panic = "abort"
+
 [workspace]
