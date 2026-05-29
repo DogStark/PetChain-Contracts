@@ -54,3 +54,37 @@ cargo test
 - The backend test suite skips Redis integration tests unless `REDIS_URL` is set.
 - The repo contains two independent Rust crates, so build and test them separately.
 - Use `.env.example` as the starting point for local environment variables.
+
+## Wasm Size Audit
+
+The transfer/adoption contract is audited with `twiggy` after building the
+Soroban Wasm target:
+
+```bash
+cd stellar-contracts/contracts/pet-transfer-adoption
+cargo build --release --target wasm32-unknown-unknown
+twiggy top -n 12 target/wasm32-unknown-unknown/release/pet_transfer_adoption.wasm
+```
+
+Measured reduction after enabling a contract-local size release profile
+(`opt-level = "z"`, LTO, single codegen unit, stripped symbols, abort panics):
+
+| Build | Wasm bytes |
+|---|---:|
+| Baseline release profile | 49,332 |
+| Size-tuned release profile | 41,245 |
+| Reduction | 8,087 bytes (16.39%) |
+
+Top `twiggy` contributors in the optimized artifact:
+
+| Contributor | Bytes | Share |
+|---|---:|---:|
+| custom section `contractspecv0` | 8,344 | 20.23% |
+| `data[0]` | 1,953 | 4.74% |
+| largest code body `code[95]` | 1,359 | 3.29% |
+
+The root `stellar-contracts` crate currently does not produce a release Wasm
+artifact because `stellar-contracts/src/lib.rs` contains duplicate contract
+type definitions and a test module nested inside an impl block. Run the same
+audit command from `stellar-contracts/` after those pre-existing compile
+blockers are removed.

@@ -1,8 +1,17 @@
 use crate::two_factor::{AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorStore, UserTwoFactorSummary};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use std::collections::HashMap;
+
+/// Pool utilisation snapshot returned by [`PostgresTwoFactorStore::pool_stats`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolStats {
+    pub active: u32,
+    pub idle: u32,
+    pub max: u32,
+}
 
 /// Trait for fetching secrets (e.g. DB connection strings).
 pub trait SecretProvider: Send + Sync {
@@ -52,8 +61,21 @@ pub struct PostgresTwoFactorStore {
 impl PostgresTwoFactorStore {
     pub fn connect(database_url: &str) -> Result<Self, String> {
         let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        let min_conns: u32 = std::env::var("DB_POOL_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let max_conns: u32 = std::env::var("DB_POOL_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
         let pool = runtime
-            .block_on(PgPoolOptions::new().connect(database_url))
+            .block_on(
+                PgPoolOptions::new()
+                    .min_connections(min_conns)
+                    .max_connections(max_conns)
+                    .connect(database_url),
+            )
             .map_err(|e| e.to_string())?;
 
         Ok(Self { pool, runtime })
@@ -76,15 +98,61 @@ impl PostgresTwoFactorStore {
     {
         self.runtime.block_on(future).map_err(|e| e.to_string())
     }
+
+    /// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
+    /// Only retries on connection-class errors; other errors are returned immediately.
+    fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+    where
+        F: FnMut() -> Result<T, String>,
+    {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut delay_ms = 100u64;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match op() {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    /// Ping the database. Returns `Err` if the pool is exhausted or the
+    /// connection cannot be acquired within the pool's connect timeout.
+    pub fn health_check(&self) -> Result<(), String> {
+        if self.pool.size() >= self.pool.options().get_max_connections() {
+            return Err("pool exhausted".to_string());
+        }
+        self.block_on(sqlx::query("SELECT 1").execute(&self.pool))?;
+        Ok(())
+    }
+
+    /// Return a snapshot of current pool utilisation.
+    pub fn pool_stats(&self) -> PoolStats {
+        let max = self.pool.options().get_max_connections();
+        let idle = self.pool.num_idle() as u32;
+        let size = self.pool.size();
+        let active = size.saturating_sub(idle);
+        PoolStats { active, idle, max }
+    }
+}
+
+pub(crate) fn is_connection_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("connection") || m.contains("timeout") || m.contains("pool") || m.contains("io error")
 }
 
 impl TwoFactorStore for PostgresTwoFactorStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
-
-        self.block_on(
-            sqlx::query(
-                r#"
+        let user_id = user_id.to_string();
+        self.with_retry(|| {
+            self.block_on(
+                sqlx::query(
+                    r#"
             INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (user_id)
@@ -94,29 +162,32 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 enabled = EXCLUDED.enabled,
                 updated_at = CURRENT_TIMESTAMP
             "#,
-            )
-            .bind(user_id)
-            .bind(data.secret)
-            .bind(backup_codes)
-            .bind(data.enabled)
-            .execute(&self.pool),
-        )?;
-
-        Ok(())
+                )
+                .bind(&user_id)
+                .bind(&data.secret)
+                .bind(&backup_codes)
+                .bind(data.enabled)
+                .execute(&self.pool),
+            )?;
+            Ok(())
+        })
     }
 
     fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
-        let row = self.block_on(
-            sqlx::query_as::<_, (String, String, bool)>(
-                r#"
+        let user_id = user_id.to_string();
+        let row = self.with_retry(|| {
+            self.block_on(
+                sqlx::query_as::<_, (String, String, bool)>(
+                    r#"
             SELECT secret, backup_codes, enabled
             FROM user_two_factor
             WHERE user_id = $1
             "#,
+                )
+                .bind(&user_id)
+                .fetch_optional(&self.pool),
             )
-            .bind(user_id)
-            .fetch_optional(&self.pool),
-        )?;
+        })?;
 
         let (secret, backup_codes, enabled) =
             row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
