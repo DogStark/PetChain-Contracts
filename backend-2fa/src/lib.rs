@@ -14,6 +14,8 @@ pub use db::{select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvide
 pub use handlers::{
     AdminDashboardHandlers, AdminScoreHandlers, AuthenticatedAdmin, AuthenticatedUser,
     CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse, TwoFactorHandlers,
+    MultiTenantHandlers, ProvisionTenantRequest, ProvisionTenantResponse,
+    TenantProvisioningHandlers,
 };
 pub use leaderboard::{
     FlaggedScoreStore, FlaggedScoreSubmission, ScoreSubmissionError, ScoreValidationConfig,
@@ -26,6 +28,7 @@ pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData,
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
+    TenantConfig, TenantRegistry, TenantScopedStore,
 };
 pub use webhooks::{
     DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog, WebhookManager,
