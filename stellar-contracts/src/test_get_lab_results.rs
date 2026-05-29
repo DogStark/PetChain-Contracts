@@ -7,7 +7,7 @@ mod test_get_lab_results {
     use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
-        Address, Env, String, Vec,
+        Address, Env, Map, String, Vec,
     };
 
     fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, u64) {
@@ -225,5 +225,122 @@ mod test_get_lab_results {
             results.get(1).unwrap().test_type,
             String::from_str(&env, "Test 3")
         );
+    }
+
+    // ============================================================
+    // REFERENCE RANGE VALIDATION TESTS (Issue #652)
+    // ============================================================
+
+    fn setup_with_admin() -> (Env, PetChainContractClient<'static>, Address, Address, u64, Address) {
+        let (env, client, owner, vet, pet_id) = setup();
+        let admin = Address::generate(&env);
+        (env, client, owner, vet, pet_id, admin)
+    }
+
+    #[test]
+    fn test_set_and_get_reference_range() {
+        let (env, client, _owner, _vet, _pet_id, admin) = setup_with_admin();
+
+        client.set_reference_range(
+            &admin,
+            &String::from_str(&env, "Dog"),
+            &String::from_str(&env, "WBC"),
+            &5i128,
+            &15i128,
+        );
+
+        let range = client.get_reference_range(
+            &String::from_str(&env, "Dog"),
+            &String::from_str(&env, "WBC"),
+        );
+        assert!(range.is_some());
+        let r = range.unwrap();
+        assert_eq!(r.min, 5);
+        assert_eq!(r.max, 15);
+    }
+
+    #[test]
+    fn test_set_reference_range_rejects_min_greater_than_max() {
+        let (env, client, _owner, _vet, _pet_id, admin) = setup_with_admin();
+
+        let result = client.try_set_reference_range(
+            &admin,
+            &String::from_str(&env, "Dog"),
+            &String::from_str(&env, "WBC"),
+            &100i128,
+            &1i128,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_reference_range() {
+        let (env, client, _owner, _vet, _pet_id, admin) = setup_with_admin();
+
+        client.set_reference_range(
+            &admin,
+            &String::from_str(&env, "Cat"),
+            &String::from_str(&env, "Glucose"),
+            &70i128,
+            &120i128,
+        );
+
+        assert!(client.get_reference_range(
+            &String::from_str(&env, "Cat"),
+            &String::from_str(&env, "Glucose"),
+        ).is_some());
+
+        client.remove_reference_range(
+            &admin,
+            &String::from_str(&env, "Cat"),
+            &String::from_str(&env, "Glucose"),
+        );
+
+        assert!(client.get_reference_range(
+            &String::from_str(&env, "Cat"),
+            &String::from_str(&env, "Glucose"),
+        ).is_none());
+    }
+
+    #[test]
+    fn test_biomarker_flags_initialized_empty() {
+        let (env, client, _owner, vet, pet_id, _admin) = setup_with_admin();
+        let id = client.add_lab_result(
+            &pet_id, &vet,
+            &String::from_str(&env, "Blood Panel"),
+            &String::from_str(&env, "All normal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None, &None,
+        );
+        let result = client.get_lab_result(&id).unwrap();
+        assert_eq!(result.biomarker_flags.len(), 0);
+    }
+
+    #[test]
+    fn test_get_lab_result_biomarker_flags_empty_for_missing_result() {
+        let (env, client, _owner, vet, pet_id, _admin) = setup_with_admin();
+        let id = client.add_lab_result(
+            &pet_id, &vet,
+            &String::from_str(&env, "Blood Panel"),
+            &String::from_str(&env, "All normal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None, &None,
+        );
+        let flags = client.get_lab_result_biomarker_flags(&id);
+        assert_eq!(flags.len(), 0);
+    }
+
+    #[test]
+    fn test_missing_reference_range_treated_as_normal() {
+        let (env, client, _owner, vet, pet_id, _admin) = setup_with_admin();
+        let id = client.add_lab_result(
+            &pet_id, &vet,
+            &String::from_str(&env, "Chemistry"),
+            &String::from_str(&env, "All clear"),
+            &String::from_str(&env, ""),
+            &None, &None,
+        );
+        let result = client.get_lab_result(&id).unwrap();
+        assert_eq!(result.biomarker_flags.len(), 0);
     }
 }
