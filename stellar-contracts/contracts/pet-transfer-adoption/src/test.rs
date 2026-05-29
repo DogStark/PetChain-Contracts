@@ -2,7 +2,10 @@ use super::{
     ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord, PetOwnershipContract,
     PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
 };
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, Error, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, Error, Vec,
+};
 
 fn setup() -> (Env, Address, Address, u64) {
     let env = Env::default();
@@ -22,6 +25,72 @@ fn create_pending_transfer(
 ) {
     client.create_pet(&pet_id, owner);
     client.initiate_transfer(&pet_id, new_owner);
+}
+
+fn address_vec(env: &Env, addresses: &[Address]) -> Vec<Address> {
+    let mut out = Vec::new(env);
+    for address in addresses {
+        out.push_back(address.clone());
+    }
+    out
+}
+
+#[test]
+fn trusted_contract_validation_rejects_untrusted_callee() {
+    let (env, owner, _, _) = setup();
+    let trusted = Address::generate(&env);
+    let untrusted = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(&env, &[owner.clone()]);
+
+    client.init_trusted_contract(&trusted, &admins, &1);
+    assert!(client.validate_trusted_contract(&trusted));
+
+    let result = client.try_validate_trusted_contract(&untrusted);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::UntrustedContract as u32,
+        )))
+    );
+}
+
+#[test]
+fn trusted_contract_update_requires_multisig_threshold() {
+    let (env, admin_one, admin_two, _) = setup();
+    let trusted = Address::generate(&env);
+    let updated = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(&env, &[admin_one.clone(), admin_two.clone()]);
+
+    client.init_trusted_contract(&trusted, &admins, &2);
+    assert!(!client.update_trusted_contract(&updated, &admin_one));
+    assert_eq!(client.get_trusted_contract_address(), trusted);
+
+    assert!(client.update_trusted_contract(&updated, &admin_two));
+    assert_eq!(client.get_trusted_contract_address(), updated);
+    assert_eq!(env.events().all().len(), 1);
+}
+
+#[test]
+fn trusted_contract_update_rejects_non_admin_signer() {
+    let (env, admin, attacker, _) = setup();
+    let trusted = Address::generate(&env);
+    let updated = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(&env, &[admin]);
+
+    client.init_trusted_contract(&trusted, &admins, &1);
+    let result = client.try_update_trusted_contract(&updated, &attacker);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::NotMultisigAdmin as u32,
+        )))
+    );
 }
 
 #[test]
@@ -540,13 +609,17 @@ fn multiple_finalizations_produce_ordered_chain() {
     // First transfer
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
-    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
     client.finalize_transfer(&pet_id);
 
     // Second transfer
     client.initiate_transfer(&pet_id, &third_owner);
     client.accept_transfer(&pet_id);
-    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
     client.finalize_transfer(&pet_id);
 
     let chain = client.get_custody_chain(&pet_id);
@@ -584,7 +657,9 @@ fn custody_chain_is_append_only_no_delete_path() {
     client.create_pet(&pet_id, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
-    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
     client.finalize_transfer(&pet_id);
 
     // Chain has one entry; no contract function can remove it
@@ -595,7 +670,9 @@ fn custody_chain_is_append_only_no_delete_path() {
     let third_owner = Address::generate(&env);
     client.initiate_transfer(&pet_id, &third_owner);
     client.accept_transfer(&pet_id);
-    env.ledger().with_mut(|l| { l.timestamp += DISPUTE_WINDOW_SECONDS + 1; });
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
     client.finalize_transfer(&pet_id);
 
     let chain = client.get_custody_chain(&pet_id);

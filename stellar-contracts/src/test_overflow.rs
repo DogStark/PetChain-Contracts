@@ -133,6 +133,7 @@ mod test_overflow {
             &String::from_str(&env, "RabiesVax"),
             &1000u64,
             &2000u64,
+            &0u64,
             &String::from_str(&env, "BATCH-001"),
         );
 

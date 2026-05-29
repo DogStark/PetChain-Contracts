@@ -19,7 +19,7 @@ pub struct TotpConfig {
 impl Default for TotpConfig {
     fn default() -> Self {
         Self {
-            algorithm: Algorithm::SHA256,
+            algorithm: Algorithm::SHA1,
             digits: 6,
             period: 30,
             window: 1,
@@ -50,6 +50,7 @@ impl TotpConfig {
 #[derive(Clone, Debug)]
 pub struct TwoFactorSetup {
     pub secret: String,
+    pub otpauth_uri: String,
     pub qr_code_base64: String,
     pub backup_codes: Vec<String>,
     pub config: TotpConfig,
@@ -73,6 +74,52 @@ pub struct RecoveryResult {
 pub struct TwoFactorAuth;
 
 impl TwoFactorAuth {
+    fn algorithm_name(algorithm: Algorithm) -> &'static str {
+        match algorithm {
+            Algorithm::SHA1 => "SHA1",
+            Algorithm::SHA256 => "SHA256",
+            Algorithm::SHA512 => "SHA512",
+        }
+    }
+
+    fn url_encode(value: &str) -> String {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut encoded = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    encoded.push(byte as char)
+                }
+                _ => {
+                    encoded.push('%');
+                    encoded.push(HEX[(byte >> 4) as usize] as char);
+                    encoded.push(HEX[(byte & 0x0f) as usize] as char);
+                }
+            }
+        }
+        encoded
+    }
+
+    pub fn generate_otpauth_uri(
+        issuer: &str,
+        account: &str,
+        secret: &str,
+        config: &TotpConfig,
+    ) -> String {
+        let issuer = Self::url_encode(issuer);
+        let account = Self::url_encode(account);
+        format!(
+            "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm={}&digits={}&period={}",
+            issuer,
+            account,
+            secret,
+            issuer,
+            Self::algorithm_name(config.algorithm),
+            config.digits,
+            config.period
+        )
+    }
+
     pub fn generate_secret() -> String {
         const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         let mut rng = thread_rng();
@@ -94,6 +141,7 @@ impl TwoFactorAuth {
         config: TotpConfig,
     ) -> Result<TwoFactorSetup, String> {
         let secret = Self::generate_secret();
+        let qr_issuer = issuer.replace(':', " ");
         let totp = TOTP::new(
             config.algorithm,
             config.digits,
@@ -102,7 +150,7 @@ impl TwoFactorAuth {
             Secret::Encoded(secret.clone())
                 .to_bytes()
                 .map_err(|e| e.to_string())?,
-            Some(issuer.to_string()),
+            Some(qr_issuer),
             user_email.to_string(),
         )
         .map_err(|e| e.to_string())?;
@@ -112,9 +160,11 @@ impl TwoFactorAuth {
             totp.get_qr_base64().map_err(|e| e.to_string())?
         );
         let backup_codes = Self::generate_backup_codes(8);
+        let otpauth_uri = Self::generate_otpauth_uri(issuer, user_email, &secret, &config);
 
         Ok(TwoFactorSetup {
             secret,
+            otpauth_uri,
             qr_code_base64,
             backup_codes,
             config,
@@ -233,18 +283,10 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Paginated list of all users with their 2FA status.
     /// Canary accounts are excluded from this listing.
-    fn list_users(
-        &self,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<UserTwoFactorSummary>, String>;
+    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String>;
 
     /// Force-disable 2FA for a user and append an audit log entry.
-    fn admin_disable_two_fa(
-        &self,
-        user_id: &str,
-        admin_id: &str,
-    ) -> Result<(), String>;
+    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String>;
 
     /// Get the full audit log for a user (paginated, page starts at 1).
     fn get_audit_log(
@@ -284,6 +326,49 @@ pub struct InMemoryStore {
 impl InMemoryStore {
     pub fn clear(&self) {
         self.data.lock().unwrap().clear();
+    }
+
+    pub fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+        <Self as TwoFactorStore>::save(self, user_id, data)
+    }
+
+    pub fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        <Self as TwoFactorStore>::get(self, user_id)
+    }
+
+    pub fn append_audit_log(
+        &self,
+        user_id: &str,
+        event: &str,
+        actor: &str,
+        metadata: Option<&str>,
+    ) -> Result<(), String> {
+        <Self as TwoFactorStore>::append_audit_log(self, user_id, event, actor, metadata)
+    }
+
+    pub fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        <Self as TwoFactorStore>::get_audit_log(self, user_id, page, page_size)
+    }
+
+    pub fn list_users(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+        <Self as TwoFactorStore>::list_users(self, page, page_size)
+    }
+
+    pub fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        <Self as TwoFactorStore>::set_canary(self, user_id, is_canary)
+    }
+
+    pub fn is_canary(&self, user_id: &str) -> bool {
+        <Self as TwoFactorStore>::is_canary(self, user_id)
     }
 }
 
@@ -336,7 +421,10 @@ impl TwoFactorStore for InMemoryStore {
         let mut log = self.recovery_log.lock().unwrap();
 
         // Check if already used
-        if log.iter().any(|e| e.user_id == user_id && e.code_index == code_index) {
+        if log
+            .iter()
+            .any(|e| e.user_id == user_id && e.code_index == code_index)
+        {
             return Err("InvalidRecoveryCode".to_string());
         }
 
@@ -370,18 +458,10 @@ impl TwoFactorStore for InMemoryStore {
         let mut entries: Vec<_> = log.iter().cloned().collect();
         entries.sort_by(|a, b| b.used_at.cmp(&a.used_at)); // Reverse chronological
 
-        Ok(entries
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect())
+        Ok(entries.into_iter().skip(offset).take(limit).collect())
     }
 
-    fn list_users(
-        &self,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String> {
         let data = self.data.lock().unwrap();
         let canary_flags = self.canary_flags.lock().unwrap();
         let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
@@ -398,14 +478,14 @@ impl TwoFactorStore for InMemoryStore {
 
         summaries.sort_by(|a, b| a.user_id.cmp(&b.user_id));
 
-        Ok(summaries.into_iter().skip(offset).take(page_size as usize).collect())
+        Ok(summaries
+            .into_iter()
+            .skip(offset)
+            .take(page_size as usize)
+            .collect())
     }
 
-    fn admin_disable_two_fa(
-        &self,
-        user_id: &str,
-        admin_id: &str,
-    ) -> Result<(), String> {
+    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String> {
         self.update_enabled(user_id, false)?;
         self.append_audit_log(user_id, "admin_disabled_2fa", admin_id, None)?;
         Ok(())
@@ -426,7 +506,11 @@ impl TwoFactorStore for InMemoryStore {
             .cloned()
             .collect();
 
-        Ok(entries.into_iter().skip(offset).take(page_size as usize).collect())
+        Ok(entries
+            .into_iter()
+            .skip(offset)
+            .take(page_size as usize)
+            .collect())
     }
 
     fn append_audit_log(
