@@ -188,6 +188,8 @@ mod test_upgrade_proposal;
 mod test_vaccination_expiry;
 #[cfg(test)]
 mod test_medical_record_soft_delete;
+#[cfg(test)]
+mod test_event_subscriptions;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -202,6 +204,7 @@ const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
 const MAX_SEARCH_NOTES_LEN: u32 = 512;
 const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
+const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -760,9 +763,12 @@ pub struct ClinicInfo {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Specialization {
-    pub name: String,
-    pub certified_date: u64,
+pub enum Specialization {
+    GeneralPractice,
+    Surgery,
+    Dermatology,
+    Oncology,
+    Dentistry,
 }
 
 #[contracttype]
@@ -901,6 +907,7 @@ pub enum DataKey {
     /// `verify_vet_license()`. Presence of this key is the authoritative
     /// signal used by `grant_access` to allow vet access grants.
     VetLicenseVerified(Address), // vet_address -> verified license_id (String)
+    VetSpecializations(Address), // vet_address -> Vec<Specialization>, admin verified
 
     // Contract Upgrade keys
     ContractVersion,
@@ -965,6 +972,37 @@ pub enum TreatmentKey {
     TreatmentCount,
     PetTreatmentCount(u64),
     PetTreatmentIndex((u64, u64)), // (pet_id, index) -> treatment_id
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventType {
+    PetRegistered,
+    TreatmentAdded,
+    MedicalRecordAdded,
+    VaccinationAdded,
+    AccessGranted,
+    AccessRevoked,
+    InsuranceClaimSubmitted,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventSubscription {
+    pub id: u64,
+    pub subscriber: Address,
+    pub event_types: Vec<EventType>,
+    pub pet_ids: Vec<u64>,
+    pub expires_at: u64,
+    pub created_at: u64,
+}
+
+#[contracttype]
+pub enum SubscriptionKey {
+    Subscription(u64),
+    SubscriptionCount,
+    SubscriberSubscriptionCount(Address),
+    SubscriberSubscriptionIndex((Address, u64)),
 }
 
 #[contracttype]
@@ -1712,6 +1750,7 @@ pub struct TreatmentAddedEvent {
     pub vet_address: Address,
     pub treatment_type: TreatmentType,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 // --- EVENTS ---
@@ -1881,6 +1920,7 @@ pub struct PetRegisteredEvent {
     pub name: String,
     pub species: Species,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1893,6 +1933,7 @@ pub struct VaccinationAddedEvent {
     pub vaccine_type: VaccineType,
     pub next_due_date: u64,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1935,6 +1976,7 @@ pub struct MedicalRecordAddedEvent {
     pub pet_id: u64,
     pub updated_by: Address,
     pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contracttype]
@@ -1986,6 +2028,136 @@ pub struct PetChainContract;
 #[contractimpl]
 impl PetChainContract {
     // --- CONTRACT STATISTICS ---
+
+    pub fn register_subscription(
+        env: Env,
+        subscriber: Address,
+        event_types: Vec<EventType>,
+        pet_ids: Vec<u64>,
+        ttl: u64,
+    ) -> u64 {
+        subscriber.require_auth();
+
+        if event_types.len() == 0 || pet_ids.len() == 0 || ttl == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let now = env.ledger().timestamp();
+        let existing_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriberSubscriptionCount(subscriber.clone()))
+            .unwrap_or(0);
+        let mut active_count = 0u32;
+        for i in 1..=existing_count {
+            let Some(subscription_id) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, u64>(&SubscriptionKey::SubscriberSubscriptionIndex((
+                    subscriber.clone(),
+                    i,
+                )))
+            else {
+                continue;
+            };
+            if let Some(subscription) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, EventSubscription>(&SubscriptionKey::Subscription(
+                    subscription_id,
+                ))
+            {
+                if subscription.expires_at > now {
+                    active_count += 1;
+                }
+            }
+        }
+
+        if active_count >= MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
+        let current_id: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriptionCount)
+            .unwrap_or(0);
+        let subscription_id = safe_increment(current_id);
+        let expires_at = now.saturating_add(ttl);
+        let subscription = EventSubscription {
+            id: subscription_id,
+            subscriber: subscriber.clone(),
+            event_types,
+            pet_ids,
+            expires_at,
+            created_at: now,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SubscriptionKey::Subscription(subscription_id), &subscription);
+        env.storage()
+            .instance()
+            .set(&SubscriptionKey::SubscriptionCount, &subscription_id);
+
+        let new_subscriber_count = safe_increment(existing_count);
+        env.storage().instance().set(
+            &SubscriptionKey::SubscriberSubscriptionCount(subscriber.clone()),
+            &new_subscriber_count,
+        );
+        env.storage().instance().set(
+            &SubscriptionKey::SubscriberSubscriptionIndex((subscriber, new_subscriber_count)),
+            &subscription_id,
+        );
+
+        subscription_id
+    }
+
+    pub fn get_subscription(env: Env, subscription_id: u64) -> Option<EventSubscription> {
+        env.storage()
+            .instance()
+            .get(&SubscriptionKey::Subscription(subscription_id))
+    }
+
+    pub fn get_matching_subscription_ids(
+        env: Env,
+        event_type: EventType,
+        pet_id: u64,
+    ) -> Vec<u64> {
+        Self::matching_subscription_ids(&env, event_type, pet_id)
+    }
+
+    fn matching_subscription_ids(env: &Env, event_type: EventType, pet_id: u64) -> Vec<u64> {
+        let now = env.ledger().timestamp();
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SubscriptionKey::SubscriptionCount)
+            .unwrap_or(0);
+        let mut matches = Vec::new(env);
+
+        for subscription_id in 1..=count {
+            let Some(subscription) = env
+                .storage()
+                .instance()
+                .get::<SubscriptionKey, EventSubscription>(&SubscriptionKey::Subscription(
+                    subscription_id,
+                ))
+            else {
+                continue;
+            };
+
+            if subscription.expires_at <= now {
+                continue;
+            }
+            if subscription.event_types.contains(&event_type) && subscription.pet_ids.contains(&pet_id)
+            {
+                matches.push_back(subscription.id);
+            }
+        }
+
+        matches
+    }
 
     /// Returns the total number of pets ever registered in the contract.
     pub fn get_total_pets(env: Env) -> u64 {
@@ -2758,6 +2930,11 @@ impl PetChainContract {
                 name: String::from_str(&env, "PROTECTED"), // Masking name in event for safety
                 species,
                 timestamp,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::PetRegistered,
+                    pet_id,
+                ),
             },
         );
 
@@ -3780,6 +3957,70 @@ impl PetChainContract {
         PetChainContract::_verify_vet_internal(&env, vet_address)
     }
 
+    pub fn register_vet_specializations(
+        env: Env,
+        admin: Address,
+        vet_address: Address,
+        specializations: Vec<Specialization>,
+    ) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        let vet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VetNotFound));
+
+        if !vet.verified {
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
+        }
+
+        if specializations.len() == 0 || specializations.len() > 5 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let mut verified = Vec::new(&env);
+        for specialization in specializations.iter() {
+            if !verified.contains(&specialization) {
+                verified.push_back(specialization);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::VetSpecializations(vet_address), &verified);
+        true
+    }
+
+    pub fn get_vet_specializations(env: Env, vet_address: Address) -> Vec<Specialization> {
+        env.storage()
+            .instance()
+            .get(&DataKey::VetSpecializations(vet_address))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    fn vet_has_specialization(
+        env: &Env,
+        vet_address: &Address,
+        specialization: Specialization,
+    ) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, Vec<Specialization>>(&DataKey::VetSpecializations(vet_address.clone()))
+            .map(|specializations| specializations.contains(&specialization))
+            .unwrap_or(false)
+    }
+
+    fn require_vet_specialization(
+        env: &Env,
+        vet_address: &Address,
+        specialization: Specialization,
+    ) {
+        if !Self::vet_has_specialization(env, vet_address, specialization) {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
+    }
+
     fn _verify_vet_internal(env: &Env, vet_address: Address) -> bool {
         if let Some(mut vet) = env
             .storage()
@@ -3979,6 +4220,11 @@ impl PetChainContract {
                 vaccine_type,
                 next_due_date,
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::VaccinationAdded,
+                    pet_id,
+                ),
             },
         );
 
@@ -6576,6 +6822,9 @@ impl PetChainContract {
         if !PetChainContract::is_verified_vet(env.clone(), vet_address.clone()) {
             panic!("Veterinarian not verified");
         }
+        if treatment == String::from_str(&env, "Surgery") {
+            Self::require_vet_specialization(&env, &vet_address, Specialization::Surgery);
+        }
 
         // Verify pet exists
         let _pet: Pet = env
@@ -6654,9 +6903,15 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "MedicalRecordAdded"), pet_id),
             MedicalRecordAddedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 pet_id,
                 updated_by: vet_address.clone(),
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::MedicalRecordAdded,
+                    pet_id,
+                ),
             },
         );
         PetChainContract::log_access(
@@ -10967,6 +11222,10 @@ impl PetChainContract {
             panic!("Veterinarian not verified");
         }
 
+        if treatment_type == TreatmentType::Surgery {
+            Self::require_vet_specialization(&env, &vet_address, Specialization::Surgery);
+        }
+
         let _pet: Pet = env
             .storage()
             .instance()
@@ -11031,6 +11290,11 @@ impl PetChainContract {
                 vet_address,
                 treatment_type,
                 timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::TreatmentAdded,
+                    pet_id,
+                ),
             },
         );
 
@@ -11041,6 +11305,13 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get::<TreatmentKey, Treatment>(&TreatmentKey::Treatment(treatment_id))
+    }
+
+    pub fn get_treatment_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .instance()
+            .get(&TreatmentKey::PetTreatmentCount(pet_id))
+            .unwrap_or(0)
     }
 
     pub fn get_treatment_history(env: Env, pet_id: u64, offset: u64, limit: u32) -> Vec<Treatment> {

@@ -1,7 +1,9 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
+use crate::rate_limiter::{
+    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+};
 use crate::two_factor::{
     AuditLogEntry, InMemoryStore, TwoFactorAuth, TwoFactorData, TwoFactorStore,
     UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
@@ -164,6 +166,28 @@ impl TwoFactorHandlers {
             .map_err(|_| format!("2FA not configured for user {}", user_id))
     }
 
+    fn ensure_not_locked(&self, user_id: &str) -> Result<(), String> {
+        let state = self.store.get_lockout_state(user_id)?;
+        if state.locked {
+            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+        }
+        Ok(())
+    }
+
+    fn record_failed_verification(&self, user_id: &str) -> Result<(), String> {
+        let state = self.store.record_failed_two_fa_attempt(user_id)?;
+        if state.locked {
+            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+        }
+        if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
+            return Err(format!(
+                "Invalid 2FA token. Retry after {} seconds.",
+                delay
+            ));
+        }
+        Err("Invalid 2FA token.".to_string())
+    }
+
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
@@ -212,25 +236,19 @@ impl TwoFactorHandlers {
     ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        let key = format!("verify:{}", req.user_id);
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
-        }
+        self.ensure_not_locked(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
         let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
         if result {
             self.store.update_enabled(&req.user_id, true)?;
+            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.limiter.record_success(&format!("verify:{}", req.user_id));
+            return Ok(true);
         }
 
-        if result {
-            self.limiter.record_success(&key);
-        }
-
-        Ok(result)
+        self.record_failed_verification(&req.user_id)?;
+        Ok(false)
     }
 
     pub fn verify_login_token(
@@ -240,13 +258,7 @@ impl TwoFactorHandlers {
     ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        let key = format!("login:{}", req.user_id);
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
-        }
+        self.ensure_not_locked(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
         if !data.enabled {
@@ -256,10 +268,13 @@ impl TwoFactorHandlers {
         let is_valid = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
 
         if is_valid {
-            self.limiter.record_success(&key);
+            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.limiter.record_success(&format!("login:{}", req.user_id));
+            return Ok(true);
         }
 
-        Ok(is_valid)
+        self.record_failed_verification(&req.user_id)?;
+        Ok(false)
     }
 
     pub fn disable_two_factor(
@@ -269,13 +284,7 @@ impl TwoFactorHandlers {
     ) -> Result<bool, String> {
         caller.authorize(&req.user_id)?;
 
-        let key = format!("disable:{}", req.user_id);
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
-        }
+        self.ensure_not_locked(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
         if !data.enabled {
@@ -285,13 +294,13 @@ impl TwoFactorHandlers {
         let result = TwoFactorAuth::verify_token(&data.secret, &req.token)?;
         if result {
             self.store.update_enabled(&req.user_id, false)?;
+            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.limiter.record_success(&format!("disable:{}", req.user_id));
+            return Ok(true);
         }
 
-        if result {
-            self.limiter.record_success(&key);
-        }
-
-        Ok(result)
+        self.record_failed_verification(&req.user_id)?;
+        Ok(false)
     }
 
     pub fn recover_with_backup(
@@ -358,6 +367,8 @@ impl TwoFactorHandlers {
                 enabled: true,
             },
         )?;
+        self.store
+            .unlock_two_fa_account(&req.user_id, "recovery_code")?;
 
         Ok(RecoverWithBackupResponse {
             new_secret: setup.secret,
@@ -559,6 +570,11 @@ impl AdminDashboardHandlers {
     /// POST /admin/users/{id}/disable-2fa — force-disable with audit log entry.
     pub fn disable_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
         two_factor_store().admin_disable_two_fa(user_id, &admin.admin_id)
+    }
+
+    /// POST /admin/users/{id}/unlock-2fa — clear persistent lockout state.
+    pub fn unlock_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
+        two_factor_store().unlock_two_fa_account(user_id, &admin.admin_id)
     }
 
     /// GET /admin/users/{id}/audit-log — full 2FA event history (paginated).

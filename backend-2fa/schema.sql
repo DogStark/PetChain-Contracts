@@ -56,3 +56,13 @@ CREATE TABLE canary_accounts (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tenant_id, user_id)
 );
+
+-- Persistent 2FA lockout state. Redis stores the hot failure counter, but this
+-- table is the source of truth for full account lockout after 10 failures.
+CREATE TABLE two_fa_lockouts (
+    user_id VARCHAR(255) PRIMARY KEY,
+    failed_attempts INT NOT NULL DEFAULT 0,
+    locked BOOLEAN NOT NULL DEFAULT FALSE,
+    locked_at TIMESTAMP NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

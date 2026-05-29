@@ -3218,3 +3218,138 @@ mod distributed_rate_limiter_tests {
         assert!(blocked >= 5, "expected at least 5 blocked, got {blocked}");
     }
 }
+
+mod progressive_two_factor_lockout_tests {
+    use crate::handlers::{
+        AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        TwoFactorHandlers,
+    };
+    use crate::rate_limiter::{
+        progressive_delay_secs, MockRedisBackend, RedisTwoFactorFailureCounter,
+    };
+    use crate::two_factor::{InMemoryStore, TwoFactorStore};
+    use std::sync::Arc;
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    fn generate_token(secret: &str) -> String {
+        TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap()
+        .generate_current()
+        .unwrap()
+    }
+
+    #[test]
+    fn delay_doubles_through_attempt_nine() {
+        let expected = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+        for (attempt, delay) in (1u32..=9).zip(expected) {
+            assert_eq!(progressive_delay_secs(attempt), Some(delay));
+        }
+        assert_eq!(progressive_delay_secs(10), None);
+    }
+
+    #[test]
+    fn redis_failure_counter_tracks_attempts() {
+        let counter = RedisTwoFactorFailureCounter::new(MockRedisBackend::new(), "test:", 300);
+        assert_eq!(counter.record_failure("user-1"), 1);
+        assert_eq!(counter.record_failure("user-1"), 2);
+        assert_eq!(counter.get_failures("user-1"), 2);
+        counter.reset("user-1");
+        assert_eq!(counter.get_failures("user-1"), 0);
+    }
+
+    #[test]
+    fn persistent_store_locks_after_ten_failures() {
+        let store = InMemoryStore::default();
+        for attempt in 1..=9 {
+            let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+            assert_eq!(state.failed_attempts, attempt);
+            assert!(!state.locked);
+        }
+
+        let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+        assert_eq!(state.failed_attempts, 10);
+        assert!(state.locked);
+        assert!(state.locked_at.is_some());
+    }
+
+    #[test]
+    fn admin_unlock_clears_lockout_state() {
+        let store = InMemoryStore::default();
+        for _ in 0..10 {
+            store.record_failed_two_fa_attempt("user-admin-unlock").unwrap();
+        }
+        assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
+
+        store
+            .unlock_two_fa_account("user-admin-unlock", "admin-1")
+            .unwrap();
+
+        let state = store.get_lockout_state("user-admin-unlock").unwrap();
+        assert_eq!(state.failed_attempts, 0);
+        assert!(!state.locked);
+    }
+
+    #[test]
+    fn handler_locks_after_ten_invalid_tokens_and_admin_unlocks() {
+        let store = Arc::new(InMemoryStore::default());
+        let handlers = TwoFactorHandlers::with_store(store.clone());
+        let user_id = "handler-lockout-user";
+        let caller = AuthenticatedUser::new(user_id);
+        let enrollment = handlers
+            .enroll(
+                &caller,
+                EnableTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    email: "lockout@example.com".to_string(),
+                },
+            )
+            .unwrap();
+        store.update_enabled(user_id, true).unwrap();
+
+        for _ in 0..9 {
+            let err = handlers
+                .verify_login_token(
+                    &caller,
+                    LoginWithTwoFactorRequest {
+                        user_id: user_id.to_string(),
+                        token: "000000".to_string(),
+                    },
+                )
+                .unwrap_err();
+            assert!(err.contains("Retry after"));
+        }
+
+        let locked = handlers
+            .verify_login_token(
+                &caller,
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: "000000".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert!(locked.contains("locked after 10"));
+
+        store
+            .unlock_two_fa_account(user_id, &AuthenticatedAdmin::new("admin").admin_id)
+            .unwrap();
+        let token = generate_token(&enrollment.secret);
+        assert!(handlers
+            .verify_login_token(
+                &caller,
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap());
+    }
+}

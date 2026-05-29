@@ -1920,3 +1920,106 @@ fn test_export_access_log_admin_can_export() {
     let logs = client.export_access_log(&admin, &pet_id, &0u64, &1000u64, &1u32);
     assert!(!logs.is_empty());
 }
+
+fn setup_verified_vet_for_specialization() -> (
+    Env,
+    PetChainContractClient<'static>,
+    Address,
+    Address,
+    Address,
+    u64,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Nova"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Dog,
+        &String::from_str(&env, "Mixed"),
+        &String::from_str(&env, "Brown"),
+        &18u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    client.register_vet(
+        &vet,
+        &String::from_str(&env, "Dr Morgan"),
+        &String::from_str(&env, "SPEC-VET-1"),
+        &String::from_str(&env, "General"),
+    );
+    assert!(client.verify_vet(&admin, &vet));
+
+    (env, client, admin, owner, vet, pet_id)
+}
+
+#[test]
+fn test_admin_verified_specialization_query_returns_values() {
+    let (env, client, admin, _owner, vet, _pet_id) = setup_verified_vet_for_specialization();
+    let mut specializations = Vec::new(&env);
+    specializations.push_back(Specialization::GeneralPractice);
+    specializations.push_back(Specialization::Surgery);
+
+    assert!(client.register_vet_specializations(&admin, &vet, &specializations));
+
+    let stored = client.get_vet_specializations(&vet);
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored.get(0).unwrap(), Specialization::GeneralPractice);
+    assert_eq!(stored.get(1).unwrap(), Specialization::Surgery);
+}
+
+#[test]
+#[should_panic]
+fn test_specialization_registration_requires_admin() {
+    let (env, client, _admin, owner, vet, _pet_id) = setup_verified_vet_for_specialization();
+    let mut specializations = Vec::new(&env);
+    specializations.push_back(Specialization::Dermatology);
+
+    client.register_vet_specializations(&owner, &vet, &specializations);
+}
+
+#[test]
+#[should_panic]
+fn test_surgery_treatment_rejected_for_unqualified_vet() {
+    let (env, client, _admin, _owner, vet, pet_id) = setup_verified_vet_for_specialization();
+
+    client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Surgery,
+        &env.ledger().timestamp(),
+        &String::from_str(&env, "Surgery notes"),
+        &None,
+        &String::from_str(&env, "Pending"),
+    );
+}
+
+#[test]
+fn test_surgery_treatment_allowed_for_surgery_vet() {
+    let (env, client, admin, _owner, vet, pet_id) = setup_verified_vet_for_specialization();
+    let mut specializations = Vec::new(&env);
+    specializations.push_back(Specialization::Surgery);
+    client.register_vet_specializations(&admin, &vet, &specializations);
+
+    let treatment_id = client.add_treatment(
+        &pet_id,
+        &vet,
+        &TreatmentType::Surgery,
+        &env.ledger().timestamp(),
+        &String::from_str(&env, "Surgery notes"),
+        &None,
+        &String::from_str(&env, "Successful"),
+    );
+
+    assert_eq!(treatment_id, 1);
+}
