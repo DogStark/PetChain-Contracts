@@ -838,7 +838,7 @@ fn test_streak_increments_on_consecutive_days() {
 
     // Day 2: Advance time by 1 day and add activity
     env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(ledger.timestamp() + 86400);
+        ledger.timestamp += 86400;
     });
 
     client.add_activity_record(
@@ -856,7 +856,7 @@ fn test_streak_increments_on_consecutive_days() {
 
     // Day 3: Advance time by 1 day and add activity
     env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(ledger.timestamp() + 86400);
+        ledger.timestamp += 86400;
     });
 
     client.add_activity_record(
@@ -912,7 +912,7 @@ fn test_streak_resets_on_gap_greater_than_one_day() {
 
     // Day 2: Advance time by 2 days (gap > 1 day) and add activity
     env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(ledger.timestamp() + 172800); // 2 days
+        ledger.timestamp += 172800; // 2 days
     });
 
     client.add_activity_record(
@@ -966,7 +966,7 @@ fn test_milestone_event_at_7_days() {
 
         if day < 6 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1013,7 +1013,7 @@ fn test_milestone_event_at_30_days() {
 
         if day < 29 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1060,7 +1060,7 @@ fn test_milestone_event_at_100_days() {
 
         if day < 99 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1107,7 +1107,7 @@ fn test_longest_streak_tracking() {
 
         if day < 4 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1118,7 +1118,7 @@ fn test_longest_streak_tracking() {
 
     // Break the streak with a 2-day gap
     env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(ledger.timestamp() + 172800); // 2 days
+        ledger.timestamp += 172800; // 2 days
     });
 
     client.add_activity_record(
@@ -1137,7 +1137,7 @@ fn test_longest_streak_tracking() {
     // Build a new 8-day streak
     for day in 0..7 {
         env.ledger().with_mut(|ledger| {
-            ledger.set_timestamp(ledger.timestamp() + 86400);
+            ledger.timestamp += 86400;
         });
 
         client.add_activity_record(
@@ -1323,7 +1323,7 @@ fn test_milestone_not_reached_before_threshold() {
 
         if day < 5 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1370,7 +1370,7 @@ fn test_multiple_milestones_reached() {
 
         if day < 29 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1431,7 +1431,7 @@ fn test_streak_with_multiple_pets() {
 
         if day < 4 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1449,7 +1449,7 @@ fn test_streak_with_multiple_pets() {
 
         if day < 2 {
             env.ledger().with_mut(|ledger| {
-                ledger.set_timestamp(ledger.timestamp() + 86400);
+                ledger.timestamp += 86400;
             });
         }
     }
@@ -1599,7 +1599,7 @@ fn test_milestone_events_not_duplicated() {
             &ActivityType::Walk,
             &30,
             &5,
-            &(1000 + (day as u64 * 86400)),
+            &((1000 + (day as u64 * 86400)) as u32),
             &String::from_str(&env, "Walk"),
         );
     }
@@ -1614,14 +1614,18 @@ fn test_milestone_events_not_duplicated() {
         &ActivityType::Walk,
         &30,
         &5,
-        &(1000 + (7 as u64 * 86400)),
+        &((1000 + (7 as u64 * 86400)) as u32),
         &String::from_str(&env, "Walk"),
     );
 
     let streak_after = client.get_activity_streak(&pet_id);
     assert_eq!(streak_after.current_streak, 8);
     // Milestone vector should still only have one entry for 7 days
-    let milestone_count = streak_after.milestones_reached.iter().filter(|&&m| m == 7).count();
+    let milestone_count = streak_after
+        .milestones_reached
+        .iter()
+        .filter(|m| *m == 7)
+        .count();
     assert_eq!(milestone_count, 1);
 }
 

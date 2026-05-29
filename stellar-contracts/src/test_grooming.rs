@@ -537,3 +537,112 @@ fn test_get_grooming_count_matches_history_length() {
     assert_eq!(count, history.len() as u64);
     assert_eq!(count, 3);
 }
+
+mod test_recurring_grooming {
+    use crate::{Gender, GroomingFrequency, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup_pet(env: &Env, client: &PetChainContractClient) -> (Address, u64) {
+        let owner = Address::generate(env);
+        let admin = Address::generate(env);
+        client.init_admin(&admin);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(env, "Buddy"),
+            &String::from_str(env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(env, "Golden Retriever"),
+            &String::from_str(env, "Golden"),
+            &30,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        (owner, pet_id)
+    }
+
+    #[test]
+    fn test_create_grooming_schedule_generates_4_slots() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let (_owner, pet_id) = setup_pet(&env, &client);
+
+        let start = 1_000_000u64;
+        let interval = 7 * 24 * 3600u64; // weekly
+        let end = start + interval * 10;
+
+        client.create_grooming_schedule(
+            &pet_id,
+            &GroomingFrequency::Weekly,
+            &start,
+            &end,
+            &String::from_str(&env, "Groomer A"),
+            &String::from_str(&env, "Bath"),
+            &5000,
+        );
+
+        let history = client.get_grooming_history(&pet_id);
+        assert_eq!(history.len(), 4);
+    }
+
+    #[test]
+    fn test_advance_schedule_correct_date() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let (_owner, pet_id) = setup_pet(&env, &client);
+
+        let start = 1_000_000u64;
+        let interval = 7 * 24 * 3600u64;
+        let end = start + interval * 10;
+
+        let schedule_id = client.create_grooming_schedule(
+            &pet_id,
+            &GroomingFrequency::Weekly,
+            &start,
+            &end,
+            &String::from_str(&env, "Groomer A"),
+            &String::from_str(&env, "Bath"),
+            &5000,
+        );
+
+        // After 4 slots (indices 0..3), last_slot_date = start + 3*interval
+        // advance should produce slot at start + 4*interval
+        let record_id = client.advance_schedule(&schedule_id);
+        assert!(record_id > 0);
+
+        let record = client.get_grooming_record(&record_id).unwrap();
+        assert_eq!(record.date, start + 4 * interval);
+    }
+
+    #[test]
+    fn test_cancel_schedule_stops_generation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let (_owner, pet_id) = setup_pet(&env, &client);
+
+        let start = 1_000_000u64;
+        let interval = 7 * 24 * 3600u64;
+        let end = start + interval * 10;
+
+        let schedule_id = client.create_grooming_schedule(
+            &pet_id,
+            &GroomingFrequency::Weekly,
+            &start,
+            &end,
+            &String::from_str(&env, "Groomer A"),
+            &String::from_str(&env, "Bath"),
+            &5000,
+        );
+
+        client.cancel_grooming_schedule(&schedule_id);
+
+        let result = client.advance_schedule(&schedule_id);
+        assert_eq!(result, 0);
+    }
+}
