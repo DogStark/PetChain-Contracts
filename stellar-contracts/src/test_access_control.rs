@@ -1760,3 +1760,80 @@ fn test_expired_grant_returns_none() {
     let level = client.check_access(&pet_id, &grantee);
     assert_eq!(level, AccessLevel::None);
 }
+
+// --- export_access_log tests ---
+
+fn setup_with_admin() -> (Env, PetChainContractClient<'static>, Address, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+    let owner = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    (env, client, admin, owner, pet_id)
+}
+
+#[test]
+fn test_export_access_log_owner_can_export() {
+    let (env, client, _admin, owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(500);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+    let logs = client.export_access_log(&owner, &pet_id, &0u64, &1000u64, &1u32);
+    assert!(!logs.is_empty());
+}
+
+#[test]
+fn test_export_access_log_time_range_filters() {
+    let (env, client, _admin, owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(100);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+    env.ledger().set_timestamp(900);
+    client.revoke_access(&pet_id, &grantee);
+
+    // Only events in [200, 1000] — should exclude the grant at ts=100
+    let logs = client.export_access_log(&owner, &pet_id, &200u64, &1000u64, &1u32);
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs.get(0).unwrap().timestamp, 900);
+}
+
+#[test]
+#[should_panic]
+fn test_export_access_log_unauthorized_caller_panics() {
+    let (env, client, _admin, _owner, pet_id) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    client.export_access_log(&stranger, &pet_id, &0u64, &9999u64, &1u32);
+}
+
+#[test]
+fn test_export_access_log_admin_can_export() {
+    let (env, client, admin, _owner, pet_id) = setup_with_admin();
+    let grantee = Address::generate(&env);
+
+    env.ledger().set_timestamp(50);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Basic, &None);
+
+    let logs = client.export_access_log(&admin, &pet_id, &0u64, &1000u64, &1u32);
+    assert!(!logs.is_empty());
+}
