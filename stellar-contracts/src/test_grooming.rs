@@ -1,3 +1,119 @@
+#[cfg(test)]
+mod test_grooming {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup() -> (Env, Address, Address, u64) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let contract_id = env.register_contract(None, PetChainContract);
+
+        let owner = Address::generate(&env);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        (env, contract_id, owner, pet_id)
+    }
+
+    fn cid_for_index(env: &Env, idx: usize) -> String {
+        let values = [
+            "bafyphoto1",
+            "bafyphoto2",
+            "bafyphoto3",
+            "bafyphoto4",
+            "bafyphoto5",
+        ];
+        String::from_str(env, values[idx % values.len()])
+    }
+
+    #[test]
+    #[should_panic(expected = "Record photo limit exceeded")]
+    fn test_per_record_photo_limit_rejected() {
+        let (env, contract_id, owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let record_id = client.add_grooming_record(
+            &pet_id,
+            &owner,
+            &String::from_str(&env, "Initial grooming"),
+        );
+
+        for idx in 0..5 {
+            assert!(client.add_grooming_photo(&record_id, &cid_for_index(&env, idx)));
+        }
+
+        client.add_grooming_photo(&record_id, &String::from_str(&env, "bafyphoto6"));
+    }
+
+    #[test]
+    fn test_remove_decrements_count_correctly() {
+        let (env, contract_id, owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let record_id =
+            client.add_grooming_record(&pet_id, &owner, &String::from_str(&env, "Nail trim"));
+
+        assert!(client.add_grooming_photo(&record_id, &String::from_str(&env, "bafyphoto1")));
+        assert!(client.add_grooming_photo(&record_id, &String::from_str(&env, "bafyphoto2")));
+
+        let record = client.get_grooming_record(&record_id).unwrap();
+        assert_eq!(record.photos.len(), 2);
+
+        assert!(client.remove_grooming_photo(&record_id, &String::from_str(&env, "bafyphoto1")));
+
+        let record = client.get_grooming_record(&record_id).unwrap();
+        assert_eq!(record.photos.len(), 1);
+
+        assert!(client.add_grooming_photo(&record_id, &String::from_str(&env, "bafyphoto3")));
+
+        let record = client.get_grooming_record(&record_id).unwrap();
+        assert_eq!(record.photos.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid CID")]
+    fn test_invalid_cid_rejected() {
+        let (env, contract_id, owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let record_id =
+            client.add_grooming_record(&pet_id, &owner, &String::from_str(&env, "Bath"));
+
+        client.add_grooming_photo(&record_id, &String::from_str(&env, ""));
+    }
+
+    #[test]
+    #[should_panic(expected = "Pet photo limit exceeded")]
+    fn test_per_pet_photo_limit_rejected() {
+        let (env, contract_id, owner, pet_id) = setup();
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        for _ in 0..10 {
+            let record_id = client.add_grooming_record(
+                &pet_id,
+                &owner,
+                &String::from_str(&env, "Grooming session"),
+            );
+            for idx in 0..5 {
+                assert!(client.add_grooming_photo(&record_id, &cid_for_index(&env, idx)));
+            }
+        }
+
+        let extra_record = client.add_grooming_record(
+            &pet_id,
+            &owner,
+            &String::from_str(&env, "Overflow session"),
+        );
+        client.add_grooming_photo(&extra_record, &String::from_str(&env, "bafyoverflow"));
+    }
+
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
