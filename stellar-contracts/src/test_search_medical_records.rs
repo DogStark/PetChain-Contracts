@@ -127,8 +127,8 @@ fn test_rejects_too_many_tokens() {
 mod test_search_medical_records {
     extern crate std;
     use crate::{
-        Gender, MedicalRecordFilter, PetChainContract, PetChainContractClient, PrivacyLevel,
-        Species,
+        Gender, MedicalRecordAmendmentInput, MedicalRecordFilter, PetChainContract,
+        PetChainContractClient, PrivacyLevel, Species,
     };
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -373,25 +373,31 @@ mod test_search_medical_records {
         let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
         let initial_record = client.get_medical_record(&record_id).unwrap();
 
-        // Update the notes
-        let success = client.update_medical_record_notes(
+        let version = client.amend_medical_record(
+            &pet_id,
             &record_id,
-            &String::from_str(&env, "Updated notes with new information"),
+            &MedicalRecordAmendmentInput {
+                diagnosis: None,
+                treatment: None,
+                medications: None,
+                notes: Some(String::from_str(&env, "Updated notes with new information")),
+            },
         );
-        assert!(success);
+        assert_eq!(version, 1);
 
-        // Verify notes were updated
-        let updated_record = client.get_medical_record(&record_id).unwrap();
+        // The original record remains unchanged.
+        let stored_record = client.get_medical_record(&record_id).unwrap();
+        assert_eq!(stored_record.notes, initial_record.notes);
+        assert_eq!(stored_record.updated_at, initial_record.updated_at);
+
+        let diff = client.diff_record_versions(&pet_id, &record_id, &0u32, &1u32);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff.get(0).unwrap().field, String::from_str(&env, "notes"));
+        assert_eq!(diff.get(0).unwrap().from_value, initial_record.notes);
         assert_eq!(
-            updated_record.notes,
+            diff.get(0).unwrap().to_value,
             String::from_str(&env, "Updated notes with new information")
         );
-
-        // Verify the date field (creation time) was NOT changed
-        assert_eq!(updated_record.date, initial_record.date);
-
-        // Verify updated_at timestamp was changed
-        assert!(updated_record.updated_at >= initial_record.updated_at);
     }
 
     #[test]
@@ -468,6 +474,62 @@ mod test_search_medical_records {
             &String::from_str(&env, "Notes for non-existent record"),
         );
         assert!(!success);
+    }
+
+    #[test]
+    fn test_medical_record_amendment_limit_enforced() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+        for i in 0..5u32 {
+            let note = String::from_str(&env, "amend");
+            let _ = client.amend_medical_record(
+                &pet_id,
+                &record_id,
+                &MedicalRecordAmendmentInput {
+                    diagnosis: None,
+                    treatment: None,
+                    medications: None,
+                    notes: Some(note.clone()),
+                },
+            );
+            env.ledger().set_timestamp(env.ledger().timestamp() + i as u64 + 1);
+        }
+
+        let result = client.try_amend_medical_record(
+            &pet_id,
+            &record_id,
+            &MedicalRecordAmendmentInput {
+                diagnosis: Some(String::from_str(&env, "Changed")),
+                treatment: None,
+                medications: None,
+                notes: None,
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_diff_record_versions_reports_field_changes() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        let record_id = add_record(&client, &env, pet_id, &vet, "Flu");
+        client.amend_medical_record(
+            &pet_id,
+            &record_id,
+            &MedicalRecordAmendmentInput {
+                diagnosis: Some(String::from_str(&env, "Cold")),
+                treatment: Some(String::from_str(&env, "Rest")),
+                medications: None,
+                notes: Some(String::from_str(&env, "Recovering well")),
+            },
+        );
+
+        let diff = client.diff_record_versions(&pet_id, &record_id, &0u32, &1u32);
+        assert_eq!(diff.len(), 3);
+        assert_eq!(diff.get(0).unwrap().field, String::from_str(&env, "diagnosis"));
+        assert_eq!(diff.get(1).unwrap().field, String::from_str(&env, "treatment"));
+        assert_eq!(diff.get(2).unwrap().field, String::from_str(&env, "notes"));
     }
 
     #[test]
