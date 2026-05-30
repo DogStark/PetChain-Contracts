@@ -2,11 +2,13 @@
 //! Run with: cargo run --example example_integration
 
 use actix_web::{middleware, web, App, HttpResponse, HttpServer};
+use petchain_2fa::{ApiError, ErrorResponseMiddleware};
 use petchain_2fa::handlers::{
     AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
     RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -39,7 +41,7 @@ struct LoginResponse {
 // Endpoint 1 – POST /api/auth/login
 // ---------------------------------------------------------------------------
 
-async fn login(state: web::Data<AppState>, req: web::Json<LoginRequest>) -> HttpResponse {
+async fn login(state: web::Data<AppState>, req: web::Json<LoginRequest>) -> Result<HttpResponse, ApiError> {
     // Placeholder: validate email/password against your database.
     let _ = (&req.email, &req.password);
     let user_id = "user123"; // replace with real DB lookup
@@ -56,37 +58,36 @@ async fn login(state: web::Data<AppState>, req: web::Json<LoginRequest>) -> Http
                         token: token.clone(),
                     },
                 ) {
-                    Ok(true) => HttpResponse::Ok().json(LoginResponse {
+                    Ok(true) => Ok(HttpResponse::Ok().json(LoginResponse {
                         success: true,
                         requires_2fa: false,
                         user_id: Some(user_id.to_string()),
                         token: Some("generated_jwt_token".to_string()),
-                    }),
-                    Ok(false) => HttpResponse::Unauthorized().json(LoginResponse {
-                        success: false,
-                        requires_2fa: true,
-                        user_id: None,
-                        token: None,
-                    }),
-                    Err(e) => {
-                        HttpResponse::InternalServerError().json(serde_json::json!({ "error": e }))
-                    }
+                    })),
+                    Ok(false) => Err(ApiError::unauthorized(
+                        "Invalid two-factor authentication token",
+                        None,
+                    )),
+                    Err(e) => Err(ApiError::internal_error(
+                        "2FA verification failed",
+                        Some(json!({ "error": e })),
+                    )),
                 }
             }
-            None => HttpResponse::Ok().json(LoginResponse {
+            None => Ok(HttpResponse::Ok().json(LoginResponse {
                 success: false,
                 requires_2fa: true,
                 user_id: Some(user_id.to_string()),
                 token: None,
-            }),
+            })),
         }
     } else {
-        HttpResponse::Ok().json(LoginResponse {
+        Ok(HttpResponse::Ok().json(LoginResponse {
             success: true,
             requires_2fa: false,
             user_id: Some(user_id.to_string()),
             token: Some("generated_jwt_token".to_string()),
-        })
+        }))
     }
 }
 
@@ -94,11 +95,14 @@ async fn login(state: web::Data<AppState>, req: web::Json<LoginRequest>) -> Http
 // Endpoint 2 – POST /api/2fa/enable
 // ---------------------------------------------------------------------------
 
-async fn enable_2fa(req: web::Json<EnableTwoFactorRequest>) -> HttpResponse {
+async fn enable_2fa(req: web::Json<EnableTwoFactorRequest>) -> Result<HttpResponse, ApiError> {
     let caller = AuthenticatedUser::new(&req.user_id);
     match TwoFactorHandlers::enable_two_factor(&caller, req.into_inner()) {
-        Ok(response) => HttpResponse::Ok().json(response),
-        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+        Ok(response) => Ok(HttpResponse::Ok().json(response)),
+        Err(e) => Err(ApiError::bad_request(
+            "Failed to enable two-factor authentication",
+            Some(json!({ "error": e })),
+        )),
     }
 }
 
@@ -109,13 +113,15 @@ async fn enable_2fa(req: web::Json<EnableTwoFactorRequest>) -> HttpResponse {
 async fn verify_2fa(
     state: web::Data<AppState>,
     req: web::Json<VerifyTwoFactorRequest>,
-) -> HttpResponse {
+) -> Result<HttpResponse, ApiError> {
     let caller = AuthenticatedUser::new(&req.user_id);
     match state.tf.verify_and_activate(&caller, req.into_inner()) {
-        Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
-        Ok(false) => HttpResponse::BadRequest()
-            .json(serde_json::json!({ "success": false, "error": "Invalid token" })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "error": e })),
+        Ok(true) => Ok(HttpResponse::Ok().json(serde_json::json!({ "success": true }))),
+        Ok(false) => Err(ApiError::invalid_token("Invalid token", None)),
+        Err(e) => Err(ApiError::internal_error(
+            "2FA verification failed",
+            Some(json!({ "error": e })),
+        )),
     }
 }
 
@@ -126,13 +132,15 @@ async fn verify_2fa(
 async fn disable_2fa(
     state: web::Data<AppState>,
     req: web::Json<DisableTwoFactorRequest>,
-) -> HttpResponse {
+) -> Result<HttpResponse, ApiError> {
     let caller = AuthenticatedUser::new(&req.user_id);
     match state.tf.disable_two_factor(&caller, req.into_inner()) {
-        Ok(true) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
-        Ok(false) => HttpResponse::BadRequest()
-            .json(serde_json::json!({ "success": false, "error": "Invalid token" })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({ "error": e })),
+        Ok(true) => Ok(HttpResponse::Ok().json(serde_json::json!({ "success": true }))),
+        Ok(false) => Err(ApiError::invalid_token("Invalid token", None)),
+        Err(e) => Err(ApiError::internal_error(
+            "2FA disable failed",
+            Some(json!({ "error": e })),
+        )),
     }
 }
 
@@ -140,15 +148,18 @@ async fn disable_2fa(
 // Endpoint 5 – POST /api/2fa/recover
 // ---------------------------------------------------------------------------
 
-async fn recover_2fa(req: web::Json<RecoverWithBackupRequest>) -> HttpResponse {
+async fn recover_2fa(req: web::Json<RecoverWithBackupRequest>) -> Result<HttpResponse, ApiError> {
     let caller = AuthenticatedUser::new(&req.user_id);
     match TwoFactorHandlers::recover_with_backup(&caller, req.into_inner()) {
-        Ok(response) => HttpResponse::Ok().json(serde_json::json!({
+        Ok(response) => Ok(HttpResponse::Ok().json(serde_json::json!({
             "success": true,
             "new_secret": response.new_secret,
             "new_backup_codes": response.new_backup_codes,
-        })),
-        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+        }))),
+        Err(e) => Err(ApiError::bad_request(
+            "Failed to recover two-factor authentication",
+            Some(json!({ "error": e })),
+        )),
     }
 }
 
@@ -165,6 +176,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
+            .wrap(ErrorResponseMiddleware)
             .wrap(middleware::Logger::default())
             .route("/api/auth/login", web::post().to(login))
             .route("/api/2fa/enable", web::post().to(enable_2fa))
