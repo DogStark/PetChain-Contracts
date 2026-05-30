@@ -204,6 +204,8 @@ mod test_vaccination_expiry;
 mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_event_subscriptions;
+#[cfg(test)]
+mod test_health_score;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -1121,6 +1123,7 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
+    HealthScoreCache(u64),
     // Scanner registry
     ScannerRegistry,
 }
@@ -1432,6 +1435,24 @@ pub struct VaccinationSummary {
     pub is_fully_current: bool,
     pub overdue_types: Vec<VaccineType>,
     pub upcoming_count: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthScoreBreakdown {
+    pub vaccination: u32,
+    pub lab_results: u32,
+    pub activity: u32,
+    pub insurance: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthScore {
+    pub pet_id: u64,
+    pub score: u32,
+    pub breakdown: HealthScoreBreakdown,
+    pub computed_at: u64,
 }
 
 #[contracttype]
@@ -3731,6 +3752,133 @@ impl PetChainContract {
         } else {
             None
         }
+    }
+
+    fn compute_vaccination_health_score(env: &Env, pet_id: u64) -> u32 {
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+        if history.len() == 0 {
+            return 0;
+        }
+
+        let mut seen_types: Vec<VaccineType> = Vec::new(env);
+        let mut current_types: u32 = 0;
+        let mut total_types: u32 = 0;
+
+        for vaccination in history.iter() {
+            if seen_types.contains(&vaccination.vaccine_type) {
+                continue;
+            }
+            seen_types.push_back(vaccination.vaccine_type.clone());
+            total_types = total_types.saturating_add(1);
+            if PetChainContract::is_vaccination_current(
+                env.clone(),
+                pet_id,
+                vaccination.vaccine_type.clone(),
+            ) {
+                current_types = current_types.saturating_add(1);
+            }
+        }
+
+        if total_types == 0 {
+            0
+        } else {
+            current_types.saturating_mul(100) / total_types
+        }
+    }
+
+    fn compute_lab_health_score(env: &Env, pet_id: u64) -> u32 {
+        let count = PetChainContract::get_lab_result_count(env.clone(), pet_id);
+        if count == 0 {
+            return 0;
+        }
+
+        let mut latest_date = 0u64;
+        for i in 1..=count {
+            if let Some(result_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(result) = PetChainContract::get_lab_result(env.clone(), result_id) {
+                    if result.date >= latest_date {
+                        latest_date = result.date;
+                    }
+                }
+            }
+        }
+
+        let recent_cutoff = env.ledger().timestamp().saturating_sub(30 * 24 * 60 * 60);
+        if latest_date >= recent_cutoff {
+            100
+        } else {
+            50
+        }
+    }
+
+    fn compute_activity_health_score(env: &Env, pet_id: u64) -> u32 {
+        let streak = PetChainContract::get_activity_streak(env.clone(), pet_id).current_streak;
+        if streak == 0 {
+            return 0;
+        }
+
+        let capped = if streak > 30 { 30 } else { streak };
+        (capped.saturating_mul(100) / 30) as u32
+    }
+
+    fn compute_insurance_health_score(env: &Env, pet_id: u64) -> u32 {
+        if PetChainContract::is_insurance_active(env.clone(), pet_id) {
+            100
+        } else {
+            0
+        }
+    }
+
+    pub fn compute_health_score(env: Env, pet_id: u64) -> HealthScore {
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        let now = env.ledger().timestamp();
+        let breakdown = HealthScoreBreakdown {
+            vaccination: Self::compute_vaccination_health_score(&env, pet_id),
+            lab_results: Self::compute_lab_health_score(&env, pet_id),
+            activity: Self::compute_activity_health_score(&env, pet_id),
+            insurance: Self::compute_insurance_health_score(&env, pet_id),
+        };
+        let score = (breakdown.vaccination
+            + breakdown.lab_results
+            + breakdown.activity
+            + breakdown.insurance)
+            / 4;
+
+        let result = HealthScore {
+            pet_id,
+            score,
+            breakdown,
+            computed_at: now,
+        };
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::HealthScoreCache(pet_id), &result);
+        result
+    }
+
+    pub fn get_health_score(env: Env, pet_id: u64) -> HealthScore {
+        let ttl = 24 * 60 * 60;
+        if let Some(cached) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, HealthScore>(&MedicalKey::HealthScoreCache(pet_id))
+        {
+            if env.ledger().timestamp().saturating_sub(cached.computed_at) < ttl {
+                return cached;
+            }
+        }
+
+        Self::compute_health_score(env, pet_id)
     }
 
     fn parse_birthday_timestamp(birthday: &String) -> Result<u64, ContractError> {
