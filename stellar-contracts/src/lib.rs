@@ -352,6 +352,7 @@ pub enum ContractError {
     StorageQuotaExceeded = 160,
     ErrorMessageNotFound = 170,
     DuplicateActivity = 180,
+    BatchTooLarge = 181,
     // Issue: Pet profile schema validation
     InvalidPetName = 190,
     InvalidBreed = 191,
@@ -4046,6 +4047,91 @@ impl PetChainContract {
             pet.new_owner = to;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+        }
+    }
+
+    /// Transfer multiple pets to the same new owner atomically.
+    /// All pets must belong to the same caller and the entire batch fails if
+    /// any pet is missing or owned by a different address.
+    pub fn batch_transfer(env: Env, pet_ids: Vec<u64>, new_owner: Address) {
+        const MAX_BATCH_SIZE: u32 = 20;
+
+        if pet_ids.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if pet_ids.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, ContractError::BatchTooLarge);
+        }
+
+        let mut expected_owner: Option<Address> = None;
+        let mut seen_ids = Vec::new(&env);
+        let mut pets = Vec::new(&env);
+        for pet_id in pet_ids.iter() {
+            if seen_ids.contains(&pet_id) {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+            seen_ids.push_back(pet_id);
+
+            let pet = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+                .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+            match expected_owner {
+                None => expected_owner = Some(pet.owner.clone()),
+                Some(ref owner) if owner != &pet.owner => {
+                    panic_with_error!(&env, ContractError::NotPetOwner);
+                }
+                _ => {}
+            }
+
+            pets.push_back(pet);
+        }
+
+        let owner = expected_owner.unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        for pet in pets.iter() {
+            let pet_id = pet.pet_id;
+            let old_owner = pet.owner.clone();
+            PetChainContract::remove_pet_from_owner_index(&env, &old_owner, pet_id);
+
+            let mut pet = pet.clone();
+            pet.owner = new_owner.clone();
+            pet.new_owner = new_owner.clone();
+            pet.updated_at = now;
+
+            PetChainContract::add_pet_to_owner_index(&env, &pet.owner, pet_id);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            PetChainContract::log_ownership_change(
+                &env,
+                pet_id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                String::from_str(&env, "Batch Transfer"),
+            );
+
+            PetChainContract::append_custody_entry(
+                &env,
+                pet_id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                TransferType::Direct,
+            );
+
+            env.events().publish(
+                (String::from_str(&env, "PetOwnershipTransferred"), pet_id),
+                PetOwnershipTransferredEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    old_owner,
+                    new_owner: pet.owner.clone(),
+                    timestamp: now,
+                },
+            );
         }
     }
 
