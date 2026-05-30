@@ -199,6 +199,10 @@ mod test_custody_chain;
 #[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
+mod test_governance_voting;
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
 mod test_vaccination_expiry;
 #[cfg(test)]
 mod test_medical_record_soft_delete;
@@ -1219,6 +1223,8 @@ pub enum SystemKey {
     LabThreshold,
     // Chain-of-custody log (Issue #637)
     CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
+    // #699: governance-controlled parameters
+    HealthScoreCacheTtl, // TTL (seconds) for health-score cache entries
 }
 
 #[contracttype]
@@ -1813,6 +1819,21 @@ pub enum ProposalState {
     Vetoed,            // Vetoed during timelock
 }
 
+/// Identifies a contract parameter that can be changed via governance vote.
+///
+/// Adding new variants here is the only change needed to expose a new
+/// on-chain parameter to the governance system.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParamKey {
+    /// Global storage quota (max entries per pet). Stored as `u64`.
+    GlobalStorageQuota,
+    /// Cache TTL in seconds for computed health scores. Stored as `u64`.
+    HealthScoreCacheTtl,
+    /// Multisig approval threshold. Stored as `u32` (cast to u64 in proposal).
+    AdminThreshold,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalAction {
@@ -1820,6 +1841,10 @@ pub enum ProposalAction {
     VerifyVet(Address),
     RevokeVet(Address),
     ChangeAdmin((Vec<Address>, u32)),
+    /// Governance vote to change a named contract parameter.
+    /// `(key, new_value_as_u64)` — the value is cast to the parameter's
+    /// native type at execution time.
+    ParameterChange((ParamKey, u64)),
 }
 
 #[contracttype]
@@ -12274,6 +12299,50 @@ impl PetChainContract {
                     .set(&SystemKey::AdminThreshold, &threshold);
                 // Also clean up legacy admin if needed
                 env.storage().instance().remove(&DataKey::Admin);
+            }
+            // #699 — Governance voting for parameter changes.
+            // The parameter is updated atomically when the proposal executes,
+            // ensuring no partial state is ever observed.
+            ProposalAction::ParameterChange(params) => {
+                let (key, new_value) = params;
+                match key {
+                    ParamKey::GlobalStorageQuota => {
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::GlobalStorageQuota, &new_value);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "GlobalStorageQuota"), new_value),
+                        );
+                    }
+                    ParamKey::HealthScoreCacheTtl => {
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::HealthScoreCacheTtl, &new_value);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "HealthScoreCacheTtl"), new_value),
+                        );
+                    }
+                    ParamKey::AdminThreshold => {
+                        let threshold = new_value as u32;
+                        let admins: Vec<Address> = env
+                            .storage()
+                            .instance()
+                            .get(&SystemKey::Admins)
+                            .unwrap_or(Vec::new(&env));
+                        if threshold == 0 || threshold > admins.len() {
+                            panic_with_error!(&env, ContractError::InvalidThreshold);
+                        }
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::AdminThreshold, &threshold);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "AdminThreshold"), new_value),
+                        );
+                    }
+                }
             }
         }
 
