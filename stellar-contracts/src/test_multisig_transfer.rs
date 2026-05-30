@@ -1,5 +1,5 @@
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, String, Vec};
 
 fn setup_test_env<'a>(
     env: &'a Env,
@@ -500,6 +500,89 @@ fn test_ownership_history_pagination() {
 
     let history_empty = client.get_ownership_history(&pet_id, &5u64, &1u32);
     assert_eq!(history_empty.len(), 0);
+}
+
+#[test]
+fn test_batch_transfer_moves_all_pets_and_emits_one_event_per_pet() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+    let pet_id1 = register_test_pet(&client, &env, &owner);
+    let pet_id2 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "TestPet2"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Tabby"),
+        &String::from_str(&env, "White"),
+        &11,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let before_events = env.events().all().len();
+    let mut pet_ids = Vec::new(&env);
+    pet_ids.push_back(pet_id1);
+    pet_ids.push_back(pet_id2);
+
+    client.batch_transfer(&pet_ids, &new_owner);
+
+    assert_eq!(client.get_pet_owner(&pet_id1).unwrap(), new_owner);
+    assert_eq!(client.get_pet_owner(&pet_id2).unwrap(), new_owner);
+    assert_eq!(env.events().all().len(), before_events + 2);
+}
+
+#[test]
+fn test_batch_transfer_rejects_owner_mismatch_atomically() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+    let other_owner = Address::generate(&env);
+    let pet_id1 = register_test_pet(&client, &env, &owner);
+    let pet_id2 = client.register_pet(
+        &other_owner,
+        &String::from_str(&env, "Rover"),
+        &String::from_str(&env, "2020-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Mix"),
+        &String::from_str(&env, "Brown"),
+        &15,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut pet_ids = Vec::new(&env);
+    pet_ids.push_back(pet_id1);
+    pet_ids.push_back(pet_id2);
+
+    assert!(client.try_batch_transfer(&pet_ids, &new_owner).is_err());
+    assert_eq!(client.get_pet_owner(&pet_id1).unwrap(), owner);
+    assert_eq!(client.get_pet_owner(&pet_id2).unwrap(), other_owner);
+}
+
+#[test]
+fn test_batch_transfer_rejects_batches_over_limit() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+
+    let mut pet_ids = Vec::new(&env);
+    for _ in 0..21u64 {
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "BatchPet"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Black"),
+            &20,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        pet_ids.push_back(pet_id);
+    }
+
+    assert!(client.try_batch_transfer(&pet_ids, &new_owner).is_err());
 }
 
 #[test]

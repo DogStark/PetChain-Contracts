@@ -1,5 +1,43 @@
 # API Overview
 
+## Backend 2FA — OpenAPI Specification
+
+The Backend 2FA service is fully documented as an **OpenAPI 3.0** spec.
+
+- **Machine-readable spec:** [`docs/openapi.yaml`](./openapi.yaml)
+- **Validation:** The spec is validated automatically on every PR via the
+  `backend-2fa.yml` CI workflow using `@stoplight/spectral-cli`.
+
+### Endpoints at a glance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/2fa/enable` | Enable 2FA — returns secret and backup codes |
+| `POST` | `/2fa/disable` | Disable 2FA (requires current TOTP token) |
+| `POST` | `/2fa/verify` | Verify a TOTP token |
+| `POST` | `/2fa/login` | Complete login with 2FA |
+| `POST` | `/2fa/recover` | Recover access with a backup code |
+| `GET`  | `/2fa/recovery-log` | Paginated backup-code usage log |
+| `GET`  | `/2fa/audit-log/{user_id}` | Paginated 2FA audit log for a user |
+| `POST` | `/admin/quota` | Set per-user storage quota (admin) |
+| `POST` | `/admin/quota/unlimited` | Grant unlimited quota (admin) |
+| `POST` | `/admin/canary` | Create a canary user (admin) |
+| `GET`  | `/admin/flagged` | List all flagged submissions (admin) |
+| `GET`  | `/admin/flagged/{user_id}` | Flagged submissions for a user (admin) |
+| `POST` | `/tenant/provision` | Provision a new tenant (admin) |
+| `GET`  | `/ws/leaderboard` | WebSocket leaderboard feed |
+| `GET`  | `/health` | Health check |
+
+### Authentication
+All write and sensitive read endpoints require a Bearer JWT (`Authorization: Bearer <token>`).
+
+### Error format
+```json
+{ "error": "INVALID_TOKEN", "message": "The provided TOTP token has expired" }
+```
+
+---
+
 ## View Functions (pure reads — no storage writes or event emissions)
 
 The following functions are guaranteed to have no side effects. They do not write to storage, emit events, or update access timestamps.

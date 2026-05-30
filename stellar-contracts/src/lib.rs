@@ -203,6 +203,10 @@ mod test_custody_chain;
 #[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
+mod test_governance_voting;
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
 mod test_vaccination_expiry;
 #[cfg(test)]
 mod test_vaccination_certificate;
@@ -210,6 +214,8 @@ mod test_vaccination_certificate;
 mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_event_subscriptions;
+#[cfg(test)]
+mod test_health_score;
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
@@ -358,6 +364,7 @@ pub enum ContractError {
     StorageQuotaExceeded = 160,
     ErrorMessageNotFound = 170,
     DuplicateActivity = 180,
+    BatchTooLarge = 181,
     // Issue: Pet profile schema validation
     InvalidPetName = 190,
     InvalidBreed = 191,
@@ -1157,6 +1164,8 @@ pub enum MedicalKey {
     MedicalRecordCount,
     PetMedicalRecordIndex((u64, u64)), // (pet_id, index) -> medical_record_id
     PetMedicalRecordCount(u64),
+    MedicalRecordAmendment((u64, u32)),
+    MedicalRecordAmendmentCount(u64),
     KeywordRecordCount((u64, Bytes)),
     KeywordRecordIndex((u64, Bytes, u64)),
     GlobalMedication(u64),          // medication_id -> Medication
@@ -1260,6 +1269,8 @@ pub enum SystemKey {
     LabThreshold,
     // Chain-of-custody log (Issue #637)
     CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
+    // #699: governance-controlled parameters
+    HealthScoreCacheTtl, // TTL (seconds) for health-score cache entries
 }
 
 #[contracttype]
@@ -1485,12 +1496,38 @@ pub struct VaccinationSummary {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthScoreBreakdown {
+    pub vaccination: u32,
+    pub lab_results: u32,
+    pub activity: u32,
+    pub insurance: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthScore {
+    pub pet_id: u64,
+    pub score: u32,
+    pub breakdown: HealthScoreBreakdown,
+    pub computed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LabDifference {
     pub biomarker: String,
     pub value_a: i128,
     pub value_b: i128,
     pub delta: i128,
     pub abnormal: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalFieldDiff {
+    pub field: String,
+    pub from_value: String,
+    pub to_value: String,
 }
 
 /// Cached result of a biomarker moving-average computation (1-hour TTL).
@@ -1753,6 +1790,24 @@ pub struct MedicalRecordInput {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAmendmentInput {
+    pub diagnosis: Option<String>,
+    pub treatment: Option<String>,
+    pub medications: Option<Vec<Medication>>,
+    pub notes: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MedicalRecordAmendment {
+    pub record_id: u64,
+    pub version: u32,
+    pub updated_at: u64,
+    pub changes: MedicalRecordAmendmentInput,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MedicalRecordFilter {
     pub vet_address: Option<Address>,
     pub from_date: Option<u64>,
@@ -1810,6 +1865,21 @@ pub enum ProposalState {
     Vetoed,            // Vetoed during timelock
 }
 
+/// Identifies a contract parameter that can be changed via governance vote.
+///
+/// Adding new variants here is the only change needed to expose a new
+/// on-chain parameter to the governance system.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParamKey {
+    /// Global storage quota (max entries per pet). Stored as `u64`.
+    GlobalStorageQuota,
+    /// Cache TTL in seconds for computed health scores. Stored as `u64`.
+    HealthScoreCacheTtl,
+    /// Multisig approval threshold. Stored as `u32` (cast to u64 in proposal).
+    AdminThreshold,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalAction {
@@ -1817,6 +1887,10 @@ pub enum ProposalAction {
     VerifyVet(Address),
     RevokeVet(Address),
     ChangeAdmin((Vec<Address>, u32)),
+    /// Governance vote to change a named contract parameter.
+    /// `(key, new_value_as_u64)` — the value is cast to the parameter's
+    /// native type at execution time.
+    ParameterChange((ParamKey, u64)),
 }
 
 #[contracttype]
@@ -4348,6 +4422,91 @@ impl PetChainContract {
             pet.new_owner = to;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+        }
+    }
+
+    /// Transfer multiple pets to the same new owner atomically.
+    /// All pets must belong to the same caller and the entire batch fails if
+    /// any pet is missing or owned by a different address.
+    pub fn batch_transfer(env: Env, pet_ids: Vec<u64>, new_owner: Address) {
+        const MAX_BATCH_SIZE: u32 = 20;
+
+        if pet_ids.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if pet_ids.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, ContractError::BatchTooLarge);
+        }
+
+        let mut expected_owner: Option<Address> = None;
+        let mut seen_ids = Vec::new(&env);
+        let mut pets = Vec::new(&env);
+        for pet_id in pet_ids.iter() {
+            if seen_ids.contains(&pet_id) {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+            seen_ids.push_back(pet_id);
+
+            let pet = env
+                .storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+                .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+            match expected_owner {
+                None => expected_owner = Some(pet.owner.clone()),
+                Some(ref owner) if owner != &pet.owner => {
+                    panic_with_error!(&env, ContractError::NotPetOwner);
+                }
+                _ => {}
+            }
+
+            pets.push_back(pet);
+        }
+
+        let owner = expected_owner.unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+        owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        for pet in pets.iter() {
+            let pet_id = pet.pet_id;
+            let old_owner = pet.owner.clone();
+            PetChainContract::remove_pet_from_owner_index(&env, &old_owner, pet_id);
+
+            let mut pet = pet.clone();
+            pet.owner = new_owner.clone();
+            pet.new_owner = new_owner.clone();
+            pet.updated_at = now;
+
+            PetChainContract::add_pet_to_owner_index(&env, &pet.owner, pet_id);
+            env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+            PetChainContract::log_ownership_change(
+                &env,
+                pet_id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                String::from_str(&env, "Batch Transfer"),
+            );
+
+            PetChainContract::append_custody_entry(
+                &env,
+                pet_id,
+                old_owner.clone(),
+                pet.owner.clone(),
+                TransferType::Direct,
+            );
+
+            env.events().publish(
+                (String::from_str(&env, "PetOwnershipTransferred"), pet_id),
+                PetOwnershipTransferredEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    old_owner,
+                    new_owner: pet.owner.clone(),
+                    timestamp: now,
+                },
+            );
         }
     }
 
@@ -8451,6 +8610,135 @@ impl PetChainContract {
         false
     }
 
+    fn get_medical_record_amendment_count(env: &Env, record_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get::<MedicalKey, u32>(&MedicalKey::MedicalRecordAmendmentCount(record_id))
+            .unwrap_or(0)
+    }
+
+    fn build_medical_record_version(
+        env: &Env,
+        record_id: u64,
+        version: u32,
+    ) -> Option<MedicalRecord> {
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))?;
+
+        if version == 0 {
+            return Some(record);
+        }
+
+        let amendment_count = Self::get_medical_record_amendment_count(env, record_id);
+        if version > amendment_count {
+            return None;
+        }
+
+        for current_version in 1..=version {
+            let amendment = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, MedicalRecordAmendment>(
+                    &MedicalKey::MedicalRecordAmendment((record_id, current_version)),
+                )?;
+
+            let MedicalRecordAmendmentInput {
+                diagnosis,
+                treatment,
+                medications,
+                notes,
+            } = amendment.changes;
+
+            if let Some(diagnosis) = diagnosis {
+                record.diagnosis = diagnosis;
+            }
+            if let Some(treatment) = treatment {
+                record.treatment = treatment;
+            }
+            if let Some(medications) = medications {
+                record.medications = medications;
+            }
+            if let Some(notes) = notes {
+                record.notes = notes;
+            }
+            record.updated_at = amendment.updated_at;
+        }
+
+        Some(record)
+    }
+
+    fn store_medical_record_amendment(
+        env: &Env,
+        record: &MedicalRecord,
+        changes: MedicalRecordAmendmentInput,
+    ) -> u32 {
+        if changes.diagnosis.is_none()
+            && changes.treatment.is_none()
+            && changes.medications.is_none()
+            && changes.notes.is_none()
+        {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        let current_count = Self::get_medical_record_amendment_count(env, record.id);
+        if current_count >= 5 {
+            panic_with_error!(env, ContractError::MedicalRecordAmendmentLimitReached);
+        }
+
+        let version = current_count + 1;
+        let updated_at = env.ledger().timestamp();
+        let amendment = MedicalRecordAmendment {
+            record_id: record.id,
+            version,
+            updated_at,
+            changes,
+        };
+
+        env.storage().instance().set(
+            &MedicalKey::MedicalRecordAmendment((record.id, version)),
+            &amendment,
+        );
+        env.storage().instance().set(
+            &MedicalKey::MedicalRecordAmendmentCount(record.id),
+            &version,
+        );
+
+        version
+    }
+
+    pub fn amend_medical_record(
+        env: Env,
+        pet_id: u64,
+        record_id: u64,
+        updated_fields: MedicalRecordAmendmentInput,
+    ) -> u32 {
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::MedicalRecordNotFound));
+
+        if record.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        record.vet_address.require_auth();
+
+        let version = Self::store_medical_record_amendment(&env, &record, updated_fields);
+
+        PetChainContract::log_access(
+            &env,
+            record.pet_id,
+            record.vet_address,
+            AccessAction::Write,
+            String::from_str(&env, "Medical record amended"),
+        );
+
+        version
+    }
+
     pub fn update_medical_record(
         env: Env,
         record_id: u64,
@@ -8459,22 +8747,19 @@ impl PetChainContract {
         medications: Vec<Medication>,
         notes: String,
     ) -> bool {
-        if let Some(mut record) = env
+        if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
             record.vet_address.require_auth();
-
-            record.diagnosis = diagnosis;
-            record.treatment = treatment;
-            record.medications = medications;
-            record.notes = notes;
-            record.date = env.ledger().timestamp();
-
-            env.storage()
-                .instance()
-                .set(&MedicalKey::MedicalRecord(record_id), &record);
+            let updated_fields = MedicalRecordAmendmentInput {
+                diagnosis: Some(diagnosis),
+                treatment: Some(treatment),
+                medications: Some(medications),
+                notes: Some(notes),
+            };
+            Self::store_medical_record_amendment(&env, &record, updated_fields);
             PetChainContract::log_access(
                 &env,
                 record.pet_id,
@@ -8494,21 +8779,19 @@ impl PetChainContract {
         if notes.len() > PetChainContract::MAX_STR_LONG {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
-        if let Some(mut record) = env
+        if let Some(record) = env
             .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
         {
-            // Require authentication from the vet who created the record
             record.vet_address.require_auth();
-
-            // Update only the notes and updated_at timestamp
-            record.notes = notes;
-            record.updated_at = env.ledger().timestamp();
-
-            env.storage()
-                .instance()
-                .set(&MedicalKey::MedicalRecord(record_id), &record);
+            let updated_fields = MedicalRecordAmendmentInput {
+                diagnosis: None,
+                treatment: None,
+                medications: None,
+                notes: Some(notes),
+            };
+            Self::store_medical_record_amendment(&env, &record, updated_fields);
             PetChainContract::log_access(
                 &env,
                 record.pet_id,
@@ -8520,6 +8803,56 @@ impl PetChainContract {
         } else {
             false
         }
+    }
+
+    pub fn diff_record_versions(
+        env: Env,
+        pet_id: u64,
+        record_id: u64,
+        v1: u32,
+        v2: u32,
+    ) -> Vec<MedicalFieldDiff> {
+        let version_a = Self::build_medical_record_version(&env, record_id, v1)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::MedicalRecordVersionNotFound));
+        let version_b = Self::build_medical_record_version(&env, record_id, v2)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::MedicalRecordVersionNotFound));
+
+        if version_a.pet_id != pet_id || version_b.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut diffs = Vec::new(&env);
+
+        if version_a.diagnosis != version_b.diagnosis {
+            diffs.push_back(MedicalFieldDiff {
+                field: String::from_str(&env, "diagnosis"),
+                from_value: version_a.diagnosis.clone(),
+                to_value: version_b.diagnosis.clone(),
+            });
+        }
+        if version_a.treatment != version_b.treatment {
+            diffs.push_back(MedicalFieldDiff {
+                field: String::from_str(&env, "treatment"),
+                from_value: version_a.treatment.clone(),
+                to_value: version_b.treatment.clone(),
+            });
+        }
+        if version_a.medications != version_b.medications {
+            diffs.push_back(MedicalFieldDiff {
+                field: String::from_str(&env, "medications"),
+                from_value: String::from_str(&env, "changed"),
+                to_value: String::from_str(&env, "changed"),
+            });
+        }
+        if version_a.notes != version_b.notes {
+            diffs.push_back(MedicalFieldDiff {
+                field: String::from_str(&env, "notes"),
+                from_value: version_a.notes.clone(),
+                to_value: version_b.notes.clone(),
+            });
+        }
+
+        diffs
     }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
@@ -12280,6 +12613,50 @@ impl PetChainContract {
                     .set(&SystemKey::AdminThreshold, &threshold);
                 // Also clean up legacy admin if needed
                 env.storage().instance().remove(&DataKey::Admin);
+            }
+            // #699 — Governance voting for parameter changes.
+            // The parameter is updated atomically when the proposal executes,
+            // ensuring no partial state is ever observed.
+            ProposalAction::ParameterChange(params) => {
+                let (key, new_value) = params;
+                match key {
+                    ParamKey::GlobalStorageQuota => {
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::GlobalStorageQuota, &new_value);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "GlobalStorageQuota"), new_value),
+                        );
+                    }
+                    ParamKey::HealthScoreCacheTtl => {
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::HealthScoreCacheTtl, &new_value);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "HealthScoreCacheTtl"), new_value),
+                        );
+                    }
+                    ParamKey::AdminThreshold => {
+                        let threshold = new_value as u32;
+                        let admins: Vec<Address> = env
+                            .storage()
+                            .instance()
+                            .get(&SystemKey::Admins)
+                            .unwrap_or(Vec::new(&env));
+                        if threshold == 0 || threshold > admins.len() {
+                            panic_with_error!(&env, ContractError::InvalidThreshold);
+                        }
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::AdminThreshold, &threshold);
+                        env.events().publish(
+                            (Symbol::new(&env, "ParamChanged"),),
+                            (Symbol::new(&env, "AdminThreshold"), new_value),
+                        );
+                    }
+                }
             }
         }
 

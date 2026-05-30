@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Map, Symbol, Vec,
+    Env, Map, String, Symbol, Vec,
 };
 
 /// Expiry policy: a pending transfer that has not been accepted within
@@ -94,7 +94,11 @@ pub struct PendingAdoption {
     pub pet_id: u64,
     pub from: Address,
     pub to: Address,
+    pub organization: Option<Address>,
     pub signed_at: u64,
+    pub owner_approved: bool,
+    pub adopter_approved: bool,
+    pub organization_approved: bool,
 }
 
 #[contracttype]
@@ -103,6 +107,7 @@ pub enum AdoptionState {
     Signed,
     Completed,
     Waived,
+    Rejected,
 }
 
 /// A record tracking the full lifecycle of an adoption.
@@ -112,11 +117,17 @@ pub struct AdoptionRecord {
     pub pet_id: u64,
     pub from: Address,
     pub to: Address,
+    pub organization: Option<Address>,
     pub signed_at: u64,
     pub completed_at: Option<u64>,
     pub state: AdoptionState,
+    pub owner_approved: bool,
+    pub adopter_approved: bool,
+    pub organization_approved: bool,
     pub waiver_reason: Option<String>, // set when waived by admin
     pub waived_by: Option<Address>,
+    pub rejected_by: Option<Address>,
+    pub rejection_reason: Option<String>,
 }
 
 /// A single chain-of-custody entry appended on every ownership change.
@@ -195,6 +206,11 @@ pub enum ContractError {
     AdoptionNotConfigurable = 18,
     InvalidWaitingPeriod = 19,
     AdoptionConfigNotFound = 20,
+    BatchTooLarge = 21,
+    InvalidBatch = 22,
+    OrganizationApprovalRequired = 23,
+    AdoptionRejected = 24,
+    InvalidApprover = 25,
 }
 
 /// ======================================================
@@ -364,7 +380,7 @@ impl PetOwnershipContract {
     }
 
     /// Sign an adoption agreement, entering the waiting period.
-    pub fn sign_adoption(env: Env, pet_id: u64, to: Address) {
+    pub fn sign_adoption(env: Env, pet_id: u64, to: Address, organization: Option<Address>) {
         let pet = get_pet(&env, pet_id);
         pet.current_owner.require_auth();
 
@@ -380,17 +396,27 @@ impl PetOwnershipContract {
             pet_id,
             from: pet.current_owner.clone(),
             to: to.clone(),
+            organization: organization.clone(),
             signed_at: now,
+            owner_approved: true,
+            adopter_approved: false,
+            organization_approved: false,
         };
         let record = AdoptionRecord {
             pet_id,
             from: pet.current_owner.clone(),
             to: to.clone(),
+            organization: organization.clone(),
             signed_at: now,
             completed_at: None,
             state: AdoptionState::Signed,
+            owner_approved: true,
+            adopter_approved: false,
+            organization_approved: false,
             waiver_reason: None,
             waived_by: None,
+            rejected_by: None,
+            rejection_reason: None,
         };
 
         env.storage().persistent().set(&DataKey::PendingAdoption(pet_id), &pending);
@@ -398,7 +424,80 @@ impl PetOwnershipContract {
 
         env.events().publish(
             (Symbol::new(&env, "adoption_sign"), pet_id),
-            (pet.current_owner, to, now),
+            (pet.current_owner, to, organization, now),
+        );
+    }
+
+    /// Approve an adoption as either the adopter or the rescue organization admin.
+    pub fn approve_adoption(env: Env, pet_id: u64, approver: Address) {
+        approver.require_auth();
+
+        let pending: PendingAdoption = env.storage().persistent()
+            .get(&DataKey::PendingAdoption(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        let mut record: AdoptionRecord = env.storage().persistent()
+            .get(&DataKey::AdoptionRecord(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+
+        if record.state == AdoptionState::Rejected {
+            panic_with_error!(&env, ContractError::AdoptionRejected);
+        }
+        if record.state == AdoptionState::Completed || record.state == AdoptionState::Waived {
+            panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+
+        if approver == pending.to {
+            record.adopter_approved = true;
+        } else if pending.organization.as_ref() == Some(&approver) {
+            record.organization_approved = true;
+        } else {
+            panic_with_error!(&env, ContractError::InvalidApprover);
+        }
+
+        let mut pending = pending;
+        pending.adopter_approved = record.adopter_approved;
+        pending.organization_approved = record.organization_approved;
+
+        env.storage().persistent().set(&DataKey::PendingAdoption(pet_id), &pending);
+        env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
+    }
+
+    /// Reject a pending adoption. Any participant may cancel the adoption.
+    pub fn reject_adoption(env: Env, pet_id: u64, rejector: Address, reason: String) {
+        rejector.require_auth();
+
+        let pending: PendingAdoption = env.storage().persistent()
+            .get(&DataKey::PendingAdoption(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        let mut record: AdoptionRecord = env.storage().persistent()
+            .get(&DataKey::AdoptionRecord(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+
+        if record.state == AdoptionState::Completed || record.state == AdoptionState::Waived {
+            panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+        if record.state == AdoptionState::Rejected {
+            panic_with_error!(&env, ContractError::AdoptionRejected);
+        }
+
+        let is_owner = rejector == pending.from;
+        let is_adopter = rejector == pending.to;
+        let is_org = pending.organization.as_ref() == Some(&rejector);
+        if !is_owner && !is_adopter && !is_org {
+            panic_with_error!(&env, ContractError::InvalidApprover);
+        }
+
+        record.state = AdoptionState::Rejected;
+        record.completed_at = None;
+        record.rejected_by = Some(rejector.clone());
+        record.rejection_reason = Some(reason.clone());
+
+        env.storage().persistent().remove(&DataKey::PendingAdoption(pet_id));
+        env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
+
+        env.events().publish(
+            (Symbol::new(&env, "adoption_rej"), pet_id),
+            (rejector, reason),
         );
     }
 
@@ -407,6 +506,7 @@ impl PetOwnershipContract {
         let pending: PendingAdoption = env.storage().persistent()
             .get(&DataKey::PendingAdoption(pet_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        pending.to.require_auth();
 
         let now = env.ledger().timestamp();
         let config: Option<AdoptionConfig> = env.storage().persistent().get(&DataKey::AdoptionConfig);
@@ -422,8 +522,14 @@ impl PetOwnershipContract {
         let mut record: AdoptionRecord = env.storage().persistent()
             .get(&DataKey::AdoptionRecord(pet_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        if record.state == AdoptionState::Rejected {
+            panic_with_error!(&env, ContractError::AdoptionRejected);
+        }
         if record.state != AdoptionState::Signed {
             panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+        if pending.organization.is_some() && !record.organization_approved {
+            panic_with_error!(&env, ContractError::OrganizationApprovalRequired);
         }
 
         let mut pet = get_pet(&env, pet_id);
@@ -449,8 +555,11 @@ impl PetOwnershipContract {
         remove_pet_from_owner(&env, &pending.from, pet_id);
         add_pet_to_owner(&env, &pending.to, pet_id);
         pet.current_owner = pending.to.clone();
+        record.adopter_approved = true;
+        record.organization_approved = record.organization_approved || pending.organization.is_none();
         record.state = AdoptionState::Completed;
         record.completed_at = Some(now);
+        record.owner_approved = true;
 
         save_pet(&env, &pet);
         save_history(&env, pet_id, &history);
@@ -474,8 +583,14 @@ impl PetOwnershipContract {
         let mut record: AdoptionRecord = env.storage().persistent()
             .get(&DataKey::AdoptionRecord(pet_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPendingAdoption));
+        if record.state == AdoptionState::Rejected {
+            panic_with_error!(&env, ContractError::AdoptionRejected);
+        }
         if record.state != AdoptionState::Signed {
             panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+        if pending.organization.is_some() && !record.organization_approved {
+            panic_with_error!(&env, ContractError::OrganizationApprovalRequired);
         }
 
         let now = env.ledger().timestamp();
@@ -505,6 +620,9 @@ impl PetOwnershipContract {
 
         record.state = AdoptionState::Waived;
         record.completed_at = Some(now);
+        record.adopter_approved = true;
+        record.owner_approved = true;
+        record.organization_approved = record.organization_approved || pending.organization.is_none();
         record.waiver_reason = Some(reason.clone());
         record.waived_by = Some(admin.clone());
 
@@ -875,6 +993,79 @@ impl PetOwnershipContract {
             env.events().publish(
                 (EVT_TRANSFER_INITIATED, pet_id),
                 (owner.clone(), to.clone()),
+            );
+        }
+    }
+
+    /// Transfer multiple pets to the same new owner atomically.
+    /// All pets must be owned by the same caller and the batch is rejected
+    /// if any pet is missing or owned by a different address.
+    pub fn batch_transfer(env: Env, pet_ids: Vec<u64>, to: Address) {
+        const MAX_BATCH_SIZE: u32 = 20;
+
+        if pet_ids.is_empty() {
+            panic_with_error!(env, ContractError::EmptyBatch);
+        }
+        if pet_ids.len() > MAX_BATCH_SIZE {
+            panic_with_error!(env, ContractError::BatchTooLarge);
+        }
+
+        let mut expected_owner: Option<Address> = None;
+        let mut seen_ids = Vec::new(env);
+        let mut pets = Vec::new(env);
+        for pet_id in pet_ids.iter() {
+            if seen_ids.contains(&pet_id) {
+                panic_with_error!(env, ContractError::InvalidBatch);
+            }
+            seen_ids.push_back(pet_id);
+
+            let pet = get_pet(&env, pet_id);
+            match expected_owner {
+                None => expected_owner = Some(pet.current_owner.clone()),
+                Some(ref owner) if owner != &pet.current_owner => {
+                    panic_with_error!(env, ContractError::BatchOwnerMismatch);
+                }
+                _ => {}
+            }
+
+            pets.push_back(pet);
+        }
+
+        let owner = expected_owner.unwrap_or_else(|| panic_with_error!(env, ContractError::EmptyBatch));
+        owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        for pet in pets.iter() {
+            let pet_id = pet.pet_id;
+            let old_owner = pet.current_owner.clone();
+            let mut history = get_history(&env, pet_id);
+            if history.len() == 0 {
+                panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+            }
+            let last = history.len() - 1;
+            let mut prev = history
+                .get(last)
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
+            prev.relinquished_at = Some(now);
+            history.set(last, prev);
+            history.push_back(OwnershipRecord {
+                owner: to.clone(),
+                acquired_at: now,
+                relinquished_at: None,
+            });
+
+            remove_pet_from_owner(&env, &old_owner, pet_id);
+            add_pet_to_owner(&env, &to, pet_id);
+            let mut pet = pet.clone();
+            pet.current_owner = to.clone();
+
+            save_pet(&env, &pet);
+            save_history(&env, pet_id, &history);
+            append_custody_entry(&env, pet_id, old_owner.clone(), to.clone(), TransferType::Direct);
+
+            env.events().publish(
+                (EVT_TRANSFER_FINALIZED, pet_id),
+                (old_owner, to.clone()),
             );
         }
     }
