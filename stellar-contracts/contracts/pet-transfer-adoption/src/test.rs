@@ -4,7 +4,7 @@ use super::{
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, Error, Vec,
+    Address, Env, Error, String, Vec,
 };
 
 fn setup() -> (Env, Address, Address, u64) {
@@ -374,6 +374,137 @@ fn batch_initiate_transfer_errors_when_a_pet_already_has_pending_transfer() {
     );
     // Atomicity: pet 2 must remain unaffected
     assert!(!client.has_pending_transfer(&2));
+}
+
+#[test]
+fn batch_transfer_moves_all_pets_and_emits_one_event_per_pet() {
+    let (env, owner, new_owner, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&1, &owner);
+    client.create_pet(&2, &owner);
+
+    let before_events = env.events().all().len();
+    let mut ids = Vec::new(&env);
+    ids.push_back(1u64);
+    ids.push_back(2u64);
+
+    client.batch_transfer(&ids, &new_owner);
+
+    assert_eq!(client.get_current_owner(&1), new_owner);
+    assert_eq!(client.get_current_owner(&2), new_owner);
+    assert_eq!(env.events().all().len(), before_events + 2);
+}
+
+#[test]
+fn batch_transfer_rejects_owner_mismatch_atomically() {
+    let (env, owner, new_owner, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let other_owner = Address::generate(&env);
+
+    client.create_pet(&1, &owner);
+    client.create_pet(&2, &other_owner);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(1u64);
+    ids.push_back(2u64);
+
+    let result = client.try_batch_transfer(&ids, &new_owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::BatchOwnerMismatch as u32,
+        )))
+    );
+    assert_eq!(client.get_current_owner(&1), owner);
+    assert_eq!(client.get_current_owner(&2), other_owner);
+}
+
+#[test]
+fn batch_transfer_rejects_over_limit() {
+    let (env, owner, new_owner, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    let mut ids = Vec::new(&env);
+    for pet_id in 1u64..=21u64 {
+        client.create_pet(&pet_id, &owner);
+        ids.push_back(pet_id);
+    }
+
+    let result = client.try_batch_transfer(&ids, &new_owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::BatchTooLarge as u32,
+        )))
+    );
+}
+
+// ======================================================
+// adoption multi-party approval tests
+// ======================================================
+
+#[test]
+fn adoption_without_organization_keeps_two_party_flow() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+    client.complete_adoption(&pet_id);
+
+    assert_eq!(client.get_current_owner(&pet_id), adopter);
+    let record = client.get_adoption_record(&pet_id).unwrap();
+    assert_eq!(record.state, AdoptionState::Completed);
+    assert!(record.organization.is_none());
+}
+
+#[test]
+fn adoption_with_organization_requires_org_approval() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let organization = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &Some(organization.clone()));
+
+    let blocked = client.try_complete_adoption(&pet_id);
+    assert_eq!(
+        blocked,
+        Err(Ok(Error::from_contract_error(
+            ContractError::OrganizationApprovalRequired as u32,
+        )))
+    );
+
+    client.approve_adoption(&pet_id, &organization);
+    client.complete_adoption(&pet_id);
+
+    let record = client.get_adoption_record(&pet_id).unwrap();
+    assert_eq!(record.state, AdoptionState::Completed);
+    assert_eq!(record.organization, Some(organization));
+    assert!(record.organization_approved);
+}
+
+#[test]
+fn adoption_rejection_cancels_pending_flow() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let organization = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &Some(organization.clone()));
+    client.reject_adoption(&pet_id, &organization, &String::from_str(&env, "Rescue declined"));
+
+    assert!(client.get_pending_adoption(&pet_id).is_none());
+    let record = client.get_adoption_record(&pet_id).unwrap();
+    assert_eq!(record.state, AdoptionState::Rejected);
+    assert_eq!(record.rejected_by, Some(organization));
 }
 
 // ======================================================
