@@ -161,6 +161,10 @@ mod test_insurance_claims;
 #[cfg(test)]
 mod test_insurance_comprehensive;
 #[cfg(test)]
+mod test_insurance_appeal;
+#[cfg(test)]
+mod test_batch_read;
+#[cfg(test)]
 mod test_pet_validation;
 #[cfg(test)]
 mod test_caller_nonce;
@@ -204,6 +208,8 @@ mod test_governance_voting;
 mod test_fixtures;
 #[cfg(test)]
 mod test_vaccination_expiry;
+#[cfg(test)]
+mod test_vaccination_certificate;
 #[cfg(test)]
 mod test_medical_record_soft_delete;
 #[cfg(test)]
@@ -368,9 +374,16 @@ pub enum ContractError {
     ClaimNotFound = 194,
     ClaimDocumentLimitReached = 195,
     ClaimImmutable = 196,
-    MedicalRecordAmendmentLimitReached = 197,
-    MedicalRecordNotFound = 198,
-    MedicalRecordVersionNotFound = 199,
+    // Issue #686: Insurance claim appeal process
+    ClaimNotRejected = 197,
+    AppealWindowExpired = 198,
+    ClaimAlreadyAppealed = 199,
+    ClaimNotUnderAppeal = 200,
+    ReviewerCannotBeOriginal = 201,
+    // Issue #693: Vaccination certificate anchoring
+    VaccinationNotFound = 202,
+    CertificateAlreadyAnchored = 203,
+    InvalidCertificateHash = 204,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -818,6 +831,26 @@ pub struct PetFullProfile {
     pub has_insurance: bool,
 }
 
+/// Batch read structure for comprehensive pet profile with owner and consents
+#[contracttype]
+#[derive(Clone)]
+pub struct PetFullProfileBatch {
+    pub profile: PetProfile,
+    pub owner: Address,
+    pub active_consents: Vec<Consent>,
+    pub latest_medical_record: Option<MedicalRecord>,
+}
+
+/// Batch read structure for pet health summary
+#[contracttype]
+#[derive(Clone)]
+pub struct PetHealthSummary {
+    pub pet_id: u64,
+    pub latest_vaccination: Option<Vaccination>,
+    pub latest_lab_result: Option<LabResult>,
+    pub active_insurance_policy: Option<InsurancePolicy>,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct PetOwner {
@@ -904,6 +937,18 @@ pub struct Vaccination {
     pub encrypted_batch_number: EncryptedData, // Encrypted value
 
     pub created_at: u64,
+}
+
+/// Certificate anchor for vaccination PDF metadata
+/// Stores hash of off-chain certificate for authenticity verification
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateAnchor {
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub cert_hash: String, // Hash of the PDF certificate
+    pub issuer: Address,   // Verified vet who issued the certificate
+    pub anchored_at: u64,  // Timestamp when anchored
 }
 
 #[contracttype]
@@ -1132,7 +1177,8 @@ pub enum MedicalKey {
     VaccinationCount,
     PetVaccinationCount(u64),
     PetVaccinationByIndex((u64, u64)),
-    HealthScoreCache(u64),
+    // Certificate anchoring (Issue #693)
+    CertificateAnchor((u64, u64)), // (pet_id, vaccination_id) -> CertificateAnchor
     // Scanner registry
     ScannerRegistry,
 }
@@ -1989,6 +2035,8 @@ pub enum InsuranceClaimStatus {
     /// Claim was flagged by one or more fraud heuristics and is awaiting
     /// manual admin review via `approve_flagged_claim`.
     UnderReview,
+    /// Claim is under appeal after rejection, awaiting second reviewer decision.
+    UnderAppeal,
 }
 
 #[contracttype]
@@ -2010,6 +2058,13 @@ pub struct InsuranceClaim {
     pub fraud_flags: u32,
     /// IPFS CIDs of attached evidence documents (max 10).
     pub documents: Vec<String>,
+    /// Appeal tracking fields
+    pub rejected_at: Option<u64>,
+    pub appeal_reason: Option<String>,
+    pub appeal_evidence_cids: Vec<String>,
+    pub appealed_at: Option<u64>,
+    pub original_reviewer: Option<Address>,
+    pub appeal_reviewer: Option<Address>,
 }
 
 #[contracttype]
@@ -2055,6 +2110,31 @@ pub struct FlaggedClaimApprovedEvent {
     pub pet_id: u64,
     pub admin: Address,
     pub reason: String,
+    pub timestamp: u64,
+}
+
+/// Emitted when a claim is appealed after rejection.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimAppealedEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub claimant: Address,
+    pub appeal_reason: String,
+    pub new_evidence_count: u32,
+    pub timestamp: u64,
+}
+
+/// Emitted when an appeal receives a final decision.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppealDecisionEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub reviewer: Address,
+    pub decision: InsuranceClaimStatus, // Approved or Rejected
     pub timestamp: u64,
 }
 
@@ -2147,6 +2227,18 @@ pub struct ExpiringVaccination {
     pub expires_at: u64,
     pub days_remaining: u64,
     pub already_expired: bool,
+}
+
+/// Emitted when a vaccination certificate is anchored on-chain
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateAnchoredEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub cert_hash: String,
+    pub issuer: Address,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -3810,131 +3902,210 @@ impl PetChainContract {
         }
     }
 
-    fn compute_vaccination_health_score(env: &Env, pet_id: u64) -> u32 {
-        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
-        if history.len() == 0 {
-            return 0;
+    /// Batch read operation: Returns pet profile, owner, active consents, and latest medical record.
+    /// Reduces multiple round trips to a single call.
+    /// Respects access control - caller must have read permission.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `caller` - The address requesting the data
+    ///
+    /// # Returns
+    /// * `Some(PetFullProfileBatch)` if pet exists and caller has access
+    /// * `None` if pet doesn't exist or caller lacks permission
+    ///
+    /// # Access Control
+    /// - Public pets: accessible to anyone
+    /// - Restricted pets: requires at least Basic access grant
+    /// - Private pets: only accessible to owner
+    pub fn get_pet_full_profile_batch(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+    ) -> Option<PetFullProfileBatch> {
+        // Check if pet exists
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))?;
+
+        // Check access control
+        let access_level = PetChainContract::check_access(env.clone(), pet_id, caller.clone());
+
+        // Private pets can only be accessed by owner
+        if pet.privacy_level == PrivacyLevel::Private && pet.owner != caller {
+            return None;
         }
 
-        let mut seen_types: Vec<VaccineType> = Vec::new(env);
-        let mut current_types: u32 = 0;
-        let mut total_types: u32 = 0;
-
-        for vaccination in history.iter() {
-            if seen_types.contains(&vaccination.vaccine_type) {
-                continue;
-            }
-            seen_types.push_back(vaccination.vaccine_type.clone());
-            total_types = total_types.saturating_add(1);
-            if PetChainContract::is_vaccination_current(
-                env.clone(),
-                pet_id,
-                vaccination.vaccine_type.clone(),
-            ) {
-                current_types = current_types.saturating_add(1);
-            }
+        // Restricted pets require at least Basic access
+        if pet.privacy_level == PrivacyLevel::Restricted && access_level == AccessLevel::None {
+            return None;
         }
 
-        if total_types == 0 {
-            0
-        } else {
-            current_types.saturating_mul(100) / total_types
-        }
-    }
+        // Get the base pet profile
+        let profile = PetChainContract::get_pet(env.clone(), pet_id, caller.clone())?;
 
-    fn compute_lab_health_score(env: &Env, pet_id: u64) -> u32 {
-        let count = PetChainContract::get_lab_result_count(env.clone(), pet_id);
-        if count == 0 {
-            return 0;
-        }
+        // Get owner address
+        let owner = pet.owner.clone();
 
-        let mut latest_date = 0u64;
-        for i in 1..=count {
-            if let Some(result_id) = env
+        // Get active consents
+        let active_consents = PetChainContract::get_active_consents(env.clone(), pet_id);
+
+        // Get latest medical record (most recent by recorded_at)
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut latest_medical_record: Option<MedicalRecord> = None;
+        let mut latest_timestamp: u64 = 0;
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
                 .storage()
                 .instance()
-                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
             {
-                if let Some(result) = PetChainContract::get_lab_result(env.clone(), result_id) {
-                    if result.date >= latest_date {
-                        latest_date = result.date;
+                if let Some(record) = PetChainContract::get_medical_record(env.clone(), record_id)
+                {
+                    if record.recorded_at > latest_timestamp {
+                        latest_timestamp = record.recorded_at;
+                        latest_medical_record = Some(record);
                     }
                 }
             }
         }
 
-        let recent_cutoff = env.ledger().timestamp().saturating_sub(30 * 24 * 60 * 60);
-        if latest_date >= recent_cutoff {
-            100
-        } else {
-            50
-        }
+        Some(PetFullProfileBatch {
+            profile,
+            owner,
+            active_consents,
+            latest_medical_record,
+        })
     }
 
-    fn compute_activity_health_score(env: &Env, pet_id: u64) -> u32 {
-        let streak = PetChainContract::get_activity_streak(env.clone(), pet_id).current_streak;
-        if streak == 0 {
-            return 0;
-        }
-
-        let capped = if streak > 30 { 30 } else { streak };
-        (capped.saturating_mul(100) / 30) as u32
-    }
-
-    fn compute_insurance_health_score(env: &Env, pet_id: u64) -> u32 {
-        if PetChainContract::is_insurance_active(env.clone(), pet_id) {
-            100
-        } else {
-            0
-        }
-    }
-
-    pub fn compute_health_score(env: Env, pet_id: u64) -> HealthScore {
-        let _pet: Pet = env
+    /// Batch read operation: Returns latest vaccination, lab result, and active insurance.
+    /// Reduces multiple round trips to a single call.
+    /// Respects access control - caller must have read permission.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `caller` - The address requesting the data
+    ///
+    /// # Returns
+    /// * `Some(PetHealthSummary)` if pet exists and caller has access
+    /// * `None` if pet doesn't exist or caller lacks permission
+    ///
+    /// # Access Control
+    /// - Public pets: accessible to anyone
+    /// - Restricted pets: requires at least Basic access grant
+    /// - Private pets: only accessible to owner
+    pub fn get_pet_health_summary(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+    ) -> Option<PetHealthSummary> {
+        // Check if pet exists
+        let pet = env
             .storage()
             .instance()
-            .get(&DataKey::Pet(pet_id))
-            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))?;
 
-        let now = env.ledger().timestamp();
-        let breakdown = HealthScoreBreakdown {
-            vaccination: Self::compute_vaccination_health_score(&env, pet_id),
-            lab_results: Self::compute_lab_health_score(&env, pet_id),
-            activity: Self::compute_activity_health_score(&env, pet_id),
-            insurance: Self::compute_insurance_health_score(&env, pet_id),
-        };
-        let score = (breakdown.vaccination
-            + breakdown.lab_results
-            + breakdown.activity
-            + breakdown.insurance)
-            / 4;
+        // Check access control
+        let access_level = PetChainContract::check_access(env.clone(), pet_id, caller.clone());
 
-        let result = HealthScore {
-            pet_id,
-            score,
-            breakdown,
-            computed_at: now,
-        };
+        // Private pets can only be accessed by owner
+        if pet.privacy_level == PrivacyLevel::Private && pet.owner != caller {
+            return None;
+        }
 
-        env.storage()
-            .instance()
-            .set(&MedicalKey::HealthScoreCache(pet_id), &result);
-        result
-    }
+        // Restricted pets require at least Basic access
+        if pet.privacy_level == PrivacyLevel::Restricted && access_level == AccessLevel::None {
+            return None;
+        }
 
-    pub fn get_health_score(env: Env, pet_id: u64) -> HealthScore {
-        let ttl = 24 * 60 * 60;
-        if let Some(cached) = env
+        // Get latest vaccination (most recent by administered_at)
+        let vax_count: u64 = env
             .storage()
             .instance()
-            .get::<MedicalKey, HealthScore>(&MedicalKey::HealthScoreCache(pet_id))
-        {
-            if env.ledger().timestamp().saturating_sub(cached.computed_at) < ttl {
-                return cached;
+            .get(&MedicalKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+
+        let mut latest_vaccination: Option<Vaccination> = None;
+        let mut latest_vax_timestamp: u64 = 0;
+
+        for i in 1..=vax_count {
+            if let Some(vax_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vax) = PetChainContract::get_vaccinations(env.clone(), vax_id) {
+                    if vax.administered_at > latest_vax_timestamp {
+                        latest_vax_timestamp = vax.administered_at;
+                        latest_vaccination = Some(vax);
+                    }
+                }
             }
         }
 
-        Self::compute_health_score(env, pet_id)
+        // Get latest lab result (most recent by test_date)
+        let lab_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        let mut latest_lab_result: Option<LabResult> = None;
+        let mut latest_lab_timestamp: u64 = 0;
+
+        for i in 1..=lab_count {
+            if let Some(lab_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(lab) = PetChainContract::get_lab_result(env.clone(), lab_id) {
+                    if lab.test_date > latest_lab_timestamp {
+                        latest_lab_timestamp = lab.test_date;
+                        latest_lab_result = Some(lab);
+                    }
+                }
+            }
+        }
+
+        // Get active insurance policy (most recent active policy)
+        let policy_count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+
+        let mut active_insurance_policy: Option<InsurancePolicy> = None;
+
+        // Get the most recent policy (highest index)
+        if policy_count > 0 {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((
+                    pet_id,
+                    policy_count,
+                )))
+            {
+                if policy.active {
+                    active_insurance_policy = Some(policy);
+                }
+            }
+        }
+
+        Some(PetHealthSummary {
+            pet_id,
+            latest_vaccination,
+            latest_lab_result,
+            active_insurance_policy,
+        })
     }
 
     fn parse_birthday_timestamp(birthday: &String) -> Result<u64, ContractError> {
@@ -5202,6 +5373,149 @@ impl PetChainContract {
             overdue_types,
             upcoming_count: upcoming.len() as u64,
         }
+    }
+
+    // --- VACCINATION CERTIFICATE ANCHORING (Issue #693) ---
+
+    /// Anchor a vaccination certificate hash on-chain for authenticity verification.
+    /// Only verified vets can anchor certificates.
+    ///
+    /// # Arguments
+    /// * `issuer` - The verified vet anchoring the certificate
+    /// * `pet_id` - The ID of the pet
+    /// * `vaccination_id` - The ID of the vaccination
+    /// * `cert_hash` - Hash of the PDF certificate (e.g., SHA-256)
+    ///
+    /// # Errors
+    /// * `VetNotVerified` - Issuer is not a verified vet
+    /// * `PetNotFound` - Pet doesn't exist
+    /// * `VaccinationNotFound` - Vaccination doesn't exist
+    /// * `CertificateAlreadyAnchored` - Certificate already anchored for this vaccination
+    /// * `InvalidCertificateHash` - Certificate hash is empty or invalid format
+    ///
+    /// # Events
+    /// Emits `CertificateAnchoredEvent` on success
+    pub fn anchor_certificate(
+        env: Env,
+        issuer: Address,
+        pet_id: u64,
+        vaccination_id: u64,
+        cert_hash: String,
+    ) {
+        issuer.require_auth();
+
+        // Verify issuer is a verified vet
+        let vet: Vet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Vet>(&DataKey::Vet(issuer.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VetNotFound));
+
+        if !vet.verified {
+            panic_with_error!(&env, ContractError::VetNotVerified);
+        }
+
+        // Verify pet exists
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Verify vaccination exists and belongs to the pet
+        let vaccination: Vaccination = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccination_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaccinationNotFound));
+
+        if vaccination.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::VaccinationNotFound);
+        }
+
+        // Validate certificate hash
+        if cert_hash.len() == 0 || cert_hash.len() > 128 {
+            panic_with_error!(&env, ContractError::InvalidCertificateHash);
+        }
+
+        // Check if certificate already anchored
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        if env.storage().instance().has(&anchor_key) {
+            panic_with_error!(&env, ContractError::CertificateAlreadyAnchored);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Create and store certificate anchor
+        let anchor = CertificateAnchor {
+            pet_id,
+            vaccination_id,
+            cert_hash: cert_hash.clone(),
+            issuer: issuer.clone(),
+            anchored_at: current_time,
+        };
+
+        env.storage().instance().set(&anchor_key, &anchor);
+
+        // Emit event
+        env.events().publish(
+            (String::from_str(&env, "CertificateAnchored"), pet_id),
+            CertificateAnchoredEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id,
+                cert_hash,
+                issuer,
+                timestamp: current_time,
+            },
+        );
+    }
+
+    /// Verify if a certificate hash matches the anchored hash for a vaccination.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `vaccination_id` - The ID of the vaccination
+    /// * `cert_hash` - Hash to verify against the anchored hash
+    ///
+    /// # Returns
+    /// * `true` if the hash matches the anchored certificate
+    /// * `false` if no certificate is anchored or hash doesn't match
+    pub fn verify_certificate(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+        cert_hash: String,
+    ) -> bool {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        
+        if let Some(anchor) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateAnchor>(&anchor_key)
+        {
+            anchor.cert_hash == cert_hash
+        } else {
+            false
+        }
+    }
+
+    /// Get the certificate anchor for a vaccination.
+    ///
+    /// # Arguments
+    /// * `pet_id` - The ID of the pet
+    /// * `vaccination_id` - The ID of the vaccination
+    ///
+    /// # Returns
+    /// * `Some(CertificateAnchor)` if certificate is anchored
+    /// * `None` if no certificate is anchored
+    pub fn get_certificate_anchor(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> Option<CertificateAnchor> {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        env.storage().instance().get(&anchor_key)
     }
 
     // --- NUTRITION / DIET FUNCTIONS ---
@@ -13351,6 +13665,12 @@ impl PetChainContract {
             flagged: false,
             fraud_flags: 0,
             documents: Vec::new(&env),
+            rejected_at: None,
+            appeal_reason: None,
+            appeal_evidence_cids: Vec::new(&env),
+            appealed_at: None,
+            original_reviewer: None,
+            appeal_reviewer: None,
         };
 
         // Save claim globally
@@ -13390,10 +13710,12 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "InsuranceClaimSubmitted"), pet_id),
             InsuranceClaimSubmittedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 claim_id,
                 pet_id,
                 policy_id: policy.policy_id,
                 amount,
+                flagged: false,
                 timestamp,
             },
         );
@@ -13438,7 +13760,7 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::Unauthorized);
         }
 
-        // Documents are immutable once UnderReview (or beyond)
+        // Documents are immutable once UnderReview (or beyond), except during appeal
         if matches!(
             claim.status,
             InsuranceClaimStatus::UnderReview
@@ -13494,6 +13816,13 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
         {
+            let current_time = env.ledger().timestamp();
+            
+            // Track rejection time for appeal window
+            if status == InsuranceClaimStatus::Rejected && claim.status != InsuranceClaimStatus::Rejected {
+                claim.rejected_at = Some(current_time);
+            }
+            
             claim.status = status.clone();
             env.storage()
                 .instance()
@@ -13505,10 +13834,11 @@ impl PetChainContract {
                     claim.pet_id,
                 ),
                 InsuranceClaimStatusUpdatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     claim_id,
                     pet_id: claim.pet_id,
                     status,
-                    timestamp: env.ledger().timestamp(),
+                    timestamp: current_time,
                 },
             );
             return true;
@@ -13593,6 +13923,234 @@ impl PetChainContract {
             .instance()
             .get(&InsuranceKey::PetClaimCount(pet_id))
             .unwrap_or(0)
+    }
+
+    /// Appeal a rejected insurance claim with additional evidence.
+    /// Can only be called within 14 days of rejection.
+    /// Claim enters UnderAppeal state and requires a different reviewer.
+    ///
+    /// # Arguments
+    /// * `claimant` - The pet owner appealing the claim
+    /// * `claim_id` - The ID of the rejected claim
+    /// * `reason` - Reason for the appeal
+    /// * `new_evidence_cids` - Vector of IPFS CIDs for new evidence (max 10 total including original)
+    ///
+    /// # Errors
+    /// * `ClaimNotFound` - Claim doesn't exist
+    /// * `Unauthorized` - Caller is not the pet owner
+    /// * `ClaimNotRejected` - Claim is not in Rejected status
+    /// * `AppealWindowExpired` - More than 14 days since rejection
+    /// * `ClaimAlreadyAppealed` - Claim has already been appealed
+    /// * `InvalidIpfsHash` - One or more CIDs are invalid
+    /// * `ClaimDocumentLimitReached` - Total evidence exceeds 10 documents
+    ///
+    /// # Events
+    /// Emits `ClaimAppealedEvent` on success
+    pub fn appeal_claim(
+        env: Env,
+        claimant: Address,
+        claim_id: u64,
+        reason: String,
+        new_evidence_cids: Vec<String>,
+    ) {
+        claimant.require_auth();
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ClaimNotFound));
+
+        // Verify claimant owns the pet
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(claim.pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if pet.owner != claimant {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        // Verify claim is rejected
+        if claim.status != InsuranceClaimStatus::Rejected {
+            panic_with_error!(&env, ContractError::ClaimNotRejected);
+        }
+
+        // Verify claim hasn't already been appealed
+        if claim.appealed_at.is_some() {
+            panic_with_error!(&env, ContractError::ClaimAlreadyAppealed);
+        }
+
+        // Verify appeal is within 14 days of rejection
+        let current_time = env.ledger().timestamp();
+        let rejection_time = claim.rejected_at.unwrap_or(claim.date);
+        let fourteen_days_seconds = 14 * 24 * 60 * 60; // 14 days in seconds
+        
+        if current_time > rejection_time + fourteen_days_seconds {
+            panic_with_error!(&env, ContractError::AppealWindowExpired);
+        }
+
+        // Validate new evidence CIDs
+        for cid in new_evidence_cids.iter() {
+            if Self::validate_ipfs_hash(&env, &cid).is_err() {
+                panic_with_error!(&env, ContractError::InvalidIpfsHash);
+            }
+        }
+
+        // Check total document limit (original + new evidence)
+        let total_docs = claim.documents.len() + new_evidence_cids.len();
+        if total_docs > 10 {
+            panic_with_error!(&env, ContractError::ClaimDocumentLimitReached);
+        }
+
+        // Update claim with appeal information
+        claim.status = InsuranceClaimStatus::UnderAppeal;
+        claim.appeal_reason = Some(reason.clone());
+        claim.appeal_evidence_cids = new_evidence_cids.clone();
+        claim.appealed_at = Some(current_time);
+
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        // Emit appeal event
+        env.events().publish(
+            (String::from_str(&env, "ClaimAppealed"), claim.pet_id),
+            ClaimAppealedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                claimant,
+                appeal_reason: reason,
+                new_evidence_count: new_evidence_cids.len(),
+                timestamp: current_time,
+            },
+        );
+    }
+
+    /// Review an appealed claim and make a final decision.
+    /// Must be called by an admin who was not the original reviewer.
+    /// Decision is final - no further appeals allowed.
+    ///
+    /// # Arguments
+    /// * `reviewer` - The admin reviewing the appeal
+    /// * `claim_id` - The ID of the appealed claim
+    /// * `decision` - Final decision (Approved or Rejected)
+    ///
+    /// # Errors
+    /// * `ClaimNotFound` - Claim doesn't exist
+    /// * `Unauthorized` - Caller is not an admin
+    /// * `ClaimNotUnderAppeal` - Claim is not in UnderAppeal status
+    /// * `ReviewerCannotBeOriginal` - Reviewer was the original reviewer
+    ///
+    /// # Events
+    /// Emits `AppealDecisionEvent` and `InsuranceClaimStatusUpdatedEvent` on success
+    pub fn review_appeal(
+        env: Env,
+        reviewer: Address,
+        claim_id: u64,
+        decision: InsuranceClaimStatus,
+    ) {
+        reviewer.require_auth();
+
+        // Verify reviewer is an admin
+        if !Self::is_admin(&env, &reviewer) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ClaimNotFound));
+
+        // Verify claim is under appeal
+        if claim.status != InsuranceClaimStatus::UnderAppeal {
+            panic_with_error!(&env, ContractError::ClaimNotUnderAppeal);
+        }
+
+        // Verify reviewer is not the original reviewer
+        if let Some(ref original_reviewer) = claim.original_reviewer {
+            if original_reviewer == &reviewer {
+                panic_with_error!(&env, ContractError::ReviewerCannotBeOriginal);
+            }
+        }
+
+        // Validate decision is either Approved or Rejected
+        if decision != InsuranceClaimStatus::Approved && decision != InsuranceClaimStatus::Rejected {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Update claim with final decision
+        claim.status = decision.clone();
+        claim.appeal_reviewer = Some(reviewer.clone());
+
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        // Emit appeal decision event
+        env.events().publish(
+            (String::from_str(&env, "AppealDecision"), claim.pet_id),
+            AppealDecisionEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                reviewer: reviewer.clone(),
+                decision: decision.clone(),
+                timestamp: current_time,
+            },
+        );
+
+        // Emit status updated event
+        env.events().publish(
+            (
+                String::from_str(&env, "InsuranceClaimStatusUpdated"),
+                claim.pet_id,
+            ),
+            InsuranceClaimStatusUpdatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                status: decision,
+                timestamp: current_time,
+            },
+        );
+    }
+
+    /// Set the original reviewer for a claim (typically when first reviewing).
+    /// This is used to prevent the same reviewer from handling the appeal.
+    ///
+    /// # Arguments
+    /// * `reviewer` - The admin who reviewed the claim
+    /// * `claim_id` - The ID of the claim
+    ///
+    /// # Errors
+    /// * `ClaimNotFound` - Claim doesn't exist
+    /// * `Unauthorized` - Caller is not an admin
+    pub fn set_claim_reviewer(env: Env, reviewer: Address, claim_id: u64) {
+        reviewer.require_auth();
+
+        // Verify reviewer is an admin
+        if !Self::is_admin(&env, &reviewer) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ClaimNotFound));
+
+        // Set original reviewer if not already set
+        if claim.original_reviewer.is_none() {
+            claim.original_reviewer = Some(reviewer);
+            env.storage()
+                .instance()
+                .set(&InsuranceKey::Claim(claim_id), &claim);
+        }
     }
 
     // --- BEHAVIORAL TRACKING SYSTEM ---
