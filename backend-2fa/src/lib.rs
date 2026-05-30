@@ -4,6 +4,7 @@ pub mod leaderboard;
 pub mod metrics;
 pub mod rate_limiter;
 pub mod tracing_middleware;
+pub mod error;
 pub mod two_factor;
 pub mod webhooks;
 
@@ -32,6 +33,7 @@ pub use metrics::{
     render_metrics, set_db_pool_stats, start_request_timer,
 };
 pub use tracing_middleware::sanitize_json_body;
+pub use error::{ApiError, ErrorResponseMiddleware};
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, RecoveryResult, TotpConfig, TwoFactorAuth, TwoFactorData,
     TwoFactorLockoutState, TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
