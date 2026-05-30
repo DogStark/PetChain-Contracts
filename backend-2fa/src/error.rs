@@ -1,4 +1,9 @@
-use actix_web::{body::BoxBody, dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform}, http::StatusCode, Error, HttpResponse, ResponseError};
+use actix_web::{
+    body::BoxBody,
+    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+    http::StatusCode,
+    Error, HttpResponse, ResponseError,
+};
 use futures_util::future::{ok, FutureExt, LocalBoxFuture, Ready};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,7 +17,11 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, details: Option<Value>) -> Self {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: Option<Value>,
+    ) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
