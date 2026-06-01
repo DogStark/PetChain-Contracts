@@ -1,5 +1,6 @@
 pub mod handlers;
 pub mod rate_limiter;
+pub mod trusted_device;
 pub mod two_factor;
 
 #[cfg(test)]
