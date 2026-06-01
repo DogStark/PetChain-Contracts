@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod ip_filter;
 pub mod rate_limiter;
 pub mod two_factor;
 
