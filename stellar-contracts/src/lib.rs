@@ -1125,6 +1125,8 @@ pub enum EventType {
     InsuranceClaimSubmitted,
     PetProfileUpdated,
     GroomingRecordCreated,
+    PolicyExpiringSoon,
+    PolicyRenewed,
 }
 
 #[contracttype]
@@ -2100,6 +2102,28 @@ pub struct InsuranceClaimFlaggedEvent {
     pub claim_id: u64,
     pub pet_id: u64,
     pub fraud_flags: u32,
+    pub timestamp: u64,
+}
+
+/// Emitted 30 days before a policy expires.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyExpiringSoonEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub expiry_date: u64,
+    pub timestamp: u64,
+}
+
+/// Emitted when a policy is renewed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyRenewedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub new_expiry_date: u64,
     pub timestamp: u64,
 }
 
@@ -13709,13 +13733,19 @@ impl PetChainContract {
             return None;
         }
 
+        const GRACE_PERIOD_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+        let timestamp = env.ledger().timestamp();
+        if timestamp > policy.expiry_date + GRACE_PERIOD_SECS {
+            // Lapsed — past grace period
+            return None;
+        }
+
         let claim_count: u64 = env
             .storage()
             .instance()
             .get(&InsuranceKey::ClaimCount)
             .unwrap_or(0);
         let claim_id = safe_increment(claim_count);
-        let timestamp = env.ledger().timestamp();
 
         let claim = InsuranceClaim {
             claim_id,
@@ -13986,6 +14016,98 @@ impl PetChainContract {
             .instance()
             .get(&InsuranceKey::PetClaimCount(pet_id))
             .unwrap_or(0)
+    }
+
+    /// Renews an insurance policy with a new expiry date.
+    /// Callable by the pet owner. Resets the policy to active.
+    pub fn renew_policy(env: Env, pet_id: u64, policy_id: String, new_end_date: u64) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
+        let mut policy = match env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))
+        {
+            Some(p) if p.policy_id == policy_id => p,
+            _ => return false,
+        };
+
+        let pet: Pet = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            Some(p) => p,
+            None => return false,
+        };
+        pet.owner.require_auth();
+
+        let timestamp = env.ledger().timestamp();
+        policy.expiry_date = new_end_date;
+        policy.active = true;
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetPolicyIndex((pet_id, count)), &policy);
+
+        env.events().publish(
+            (String::from_str(&env, "PolicyRenewed"), pet_id),
+            PolicyRenewedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                policy_id,
+                new_expiry_date: new_end_date,
+                timestamp,
+            },
+        );
+        true
+    }
+
+    /// Checks if a policy is within 30 days of expiry and emits `PolicyExpiringSoon` if so.
+    /// Returns true if the warning was emitted.
+    pub fn check_policy_expiry(env: Env, pet_id: u64) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return false;
+        }
+        let policy = match env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, count)))
+        {
+            Some(p) => p,
+            None => return false,
+        };
+
+        if !policy.active {
+            return false;
+        }
+
+        const THIRTY_DAYS: u64 = 30 * 24 * 60 * 60;
+        let timestamp = env.ledger().timestamp();
+        if policy.expiry_date > timestamp && policy.expiry_date - timestamp <= THIRTY_DAYS {
+            env.events().publish(
+                (String::from_str(&env, "PolicyExpiringSoon"), pet_id),
+                PolicyExpiringSoonEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    policy_id: policy.policy_id,
+                    expiry_date: policy.expiry_date,
+                    timestamp,
+                },
+            );
+            return true;
+        }
+        false
     }
 
     /// Appeal a rejected insurance claim with additional evidence.
