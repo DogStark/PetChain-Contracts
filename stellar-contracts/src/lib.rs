@@ -1123,6 +1123,8 @@ pub enum EventType {
     AccessGranted,
     AccessRevoked,
     InsuranceClaimSubmitted,
+    PetProfileUpdated,
+    GroomingRecordCreated,
 }
 
 #[contracttype]
@@ -2312,6 +2314,29 @@ pub struct TempVetGrantExpiredEvent {
     pub pet_id: u64,
     pub vet: Address,
     pub expired_at: u64,
+}
+
+/// Emitted when a pet's profile is updated.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PetProfileUpdatedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub owner: Address,
+    pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
+}
+
+/// Emitted when a grooming record is created.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingRecordCreatedEvent {
+    pub version: u32,
+    pub record_id: u64,
+    pub pet_id: u64,
+    pub groomer: Address,
+    pub timestamp: u64,
+    pub subscription_ids: Vec<u64>,
 }
 
 #[contract]
@@ -3631,9 +3656,24 @@ impl PetChainContract {
             PetChainContract::log_access(
                 &env,
                 id,
-                pet.owner,
+                pet.owner.clone(),
                 AccessAction::Write,
                 String::from_str(&env, "Pet profile updated"),
+            );
+            let timestamp = env.ledger().timestamp();
+            env.events().publish(
+                (String::from_str(&env, "PetProfileUpdated"), id),
+                PetProfileUpdatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id: id,
+                    owner: pet.owner,
+                    timestamp,
+                    subscription_ids: Self::matching_subscription_ids(
+                        &env,
+                        EventType::PetProfileUpdated,
+                        id,
+                    ),
+                },
             );
             true
         } else {
@@ -3757,6 +3797,15 @@ impl PetChainContract {
     }
 
     pub fn get_pet_data(env: Env, id: u64, caller: Address) -> Option<PetData> {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(id))
+        {
+            let allowed = match pet.privacy_level {
+                PrivacyLevel::Public => true,
+                PrivacyLevel::Restricted => {
+                    let access = PetChainContract::check_access(env.clone(), id, caller.clone());
                     !matches!(access, AccessLevel::None)
                 }
                 PrivacyLevel::Private => {
@@ -8475,8 +8524,6 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&MedicalKey::MedicalRecord(record_id));
-        record
-    }
 
         // Authorise: pet owner or the vet who created the record
         let pet: Pet = env
@@ -9846,6 +9893,22 @@ impl PetChainContract {
         };
 
         env.storage().instance().set(&FeatureKey::Gr(id), &record);
+
+        env.events().publish(
+            (String::from_str(&env, "GroomingRecordCreated"), pet_id),
+            GroomingRecordCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id: id,
+                pet_id,
+                groomer: record.groomer,
+                timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::GroomingRecordCreated,
+                    pet_id,
+                ),
+            },
+        );
 
         id
     }

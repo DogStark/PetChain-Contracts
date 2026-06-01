@@ -516,3 +516,4 @@ fn test_consent_access_fails_when_parent_chain_is_revoked() {
     client.revoke_consent(&root_id, &owner);
     assert!(!client.check_consent_access(&pet_id, &sub_delegate, &ConsentScope::ReadMedical));
 }
+}
