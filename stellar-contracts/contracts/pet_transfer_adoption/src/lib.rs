@@ -12,6 +12,7 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
+pub mod escrow;
 mod vet_registry;
 #[cfg(test)]
 mod test;
