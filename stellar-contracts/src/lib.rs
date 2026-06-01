@@ -1299,6 +1299,19 @@ pub enum StatsKey {
 }
 
 #[contracttype]
+pub enum StatSeriesKey {
+    Count(String),           // stat key -> number of stored points
+    Point((String, u64)),    // (stat key, 1-based index) -> StatPoint
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatPoint {
+    pub value: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum FeatureKey {
     Rg((u64, Address)),
     Gr(u64),
@@ -2513,6 +2526,74 @@ impl PetChainContract {
             .instance()
             .get(&StatsKey::ActivePetsCount)
             .unwrap_or(0)
+    }
+
+    /// Appends a `StatPoint` for `key`, pruning the oldest entry when the
+    /// series exceeds 365 points.
+    fn record_stat_point(env: &Env, key: String, value: u64) {
+        const MAX_POINTS: u64 = 365;
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&StatSeriesKey::Count(key.clone()))
+            .unwrap_or(0);
+
+        let point = StatPoint {
+            value,
+            timestamp: env.ledger().timestamp(),
+        };
+
+        if count < MAX_POINTS {
+            let new_count = count + 1;
+            env.storage()
+                .instance()
+                .set(&StatSeriesKey::Point((key.clone(), new_count)), &point);
+            env.storage()
+                .instance()
+                .set(&StatSeriesKey::Count(key), &new_count);
+        } else {
+            // Shift: drop index 1, move 2..=MAX down by one, write at MAX
+            for i in 1..MAX_POINTS {
+                if let Some(p) = env
+                    .storage()
+                    .instance()
+                    .get::<StatSeriesKey, StatPoint>(&StatSeriesKey::Point((key.clone(), i + 1)))
+                {
+                    env.storage()
+                        .instance()
+                        .set(&StatSeriesKey::Point((key.clone(), i)), &p);
+                }
+            }
+            env.storage()
+                .instance()
+                .set(&StatSeriesKey::Point((key, MAX_POINTS)), &point);
+        }
+    }
+
+    /// Returns all recorded `StatPoint`s for `key` whose timestamp falls
+    /// within the inclusive range `[start_ts, end_ts]`.
+    pub fn get_stat_series(env: Env, key: String, start_ts: u64, end_ts: u64) -> Vec<StatPoint> {
+        let mut result = Vec::new(&env);
+        if start_ts > end_ts {
+            return result;
+        }
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&StatSeriesKey::Count(key.clone()))
+            .unwrap_or(0);
+        for i in 1..=count {
+            if let Some(p) = env
+                .storage()
+                .instance()
+                .get::<StatSeriesKey, StatPoint>(&StatSeriesKey::Point((key.clone(), i)))
+            {
+                if p.timestamp >= start_ts && p.timestamp <= end_ts {
+                    result.push_back(p);
+                }
+            }
+        }
+        result
     }
 
     /// Returns the statistics for a given vet address.
@@ -4286,6 +4367,11 @@ impl PetChainContract {
                 env.storage()
                     .instance()
                     .set(&StatsKey::ActivePetsCount, &safe_increment(active_count));
+                Self::record_stat_point(
+                    &env,
+                    String::from_str(&env, "ActivePetsCount"),
+                    safe_increment(active_count),
+                );
             }
             pet.active = true;
             pet.updated_at = env.ledger().timestamp();
@@ -4310,6 +4396,11 @@ impl PetChainContract {
                     env.storage()
                         .instance()
                         .set(&StatsKey::ActivePetsCount, &(active_count - 1));
+                    Self::record_stat_point(
+                        &env,
+                        String::from_str(&env, "ActivePetsCount"),
+                        active_count - 1,
+                    );
                 }
             }
             pet.active = false;
@@ -4335,6 +4426,11 @@ impl PetChainContract {
                 env.storage()
                     .instance()
                     .set(&StatsKey::ActivePetsCount, &(active_count - 1));
+                Self::record_stat_point(
+                    &env,
+                    String::from_str(&env, "ActivePetsCount"),
+                    active_count - 1,
+                );
             }
         }
         pet.archived = true;
