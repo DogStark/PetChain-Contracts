@@ -2023,3 +2023,4 @@ fn test_surgery_treatment_allowed_for_surgery_vet() {
 
     assert_eq!(treatment_id, 1);
 }
+}
