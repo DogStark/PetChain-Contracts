@@ -1029,3 +1029,4 @@ fn test_get_breeding_count_unrelated_pet_unaffected() {
     assert_eq!(client.get_breeding_count(&dam_id), 1);
     assert_eq!(client.get_breeding_count(&unrelated_id), 0);
 }
+}
