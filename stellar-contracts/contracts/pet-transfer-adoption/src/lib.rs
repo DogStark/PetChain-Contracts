@@ -19,6 +19,7 @@ pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
 #[cfg(test)]
 mod test;
 mod vet_registry;
+pub mod escrow;
 
 /// ======================================================
 /// CONTRACT
@@ -151,7 +152,12 @@ enum DataKey {
     EscrowedTransfer(u64),
     OwnershipHistory(u64),
     OwnerPets(Address),
-    CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
+    CustodyChain(u64),
+    // Trusted contract / multisig keys
+    TrustedContract,
+    TrustedAdmins,
+    TrustedThreshold,
+    TrustedUpdateApprovals((Address, Address)), // pet_id -> Vec<CustodyEntry>
     // Adoption waiting period (Issue #653)
     AdoptionConfig,               // global -> AdoptionConfig
     PendingAdoption(u64),         // pet_id -> PendingAdoption
@@ -200,17 +206,17 @@ pub enum ContractError {
     ThresholdNotMet = 18,
     UntrustedContract = 19,
     // Adoption waiting period errors (Issue #653)
-    NoPendingAdoption = 15,
-    WaitingPeriodNotElapsed = 16,
-    AdoptionAlreadyCompleted = 17,
-    AdoptionNotConfigurable = 18,
-    InvalidWaitingPeriod = 19,
-    AdoptionConfigNotFound = 20,
-    BatchTooLarge = 21,
-    InvalidBatch = 22,
-    OrganizationApprovalRequired = 23,
-    AdoptionRejected = 24,
-    InvalidApprover = 25,
+    NoPendingAdoption = 20,
+    WaitingPeriodNotElapsed = 21,
+    AdoptionAlreadyCompleted = 22,
+    AdoptionNotConfigurable = 23,
+    InvalidWaitingPeriod = 24,
+    AdoptionConfigNotFound = 25,
+    BatchTooLarge = 26,
+    InvalidBatch = 27,
+    OrganizationApprovalRequired = 28,
+    AdoptionRejected = 29,
+    InvalidApprover = 30,
 }
 
 /// ======================================================
@@ -1011,8 +1017,8 @@ impl PetOwnershipContract {
         }
 
         let mut expected_owner: Option<Address> = None;
-        let mut seen_ids = Vec::new(env);
-        let mut pets = Vec::new(env);
+        let mut seen_ids = Vec::new(&env);
+        let mut pets = Vec::new(&env);
         for pet_id in pet_ids.iter() {
             if seen_ids.contains(&pet_id) {
                 panic_with_error!(env, ContractError::InvalidBatch);
