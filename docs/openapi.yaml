@@ -1,0 +1,785 @@
+openapi: 3.0.3
+info:
+  title: PetChain Backend 2FA API
+  version: "1.0.0"
+  description: |
+    OpenAPI 3.0 specification for the PetChain Backend 2FA service.
+
+    ## Authentication
+    All write endpoints require a Bearer JWT in the `Authorization` header.
+    Read / verification endpoints accept either Bearer JWT or an `X-User-Id`
+    header for service-to-service calls.
+
+    ## Error format
+    All error responses share the same envelope:
+    ```json
+    { "error": "<machine-readable code>", "message": "<human-readable detail>" }
+    ```
+
+    ## Rate limiting
+    Verification and login endpoints are rate-limited per `user_id`.  After 5
+    consecutive failures the account is locked for 15 minutes.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.petchain.io
+    description: Production
+
+tags:
+  - name: 2FA Setup
+    description: Enable, configure, and disable two-factor authentication
+  - name: 2FA Verification
+    description: Verify TOTP tokens and log in with 2FA
+  - name: Recovery
+    description: Backup-code recovery and audit logs
+  - name: Admin
+    description: Admin-only quota, canary, and flagged-score operations
+  - name: Tenant
+    description: Multi-tenant provisioning
+  - name: Leaderboard
+    description: WebSocket leaderboard feed
+
+paths:
+  # ─── 2FA Setup ──────────────────────────────────────────────────────────────
+
+  /2fa/enable:
+    post:
+      tags: [2FA Setup]
+      summary: Enable 2FA for a user
+      description: |
+        Generates a TOTP secret, produces a QR-code URI, and stores the pending
+        setup. The user must call `/2fa/verify` to confirm possession before 2FA
+        is considered active.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnableTwoFactorRequest'
+      responses:
+        '200':
+          description: 2FA setup initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnableTwoFactorResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: 2FA already enabled for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /2fa/disable:
+    post:
+      tags: [2FA Setup]
+      summary: Disable 2FA for a user
+      description: Disables 2FA and clears all stored secrets. Requires current TOTP token to confirm intent.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DisableTwoFactorRequest'
+      responses:
+        '200':
+          description: 2FA disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── 2FA Verification ────────────────────────────────────────────────────────
+
+  /2fa/verify:
+    post:
+      tags: [2FA Verification]
+      summary: Verify a TOTP token
+      description: |
+        Validates a 6-digit TOTP code. On first call after `/2fa/enable` this
+        activates 2FA. Subsequent calls act as a plain verification check.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyTwoFactorRequest'
+      responses:
+        '200':
+          description: Token valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or expired TOTP token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '423':
+          description: Account locked due to too many failed attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /2fa/login:
+    post:
+      tags: [2FA Verification]
+      summary: Complete login with 2FA
+      description: |
+        Second factor in a two-step login flow. Accepts a TOTP token alongside
+        the user ID. Returns a session token on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginWithTwoFactorRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid TOTP token or 2FA not enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '423':
+          description: Account locked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ─── Recovery ────────────────────────────────────────────────────────────────
+
+  /2fa/recover:
+    post:
+      tags: [Recovery]
+      summary: Recover access with a backup code
+      description: |
+        Consumes one of the user's pre-generated backup codes and disables 2FA,
+        allowing the user to re-enrol with a new device.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoverWithBackupRequest'
+      responses:
+        '200':
+          description: Recovery successful, 2FA disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoverWithBackupResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid backup code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /2fa/recovery-log:
+    get:
+      tags: [Recovery]
+      summary: List backup-code usage log (paginated)
+      description: Returns a paginated list of backup-code recovery events for audit purposes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Recovery log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryLogPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /2fa/audit-log/{user_id}:
+    get:
+      tags: [Recovery]
+      summary: Get 2FA audit log for a user
+      description: Returns paginated 2FA audit events (enable, disable, verify, recover) for the given user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Admin ───────────────────────────────────────────────────────────────────
+
+  /admin/quota:
+    post:
+      tags: [Admin]
+      summary: Set per-user storage quota
+      description: Override the default storage quota for a specific user. Admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetUserQuotaRequest'
+      responses:
+        '200':
+          description: Quota updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/quota/unlimited:
+    post:
+      tags: [Admin]
+      summary: Grant unlimited quota to a user
+      description: Removes the quota cap for a user. Admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantUnlimitedRequest'
+      responses:
+        '200':
+          description: Unlimited quota granted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/canary:
+    post:
+      tags: [Admin]
+      summary: Create a canary user for anomaly detection
+      description: Marks a user as a canary so anomalous activity triggers alerts. Admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCanaryRequest'
+      responses:
+        '200':
+          description: Canary user created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCanaryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/flagged:
+    get:
+      tags: [Admin]
+      summary: List all flagged score submissions
+      description: Returns all submissions flagged for manual review. Admin-only.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Flagged submissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlaggedScoreSubmission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/flagged/{user_id}:
+    get:
+      tags: [Admin]
+      summary: List flagged score submissions for a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Flagged submissions for user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlaggedScoreSubmission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ─── Tenant ──────────────────────────────────────────────────────────────────
+
+  /tenant/provision:
+    post:
+      tags: [Tenant]
+      summary: Provision a new tenant
+      description: Creates a new tenant namespace with its own isolated 2FA store. Admin-only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProvisionTenantRequest'
+      responses:
+        '200':
+          description: Tenant provisioned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisionTenantResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Tenant already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ─── Leaderboard ─────────────────────────────────────────────────────────────
+
+  /ws/leaderboard:
+    get:
+      tags: [Leaderboard]
+      summary: WebSocket leaderboard feed
+      description: |
+        Upgrades the connection to WebSocket. The server streams leaderboard
+        update messages as JSON whenever the top-N rankings change.
+      responses:
+        '101':
+          description: Switching Protocols (WebSocket upgrade)
+        '400':
+          description: Not a WebSocket upgrade request
+
+  # ─── Health ──────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      summary: Health check
+      description: Returns 200 if the service is healthy. No authentication required.
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+# ─── Components ───────────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase / PetChain JWT
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Zero-based page index
+    PageSizeParam:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Number of items per page
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions (not an admin)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: INVALID_TOKEN
+        message:
+          type: string
+          description: Human-readable error detail
+          example: The provided TOTP token has expired
+
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: 2FA disabled
+
+    # ── 2FA Setup ──────────────────────────────────────────────────────────────
+
+    EnableTwoFactorRequest:
+      type: object
+      required: [user_id, email]
+      properties:
+        user_id:
+          type: string
+          description: Unique user identifier
+          example: user_abc123
+        email:
+          type: string
+          format: email
+          example: alice@petchain.io
+        issuer:
+          type: string
+          description: Issuer label shown in authenticator apps
+          default: PetChain
+          example: PetChain
+
+    EnableTwoFactorResponse:
+      type: object
+      required: [secret, qr_code_uri, backup_codes]
+      properties:
+        secret:
+          type: string
+          description: Base32-encoded TOTP secret (store securely)
+          example: JBSWY3DPEHPK3PXP
+        qr_code_uri:
+          type: string
+          description: otpauth:// URI for QR code generation
+          example: "otpauth://totp/PetChain:alice@petchain.io?secret=JBSWY3DP&issuer=PetChain"
+        backup_codes:
+          type: array
+          description: One-time backup codes for account recovery
+          items:
+            type: string
+          example: ["A1B2-C3D4", "E5F6-G7H8"]
+
+    DisableTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+        token:
+          type: string
+          description: Current TOTP code to confirm the user's intent
+          example: "123456"
+
+    VerifyTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+        token:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "654321"
+
+    LoginWithTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+        token:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "111222"
+
+    LoginResponse:
+      type: object
+      required: [session_token]
+      properties:
+        session_token:
+          type: string
+          description: Short-lived session token for subsequent requests
+          example: eyJhbGciOiJIUzI1NiJ9...
+
+    # ── Recovery ───────────────────────────────────────────────────────────────
+
+    RecoverWithBackupRequest:
+      type: object
+      required: [user_id, backup_code]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+        backup_code:
+          type: string
+          example: A1B2-C3D4
+
+    RecoverWithBackupResponse:
+      type: object
+      required: [success, remaining_codes]
+      properties:
+        success:
+          type: boolean
+        remaining_codes:
+          type: integer
+          description: Number of backup codes still available
+          example: 7
+
+    RecoveryLogPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecoveryLogEntry'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    RecoveryLogEntry:
+      type: object
+      properties:
+        user_id:
+          type: string
+        used_at:
+          type: string
+          format: date-time
+        code_index:
+          type: integer
+          description: Index of the backup code that was consumed
+
+    AuditLogPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        total:
+          type: integer
+        page:
+          type: integer
+
+    AuditLogEntry:
+      type: object
+      properties:
+        event:
+          type: string
+          enum: [enabled, disabled, verified, recovered, login]
+        timestamp:
+          type: string
+          format: date-time
+        ip_address:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+
+    # ── Admin ──────────────────────────────────────────────────────────────────
+
+    SetUserQuotaRequest:
+      type: object
+      required: [user_id, quota]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+        quota:
+          type: integer
+          description: Maximum number of storage entries
+          minimum: 1
+          example: 5000
+
+    GrantUnlimitedRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          example: user_abc123
+
+    CreateCanaryRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          example: canary_sentinel_01
+
+    CreateCanaryResponse:
+      type: object
+      required: [user_id, is_canary]
+      properties:
+        user_id:
+          type: string
+        is_canary:
+          type: boolean
+          example: true
+
+    FlaggedScoreSubmission:
+      type: object
+      properties:
+        user_id:
+          type: string
+        submitted_at:
+          type: string
+          format: date-time
+        score:
+          type: number
+        reason:
+          type: string
+          description: Why this submission was flagged
+
+    # ── Tenant ─────────────────────────────────────────────────────────────────
+
+    ProvisionTenantRequest:
+      type: object
+      required: [tenant_id, issuer]
+      properties:
+        tenant_id:
+          type: string
+          example: acme-corp
+        issuer:
+          type: string
+          description: TOTP issuer label shown in authenticator apps
+          example: ACME Corp
+        max_users:
+          type: integer
+          nullable: true
+          description: Optional user cap for this tenant
+          example: 500
+
+    ProvisionTenantResponse:
+      type: object
+      required: [tenant_id, provisioned_at]
+      properties:
+        tenant_id:
+          type: string
+        provisioned_at:
+          type: string
+          format: date-time

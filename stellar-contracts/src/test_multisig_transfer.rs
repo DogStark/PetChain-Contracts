@@ -1,5 +1,5 @@
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, String, Vec};
 
 fn setup_test_env<'a>(
     env: &'a Env,
@@ -479,7 +479,7 @@ fn test_ownership_history_pagination() {
     signers.push_back(signer2.clone());
 
     client.configure_multisig(&pet_id, &signers, &2);
-    
+
     // Transfer 1
     let proposal_id1 = client.require_multisig_for_transfer(&pet_id, &new_owner);
     client.sign_transfer_proposal(&proposal_id1, &signer1);
@@ -487,7 +487,7 @@ fn test_ownership_history_pagination() {
 
     // Transfer 2 (back to owner)
     let proposal_id2 = client.require_multisig_for_transfer(&pet_id, &owner);
-    client.sign_transfer_proposal(&proposal_id2, &new_owner); // new_owner must sign now
+    client.sign_transfer_proposal(&proposal_id2, &signer1); // signer1 is a configured signer
     client.multisig_transfer_pet(&proposal_id2);
 
     // Total 3 records (initial registration + 2 transfers)
@@ -500,4 +500,360 @@ fn test_ownership_history_pagination() {
 
     let history_empty = client.get_ownership_history(&pet_id, &5u64, &1u32);
     assert_eq!(history_empty.len(), 0);
+}
+
+#[test]
+fn test_batch_transfer_moves_all_pets_and_emits_one_event_per_pet() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+    let pet_id1 = register_test_pet(&client, &env, &owner);
+    let pet_id2 = client.register_pet(
+        &owner,
+        &String::from_str(&env, "TestPet2"),
+        &String::from_str(&env, "2021-01-01"),
+        &Gender::Female,
+        &Species::Cat,
+        &String::from_str(&env, "Tabby"),
+        &String::from_str(&env, "White"),
+        &11,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let before_events = env.events().all().len();
+    let mut pet_ids = Vec::new(&env);
+    pet_ids.push_back(pet_id1);
+    pet_ids.push_back(pet_id2);
+
+    client.batch_transfer(&pet_ids, &new_owner);
+
+    assert_eq!(client.get_pet_owner(&pet_id1).unwrap(), new_owner);
+    assert_eq!(client.get_pet_owner(&pet_id2).unwrap(), new_owner);
+    assert_eq!(env.events().all().len(), before_events + 2);
+}
+
+#[test]
+fn test_batch_transfer_rejects_owner_mismatch_atomically() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+    let other_owner = Address::generate(&env);
+    let pet_id1 = register_test_pet(&client, &env, &owner);
+    let pet_id2 = client.register_pet(
+        &other_owner,
+        &String::from_str(&env, "Rover"),
+        &String::from_str(&env, "2020-06-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Mix"),
+        &String::from_str(&env, "Brown"),
+        &15,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut pet_ids = Vec::new(&env);
+    pet_ids.push_back(pet_id1);
+    pet_ids.push_back(pet_id2);
+
+    assert!(client.try_batch_transfer(&pet_ids, &new_owner).is_err());
+    assert_eq!(client.get_pet_owner(&pet_id1).unwrap(), owner);
+    assert_eq!(client.get_pet_owner(&pet_id2).unwrap(), other_owner);
+}
+
+#[test]
+fn test_batch_transfer_rejects_batches_over_limit() {
+    let env = Env::default();
+    let (client, owner, _, _, new_owner) = setup_test_env(&env);
+
+    let mut pet_ids = Vec::new(&env);
+    for _ in 0..21u64 {
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "BatchPet"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Breed"),
+            &String::from_str(&env, "Black"),
+            &20,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        pet_ids.push_back(pet_id);
+    }
+
+    assert!(client.try_batch_transfer(&pet_ids, &new_owner).is_err());
+}
+
+#[test]
+fn test_cancel_transfer_proposal() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    client.cancel_transfer_proposal(&proposal_id);
+
+    let proposal = client.get_transfer_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed); // Executed is used for cancelled too
+}
+
+#[test]
+#[should_panic]
+fn test_sign_cancelled_proposal() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    client.cancel_transfer_proposal(&proposal_id);
+
+    client.sign_transfer_proposal(&proposal_id, &signer1);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_empty() {
+    let env = Env::default();
+    let (client, owner, _, _, _) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    // No proposals yet, should return empty
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_single() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().pet_id, pet_id);
+    assert!(!active.get(0).unwrap().executed);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_multiple() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+
+    // Create multiple proposals
+    client.require_multisig_for_transfer(&pet_id, &new_owner);
+    client.require_multisig_for_transfer(&pet_id, &signer1);
+    client.require_multisig_for_transfer(&pet_id, &signer2);
+
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 3);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_excludes_executed() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+    client.sign_transfer_proposal(&proposal_id, &signer1);
+    client.multisig_transfer_pet(&proposal_id);
+
+    // After execution, should return empty
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_excludes_cancelled() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+    let proposal_id = client.require_multisig_for_transfer(&pet_id, &new_owner);
+    client.cancel_transfer_proposal(&proposal_id);
+
+    // After cancellation, should return empty
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_mixed_states() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id, &signers, &2);
+
+    // Proposal 1: active
+    let proposal_id1 = client.require_multisig_for_transfer(&pet_id, &new_owner);
+
+    // Proposal 2: cancelled
+    let proposal_id2 = client.require_multisig_for_transfer(&pet_id, &signer1);
+    client.cancel_transfer_proposal(&proposal_id2);
+
+    // Proposal 3: active
+    let proposal_id3 = client.require_multisig_for_transfer(&pet_id, &signer2);
+
+    let active = client.get_active_transfer_proposals(&pet_id);
+    assert_eq!(active.len(), 2);
+
+    // Verify the active proposals are the correct ones
+    let mut found_proposal1 = false;
+    let mut found_proposal3 = false;
+    for i in 0..active.len() {
+        let proposal = active.get(i);
+        if proposal.as_ref().map(|p| p.id) == Some(proposal_id1) {
+            found_proposal1 = true;
+        }
+        if proposal.as_ref().map(|p| p.id) == Some(proposal_id3) {
+            found_proposal3 = true;
+        }
+    }
+    assert!(found_proposal1);
+    assert!(found_proposal3);
+}
+
+#[test]
+fn test_get_active_transfer_proposals_per_pet_isolation() {
+    let env = Env::default();
+    let (client, owner, signer1, signer2, new_owner) = setup_test_env(&env);
+    let pet_id1 = register_test_pet(&client, &env, &owner);
+    let pet_id2 = register_test_pet(&client, &env, &owner);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(owner.clone());
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.configure_multisig(&pet_id1, &signers, &2);
+    client.configure_multisig(&pet_id2, &signers, &2);
+
+    // Create proposal for pet 1
+    client.require_multisig_for_transfer(&pet_id1, &new_owner);
+
+    // Create proposal for pet 2
+    client.require_multisig_for_transfer(&pet_id2, &signer1);
+
+    // Each pet should only see its own proposals
+    let active_pet1 = client.get_active_transfer_proposals(&pet_id1);
+    let active_pet2 = client.get_active_transfer_proposals(&pet_id2);
+
+    assert_eq!(active_pet1.len(), 1);
+    assert_eq!(active_pet1.get(0).unwrap().pet_id, pet_id1);
+
+    assert_eq!(active_pet2.len(), 1);
+    assert_eq!(active_pet2.get(0).unwrap().pet_id, pet_id2);
+}
+
+#[test]
+fn test_set_threshold_valid() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+
+    client.set_threshold(&admin1, &2u32);
+    assert_eq!(client.get_admin_threshold(), 2u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    client.set_threshold(&admin1, &0u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_exceeds_signer_count_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    client.set_threshold(&admin1, &5u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_threshold_blocked_by_active_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let mut admins = Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    client.init_multisig(&admin1, &admins, &1u32);
+    // create an active proposal
+    let action = crate::ProposalAction::VerifyVet(admin2.clone());
+    client.propose_action(&admin1, &action, &3600u64);
+    // now try to change threshold — should panic
+    client.set_threshold(&admin1, &2u32);
 }
