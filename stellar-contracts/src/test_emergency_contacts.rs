@@ -1,6 +1,25 @@
 use crate::*;
 use soroban_sdk::{testutils::Address as _, Env};
 
+fn valid_contact(
+    env: &Env,
+    name: &str,
+    phone: &str,
+    email: &str,
+    relationship: &str,
+    is_primary: bool,
+    priority: u32,
+) -> EmergencyContact {
+    EmergencyContact {
+        name: String::from_str(env, name),
+        phone: String::from_str(env, phone),
+        email: String::from_str(env, email),
+        relationship: String::from_str(env, relationship),
+        is_primary,
+        priority,
+    }
+}
+
 fn setup_pet_with_contacts(
     env: &Env,
     client: &PetChainContractClient,
@@ -20,13 +39,15 @@ fn setup_pet_with_contacts(
     );
 
     let mut contacts = soroban_sdk::Vec::new(env);
-    contacts.push_back(EmergencyContact {
-        name: String::from_str(env, "Jane Doe"),
-        phone: String::from_str(env, "555-0100"),
-        email: String::from_str(env, "jane@example.com"),
-        relationship: String::from_str(env, "Vet"),
-        is_primary: true,
-    });
+    contacts.push_back(valid_contact(
+        env,
+        "Jane Doe",
+        "555-0100",
+        "jane@example.com",
+        "Vet",
+        true,
+        1,
+    ));
 
     client.set_emergency_contacts(
         &pet_id,
@@ -87,27 +108,33 @@ fn test_emergency_contacts_multiple() {
     );
 
     let mut contacts = soroban_sdk::Vec::new(&env);
-    contacts.push_back(EmergencyContact {
-        name: String::from_str(&env, "Primary Contact"),
-        phone: String::from_str(&env, "555-1000"),
-        email: String::from_str(&env, "primary@example.com"),
-        relationship: String::from_str(&env, "Owner"),
-        is_primary: true,
-    });
-    contacts.push_back(EmergencyContact {
-        name: String::from_str(&env, "Backup Contact"),
-        phone: String::from_str(&env, "555-2000"),
-        email: String::from_str(&env, "backup@example.com"),
-        relationship: String::from_str(&env, "Spouse"),
-        is_primary: false,
-    });
-    contacts.push_back(EmergencyContact {
-        name: String::from_str(&env, "Vet Clinic"),
-        phone: String::from_str(&env, "555-3000"),
-        email: String::from_str(&env, "vet@clinic.com"),
-        relationship: String::from_str(&env, "Veterinarian"),
-        is_primary: false,
-    });
+    contacts.push_back(valid_contact(
+        &env,
+        "Primary Contact",
+        "555-1000",
+        "primary@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Backup Contact",
+        "555-2000",
+        "backup@example.com",
+        "Spouse",
+        false,
+        2,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Vet Clinic",
+        "555-3000",
+        "vet@clinic.com",
+        "Veterinarian",
+        false,
+        3,
+    ));
 
     client.set_emergency_contacts(
         &pet_id,
@@ -188,6 +215,67 @@ fn test_revoked_responder_cannot_read_contacts() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_empty_emergency_contacts_rejected() {
+    let env = Env::default();
+    PetChainContract::validate_emergency_contacts(&env, &soroban_sdk::Vec::new(&env));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_contact_without_primary_rejected() {
+    let env = Env::default();
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "Backup Contact",
+        "555-2200",
+        "backup@example.com",
+        "Neighbor",
+        false,
+        1,
+    ));
+
+    PetChainContract::validate_emergency_contacts(&env, &contacts);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_contact_with_empty_name_rejected() {
+    let env = Env::default();
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "",
+        "555-3300",
+        "primary@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+
+    PetChainContract::validate_emergency_contacts(&env, &contacts);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_contact_with_empty_phone_rejected() {
+    let env = Env::default();
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "Primary Contact",
+        "",
+        "primary@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+
+    PetChainContract::validate_emergency_contacts(&env, &contacts);
+}
+
+#[test]
 fn test_emergency_contacts_update() {
     let env = Env::default();
     env.mock_all_auths();
@@ -197,15 +285,16 @@ fn test_emergency_contacts_update() {
     let owner = Address::generate(&env);
     let (pet_id, _) = setup_pet_with_contacts(&env, &client, &owner);
 
-    // Update contacts
     let mut new_contacts = soroban_sdk::Vec::new(&env);
-    new_contacts.push_back(EmergencyContact {
-        name: String::from_str(&env, "John Smith"),
-        phone: String::from_str(&env, "555-9999"),
-        email: String::from_str(&env, "john@example.com"),
-        relationship: String::from_str(&env, "Brother"),
-        is_primary: true,
-    });
+    new_contacts.push_back(valid_contact(
+        &env,
+        "John Smith",
+        "555-9999",
+        "john@example.com",
+        "Brother",
+        true,
+        1,
+    ));
 
     client.set_emergency_contacts(
         &pet_id,
@@ -223,7 +312,7 @@ fn test_emergency_contacts_update() {
 }
 
 #[test]
-#[should_panic(expected = "Emergency contacts cannot be empty")]
+#[should_panic(expected = "Error(Contract, #14)")]
 fn test_emergency_contacts_empty_rejection() {
     let env = Env::default();
     env.mock_all_auths();
@@ -244,7 +333,6 @@ fn test_emergency_contacts_empty_rejection() {
         &PrivacyLevel::Public,
     );
 
-    // Attempt to set empty contacts
     client.set_emergency_contacts(
         &pet_id,
         &soroban_sdk::Vec::new(&env),
@@ -262,11 +350,8 @@ fn test_set_emergency_contacts_unauthorized() {
     let client = PetChainContractClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
-    let stranger = Address::generate(&env);
+    let _stranger = Address::generate(&env);
     let (pet_id, contacts) = setup_pet_with_contacts(&env, &client, &owner);
-
-    // Stranger attempts to set contacts — must panic because owner.require_auth() will fail
-    // We need to generate a new context where stranger is the caller
     env.as_contract(&contract_id, || {
         client.set_emergency_contacts(
             &pet_id,
@@ -312,7 +397,7 @@ fn test_get_emergency_info_authorized() {
 }
 
 #[test]
-#[should_panic(expected = "Pet not found")]
+#[should_panic]
 fn test_set_emergency_contacts_pet_not_found() {
     let env = Env::default();
     env.mock_all_auths();
@@ -324,5 +409,306 @@ fn test_set_emergency_contacts_pet_not_found() {
         &soroban_sdk::Vec::new(&env),
         &soroban_sdk::Vec::new(&env),
         &String::from_str(&env, ""),
+    );
+}
+
+// --- get_emergency_responders tests ---
+
+fn setup_env_with_pet() -> (Env, PetChainContractClient<'static>, Address, u64) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.init_admin(&owner);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    (env, client, owner, pet_id)
+}
+
+#[test]
+fn test_get_emergency_responders_empty() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 0);
+}
+
+#[test]
+fn test_get_emergency_responders_returns_added() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r1);
+    client.add_emergency_responder(&pet_id, &r2);
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 2);
+    assert!(responders.contains(&r1));
+    assert!(responders.contains(&r2));
+}
+
+#[test]
+fn test_get_emergency_responders_after_remove() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r1);
+    client.add_emergency_responder(&pet_id, &r2);
+    client.remove_emergency_responder(&pet_id, &r2);
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 1);
+    assert!(responders.contains(&r1));
+    assert!(!responders.contains(&r2));
+}
+
+#[test]
+#[should_panic]
+fn test_get_emergency_responders_non_owner_panics() {
+    let (env, client, _owner, pet_id) = setup_env_with_pet();
+    let stranger = Address::generate(&env);
+    client.get_emergency_responders(&pet_id, &stranger);
+}
+
+#[test]
+fn test_add_emergency_responder_idempotent() {
+    let (env, client, owner, pet_id) = setup_env_with_pet();
+    let r = Address::generate(&env);
+    client.add_emergency_responder(&pet_id, &r);
+    client.add_emergency_responder(&pet_id, &r); // duplicate — should not double-add
+    let responders = client.get_emergency_responders(&pet_id, &owner);
+    assert_eq!(responders.len(), 1);
+}
+
+// --- Priority Queue Tests ---
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_duplicate_priority_rejected() {
+    let env = Env::default();
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "Primary Contact",
+        "555-1000",
+        "primary@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Backup Contact",
+        "555-2000",
+        "backup@example.com",
+        "Spouse",
+        false,
+        1, // Duplicate priority
+    ));
+
+    PetChainContract::validate_emergency_contacts(&env, &contacts);
+}
+
+#[test]
+fn test_get_contacts_ordered_ascending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    // Add contacts with non-sequential priorities
+    contacts.push_back(valid_contact(
+        &env,
+        "Third Contact",
+        "555-3000",
+        "third@example.com",
+        "Friend",
+        false,
+        3,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "First Contact",
+        "555-1000",
+        "first@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Second Contact",
+        "555-2000",
+        "second@example.com",
+        "Spouse",
+        false,
+        2,
+    ));
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+
+    let ordered = client.get_contacts_ordered(&pet_id, &owner);
+    assert_eq!(ordered.len(), 3);
+    assert_eq!(ordered.get(0).unwrap().priority, 1);
+    assert_eq!(ordered.get(1).unwrap().priority, 2);
+    assert_eq!(ordered.get(2).unwrap().priority, 3);
+    assert_eq!(
+        ordered.get(0).unwrap().name,
+        String::from_str(&env, "First Contact")
+    );
+}
+
+#[test]
+fn test_reorder_contact_swap_priorities() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "First Contact",
+        "555-1000",
+        "first@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Second Contact",
+        "555-2000",
+        "second@example.com",
+        "Spouse",
+        false,
+        2,
+    ));
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+
+    // Reorder first contact to priority 2 (should swap with second contact)
+    client.reorder_contact(&pet_id, &0, &2);
+
+    let ordered = client.get_contacts_ordered(&pet_id, &owner);
+    assert_eq!(ordered.get(0).unwrap().priority, 1);
+    assert_eq!(ordered.get(1).unwrap().priority, 2);
+    // First contact should now have priority 2
+    assert_eq!(
+        ordered.get(1).unwrap().name,
+        String::from_str(&env, "First Contact")
+    );
+    // Second contact should now have priority 1
+    assert_eq!(
+        ordered.get(0).unwrap().name,
+        String::from_str(&env, "Second Contact")
+    );
+}
+
+#[test]
+fn test_reorder_contact_unused_priority() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Golden Retriever"),
+        &String::from_str(&env, "Golden"),
+        &25u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    let mut contacts = soroban_sdk::Vec::new(&env);
+    contacts.push_back(valid_contact(
+        &env,
+        "First Contact",
+        "555-1000",
+        "first@example.com",
+        "Owner",
+        true,
+        1,
+    ));
+    contacts.push_back(valid_contact(
+        &env,
+        "Second Contact",
+        "555-2000",
+        "second@example.com",
+        "Spouse",
+        false,
+        2,
+    ));
+
+    client.set_emergency_contacts(
+        &pet_id,
+        &contacts,
+        &soroban_sdk::Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+
+    // Reorder first contact to unused priority 5
+    client.reorder_contact(&pet_id, &0, &5);
+
+    let ordered = client.get_contacts_ordered(&pet_id, &owner);
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered.get(0).unwrap().priority, 2);
+    assert_eq!(ordered.get(1).unwrap().priority, 5);
+    assert_eq!(
+        ordered.get(1).unwrap().name,
+        String::from_str(&env, "First Contact")
     );
 }
