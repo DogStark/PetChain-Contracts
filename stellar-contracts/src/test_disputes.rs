@@ -1,53 +1,7 @@
-use crate::{
-    DisputeStatus, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
-};
+use crate::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-#[test]
-fn test_raise_and_get_dispute() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PetChainContract);
-    let client = PetChainContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
-    let target = Address::generate(&env);
-
-    let pet_id = client.register_pet(
-        &owner,
-        &String::from_str(&env, "Max"),
-        &String::from_str(&env, "2021-06-01"),
-        &Gender::Male,
-        &Species::Dog,
-        &String::from_str(&env, "Golden"),
-        &String::from_str(&env, "Golden Retriever"),
-        &25,
-        &None,
-        &PrivacyLevel::Public,
-    );
-
-    let claim_amount = 1000;
-    let reason = String::from_str(&env, "Pet not delivered");
-    let evidence = String::from_str(&env, "ipfs://evidence_hash");
-
-    let dispute_id =
-        client.raise_dispute(&pet_id, &owner, &target, &claim_amount, &reason, &evidence);
-
-    let dispute = client.get_dispute(&dispute_id).unwrap();
-
-    assert_eq!(dispute.dispute_id, dispute_id);
-    assert_eq!(dispute.pet_id, pet_id);
-    assert_eq!(dispute.claimer, owner);
-    assert_eq!(dispute.target, target);
-    assert_eq!(dispute.amount, claim_amount);
-    assert_eq!(dispute.reason, reason);
-    assert_eq!(dispute.evidence_hash, evidence);
-    assert_eq!(dispute.status, DisputeStatus::Pending);
-}
-
-#[test]
-fn test_resolve_dispute_admin_only() {
+fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, Address, Address, u64) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -59,111 +13,170 @@ fn test_resolve_dispute_admin_only() {
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
+    let arbitrator = Address::generate(&env);
 
     let pet_id = client.register_pet(
         &owner,
-        &String::from_str(&env, "Bella"),
-        &String::from_str(&env, "2022-01-01"),
-        &Gender::Female,
-        &Species::Dog,
-        &String::from_str(&env, "White"),
-        &String::from_str(&env, "Samoyed"),
-        &20,
-        &None,
-        &PrivacyLevel::Public,
-    );
-
-    let dispute_id = client.raise_dispute(
-        &pet_id,
-        &owner,
-        &target,
-        &500,
-        &String::from_str(&env, "Minor issue"),
-        &String::from_str(&env, "ipfs://hash"),
-    );
-
-    // Resolve as admin
-    let success = client.resolve_dispute(&dispute_id, &DisputeStatus::ResolvedInFavorOfClaimer);
-    assert!(success);
-
-    let resolved_dispute = client.get_dispute(&dispute_id).unwrap();
-    assert_eq!(
-        resolved_dispute.status,
-        DisputeStatus::ResolvedInFavorOfClaimer
-    );
-    assert!(resolved_dispute.resolved_at.is_some());
-}
-
-#[test]
-#[should_panic(expected = "Admin not set")]
-fn test_resolve_dispute_no_admin_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PetChainContract);
-    let client = PetChainContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
-    let target = Address::generate(&env);
-
-    let pet_id = 1; // Dummy ID for this test
-
-    let dispute_id = client.raise_dispute(
-        &pet_id,
-        &owner,
-        &target,
-        &500,
-        &String::from_str(&env, "Reason"),
-        &String::from_str(&env, "Hash"),
-    );
-
-    client.resolve_dispute(&dispute_id, &DisputeStatus::ResolvedInFavorOfClaimer);
-}
-
-#[test]
-fn test_get_all_pet_disputes() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, PetChainContract);
-    let client = PetChainContractClient::new(&env, &contract_id);
-
-    let owner = Address::generate(&env);
-    let target = Address::generate(&env);
-
-    let pet_id = client.register_pet(
-        &owner,
-        &String::from_str(&env, "Charlie"),
-        &String::from_str(&env, "2020-05-15"),
+        &String::from_str(&env, "Max"),
+        &String::from_str(&env, "2021-06-01"),
         &Gender::Male,
         &Species::Dog,
-        &String::from_str(&env, "Black"),
-        &String::from_str(&env, "Labrador"),
-        &32,
+        &String::from_str(&env, "Golden"),
+        &String::from_str(&env, "Golden Retriever"),
+        &25u32,
         &None,
         &PrivacyLevel::Public,
     );
 
-    client.raise_dispute(
+    client.set_appeal_window(&admin, &100);
+    client.assign_arbitrator(&admin, &arbitrator);
+
+    (env, client, admin, owner, target, arbitrator, pet_id)
+}
+
+#[test]
+fn test_raise_dispute_and_list_pet_disputes() {
+    let (env, client, _admin, owner, target, _arbitrator, pet_id) = setup();
+
+    let dispute_id = client.raise_dispute(
         &pet_id,
         &owner,
         &target,
-        &100,
-        &String::from_str(&env, "Reason 1"),
-        &String::from_str(&env, "Hash 1"),
+        &1_000u64,
+        &String::from_str(&env, "Pet not delivered"),
+        &String::from_str(&env, "ipfs://initial"),
     );
 
-    client.raise_dispute(
+    let dispute = client.get_dispute(&dispute_id).unwrap();
+    assert_eq!(dispute.status, DisputeStatus::Open);
+    assert_eq!(client.get_pet_disputes(&pet_id).len(), 1);
+}
+
+#[test]
+fn test_submit_evidence_and_review_flow() {
+    let (env, client, _admin, owner, target, arbitrator, pet_id) = setup();
+
+    let dispute_id = client.raise_dispute(
         &pet_id,
         &owner,
         &target,
-        &200,
-        &String::from_str(&env, "Reason 2"),
-        &String::from_str(&env, "Hash 2"),
+        &1_000u64,
+        &String::from_str(&env, "Pet not delivered"),
+        &String::from_str(&env, "ipfs://initial"),
     );
 
-    let disputes = client.get_pet_disputes(&pet_id);
-    assert_eq!(disputes.len(), 2);
-    assert_eq!(disputes.get(0).unwrap().amount, 100);
-    assert_eq!(disputes.get(1).unwrap().amount, 200);
+    assert!(client.submit_evidence(
+        &dispute_id,
+        &target,
+        &String::from_str(&env, "ipfs://target-evidence"),
+    ));
+    assert_eq!(
+        client.get_dispute(&dispute_id).unwrap().status,
+        DisputeStatus::EvidencePhase
+    );
+
+    env.ledger().set_timestamp(1_000);
+    assert!(client.start_review(&dispute_id, &arbitrator));
+    assert_eq!(
+        client.get_dispute(&dispute_id).unwrap().status,
+        DisputeStatus::UnderReview
+    );
+
+    assert!(client.rule(
+        &dispute_id,
+        &arbitrator,
+        &DisputeOutcome::InFavorOfClaimer,
+    ));
+    let resolved = client.get_dispute(&dispute_id).unwrap();
+    assert_eq!(resolved.status, DisputeStatus::Resolved);
+    assert_eq!(resolved.resolved_at, Some(1_000));
+}
+
+// --- Reputation-based arbitrator tests ---
+
+fn full_dispute(
+    client: &PetChainContractClient,
+    env: &Env,
+    pet_id: u64,
+    owner: &Address,
+    target: &Address,
+    arbitrator: &Address,
+) -> u64 {
+    let dispute_id = raise(client, env, pet_id, owner, target);
+    client.submit_evidence(
+        &dispute_id,
+        target,
+        &String::from_str(env, "ipfs://evidence"),
+    );
+    client.start_review(&dispute_id, arbitrator);
+    client.rule(&dispute_id, arbitrator, &DisputeOutcome::InFavorOfClaimer);
+    dispute_id
+}
+
+#[test]
+fn test_register_arbitrator_and_auto_assign_selects_highest_reputation() {
+    let (env, client, admin, owner, target, arb1, pet_id) = setup();
+    let arb2 = Address::generate(&env);
+
+    client.register_arbitrator(&admin, &arb1);
+    client.register_arbitrator(&admin, &arb2);
+
+    // Give arb2 two rulings (higher reputation) by assigning it manually first
+    client.assign_arbitrator(&admin, &arb2);
+    let d1 = raise(&client, &env, pet_id, &owner, &target);
+    client.submit_evidence(&d1, &target, &String::from_str(&env, "ipfs://e1"));
+    client.start_review(&d1, &arb2);
+    client.rule(&d1, &arb2, &DisputeOutcome::InFavorOfClaimer);
+
+    let d2 = raise(&client, &env, pet_id, &owner, &target);
+    client.submit_evidence(&d2, &target, &String::from_str(&env, "ipfs://e2"));
+    client.start_review(&d2, &arb2);
+    client.rule(&d2, &arb2, &DisputeOutcome::InFavorOfClaimer);
+
+    // arb1 has 0 reputation, arb2 has 2 — auto_assign should pick arb2
+    let d3 = raise(&client, &env, pet_id, &owner, &target);
+    let assigned = client.auto_assign_arbitrator(&d3);
+    assert_eq!(assigned, arb2);
+}
+
+#[test]
+fn test_auto_assign_excludes_dispute_parties() {
+    let (env, client, admin, owner, target, arb1, pet_id) = setup();
+
+    // Register owner and target as arbitrators (should be excluded)
+    client.register_arbitrator(&admin, &owner);
+    client.register_arbitrator(&admin, &target);
+    client.register_arbitrator(&admin, &arb1);
+
+    let dispute_id = raise(&client, &env, pet_id, &owner, &target);
+    let assigned = client.auto_assign_arbitrator(&dispute_id);
+    assert_ne!(assigned, owner);
+    assert_ne!(assigned, target);
+    assert_eq!(assigned, arb1);
+}
+
+#[test]
+fn test_get_arbitrator_stats_returns_reputation() {
+    let (env, client, admin, owner, target, arbitrator, pet_id) = setup();
+    client.register_arbitrator(&admin, &arbitrator);
+    client.assign_arbitrator(&admin, &arbitrator);
+
+    full_dispute(&client, &env, pet_id, &owner, &target, &arbitrator);
+
+    let stats = client.get_arbitrator_stats(&arbitrator);
+    assert_eq!(stats.reputation, 1);
+}
+
+#[test]
+fn test_penalise_arbitrator_decreases_reputation() {
+    let (env, client, admin, owner, target, arbitrator, pet_id) = setup();
+    client.register_arbitrator(&admin, &arbitrator);
+    client.assign_arbitrator(&admin, &arbitrator);
+
+    full_dispute(&client, &env, pet_id, &owner, &target, &arbitrator);
+    // reputation is now 1; penalise brings it back to 0
+    client.penalise_arbitrator(&admin, &arbitrator);
+
+    let stats = client.get_arbitrator_stats(&arbitrator);
+    assert_eq!(stats.reputation, 0);
 }

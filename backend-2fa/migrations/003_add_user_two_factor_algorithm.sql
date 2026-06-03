@@ -1,0 +1,2 @@
+ALTER TABLE user_two_factor
+    ADD COLUMN IF NOT EXISTS algorithm VARCHAR(16) NOT NULL DEFAULT 'SHA1';
