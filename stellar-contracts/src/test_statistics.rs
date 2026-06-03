@@ -169,13 +169,14 @@ fn test_vet_stats_update_after_vaccination() {
         &String::from_str(&env, "Rabies"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH123"),
     );
 
     // Check stats after vaccination
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 2);
-    assert_eq!(stats.total_vaccinations, 2); // Actual value from test output
+    assert_eq!(stats.total_records, 1);
+    assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 0);
     assert_eq!(stats.pets_treated, 1);
 }
@@ -210,7 +211,7 @@ fn test_vet_stats_update_after_medical_record() {
 
     // Check stats after medical record
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 2); // Actual value from test output
+    assert_eq!(stats.total_records, 1);
     assert_eq!(stats.total_vaccinations, 0);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 1);
@@ -242,6 +243,7 @@ fn test_vet_stats_multiple_operations_same_pet() {
         &String::from_str(&env, "Bordetella"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH456"),
     );
 
@@ -257,7 +259,7 @@ fn test_vet_stats_multiple_operations_same_pet() {
 
     // Check stats - pets_treated should still be 1 (same pet)
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 4); // Actual value from test output
+    assert_eq!(stats.total_records, 2);
     assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 1);
@@ -290,6 +292,7 @@ fn test_vet_stats_multiple_pets() {
         &String::from_str(&env, "Rabies"),
         &env.ledger().timestamp(),
         &(env.ledger().timestamp() + 365 * 24 * 60 * 60),
+        &0u64,
         &String::from_str(&env, "BATCH789"),
     );
 
@@ -305,8 +308,191 @@ fn test_vet_stats_multiple_pets() {
 
     // Check stats - should have 2 pets treated
     let stats = client.get_vet_stats(&vet);
-    assert_eq!(stats.total_records, 4); // Actual value from test output
+    assert_eq!(stats.total_records, 2);
     assert_eq!(stats.total_vaccinations, 1);
     assert_eq!(stats.total_treatments, 1);
     assert_eq!(stats.pets_treated, 2);
+}
+
+// ── Vet Review Tests ──────────────────────────────────────────────────────────
+
+fn setup_vet_and_pet(
+    client: &PetChainContractClient,
+    env: &Env,
+    admin: &Address,
+) -> (Address, Address, u64) {
+    let owner = Address::generate(env);
+    let vet = Address::generate(env);
+
+    // Register vet
+    client.register_vet(
+        &vet,
+        &String::from_str(env, "Dr. Smith"),
+        &String::from_str(env, "VET123"),
+        &String::from_str(env, "Animal Clinic"),
+    );
+    client.verify_vet(admin, &vet);
+
+    // Register pet
+    let pet_id = register_pet_with_species(client, env, &owner, Species::Dog);
+
+    (owner, vet, pet_id)
+}
+
+#[test]
+fn test_get_vet_reviews_empty_initially() {
+    let (env, client, admin) = setup_env();
+    let (_owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(reviews.len(), 0);
+}
+
+#[test]
+fn test_add_and_get_vet_review() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // Add a review
+    let review_id =
+        client.add_vet_review(&owner, &vet, &5, &String::from_str(&env, "Excellent vet!"));
+    assert!(review_id > 0);
+
+    // Get reviews
+    let reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews.get(0).unwrap().rating, 5);
+}
+
+#[test]
+fn test_get_vet_reviews_pagination() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // Add 5 reviews from different owners
+    for i in 1..=5 {
+        let review_owner = Address::generate(&env);
+        client.add_vet_review(&review_owner, &vet, &i, &String::from_str(&env, "Review"));
+    }
+
+    // Get all reviews
+    let all_reviews = client.get_vet_reviews(&vet, &0u64, &10u32);
+    assert_eq!(all_reviews.len(), 5);
+
+    // Get first page (2 reviews)
+    let page1 = client.get_vet_reviews(&vet, &0u64, &2u32);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap().rating, 1);
+    assert_eq!(page1.get(1).unwrap().rating, 2);
+
+    // Get second page (2 reviews)
+    let page2 = client.get_vet_reviews(&vet, &2u64, &2u32);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().rating, 3);
+    assert_eq!(page2.get(1).unwrap().rating, 4);
+
+    // Get last page (1 review)
+    let page3 = client.get_vet_reviews(&vet, &4u64, &2u32);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().rating, 5);
+
+    // Get beyond available reviews
+    let empty = client.get_vet_reviews(&vet, &10u64, &5u32);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_get_vet_average_rating() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // No reviews - should return 0
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 0);
+
+    // Add review with rating 5
+    let owner1 = Address::generate(&env);
+    client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Great"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 500); // 5.0 * 100 = 500
+
+    // Add review with rating 3
+    let owner2 = Address::generate(&env);
+    client.add_vet_review(&owner2, &vet, &3, &String::from_str(&env, "Good"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 400); // (5+3)/2 = 4.0 * 100 = 400
+
+    // Add review with rating 4
+    let owner3 = Address::generate(&env);
+    client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Very good"));
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 400); // (5+3+4)/3 = 4.0 * 100 = 400
+}
+
+#[test]
+fn test_get_vet_average_rating_with_fractional() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // Add reviews: 5, 4, 4 = avg 4.333... -> 433
+    let owner1 = Address::generate(&env);
+    client.add_vet_review(&owner1, &vet, &5, &String::from_str(&env, "Excellent"));
+
+    let owner2 = Address::generate(&env);
+    client.add_vet_review(&owner2, &vet, &4, &String::from_str(&env, "Good"));
+
+    let owner3 = Address::generate(&env);
+    client.add_vet_review(&owner3, &vet, &4, &String::from_str(&env, "Good"));
+
+    let avg = client.get_vet_average_rating(&vet);
+    assert_eq!(avg, 433); // (5+4+4)/3 = 4.333... * 100 = 433 (integer division)
+}
+
+#[test]
+fn test_duplicate_review_prevented() {
+    let (env, client, admin) = setup_env();
+    let (owner, vet, _pet_id) = setup_vet_and_pet(&client, &env, &admin);
+
+    // First review should succeed
+    let result1 =
+        client.try_add_vet_review(&owner, &vet, &5, &String::from_str(&env, "First review"));
+    assert!(result1.is_ok());
+
+    // Second review from same owner should fail
+    let result2 =
+        client.try_add_vet_review(&owner, &vet, &4, &String::from_str(&env, "Second review"));
+    assert!(result2.is_err());
+}
+
+#[test]
+fn test_get_pet_count_by_owner_zero_for_new_owner() {
+    let (env, client, _admin) = setup_env();
+    let owner = Address::generate(&env);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 0);
+}
+
+#[test]
+fn test_get_pet_count_by_owner_increments_on_register() {
+    let (env, client, _admin) = setup_env();
+    let owner = Address::generate(&env);
+
+    register_pet_with_species(&client, &env, &owner, Species::Dog);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 1);
+
+    register_pet_with_species(&client, &env, &owner, Species::Cat);
+    assert_eq!(client.get_pet_count_by_owner(&owner), 2);
+}
+
+#[test]
+fn test_get_pet_count_by_owner_independent_per_owner() {
+    let (env, client, _admin) = setup_env();
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+
+    register_pet_with_species(&client, &env, &owner1, Species::Dog);
+    register_pet_with_species(&client, &env, &owner1, Species::Dog);
+    register_pet_with_species(&client, &env, &owner2, Species::Cat);
+
+    assert_eq!(client.get_pet_count_by_owner(&owner1), 2);
+    assert_eq!(client.get_pet_count_by_owner(&owner2), 1);
 }
