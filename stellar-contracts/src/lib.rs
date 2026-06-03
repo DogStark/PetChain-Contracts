@@ -8375,7 +8375,6 @@ pub fn get_pet_age_with_lifespan(env: Env, pet_id: u64) -> PetAge {
         removed
     }
 } // end impl PetChainContract
->>>>>>> origin/main
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
 pub(crate) fn safe_increment(count: u64) -> u64 {
