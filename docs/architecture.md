@@ -5,10 +5,15 @@
 ```text
 PetChain-Contracts/
 ├── README.md
+├── SECURITY.md
+├── CONTRIBUTING.md
+├── CHANGELOG.md
 ├── docs/
 │   ├── architecture.md
 │   ├── development.md
-│   └── api.md
+│   ├── api.md
+│   ├── openapi.yaml
+│   └── error-codes.md
 ├── stellar-contracts/
 │   ├── Cargo.toml
 │   ├── src/
@@ -19,8 +24,11 @@ PetChain-Contracts/
 └── backend-2fa/
     ├── Cargo.toml
     ├── src/
+    ├── migrations/
     ├── schema.sql
-    └── example-integration.rs
+    ├── README.md
+    └── examples/
+        └── example_integration.rs
 ```
 
 ## Components

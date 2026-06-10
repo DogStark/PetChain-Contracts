@@ -1,0 +1,580 @@
+   Compiling petchain-2fa v0.1.0 (/workspaces/PetChain-Contracts/backend-2fa)
+error: struct is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:415:1
+    |
+415 | pub struct MockStoreConfig {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the struct out to a nearby module scope
+
+error: enum is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:421:1
+    |
+421 | pub enum MockStoreFailure {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the enum out to a nearby module scope
+
+error: implementation is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:426:1
+    |
+426 | impl Default for MockStoreFailure {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the implementation out to a nearby module scope
+
+error: struct is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:432:1
+    |
+432 | pub struct MockTwoFactorStore {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the struct out to a nearby module scope
+
+error: implementation is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:437:1
+    |
+437 | impl MockTwoFactorStore {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the implementation out to a nearby module scope
+
+error: implementation is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:443:1
+    |
+443 | impl Default for MockTwoFactorStore {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the implementation out to a nearby module scope
+
+error: implementation is not supported in `trait`s or `impl`s
+   --> src/two_factor.rs:449:1
+    |
+449 | impl TwoFactorStore for MockTwoFactorStore {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider moving the implementation out to a nearby module scope
+
+error[E0428]: the name `TwoFactorData` is defined multiple times
+  --> src/two_factor.rs:77:1
+   |
+70 | pub struct TwoFactorData {
+   | ------------------------ previous definition of the type `TwoFactorData` here
+...
+77 | pub struct TwoFactorData {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `TwoFactorData` redefined here
+   |
+   = note: `TwoFactorData` must be defined only once in the type namespace of this module
+
+warning: unused imports: `SystemTime` and `UNIX_EPOCH`
+ --> src/rate_limiter.rs:3:36
+  |
+3 | use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+  |                                    ^^^^^^^^^^  ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0432]: unresolved imports `crate::two_factor::MockStoreConfig`, `crate::two_factor::MockStoreFailure`, `crate::two_factor::MockTwoFactorStore`
+  --> src/tests.rs:10:9
+   |
+10 |         MockStoreConfig, MockStoreFailure, MockTwoFactorStore, TotpConfi...
+   |         ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `MockTwoFactorStore` in `two_factor`
+   |         |                |
+   |         |                no `MockStoreFailure` in `two_factor`
+   |         no `MockStoreConfig` in `two_factor`
+   |
+help: a similar name exists in the module
+   |
+10 -         MockStoreConfig, MockStoreFailure, MockTwoFactorStore, TotpConfig, TwoFactorAuth,
+10 +         MockStoreConfig, MockStoreFailure, TwoFactorStore, TotpConfig, TwoFactorAuth,
+   |
+
+error[E0119]: conflicting implementations of trait `std::fmt::Debug` for type `two_factor::TwoFactorData`
+  --> src/two_factor.rs:76:17
+   |
+69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+   |                 ----- first implementation here
+...
+76 | #[derive(Clone, Debug)]
+   |                 ^^^^^ conflicting implementation for `two_factor::TwoFactorData`
+
+error[E0119]: conflicting implementations of trait `Clone` for type `two_factor::TwoFactorData`
+  --> src/two_factor.rs:76:10
+   |
+69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+   |          ----- first implementation here
+...
+76 | #[derive(Clone, Debug)]
+   |          ^^^^^ conflicting implementation for `two_factor::TwoFactorData`
+
+warning: unused import: `overwrite_two_factor_data_for_tests`
+    --> src/tests.rs:1260:9
+     |
+1260 | ...   overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, Auth...
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `TwoFactorAuth` and `TwoFactorData`
+    --> src/tests.rs:1265:29
+     |
+1265 |     use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+     |                             ^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `crate::leaderboard::FlaggedScoreSubmission`
+    --> src/tests.rs:2534:13
+     |
+2534 |         use crate::leaderboard::FlaggedScoreSubmission;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `EnableTwoFactorRequest` and `TwoFactorHandlers`
+    --> src/tests.rs:2830:48
+     |
+2830 | ...ticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicU32` and `Ordering`
+    --> src/tests.rs:2939:18
+     |
+2939 |         atomic::{AtomicU32, Ordering},
+     |                  ^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+    --> src/tests.rs:3111:9
+     |
+3111 |     use std::sync::Arc;
+     |         ^^^^^^^^^^^^^^
+
+error[E0592]: duplicate definitions with name `verification_config`
+   --> src/handlers.rs:173:5
+    |
+165 |     fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+    |     -------------------------------------------------------------- other definition for `verification_config`
+...
+173 |     fn verification_config(algorithm: crate::two_factor::HmacAlgorithm) -> crate::two_factor::TotpConfig {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `verification_config`
+
+error[E0277]: the trait bound `B: MessageBody` is not satisfied
+   --> src/error.rs:125:39
+    |
+125 |                 Ok(Ok(res)) => Ok(res.map_into_boxed_body()),
+    |                                       ^^^^^^^^^^^^^^^^^^^ the trait `MessageBody` is not implemented for `B`
+    |
+note: required by a bound in `ServiceResponse::<B>::map_into_boxed_body`
+   --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/actix-web-4.13.0/src/service.rs:490:12
+    |
+488 |     pub fn map_into_boxed_body(self) -> ServiceResponse<BoxBody>
+    |            ------------------- required by a bound in this associated function
+489 |     where
+490 |         B: MessageBody + 'static,
+    |            ^^^^^^^^^^^ required by this bound in `ServiceResponse::<B>::map_into_boxed_body`
+help: consider further restricting type parameter `B` with trait `MessageBody`
+    |
+111 |     B: 'static + actix_web::body::MessageBody,
+    |                ++++++++++++++++++++++++++++++
+
+error[E0599]: no associated function or constant named `verification_config` found for struct `CanaryHandlers` in the current scope
+   --> src/handlers.rs:719:19
+    |
+642 | pub struct CanaryHandlers {
+    | ------------------------- associated function or constant `verification_config` not found for this struct
+...
+719 |             Self::verification_config(data.algorithm),
+    |                   ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `CanaryHandlers`
+    |
+note: if you're trying to build a new `CanaryHandlers`, consider using `CanaryHandlers::new` which returns `CanaryHandlers`
+   --> src/handlers.rs:647:5
+    |
+647 |     pub fn new(webhook_manager: Arc<WebhookManager>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `verification_config` found for struct `MultiTenantHandlers` in the current scope
+   --> src/handlers.rs:827:19
+    |
+749 | pub struct MultiTenantHandlers {
+    | ------------------------------ associated function or constant `verification_config` not found for this struct
+...
+827 |             Self::verification_config(data.algorithm),
+    |                   ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `MultiTenantHandlers`
+    |
+note: if you're trying to build a new `MultiTenantHandlers` consider using one of the following associated functions:
+      MultiTenantHandlers::new
+      MultiTenantHandlers::with_limiter
+   --> src/handlers.rs:755:5
+    |
+755 |     pub fn new(store: TenantScopedStore) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+762 |     pub fn with_limiter(store: TenantScopedStore, limiter: Arc<dyn RateLimiter>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `verification_config` found for struct `MultiTenantHandlers` in the current scope
+   --> src/handlers.rs:862:19
+    |
+749 | pub struct MultiTenantHandlers {
+    | ------------------------------ associated function or constant `verification_config` not found for this struct
+...
+862 |             Self::verification_config(data.algorithm),
+    |                   ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `MultiTenantHandlers`
+    |
+note: if you're trying to build a new `MultiTenantHandlers` consider using one of the following associated functions:
+      MultiTenantHandlers::new
+      MultiTenantHandlers::with_limiter
+   --> src/handlers.rs:755:5
+    |
+755 |     pub fn new(store: TenantScopedStore) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+762 |     pub fn with_limiter(store: TenantScopedStore, limiter: Arc<dyn RateLimiter>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Serialize` is not satisfied
+    --> src/two_factor.rs:69:24
+     |
+  69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+     |                        ^^^^^^^^^ unsatisfied trait bound
+...
+  74 |     pub algorithm: HmacAlgorithm,
+     |     --- required by a bound introduced by this call
+     |
+     = help: the trait `error::_::_serde::Serialize` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Serialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Serialize`:
+               &'a T
+               &'a mut T
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+               (T0, T1, T2, T3, T4)
+             and 176 others
+note: required by a bound in `error::_::_serde::ser::SerializeStruct::serialize_field`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/ser/mod.rs:1917:21
+     |
+1915 |     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> ...
+     |        --------------- required by a bound in this associated function
+1916 |     where
+1917 |         T: ?Sized + Serialize;
+     |                     ^^^^^^^^^ required by this bound in `SerializeStruct::serialize_field`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-9ed141b61851f74a.long-type-13258251738249690868.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+     = note: this error originates in the derive macro `Serialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+    --> src/two_factor.rs:74:20
+     |
+  74 |     pub algorithm: HmacAlgorithm,
+     |                    ^^^^^^^^^^^^^ unsatisfied trait bound
+     |
+     = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+               &'a JsonRawValue
+               &'a [u8]
+               &'a std::path::Path
+               &'a str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+             and 183 others
+note: required by a bound in `next_element`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1771:12
+     |
+1769 |     fn next_element<T>(&mut self) -> Result<Option<T>, Self::Error>
+     |        ------------ required by a bound in this associated function
+1770 |     where
+1771 |         T: Deserialize<'de>,
+     |            ^^^^^^^^^^^^^^^^ required by this bound in `SeqAccess::next_element`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-9ed141b61851f74a.long-type-1241260865423243335.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+    --> src/two_factor.rs:74:20
+     |
+  74 |     pub algorithm: HmacAlgorithm,
+     |                    ^^^^^^^^^^^^^ unsatisfied trait bound
+     |
+     = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+               &'a JsonRawValue
+               &'a [u8]
+               &'a std::path::Path
+               &'a str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+             and 183 others
+note: required by a bound in `next_value`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1916:12
+     |
+1914 |     fn next_value<V>(&mut self) -> Result<V, Self::Error>
+     |        ---------- required by a bound in this associated function
+1915 |     where
+1916 |         V: Deserialize<'de>,
+     |            ^^^^^^^^^^^^^^^^ required by this bound in `MapAccess::next_value`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-9ed141b61851f74a.long-type-1241260865423243335.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+  --> src/two_factor.rs:69:35
+   |
+69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+   |                                   ^^^^^^^^^^^ unsatisfied trait bound
+   |
+   = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+   = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+   = note: for types from other crates check whether the crate offers a `serde` feature flag
+   = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+             &'a JsonRawValue
+             &'a [u8]
+             &'a std::path::Path
+             &'a str
+             ()
+             (T,)
+             (T0, T1)
+             (T0, T1, T2)
+           and 183 others
+note: required by a bound in `error::_::_serde::__private228::de::missing_field`
+  --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:26:8
+   |
+24 | pub fn missing_field<'de, V, E>(field: &'static str) -> Result<V, E>
+   |        ------------- required by a bound in this function
+25 | where
+26 |     V: Deserialize<'de>,
+   |        ^^^^^^^^^^^^^^^^ required by this bound in `missing_field`
+   = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-9ed141b61851f74a.long-type-1241260865423243335.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+   = note: this error originates in the derive macro `Deserialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `(dyn TwoFactorStore + 'static)` doesn't implement `std::fmt::Debug`
+   --> src/two_factor.rs:779:5
+    |
+777 | #[derive(Clone, Debug)]
+    |                 ----- in this derive macro expansion
+778 | pub struct TenantScopedStore {
+779 |     inner: Arc<dyn TwoFactorStore>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+    = help: the trait `std::fmt::Debug` is not implemented for `(dyn TwoFactorStore + 'static)`
+help: the following other types implement trait `std::fmt::Debug`
+   --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-core-0.1.36/src/field.rs:680:1
+    |
+680 | impl fmt::Debug for dyn Value {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `dyn tracing::Value`
+   --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:152:0
+    |
+    = note: `dyn std::any::Any`
+   ::: /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:162:0
+    |
+    = note: `dyn std::any::Any + std::marker::Send`
+   ::: /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:169:0
+    |
+    = note: `dyn std::any::Any + std::marker::Send + Sync`
+
+warning: unused import: `futures_util::StreamExt`
+ --> src/leaderboard.rs:5:5
+  |
+5 | use futures_util::StreamExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Serialize` is not satisfied
+    --> src/two_factor.rs:69:24
+     |
+  69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+     |                        ^^^^^^^^^ unsatisfied trait bound
+...
+  74 |     pub algorithm: HmacAlgorithm,
+     |     --- required by a bound introduced by this call
+     |
+     = help: the trait `error::_::_serde::Serialize` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Serialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Serialize`:
+               &'a T
+               &'a mut T
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+               (T0, T1, T2, T3, T4)
+             and 176 others
+note: required by a bound in `error::_::_serde::ser::SerializeStruct::serialize_field`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/ser/mod.rs:1917:21
+     |
+1915 |     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> ...
+     |        --------------- required by a bound in this associated function
+1916 |     where
+1917 |         T: ?Sized + Serialize;
+     |                     ^^^^^^^^^ required by this bound in `SerializeStruct::serialize_field`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-54cec64bedea5c01.long-type-3625095821636077654.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+     = note: this error originates in the derive macro `Serialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+    --> src/two_factor.rs:74:20
+     |
+  74 |     pub algorithm: HmacAlgorithm,
+     |                    ^^^^^^^^^^^^^ unsatisfied trait bound
+     |
+     = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+               &'a JsonRawValue
+               &'a [u8]
+               &'a std::path::Path
+               &'a str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+             and 183 others
+note: required by a bound in `next_element`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1771:12
+     |
+1769 |     fn next_element<T>(&mut self) -> Result<Option<T>, Self::Error>
+     |        ------------ required by a bound in this associated function
+1770 |     where
+1771 |         T: Deserialize<'de>,
+     |            ^^^^^^^^^^^^^^^^ required by this bound in `SeqAccess::next_element`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-54cec64bedea5c01.long-type-1803140776858864151.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+    --> src/two_factor.rs:74:20
+     |
+  74 |     pub algorithm: HmacAlgorithm,
+     |                    ^^^^^^^^^^^^^ unsatisfied trait bound
+     |
+     = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+     = note: for types from other crates check whether the crate offers a `serde` feature flag
+     = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+               &'a JsonRawValue
+               &'a [u8]
+               &'a std::path::Path
+               &'a str
+               ()
+               (T,)
+               (T0, T1)
+               (T0, T1, T2)
+             and 183 others
+note: required by a bound in `next_value`
+    --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de/mod.rs:1916:12
+     |
+1914 |     fn next_value<V>(&mut self) -> Result<V, Self::Error>
+     |        ---------- required by a bound in this associated function
+1915 |     where
+1916 |         V: Deserialize<'de>,
+     |            ^^^^^^^^^^^^^^^^ required by this bound in `MapAccess::next_value`
+     = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-54cec64bedea5c01.long-type-1803140776858864151.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `totp_rs::Algorithm: serde::Deserialize<'de>` is not satisfied
+  --> src/two_factor.rs:69:35
+   |
+69 | #[derive(Clone, Debug, Serialize, Deserialize)]
+   |                                   ^^^^^^^^^^^ unsatisfied trait bound
+   |
+   = help: the trait `error::_::_serde::Deserialize<'_>` is not implemented for `totp_rs::Algorithm`
+   = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `totp_rs::Algorithm` type
+   = note: for types from other crates check whether the crate offers a `serde` feature flag
+   = help: the following other types implement trait `error::_::_serde::Deserialize<'de>`:
+             &'a JsonRawValue
+             &'a [u8]
+             &'a std::path::Path
+             &'a str
+             ()
+             (T,)
+             (T0, T1)
+             (T0, T1, T2)
+           and 183 others
+note: required by a bound in `error::_::_serde::__private228::de::missing_field`
+  --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:26:8
+   |
+24 | pub fn missing_field<'de, V, E>(field: &'static str) -> Result<V, E>
+   |        ------------- required by a bound in this function
+25 | where
+26 |     V: Deserialize<'de>,
+   |        ^^^^^^^^^^^^^^^^ required by this bound in `missing_field`
+   = note: the full name for the type has been written to '/workspaces/PetChain-Contracts/backend-2fa/target/debug/deps/petchain_2fa-54cec64bedea5c01.long-type-1803140776858864151.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+   = note: this error originates in the derive macro `Deserialize` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `(dyn two_factor::TwoFactorStore + 'static)` doesn't implement `std::fmt::Debug`
+   --> src/two_factor.rs:779:5
+    |
+777 | #[derive(Clone, Debug)]
+    |                 ----- in this derive macro expansion
+778 | pub struct TenantScopedStore {
+779 |     inner: Arc<dyn TwoFactorStore>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+    = help: the trait `std::fmt::Debug` is not implemented for `(dyn two_factor::TwoFactorStore + 'static)`
+help: the following other types implement trait `std::fmt::Debug`
+   --> /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-core-0.1.36/src/field.rs:680:1
+    |
+680 | impl fmt::Debug for dyn Value {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `dyn tracing::Value`
+   --> /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:152:0
+    |
+    = note: `dyn std::any::Any`
+   ::: /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:162:0
+    |
+    = note: `dyn std::any::Any + std::marker::Send`
+   ::: /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/any.rs:169:0
+    |
+    = note: `dyn std::any::Any + std::marker::Send + Sync`
+
+error[E0433]: cannot find type `Algorithm` in this scope
+   --> src/tests.rs:876:32
+    |
+876 |                     algorithm: Algorithm::SHA1,
+    |                                ^^^^^^^^^ use of undeclared type `Algorithm`
+
+Some errors have detailed explanations: E0119, E0277, E0428, E0592, E0599.
+For more information about an error, try `rustc --explain E0119`.
+warning: `petchain-2fa` (lib) generated 2 warnings
+error: could not compile `petchain-2fa` (lib) due to 20 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error[E0433]: cannot find type `Algorithm` in this scope
+    --> src/tests.rs:2846:28
+     |
+2846 |                 algorithm: Algorithm::SHA1,
+     |                            ^^^^^^^^^ use of undeclared type `Algorithm`
+
+error[E0433]: cannot find type `Algorithm` in this scope
+    --> src/tests.rs:3093:36
+     |
+3093 |                         algorithm: Algorithm::SHA1,
+     |                                    ^^^^^^^^^ use of undeclared type `Algorithm`
+
+warning: unused import: `TwoFactorStore`
+    --> src/tests.rs:2832:44
+     |
+2832 |     use crate::two_factor::{TwoFactorData, TwoFactorStore};
+     |                                            ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::two_factor::TwoFactorStore`
+    --> src/tests.rs:2936:9
+     |
+2936 |     use crate::two_factor::TwoFactorStore;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `handlers`
+    --> src/tests.rs:2983:14
+     |
+2983 |         let (handlers, _calls) = make_canary_handlers();
+     |              ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_handlers`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0119, E0277, E0428, E0432, E0433, E0592, E0599.
+warning: `petchain-2fa` (lib test) generated 11 warnings (2 duplicates)
+error: could not compile `petchain-2fa` (lib test) due to 24 previous errors; 11 warnings emitted

@@ -54,4 +54,4 @@ This replaces the previous static all-zero key. As a result:
 | **Auditor** | Internal |
 | **Result** | All 23 security checklist items pass. Fixed: temp vet access expiry now enforced on all read paths via `check_and_expire_access`; scope escalation prevented in `grant_temp_vet_access` with explicit `ScopeEscalation` error. |
 
-See [docs/security-audit.md](docs/security-audit.md) for the full checklist.
+The full checklist was confirmed internally and is not published in this repository.

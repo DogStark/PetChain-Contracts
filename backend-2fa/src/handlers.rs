@@ -1,6 +1,6 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, leaderboard_ws_endpoint};
 use crate::rate_limiter::{
     progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
 };
@@ -159,6 +159,24 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
             issuer: issuer.into(),
+        }
+    }
+
+    fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+        match algorithm {
+            HmacAlgorithm::SHA512 => TotpConfig::high_security(),
+            HmacAlgorithm::SHA256 => TotpConfig::high_security(),
+            _ => TotpConfig::legacy_sha1(),
+        }
+    }
+
+    fn verification_config(algorithm: crate::two_factor::HmacAlgorithm) -> crate::two_factor::TotpConfig {
+        use crate::two_factor::HmacAlgorithm;
+        use crate::two_factor::TotpConfig;
+        match algorithm {
+            HmacAlgorithm::SHA512 => TotpConfig::high_security(),
+            HmacAlgorithm::SHA256 => TotpConfig::high_security(),
+            _ => TotpConfig::legacy_sha1(),
         }
     }
 
@@ -777,6 +795,7 @@ impl MultiTenantHandlers {
             secret: setup.secret,
             qr_code: setup.qr_code_base64,
             backup_codes: setup.backup_codes,
+            otpauth_uri: setup.otpauth_uri,
         })
     }
 

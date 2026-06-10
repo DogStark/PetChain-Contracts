@@ -2,6 +2,7 @@ use crate::two_factor::{
     AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
     UserTwoFactorSummary,
 };
+use crate::two_factor::HmacAlgorithm;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::sync::Arc;
 use std::time::Duration;

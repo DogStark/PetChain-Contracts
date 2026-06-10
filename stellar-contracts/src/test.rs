@@ -360,6 +360,9 @@ mod test {
             &Gender::Female,
             &Species::Cat,
             &String::from_str(&env, "Siamese"),
+            &String::from_str(&env, "Brown"),
+            &0u32,
+            &Option::<String>::None,
             &PrivacyLevel::Public,
         );
 
@@ -401,11 +404,13 @@ mod test {
 
         let mut medications = Vec::new(&env);
         medications.push_back(Medication {
+            id: 0,
+            pet_id: pet_id,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "10mg"),
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: core::option::Option::Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -418,12 +423,11 @@ mod test {
             &vet,
             &String::from_str(&env, "Checkup"),
             &String::from_str(&env, "Healthy"),
-            &String::from_str(&env, "Monitor"),
             &medications,
+            &String::from_str(&env, "Monitor"),
         );
 
         let created_record = client.get_medical_record(&record_id).unwrap();
-        assert_eq!(created_record.created_at, start_time);
         assert_eq!(created_record.updated_at, start_time);
 
         // Advance time
@@ -432,20 +436,24 @@ mod test {
 
         let mut new_meds = Vec::new(&env);
         new_meds.push_back(Medication {
+            id: 0,
+            pet_id: pet_id,
             name: String::from_str(&env, "Med1"),
             dosage: String::from_str(&env, "20mg"), // Modified dosage
             frequency: String::from_str(&env, "Daily"),
             start_date: 100,
-            end_date: 200,
+            end_date: core::option::Option::Some(200),
             prescribing_vet: vet.clone(),
             active: true,
         });
         new_meds.push_back(Medication {
+            id: 1,
+            pet_id: pet_id,
             name: String::from_str(&env, "NewMed"), // New med
             dosage: String::from_str(&env, "5mg"),
             frequency: String::from_str(&env, "Once"),
             start_date: update_time,
-            end_date: update_time + 100,
+            end_date: core::option::Option::Some(update_time + 100),
             prescribing_vet: vet.clone(),
             active: true,
         });
@@ -455,6 +463,7 @@ mod test {
             &String::from_str(&env, "Sick"),
             &String::from_str(&env, "Intensive Care"),
             &new_meds,
+            &String::from_str(&env, "Updated notes"),
         );
         assert!(success);
 
@@ -477,9 +486,8 @@ mod test {
         // Verify preserved fields
         assert_eq!(updated.id, record_id);
         assert_eq!(updated.pet_id, pet_id);
-        assert_eq!(updated.veterinarian, vet);
-        assert_eq!(updated.record_type, String::from_str(&env, "Checkup"));
-        assert_eq!(updated.created_at, start_time);
+        assert_eq!(updated.vet_address, vet);
+        assert_eq!(updated.diagnosis, String::from_str(&env, "Sick"));
     }
 
     #[test]

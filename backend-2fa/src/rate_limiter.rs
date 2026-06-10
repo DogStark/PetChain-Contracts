@@ -208,6 +208,29 @@ pub struct MockRedisBackend {
     now_ms: Mutex<u64>,
 }
 
+// --- Simple per-user quota store used by admin handlers in tests ---
+#[derive(Default, Clone)]
+pub struct UserQuotaStore {
+    inner: Arc<Mutex<HashMap<String, (u32, Option<u64>)>>>,
+}
+
+impl UserQuotaStore {
+    pub fn new() -> Self {
+        Self { inner: Arc::new(Mutex::new(HashMap::new())) }
+    }
+
+    pub fn set_quota(&self, user_id: &str, requests_per_minute: u32) {
+        let mut m = self.inner.lock().unwrap();
+        m.insert(user_id.to_string(), (requests_per_minute, None));
+    }
+
+    pub fn grant_unlimited(&self, user_id: &str, expires_at: u64) {
+        let mut m = self.inner.lock().unwrap();
+        let entry = m.entry(user_id.to_string()).or_insert((0, None));
+        entry.1 = Some(expires_at);
+    }
+}
+
 impl MockRedisBackend {
     pub fn new() -> Self {
         let now_ms = std::time::SystemTime::now()

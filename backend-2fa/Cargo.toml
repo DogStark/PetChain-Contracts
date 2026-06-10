@@ -28,4 +28,4 @@ prometheus = { version = "0.13", features = ["process"] }
 
 [[example]]
 name = "example_integration"
-path = "example-integration.rs"
+path = "examples/example_integration.rs"
