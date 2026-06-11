@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "stellar-contracts",
+    "backend-2fa",
+]
+resolver = "2"

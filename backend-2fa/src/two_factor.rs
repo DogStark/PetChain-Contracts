@@ -13,10 +13,6 @@ use totp_rs::{Algorithm, Secret, TOTP};
 /// until the user re-enrolls with a fresh secret.
 pub type HmacAlgorithm = Algorithm;
 
-fn default_hmac_algorithm() -> HmacAlgorithm {
-    HmacAlgorithm::SHA1
-}
-
 /// Configuration for TOTP parameters to ensure cryptographic agility
 #[derive(Debug, Clone)]
 pub struct TotpConfig {
@@ -66,13 +62,6 @@ pub struct TwoFactorSetup {
     pub config: TotpConfig,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TwoFactorData {
-    pub secret: String,
-    pub backup_codes: Vec<String>,
-    pub enabled: bool,
-    pub algorithm: HmacAlgorithm,
-}
 #[derive(Clone, Debug)]
 pub struct TwoFactorData {
     pub secret: String,
@@ -405,7 +394,10 @@ impl InMemoryStore {
     pub fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
         <Self as TwoFactorStore>::set_canary(self, user_id, is_canary)
     }
-
+    pub fn is_canary(&self, user_id: &str) -> bool {
+        <Self as TwoFactorStore>::is_canary(self, user_id)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Mock store for tests
@@ -435,8 +427,28 @@ pub struct MockTwoFactorStore {
 }
 
 impl MockTwoFactorStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn with_config(cfg: MockStoreConfig) -> Self {
-        Self { data: Arc::new(Mutex::new(HashMap::new())), config: cfg }
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+            config: cfg,
+        }
+    }
+
+    pub fn seed(&self, user_id: &str, data: TwoFactorData) {
+        self.data.lock().unwrap().insert(user_id.to_string(), data);
+    }
+
+    pub fn get_data(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        self.data
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .cloned()
+            .ok_or_else(|| "not found".to_string())
     }
 }
 
@@ -479,7 +491,7 @@ impl TwoFactorStore for MockTwoFactorStore {
     }
 
     fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
-        if let Some(mut d) = self.data.lock().unwrap().get_mut(user_id) {
+        if let Some(d) = self.data.lock().unwrap().get_mut(user_id) {
             d.enabled = enabled;
             return Ok(());
         }
@@ -487,18 +499,27 @@ impl TwoFactorStore for MockTwoFactorStore {
     }
 
     fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
-        if let Some(mut d) = self.data.lock().unwrap().get_mut(user_id) {
+        if let Some(d) = self.data.lock().unwrap().get_mut(user_id) {
             d.backup_codes = codes;
             return Ok(());
         }
         Err("not found".to_string())
     }
 
-    fn log_recovery_code_usage(&self, _user_id: &str, _code_index: i32, _ip_address: Option<&str>) -> Result<(), String> {
+    fn log_recovery_code_usage(
+        &self,
+        _user_id: &str,
+        _code_index: i32,
+        _ip_address: Option<&str>,
+    ) -> Result<(), String> {
         Ok(())
     }
 
-    fn get_recovery_usage_log(&self, _page: u32, _page_size: u32) -> Result<Vec<RecoveryCodeUsageLog>, String> {
+    fn get_recovery_usage_log(
+        &self,
+        _page: u32,
+        _page_size: u32,
+    ) -> Result<Vec<RecoveryCodeUsageLog>, String> {
         Ok(vec![])
     }
 
@@ -506,26 +527,51 @@ impl TwoFactorStore for MockTwoFactorStore {
         Ok(vec![])
     }
 
-    fn admin_disable_two_fa(&self, _user_id: &str, _admin_id: &str) -> Result<(), String> { Ok(()) }
+    fn admin_disable_two_fa(&self, _user_id: &str, _admin_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 
-    fn get_audit_log(&self, _user_id: &str, _page: u32, _page_size: u32) -> Result<Vec<AuditLogEntry>, String> { Ok(vec![]) }
+    fn get_audit_log(
+        &self,
+        _user_id: &str,
+        _page: u32,
+        _page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        Ok(vec![])
+    }
 
-    fn append_audit_log(&self, _user_id: &str, _event: &str, _actor: &str, _metadata: Option<&str>) -> Result<(), String> { Ok(()) }
+    fn append_audit_log(
+        &self,
+        _user_id: &str,
+        _event: &str,
+        _actor: &str,
+        _metadata: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 
-    fn set_canary(&self, _user_id: &str, _is_canary: bool) -> Result<(), String> { Ok(()) }
+    fn set_canary(&self, _user_id: &str, _is_canary: bool) -> Result<(), String> {
+        Ok(())
+    }
 
-    fn is_canary(&self, _user_id: &str) -> bool { false }
+    fn is_canary(&self, _user_id: &str) -> bool {
+        false
+    }
 
-    fn get_lockout_state(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> { Ok(TwoFactorLockoutState::default()) }
+    fn get_lockout_state(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        Ok(TwoFactorLockoutState::default())
+    }
 
-    fn record_failed_two_fa_attempt(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> { Ok(TwoFactorLockoutState::default()) }
+    fn record_failed_two_fa_attempt(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        Ok(TwoFactorLockoutState::default())
+    }
 
-    fn reset_two_fa_failures(&self, _user_id: &str) -> Result<(), String> { Ok(()) }
+    fn reset_two_fa_failures(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 
-    fn unlock_two_fa_account(&self, _user_id: &str) -> Result<(), String> { Ok(()) }
-}
-    pub fn is_canary(&self, user_id: &str) -> bool {
-        <Self as TwoFactorStore>::is_canary(self, user_id)
+    fn unlock_two_fa_account(&self, _user_id: &str, _actor: &str) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -774,7 +820,7 @@ impl TenantConfig {
 /// A namespaced key that scopes any store operation to a specific tenant.
 /// All store methods that accept a `user_id` are prefixed with `{tenant_id}::`
 /// so data is fully isolated between tenants.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TenantScopedStore {
     inner: Arc<dyn TwoFactorStore>,
     pub config: TenantConfig,

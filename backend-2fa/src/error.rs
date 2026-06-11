@@ -1,4 +1,5 @@
 use actix_web::{
+    body::MessageBody,
     body::BoxBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
@@ -88,7 +89,7 @@ pub struct ErrorResponseMiddleware;
 impl<S, B> Transform<S, ServiceRequest> for ErrorResponseMiddleware
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
-    B: 'static,
+    B: MessageBody + 'static,
 {
     type Response = ServiceResponse<BoxBody>;
     type Error = Error;
@@ -108,7 +109,7 @@ pub struct ErrorResponseMiddlewareService<S> {
 impl<S, B> Service<ServiceRequest> for ErrorResponseMiddlewareService<S>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
-    B: 'static,
+    B: MessageBody + 'static,
 {
     type Response = ServiceResponse<BoxBody>;
     type Error = Error;

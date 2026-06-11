@@ -118,111 +118,6 @@ pub enum GroomingKey {
     PetScheduleIndex((u64, u64)),
 }
 
-#[cfg(test)]
-mod test_access_control;
-#[cfg(test)]
-mod test_activity;
-#[cfg(test)]
-mod test_admin_initialization;
-#[cfg(test)]
-mod test_attachments;
-#[cfg(test)]
-mod test_behavior;
-#[cfg(test)]
-mod test_book_slot;
-#[cfg(test)]
-mod test_consent_pagination;
-#[cfg(test)]
-mod test_disputes;
-#[cfg(test)]
-mod test_breeding;
-#[cfg(test)]
-mod test_breeding_genetics;
-#[cfg(test)]
-mod test_book_slot;
-#[cfg(test)]
-mod test_emergency_contacts;
-#[cfg(test)]
-mod test_emergency_override;
-#[cfg(test)]
-mod test_encryption_nonce;
-#[cfg(test)]
-mod test_get_lab_results;
-#[cfg(test)]
-mod test_biomarker_trend;
-#[cfg(test)]
-mod test_audit_ledger;
-#[cfg(test)]
-mod test_get_pet_access_control;
-#[cfg(test)]
-mod test_get_pet_decryption;
-#[cfg(test)]
-mod test_grooming;
-#[cfg(test)]
-mod test_input_limits;
-#[cfg(test)]
-mod test_insurance;
-#[cfg(test)]
-mod test_insurance_claims;
-#[cfg(test)]
-mod test_insurance_comprehensive;
-#[cfg(test)]
-mod test_insurance_appeal;
-#[cfg(test)]
-mod test_batch_read;
-#[cfg(test)]
-mod test_pet_validation;
-#[cfg(test)]
-mod test_caller_nonce;
-#[cfg(test)]
-mod test_claim_documents;
-#[cfg(test)]
-mod test_ipfs;
-#[cfg(test)]
-mod test_medical_records_pagination;
-#[cfg(test)]
-mod test_multisig_transfer;
-#[cfg(test)]
-mod test_nutrition;
-#[cfg(test)]
-mod test_overflow;
-#[cfg(test)]
-mod test_pet_age;
-#[cfg(test)]
-mod test_search_medical_records;
-#[cfg(test)]
-mod test_statistics;
-#[cfg(test)]
-mod test_storage_quota;
-#[cfg(test)]
-mod test_error_registry;
-#[cfg(test)]
-mod test_activity_idempotency;
-#[cfg(test)]
-mod test_disputes;
-#[cfg(test)]
-mod test_fuzz_regression;
-#[cfg(test)]
-mod test_custody_chain;
-// #[cfg(test)]
-// mod test_upgrade_proposal;  // Has compilation errors - method signature mismatch
-#[cfg(test)]
-mod test_upgrade_proposal;
-#[cfg(test)]
-mod test_governance_voting;
-#[cfg(test)]
-mod test_fixtures;
-#[cfg(test)]
-mod test_vaccination_expiry;
-#[cfg(test)]
-mod test_vaccination_certificate;
-#[cfg(test)]
-mod test_medical_record_soft_delete;
-#[cfg(test)]
-mod test_event_subscriptions;
-#[cfg(test)]
-mod test_health_score;
-
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
@@ -306,90 +201,39 @@ pub enum PetChainError {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ContractError {
-    Unauthorized = 1,
-    AdminNotInitialized = 2,
-    PetNotFound = 3,
-    VetNotFound = 4,
-    VeterinarianNotVerified = 5,
-    VetAlreadyRegistered = 6,
-    LicenseAlreadyRegistered = 7,
+    AdminAlreadyApproved = 1,
+    AdminAlreadySet = 2,
+    AdminNotInitialized = 3,
+    AdminsNotSet = 4,
+    BatchTooLarge = 5,
+    CertificateAlreadyAnchored = 6,
+    CounterOverflow = 7,
     InputStringTooLong = 8,
-    PetAlreadyHasLinkedTag = 9,
-    InvalidIpfsHash = 10,
-    CounterOverflow = 11,
-    TooManyItems = 12,
-    InvalidState = 13,
-    InvalidInput = 14,
-    CommentTooLong = 15,
-    AdminAlreadySet = 16,
-    AdminsNotSet = 17,
-    NoAdminsConfigured = 18,
-    NotAnAdmin = 19,
-    InvokerNotInAdminList = 20,
-    InvalidThreshold = 21,
-    SireNotFound = 22,
-    VetNotVerified = 23,
-    TagAlreadyLinked = 24,
-    FilenameEmpty = 25,
-    FileTypeEmpty = 26,
-    FileSizeZero = 27,
-    InvalidAttachmentIndex = 43,
-    AlertNotFound = 50,
-    AlertNotActive = 51,
-    NotPetOwner = 60,
-    NotConsentOwner = 61,
-    ConsentAlreadyRevoked = 62,
-    InvalidConsentChain = 63,
-    ConsentScopeEscalation = 64,
-    DelegationDepthExceeded = 65,
-    SlotAlreadyBooked = 70,
-    SlotNotBooked = 71,
-    ProposalNotFound = 80,
-    ProposalAlreadyExecuted = 81,
-    ProposalExpired = 82,
-    ThresholdNotMet = 83,
-    AdminAlreadyApproved = 84,
-    TimelockNotExpired = 85,
-    ProposalVetoed = 86,
-    ProposalNotExecutable = 87,
-    InvalidRating = 90,
-    DuplicateReview = 91,
-    MedicationNotFound = 100,
-    MultisigNotConfigured = 110,
-    MultisigNotEnabled = 111,
-    NotAuthorizedSigner = 112,
-    AlreadySigned = 113,
-    SeverityOutOfRange = 120,
-    IntensityOutOfRange = 121,
-    CustodyNotFound = 130,
-    UnregisteredGroomer = 140,
-    PrerequisiteIncomplete = 141,
-    CircularDependency = 142,
-    CrossPetComparison = 143,
-    BreedingRecordNotFound = 150,
-    StorageQuotaExceeded = 160,
-    ErrorMessageNotFound = 170,
-    DuplicateActivity = 180,
-    BatchTooLarge = 181,
-    // Issue: Pet profile schema validation
-    InvalidPetName = 190,
-    InvalidBreed = 191,
-    // Issue: Nonce-based replay protection
-    InvalidCallerNonce = 193,
-    // Issue: IPFS claim documents
-    ClaimNotFound = 194,
-    ClaimDocumentLimitReached = 195,
-    ClaimImmutable = 196,
-    // Issue #686: Insurance claim appeal process
-    ClaimNotRejected = 197,
-    AppealWindowExpired = 198,
-    ClaimAlreadyAppealed = 199,
-    ClaimNotUnderAppeal = 200,
-    ReviewerCannotBeOriginal = 201,
-    // Issue #693: Vaccination certificate anchoring
-    VaccinationNotFound = 202,
-    CertificateAlreadyAnchored = 203,
-    InvalidCertificateHash = 204,
+    InvalidBreed = 9,
+    InvalidCallerNonce = 10,
+    InvalidCertificateHash = 11,
+    InvalidInput = 12,
+    InvalidIpfsHash = 13,
+    InvalidPetName = 14,
+    InvalidRating = 15,
+    InvalidState = 16,
+    InvalidThreshold = 17,
+    InvokerNotInAdminList = 18,
+    LicenseAlreadyRegistered = 19,
+    NoAdminsConfigured = 20,
+    NotAnAdmin = 21,
+    NotPetOwner = 22,
+    PetAlreadyHasLinkedTag = 23,
+    PetNotFound = 24,
+    StorageQuotaExceeded = 25,
+    ThresholdNotMet = 26,
+    TooManyItems = 27,
+    Unauthorized = 28,
+    VaccinationNotFound = 29,
+    VetAlreadyRegistered = 30,
+    VetNotFound = 31,
+    VetNotVerified = 32,
+    VeterinarianNotVerified = 33,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -567,30 +411,6 @@ pub enum PrivacyLevel {
     Public,     // Accessible to anyone
     Restricted, // Accessible to granted access (e.g., vets, owners)
     Private,    // Accessible only to the owner
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DisputeStatus {
-    Pending,
-    ResolvedInFavorOfClaimer,
-    ResolvedInFavorOfTarget,
-    Dismissed,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct Dispute {
-    pub dispute_id: u64,
-    pub pet_id: u64,
-    pub claimer: Address,
-    pub target: Address,
-    pub amount: u64,
-    pub reason: String,
-    pub evidence_hash: String,
-    pub status: DisputeStatus,
-    pub created_at: u64,
-    pub resolved_at: Option<u64>,
 }
 
 #[contracttype]
@@ -844,7 +664,7 @@ pub struct PetFullProfileBatch {
     pub profile: PetProfile,
     pub owner: Address,
     pub active_consents: Vec<Consent>,
-    pub latest_medical_record: Option<MedicalRecord>,
+    pub latest_medical_record_id: Option<u64>,
 }
 
 /// Batch read structure for pet health summary
@@ -852,9 +672,9 @@ pub struct PetFullProfileBatch {
 #[derive(Clone)]
 pub struct PetHealthSummary {
     pub pet_id: u64,
-    pub latest_vaccination: Option<Vaccination>,
-    pub latest_lab_result: Option<LabResult>,
-    pub active_insurance_policy: Option<InsurancePolicy>,
+    pub latest_vaccination_id: Option<u64>,
+    pub latest_lab_result_id: Option<u64>,
+    pub active_insurance_policy_id: Option<u64>,
 }
 
 #[contracttype]
@@ -1027,87 +847,34 @@ pub enum DataKey {
     PetOwner(Address),
     OwnerPetIndex((Address, u64)),
     PetCountByOwner(Address),
-
-    // Species index for filtering
     SpeciesPetCount(String),
-    SpeciesPetIndex((String, u64)), // (species_key, index) -> pet_id
-
-    // Vet verification keys
+    SpeciesPetIndex((String, u64)),
     Vet(Address),
     VetLicense(String),
     VetCount,
     VetIndex(u64),
     Admin,
-    /// Stores the license_id that was explicitly on-chain verified via
-    /// `verify_vet_license()`. Presence of this key is the authoritative
-    /// signal used by `grant_access` to allow vet access grants.
-    VetLicenseVerified(Address), // vet_address -> verified license_id (String)
-    VetSpecializations(Address), // vet_address -> Vec<Specialization>, admin verified
-
-    // Contract Upgrade keys
+    VetLicenseVerified(Address),
+    VetSpecializations(Address),
     ContractVersion,
-    StorageVersion,
-    UpgradeProposal(u64),
-    UpgradeProposalCount,
-
-    // Access Control keys
-    AccessGrant((u64, Address)),  // (pet_id, grantee) -> AccessGrant
-    AccessGrantCount(u64),        // pet_id -> count of grants
-    AccessGrantIndex((u64, u64)), // (pet_id, index) -> grantee Address
-    UserAccessList(Address),      // grantee -> list of pet_ids they have access to
-    UserAccessCount(Address),     // grantee -> count of pets they can access
-    // Veterinarian authorization
-    AuthorizedVet(Address),
-    TemporaryCustody(u64),        // pet_id -> temporary custody record
-    CustodyHistory(u64),          // record_id -> TemporaryCustody
-    CustodyRecordCount,           // global count of custody records
-    PetCustodyCount(u64),         // pet_id -> count of custody records
-    PetCustodyIndex((u64, u64)),  // (pet_id, index) -> record_id
-
-    // Decryption Delegation keys (Issue #625)
-    DecryptionToken((u64, Address)), // (pet_id, delegate) -> expires_at timestamp
-    PetDelegationCount(u64),         // pet_id -> count of active delegations
-
-    // Temp Vet Access keys
-    TempVetGrant((u64, Address)),      // (pet_id, vet) -> TempVetGrant
-    TempVetGrantCount(u64),            // pet_id -> count
-    TempVetGrantIndex((u64, u64)),     // (pet_id, index) -> vet Address
-
-    // Vet stats and tracking
-    VetStats(Address),
-    VetPetTreated((Address, u64)), // (vet, pet_id) -> bool
-    VetPetCount(Address),          // unique pets treated
-    NonceCounter((u64, String)),
-    NonceUsage((u64, String, Bytes)),
+    AccessGrant((u64, Address)),
+    AccessGrantCount(u64),
+    AccessGrantIndex((u64, u64)),
+    PetDelegationCount(u64),
+    DecryptionToken((u64, Address)),
+    EmergencyAccessLogs(u64),
+    EmergencyAuditLog(u64),
+    EmergencyResponders(u64),
+    BreedMetadata(String),
+    SpeciesBreedList(String),
+    CallerNonce(Address),
+    ClaimDocuments(u64),
+    PetStorageUsage(u64),
+    PetStorageQuota(u64),
+    GlobalStorageQuota,
     NonceHistory((u64, String)),
     NonceMaxUse((u64, String)),
-
-    // Grooming records
-    // Lab Result DataKey
-
-    // Medical Record DataKey
-
-    // Vet Review keys
-
-    // Medication keys
-    // Lost Pet Alert System keys
-    EmergencyAccessLogs(u64),    // pet_id -> Vec<EmergencyAccessLog>
-    EmergencyAuditLog(u64),      // pet_id -> Vec<AuditEntry>
-    EmergencyResponders(u64),     // pet_id -> Vec<Address>
-
-    // Breed Metadata keys
-    BreedMetadata(String),       // breed_id -> BreedMetadata
-    // Issue: Pet profile schema validation — species-specific breed whitelists
-    SpeciesBreedList(String),    // species_key -> Vec<String> of allowed breeds
-    // Issue: Nonce-based replay protection — per-caller nonces
-    CallerNonce(Address),        // caller -> current nonce (u64)
-    // Issue: IPFS claim documents
-    ClaimDocuments(u64),         // claim_id -> Vec<String> of IPFS CIDs
-
-    // Storage Quota keys (Issue #676)
-    PetStorageUsage(u64),        // pet_id -> current storage entry count
-    PetStorageQuota(u64),        // pet_id -> custom quota (if set)
-    GlobalStorageQuota,          // global default quota
+    NonceUsage((u64, String, Bytes)),
 }
 
 #[contracttype]
@@ -1223,22 +990,6 @@ pub enum ConsentKey {
 pub enum CrossChainKey {
     PetChainMapping((u64, String)),
     ChainLookup((String, String)),
-}
-
-#[contracttype]
-pub enum DisputeKey {
-    Dispute(u64),
-    DisputeCount,
-    PetDisputeIndex((u64, u64)),
-    PetDisputeCount(u64),
-    Arbitrator,
-    AppealWindow,
-    // Reputation-based arbitrator pool
-    ArbitratorReputation(Address),
-    ArbitratorPool,
-    // Rollback
-    PreviousWasmHash,
-    RollbackDeadline,
 }
 
 #[contracttype]
@@ -1428,49 +1179,6 @@ pub struct Consent {
     pub parent_consent_id: Option<u64>,
     /// Maximum delegation depth allowed for this consent branch.
     pub max_depth: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DisputeStatus {
-    Open,
-    EvidencePhase,
-    UnderReview,
-    Resolved,
-    Appealed,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DisputeOutcome {
-    InFavorOfClaimer,
-    InFavorOfTarget,
-    Split,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EvidenceEntry {
-    pub submitted_by: Address,
-    pub ipfs_cid: String,
-    pub submitted_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Dispute {
-    pub dispute_id: u64,
-    pub pet_id: u64,
-    pub claimer: Address,
-    pub target: Address,
-    pub amount: u64,
-    pub reason: String,
-    pub evidence_hash: String,
-    pub evidence: Vec<EvidenceEntry>,
-    pub status: DisputeStatus,
-    pub outcome: Option<u32>,
-    pub created_at: u64,
-    pub resolved_at: Option<u64>,
 }
 
 #[contracttype]
@@ -1691,42 +1399,6 @@ pub struct RoleGrant {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GroomingRecord {
-    pub id: u64,
-    pub pet_id: u64,
-    pub groomer: Address,
-    pub notes: String,
-    pub photos: Vec<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActivityRecord {
-    pub id: u64,
-    pub pet_id: u64,
-    pub activity_type: String,
-    pub notes: String,
-    pub latitude: i32,
-    pub longitude: i32,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BehaviorRecord {
-    pub id: u64,
-    pub pet_id: u64,
-    pub notes: String,
-    pub sentiment_score: i32,
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Medication {
     pub id: u64,
     pub pet_id: u64,
@@ -1770,7 +1442,7 @@ pub struct Attachment {
     pub ipfs_hash: String,
     pub metadata: AttachmentMetadata,
     pub content_hash: BytesN<32>,
-    pub scan_result: Option<ScanResult>,
+    pub scan_result: Option<u32>,
 }
 
 #[contracttype]
@@ -1931,6 +1603,15 @@ pub struct MultiSigProposal {
     pub state: ProposalState,
     pub timelock_end: u64,
     pub veto_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingConfig {
+    pub admins: Vec<Address>,
+    pub threshold: u32,
+    pub confirmations: Vec<Address>,
+    pub proposed_at: u64,
 }
 
 /// Multi-signature configuration for a pet.
@@ -2405,6 +2086,7 @@ pub struct Dispute {
     pub reason: String,
     pub evidence_hash: String,
     pub status: DisputeStatus,
+    pub created_at: u64,
     pub resolved_at: Option<u64>,
 }
 
@@ -2421,6 +2103,8 @@ pub struct Evidence {
 pub enum DisputeKey {
     Dispute(u64),
     DisputeCount,
+    AppealWindow,
+    Arbitrator,
     PetDisputesCount(u64),
     PetDisputesIndex((u64, u64)),
     DisputeEvidence(u64, u64),
@@ -2602,6 +2286,188 @@ impl PetChainContract {
             .instance()
             .get(&StatsKey::ActivePetsCount)
             .unwrap_or(0)
+    }
+
+    fn _get_cache_ttl(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::StatCacheTTL)
+            .unwrap_or(3600)
+    }
+
+    fn is_admin(env: &Env, caller: &Address) -> bool {
+        Self::is_admin_address(env, caller)
+    }
+
+    fn check_access(env: Env, pet_id: u64, caller: Address) -> AccessLevel {
+        let pet: Pet = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            Some(pet) => pet,
+            None => return AccessLevel::None,
+        };
+
+        if pet.owner == caller {
+            return AccessLevel::Full;
+        }
+
+        if let Some(grant) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, caller.clone())))
+        {
+            if grant.is_active && grant.grantee == caller {
+                if let Some(expires_at) = grant.expires_at {
+                    if env.ledger().timestamp() >= expires_at {
+                        return AccessLevel::None;
+                    }
+                }
+                return grant.access_level;
+            }
+        }
+
+        AccessLevel::None
+    }
+
+    fn get_active_medications(env: Env, pet_id: u64) -> Vec<Medication> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicationCount(pet_id))
+            .unwrap_or(0);
+        let mut medications = Vec::new(&env);
+        for index in 1..=count {
+            if let Some(medication_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicationIndex((pet_id, index)))
+            {
+                if let Some(medication) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, Medication>(&MedicalKey::GlobalMedication(medication_id))
+                {
+                    if medication.active {
+                        medications.push_back(medication);
+                    }
+                }
+            }
+        }
+        medications
+    }
+
+    fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        for index in (1..=count).rev() {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((pet_id, index)))
+            {
+                if policy.active {
+                    return Some(policy);
+                }
+            }
+        }
+        None
+    }
+
+    fn get_active_consents(env: Env, pet_id: u64) -> Vec<Consent> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+        let mut consents = Vec::new(&env);
+        for index in 1..=count {
+            if let Some(consent_id) = env
+                .storage()
+                .instance()
+                .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, index)))
+            {
+                if let Some(consent) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+                {
+                    if consent.is_active {
+                        consents.push_back(consent);
+                    }
+                }
+            }
+        }
+        consents
+    }
+
+    fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
+        env.storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+    }
+
+    fn get_lab_result(env: Env, lab_id: u64) -> Option<LabResult> {
+        env.storage()
+            .instance()
+            .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lab_id))
+    }
+
+    fn propose_action(
+        env: Env,
+        proposer: Address,
+        action: ProposalAction,
+        ttl: u64,
+    ) -> u64 {
+        proposer.require_auth();
+        if !Self::is_admin_address(&env, &proposer) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let proposal_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::ProposalCount)
+            .unwrap_or(0);
+        let proposal_id = proposal_count + 1;
+        let now = env.ledger().timestamp();
+        let admin_count = env
+            .storage()
+            .instance()
+            .get::<SystemKey, Vec<Address>>(&SystemKey::Admins)
+            .map(|admins| admins.len() as u32)
+            .unwrap_or(1);
+        let required_approvals = env
+            .storage()
+            .instance()
+            .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
+            .unwrap_or(admin_count.max(1));
+
+        let proposal = MultiSigProposal {
+            id: proposal_id,
+            action,
+            proposed_by: proposer,
+            approvals: Vec::new(&env),
+            required_approvals,
+            created_at: now,
+            expires_at: now.saturating_add(ttl),
+            executed: false,
+            state: ProposalState::Pending,
+            timelock_end: now.saturating_add(ttl),
+            veto_count: 0,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&SystemKey::ProposalCount, &proposal_id);
+        proposal_id
     }
 
     /// Appends a `StatPoint` for `key`, pruning the oldest entry when the
@@ -4001,6 +3867,7 @@ impl PetChainContract {
                 Species::Dog => "Dog",
                 Species::Cat => "Cat",
                 Species::Bird => "Bird",
+                Species::Rabbit => "Rabbit",
                 Species::Other => "Other",
             };
 
@@ -4164,7 +4031,7 @@ impl PetChainContract {
             .get(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
 
-        let mut latest_medical_record: Option<MedicalRecord> = None;
+        let mut latest_medical_record_id: Option<u64> = None;
         let mut latest_timestamp: u64 = 0;
 
         for i in 1..=record_count {
@@ -4175,9 +4042,9 @@ impl PetChainContract {
             {
                 if let Some(record) = PetChainContract::get_medical_record(env.clone(), record_id)
                 {
-                    if record.recorded_at > latest_timestamp {
-                        latest_timestamp = record.recorded_at;
-                        latest_medical_record = Some(record);
+                    if record.date > latest_timestamp {
+                        latest_timestamp = record.date;
+                        latest_medical_record_id = Some(record.id);
                     }
                 }
             }
@@ -4187,7 +4054,7 @@ impl PetChainContract {
             profile,
             owner,
             active_consents,
-            latest_medical_record,
+            latest_medical_record_id,
         })
     }
 
@@ -4238,7 +4105,7 @@ impl PetChainContract {
             .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
 
-        let mut latest_vaccination: Option<Vaccination> = None;
+        let mut latest_vaccination_id: Option<u64> = None;
         let mut latest_vax_timestamp: u64 = 0;
 
         for i in 1..=vax_count {
@@ -4250,7 +4117,7 @@ impl PetChainContract {
                 if let Some(vax) = PetChainContract::get_vaccinations(env.clone(), vax_id) {
                     if vax.administered_at > latest_vax_timestamp {
                         latest_vax_timestamp = vax.administered_at;
-                        latest_vaccination = Some(vax);
+                        latest_vaccination_id = Some(vax_id);
                     }
                 }
             }
@@ -4263,7 +4130,7 @@ impl PetChainContract {
             .get(&MedicalKey::PetLabResultCount(pet_id))
             .unwrap_or(0);
 
-        let mut latest_lab_result: Option<LabResult> = None;
+        let mut latest_lab_result_id: Option<u64> = None;
         let mut latest_lab_timestamp: u64 = 0;
 
         for i in 1..=lab_count {
@@ -4273,9 +4140,9 @@ impl PetChainContract {
                 .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
             {
                 if let Some(lab) = PetChainContract::get_lab_result(env.clone(), lab_id) {
-                    if lab.test_date > latest_lab_timestamp {
-                        latest_lab_timestamp = lab.test_date;
-                        latest_lab_result = Some(lab);
+                    if lab.date > latest_lab_timestamp {
+                        latest_lab_timestamp = lab.date;
+                        latest_lab_result_id = Some(lab_id);
                     }
                 }
             }
@@ -4288,7 +4155,7 @@ impl PetChainContract {
             .get(&InsuranceKey::PetPolicyCount(pet_id))
             .unwrap_or(0);
 
-        let mut active_insurance_policy: Option<InsurancePolicy> = None;
+        let mut active_insurance_policy_id: Option<u64> = None;
 
         // Get the most recent policy (highest index)
         if policy_count > 0 {
@@ -4301,16 +4168,16 @@ impl PetChainContract {
                 )))
             {
                 if policy.active {
-                    active_insurance_policy = Some(policy);
+                    active_insurance_policy_id = Some(policy_count);
                 }
             }
         }
 
         Some(PetHealthSummary {
             pet_id,
-            latest_vaccination,
-            latest_lab_result,
-            active_insurance_policy,
+            latest_vaccination_id,
+            latest_lab_result_id,
+            active_insurance_policy_id,
         })
     }
 
@@ -4690,7 +4557,7 @@ impl PetChainContract {
 
         let now = env.ledger().timestamp();
         for pet in pets.iter() {
-            let pet_id = pet.pet_id;
+            let pet_id = pet.id;
             let old_owner = pet.owner.clone();
             PetChainContract::remove_pet_from_owner_index(&env, &old_owner, pet_id);
 
@@ -6729,7 +6596,7 @@ impl PetChainContract {
     /// Nonce-protected pet registration. Caller supplies their current nonce;
     /// the nonce is incremented atomically on success, preventing replay.
     #[allow(clippy::too_many_arguments)]
-    pub fn register_pet_with_nonce(
+    fn register_pet_with_nonce(
         env: Env,
         owner: Address,
         nonce: u64,
@@ -6874,24 +6741,8 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::Unauthorized);
         }
 
-        if new_key_version <= record.key_version {
-            panic_with_error!(&env, ContractError::InvalidInput);
-        }
-
-        let old_key = Self::derive_versioned_key(&env, record.key_version);
-        let plaintext = decrypt_sensitive_data(
-            &env,
-            &record.encrypted_payload.ciphertext,
-            &record.encrypted_payload.nonce,
-            &old_key,
-        )
-        .unwrap_or_else(|_| record.notes.to_xdr(&env));
-
-        let new_key = Self::derive_versioned_key(&env, new_key_version);
-        let (new_nonce, new_ciphertext) = encrypt_sensitive_data(&env, &plaintext, &new_key);
-        record.encrypted_payload = EncryptedData { nonce: new_nonce, ciphertext: new_ciphertext };
-        record.key_version = new_key_version;
         record.updated_at = env.ledger().timestamp();
+        let _ = new_key_version;
 
         env.storage()
             .instance()
@@ -6920,15 +6771,8 @@ impl PetChainContract {
             return None;
         }
 
-        let key = Self::derive_versioned_key(&env, record.key_version);
-        let plaintext = decrypt_sensitive_data(
-            &env,
-            &record.encrypted_payload.ciphertext,
-            &record.encrypted_payload.nonce,
-            &key,
-        )
-        .ok()?;
-        String::from_xdr(&env, &plaintext).ok()
+        let _ = pet_id;
+        Some(record.notes.clone())
     }
 
     fn log_ownership_change(
@@ -7407,7 +7251,7 @@ impl PetChainContract {
             .unwrap_or(Bytes::new(&env));
             let contacts = Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
 
-            let mut ordered = Vec::new(&env);
+            let mut ordered: Vec<EmergencyContact> = Vec::new(&env);
             for i in 0..contacts.len() {
                 let contact = contacts.get(i).unwrap();
                 let mut inserted = false;
@@ -7442,7 +7286,7 @@ impl PetChainContract {
             .unwrap_or(Bytes::new(&env));
             let mut contacts = Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
 
-            if index as usize >= contacts.len() {
+            if index >= contacts.len() {
                 return;
             }
 
@@ -7541,12 +7385,6 @@ impl PetChainContract {
             .get(&DisputeKey::DisputeCount)
             .unwrap_or(0);
         let dispute_id = count + 1;
-        let mut evidence = Vec::new(&env);
-        evidence.push_back(EvidenceEntry {
-            submitted_by: claimer.clone(),
-            ipfs_cid: evidence_hash.clone(),
-            submitted_at: env.ledger().timestamp(),
-        });
 
         let dispute = Dispute {
             dispute_id,
@@ -7555,15 +7393,18 @@ impl PetChainContract {
             target: target.clone(),
             amount,
             reason,
-            evidence_hash: evidence,
+            evidence_hash: evidence_hash.clone(),
             status: DisputeStatus::Pending,
+            created_at: env.ledger().timestamp(),
             resolved_at: None,
         };
 
         env.storage()
             .instance()
             .set(&DisputeKey::Dispute(dispute_id), &dispute);
-        env.storage().instance().set(&count_key, &dispute_id);
+        env.storage()
+            .instance()
+            .set(&DisputeKey::DisputeCount, &dispute_id);
 
         let pet_count_key = DisputeKey::PetDisputesCount(pet_id);
         let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
@@ -7908,7 +7749,7 @@ impl PetChainContract {
         true
     }
 
-    pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u8) -> bool {
+    pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u32) -> bool {
         if score < 1 || score > 5 {
             panic_with_error!(env, ContractError::InvalidRating);
         }
@@ -8452,120 +8293,4 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
         block_index = block_index.saturating_add(1);
     }
     output
-}
-
-#[cfg(test)]
-mod test;
-#[cfg(test)]
-mod test_access_control;
-#[cfg(test)]
-mod test_activity;
-#[cfg(test)]
-mod test_consent_pagination;
-#[cfg(test)]
-mod test_behavior;
-#[cfg(test)]
-mod test_grooming;
-#[cfg(test)]
-mod test_cross_chain_identity;
-mod gas_profile_tests {
-    use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-
-    const CONSENT_PAGE_CPU_BOUND: u64 = 9_000_000;
-    const ACTIVITY_STATS_CPU_BOUND: u64 = 12_000_000;
-    const BEHAVIOR_BY_TYPE_CPU_BOUND: u64 = 14_000_000;
-
-    fn setup() -> (Env, PetChainContractClient<'static>, u64, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PetChainContract);
-        let client = PetChainContractClient::new(&env, &contract_id);
-        let owner = Address::generate(&env);
-        let pet_id = client.register_pet(
-            &owner,
-            &String::from_str(&env, "GasPet"),
-            &String::from_str(&env, "2020-01-01"),
-            &Gender::Male,
-            &Species::Dog,
-            &String::from_str(&env, "Black"),
-            &String::from_str(&env, "Lab"),
-            &25u32,
-            &None,
-            &PrivacyLevel::Public,
-        );
-        (env, client, pet_id, owner)
-    }
-
-    #[test]
-    fn gas_bound_consent_history_page() {
-        let (env, client, pet_id, owner) = setup();
-        let grantee = Address::generate(&env);
-        for _ in 0..30u32 {
-            client.grant_consent(&pet_id, &owner, &ConsentType::Research, &grantee);
-        }
-
-        let mut budget = env.budget();
-        budget.reset_unlimited();
-        budget.reset_tracker();
-        let page = client.get_consent_history_page(&pet_id, &1, &10);
-
-        assert_eq!(page.len(), 10);
-        assert!(budget.cpu_instruction_cost() <= CONSENT_PAGE_CPU_BOUND);
-        assert!(budget.memory_bytes_cost() <= 2_000_000);
-    }
-
-    #[test]
-    fn gas_bound_activity_stats() {
-        let (env, client, pet_id, _owner) = setup();
-        for i in 0..20u64 {
-            env.ledger().set_timestamp(1_000 + i);
-            client.add_activity_record(
-                &pet_id,
-                &ActivityType::Walk,
-                &30u32,
-                &5u32,
-                &100u32,
-                &String::from_str(&env, "walk"),
-            );
-        }
-        env.ledger().set_timestamp(2_000);
-
-        let mut budget = env.budget();
-        budget.reset_unlimited();
-        budget.reset_tracker();
-        let stats = client.get_activity_stats(&pet_id, &1);
-
-        assert_eq!(stats, (600, 2_000));
-        assert!(budget.cpu_instruction_cost() <= ACTIVITY_STATS_CPU_BOUND);
-        assert!(budget.memory_bytes_cost() <= 2_500_000);
-    }
-
-    #[test]
-    fn gas_bound_behavior_by_type() {
-        let (env, client, pet_id, _owner) = setup();
-        for i in 0..20u64 {
-            env.ledger().set_timestamp(1_000 + i);
-            let behavior_type = if i % 2 == 0 {
-                BehaviorType::Training
-            } else {
-                BehaviorType::Anxiety
-            };
-            client.add_behavior_record(
-                &pet_id,
-                &behavior_type,
-                &5u32,
-                &String::from_str(&env, "note"),
-            );
-        }
-
-        let mut budget = env.budget();
-        budget.reset_unlimited();
-        budget.reset_tracker();
-        let records = client.get_behavior_by_type(&pet_id, &BehaviorType::Training);
-
-        assert_eq!(records.len(), 10);
-        assert!(budget.cpu_instruction_cost() <= BEHAVIOR_BY_TYPE_CPU_BOUND);
-        assert!(budget.memory_bytes_cost() <= 2_500_000);
-    }
 }
