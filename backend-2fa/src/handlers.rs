@@ -17,6 +17,14 @@ use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
+fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+    match algorithm {
+        HmacAlgorithm::SHA512 => TotpConfig::high_security(),
+        HmacAlgorithm::SHA256 => TotpConfig::high_security(),
+        _ => TotpConfig::legacy_sha1(),
+    }
+}
+
 #[cfg(test)]
 fn test_two_factor_store() -> Arc<InMemoryStore> {
     std::thread_local! {
@@ -151,6 +159,17 @@ impl TwoFactorHandlers {
         }
     }
 
+    pub fn with_store_and_limiter(
+        store: Arc<dyn TwoFactorStore>,
+        limiter: Arc<dyn RateLimiter>,
+    ) -> Self {
+        Self {
+            limiter,
+            store,
+            issuer: "PetChain".to_string(),
+        }
+    }
+
     pub fn with_store_and_issuer(
         store: Arc<dyn TwoFactorStore>,
         issuer: impl Into<String>,
@@ -162,22 +181,8 @@ impl TwoFactorHandlers {
         }
     }
 
-    fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
-        match algorithm {
-            HmacAlgorithm::SHA512 => TotpConfig::high_security(),
-            HmacAlgorithm::SHA256 => TotpConfig::high_security(),
-            _ => TotpConfig::legacy_sha1(),
-        }
-    }
-
-    fn verification_config(algorithm: crate::two_factor::HmacAlgorithm) -> crate::two_factor::TotpConfig {
-        use crate::two_factor::HmacAlgorithm;
-        use crate::two_factor::TotpConfig;
-        match algorithm {
-            HmacAlgorithm::SHA512 => TotpConfig::high_security(),
-            HmacAlgorithm::SHA256 => TotpConfig::high_security(),
-            _ => TotpConfig::legacy_sha1(),
-        }
+    fn rate_limit_key(prefix: &str, user_id: &str) -> String {
+        format!("{}:{}", prefix, user_id)
     }
 
     fn store_get(&self, user_id: &str) -> Result<TwoFactorData, String> {
@@ -194,18 +199,15 @@ impl TwoFactorHandlers {
         Ok(())
     }
 
-    fn record_failed_verification(&self, user_id: &str) -> Result<(), String> {
+    fn record_failed_verification(&self, user_id: &str) -> Result<String, String> {
         let state = self.store.record_failed_two_fa_attempt(user_id)?;
         if state.locked {
             return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
         }
         if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
-            return Err(format!(
-                "Invalid 2FA token. Retry after {} seconds.",
-                delay
-            ));
+            return Ok(format!("Invalid 2FA token. Retry after {} seconds.", delay));
         }
-        Err("Invalid 2FA token.".to_string())
+        Ok("Invalid 2FA token.".to_string())
     }
 
     pub fn enable_two_factor(
@@ -258,21 +260,31 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("verify", &req.user_id);
+        match self.limiter.record_failure(&key) {
+            RateLimitResult::Blocked { retry_after_secs } => {
+                return Err(format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    retry_after_secs
+                ));
+            }
+            RateLimitResult::Allowed { .. } => {}
+        }
 
         let data = self.store_get(&req.user_id)?;
         let result = TwoFactorAuth::verify_token_with_config(
             &data.secret,
             &req.token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )?;
         if result {
             self.store.update_enabled(&req.user_id, true)?;
             self.store.reset_two_fa_failures(&req.user_id)?;
-            self.limiter.record_success(&format!("verify:{}", req.user_id));
+            self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        self.record_failed_verification(&req.user_id)?;
+        let _ = self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
@@ -284,6 +296,16 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("login", &req.user_id);
+        match self.limiter.record_failure(&key) {
+            RateLimitResult::Blocked { retry_after_secs } => {
+                return Err(format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    retry_after_secs
+                ));
+            }
+            RateLimitResult::Allowed { .. } => {}
+        }
 
         let data = self.store_get(&req.user_id)?;
         if !data.enabled {
@@ -293,16 +315,16 @@ impl TwoFactorHandlers {
         let is_valid = TwoFactorAuth::verify_token_with_config(
             &data.secret,
             &req.token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )?;
 
         if is_valid {
             self.store.reset_two_fa_failures(&req.user_id)?;
-            self.limiter.record_success(&format!("login:{}", req.user_id));
+            self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        self.record_failed_verification(&req.user_id)?;
+        let _ = self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
@@ -314,6 +336,16 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("disable", &req.user_id);
+        match self.limiter.record_failure(&key) {
+            RateLimitResult::Blocked { retry_after_secs } => {
+                return Err(format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    retry_after_secs
+                ));
+            }
+            RateLimitResult::Allowed { .. } => {}
+        }
 
         let data = self.store_get(&req.user_id)?;
         if !data.enabled {
@@ -323,16 +355,16 @@ impl TwoFactorHandlers {
         let result = TwoFactorAuth::verify_token_with_config(
             &data.secret,
             &req.token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )?;
         if result {
             self.store.update_enabled(&req.user_id, false)?;
             self.store.reset_two_fa_failures(&req.user_id)?;
-            self.limiter.record_success(&format!("disable:{}", req.user_id));
+            self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        self.record_failed_verification(&req.user_id)?;
+        let _ = self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
@@ -716,7 +748,7 @@ impl CanaryHandlers {
         TwoFactorAuth::verify_token_with_config(
             &data.secret,
             token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )
     }
 }
@@ -824,7 +856,7 @@ impl MultiTenantHandlers {
         let result = TwoFactorAuth::verify_token_with_config(
             &data.secret,
             token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )?;
         if result {
             self.store.update_enabled(user_id, true)?;
@@ -859,7 +891,7 @@ impl MultiTenantHandlers {
         let result = TwoFactorAuth::verify_token_with_config(
             &data.secret,
             token,
-            Self::verification_config(data.algorithm),
+            verification_config(data.algorithm),
         )?;
         if result {
             self.store.update_enabled(user_id, false)?;

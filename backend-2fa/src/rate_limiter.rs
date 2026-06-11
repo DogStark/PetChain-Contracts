@@ -410,11 +410,11 @@ impl RateLimiter for InMemoryRateLimiter {
 
         record.failures += 1;
 
-        if record.failures >= self.max_failures {
+        if record.failures > self.max_failures {
             record.locked_until = Some(now + self.lockout);
             RateLimitResult::Blocked { retry_after_secs: self.lockout.as_secs() }
         } else {
-            RateLimitResult::Allowed { remaining: self.max_failures - record.failures }
+            RateLimitResult::Allowed { remaining: self.max_failures.saturating_sub(record.failures) }
         }
     }
 
@@ -497,12 +497,12 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
 
         let count = self.backend.sliding_window_add(&window_key, now_ms, cutoff_ms, &member, cfg.window_secs);
 
-        if count >= cfg.max_failures as u64 {
+        if count > cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
             return RateLimitResult::Blocked { retry_after_secs: cfg.lockout_secs };
         }
 
-        RateLimitResult::Allowed { remaining: cfg.max_failures - count as u32 }
+        RateLimitResult::Allowed { remaining: cfg.max_failures.saturating_sub(count as u32) }
     }
 
     fn record_success(&self, key: &str) {

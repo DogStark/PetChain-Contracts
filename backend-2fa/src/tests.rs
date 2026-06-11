@@ -698,6 +698,7 @@ mod tests {
         };
         use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
         use crate::two_factor::TwoFactorData;
+        use totp_rs::Algorithm;
         use std::sync::Arc;
 
         fn caller(id: &str) -> AuthenticatedUser {
@@ -2830,6 +2831,7 @@ mod admin_dashboard_tests {
         AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
     };
     use crate::two_factor::{TwoFactorData, TwoFactorStore};
+    use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
         AuthenticatedAdmin::new("admin-001")
@@ -2935,6 +2937,7 @@ mod canary_tests {
     };
     use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
+    use totp_rs::Algorithm;
     use std::sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -3232,7 +3235,7 @@ mod progressive_two_factor_lockout_tests {
         TwoFactorHandlers,
     };
     use crate::rate_limiter::{
-        progressive_delay_secs, MockRedisBackend, RedisTwoFactorFailureCounter,
+        progressive_delay_secs, InMemoryRateLimiter, MockRedisBackend, RedisTwoFactorFailureCounter,
     };
     use crate::two_factor::{InMemoryStore, TwoFactorStore};
     use std::sync::Arc;
@@ -3307,7 +3310,10 @@ mod progressive_two_factor_lockout_tests {
     #[test]
     fn handler_locks_after_ten_invalid_tokens_and_admin_unlocks() {
         let store = Arc::new(InMemoryStore::default());
-        let handlers = TwoFactorHandlers::with_store(store.clone());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(
+            store.clone(),
+            Arc::new(InMemoryRateLimiter::new(100, 60, 300)),
+        );
         let user_id = "handler-lockout-user";
         let caller = AuthenticatedUser::new(user_id);
         let enrollment = handlers
@@ -3322,7 +3328,7 @@ mod progressive_two_factor_lockout_tests {
         store.update_enabled(user_id, true).unwrap();
 
         for _ in 0..9 {
-            let err = handlers
+            let result = handlers
                 .verify_login_token(
                     &caller,
                     LoginWithTwoFactorRequest {
@@ -3330,8 +3336,8 @@ mod progressive_two_factor_lockout_tests {
                         token: "000000".to_string(),
                     },
                 )
-                .unwrap_err();
-            assert!(err.contains("Retry after"));
+                .unwrap();
+            assert!(!result);
         }
 
         let locked = handlers

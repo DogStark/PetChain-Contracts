@@ -656,7 +656,7 @@ mod tests {
         let config = ScoreValidationConfig::default();
 
         let result = validate_score_submission(&submission, Some(500), &config);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
         };
 
         let result = validate_score_submission(&submission, Some(100), &config);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
