@@ -261,14 +261,12 @@ impl TwoFactorHandlers {
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("verify", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -297,14 +295,12 @@ impl TwoFactorHandlers {
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("login", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -337,14 +333,12 @@ impl TwoFactorHandlers {
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("disable", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -844,11 +838,14 @@ impl MultiTenantHandlers {
             "{}::verify::{}",
             self.store.config.tenant_id, user_id
         );
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
+        {
+            let rate_result = self.limiter.record_failure(&key);
+            if rate_result.is_blocked() {
+                return Err(format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ));
+            }
         }
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
@@ -877,11 +874,14 @@ impl MultiTenantHandlers {
             "{}::disable::{}",
             self.store.config.tenant_id, user_id
         );
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
+        {
+            let rate_result = self.limiter.record_failure(&key);
+            if rate_result.is_blocked() {
+                return Err(format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ));
+            }
         }
 
         let data = self.store.get(user_id)?;
