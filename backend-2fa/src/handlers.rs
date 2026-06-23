@@ -1,14 +1,11 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
-use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, leaderboard_ws_endpoint};
-use crate::rate_limiter::{
-    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
-};
+use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, TotpConfig, TwoFactorAuth, TwoFactorData,
-    TwoFactorStore,
-    UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
+    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
@@ -190,9 +187,9 @@ impl TwoFactorHandlers {
     }
 
     fn store_get(&self, user_id: &str) -> Result<TwoFactorData, ApiError> {
-        self.store
-            .get(user_id)
-            .map_err(|_| ApiError::not_found(format!("2FA not configured for user {}", user_id), None))
+        self.store.get(user_id).map_err(|_| {
+            ApiError::not_found(format!("2FA not configured for user {}", user_id), None)
+        })
     }
 
     fn ensure_not_locked(&self, user_id: &str) -> Result<(), ApiError> {
@@ -281,7 +278,10 @@ impl TwoFactorHandlers {
         match self.limiter.record_failure(&key) {
             RateLimitResult::Blocked { retry_after_secs } => {
                 return Err(ApiError::too_many_requests(
-                    format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs),
+                    format!(
+                        "Too many failed attempts. Retry after {} seconds.",
+                        retry_after_secs
+                    ),
                     None,
                 ));
             }
@@ -322,7 +322,10 @@ impl TwoFactorHandlers {
         match self.limiter.record_failure(&key) {
             RateLimitResult::Blocked { retry_after_secs } => {
                 return Err(ApiError::too_many_requests(
-                    format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs),
+                    format!(
+                        "Too many failed attempts. Retry after {} seconds.",
+                        retry_after_secs
+                    ),
                     None,
                 ));
             }
@@ -365,7 +368,10 @@ impl TwoFactorHandlers {
         match self.limiter.record_failure(&key) {
             RateLimitResult::Blocked { retry_after_secs } => {
                 return Err(ApiError::too_many_requests(
-                    format!("Too many failed attempts. Retry after {} seconds.", retry_after_secs),
+                    format!(
+                        "Too many failed attempts. Retry after {} seconds.",
+                        retry_after_secs
+                    ),
                     None,
                 ));
             }
@@ -598,7 +604,8 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: SetUserQuotaRequest,
     ) -> Result<(), String> {
-        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        self.quota_store
+            .set_quota(&req.user_id, req.requests_per_minute);
         Ok(())
     }
 
@@ -608,7 +615,8 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: GrantUnlimitedRequest,
     ) -> Result<(), String> {
-        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        self.quota_store
+            .grant_unlimited(&req.user_id, req.expires_at);
         Ok(())
     }
 }
@@ -873,10 +881,7 @@ impl MultiTenantHandlers {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = format!(
-            "{}::verify::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::verify::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -906,10 +911,7 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let key = format!(
-            "{}::disable::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::disable::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -1002,16 +1004,17 @@ impl PoolMetricsHandlers {
     pub fn pool_stats() -> Result<PoolStatsResponse, String> {
         // In tests there is no real pool; return a fixed sentinel so the
         // endpoint handler can be exercised without a database.
-        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+        Ok(PoolStatsResponse {
+            active: 0,
+            idle: 0,
+            max: 0,
+        })
     }
 }
 
 /// WebSocket endpoint for real-time leaderboard updates.
 ///
 /// Mount this at `GET /leaderboard/ws`.
-pub async fn leaderboard_ws(
-    req: HttpRequest,
-    stream: Payload,
-) -> Result<HttpResponse, Error> {
+pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
     leaderboard_ws_endpoint(req, stream).await
 }

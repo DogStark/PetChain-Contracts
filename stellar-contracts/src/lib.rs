@@ -125,10 +125,15 @@ use soroban_sdk::{
 };
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
+#[allow(dead_code)]
 const NONCE_HISTORY_LIMIT: u32 = 8;
+#[allow(dead_code)]
 const MAX_SEARCH_KEYWORD_LEN: u32 = 32;
+#[allow(dead_code)]
 const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
+#[allow(dead_code)]
 const MAX_SEARCH_NOTES_LEN: u32 = 512;
+#[allow(dead_code)]
 const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
 const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
@@ -1213,8 +1218,11 @@ pub enum ReferenceRangeKey {
     SpeciesBiomarker((String, String)),
 }
 
+#[allow(dead_code)]
 const FLAG_NORMAL: u32 = 0;
+#[allow(dead_code)]
 const FLAG_LOW: u32 = 1;
+#[allow(dead_code)]
 const FLAG_HIGH: u32 = 2;
 
 #[contracttype]
@@ -1337,6 +1345,7 @@ pub enum Role {
 }
 
 impl Role {
+    #[allow(dead_code)]
     fn rank(self) -> u8 {
         match self {
             Role::ReadOnly => 0,
@@ -1346,6 +1355,7 @@ impl Role {
         }
     }
 
+    #[allow(dead_code)]
     fn inherited_roles(self, env: &Env) -> Vec<Role> {
         let mut roles = Vec::new(env);
         roles.push_back(Role::ReadOnly);
@@ -3145,6 +3155,7 @@ impl PetChainContract {
     }
 
     /// Check if a pet can add more storage entries without incrementing
+    #[allow(dead_code)]
     fn check_pet_storage_quota(env: &Env, pet_id: u64) -> bool {
         let current = Self::get_pet_storage_count(env, pet_id);
         let quota = Self::get_pet_quota(env, pet_id);
@@ -4719,15 +4730,6 @@ impl PetChainContract {
 
         if emergency_contact.len() > PetChainContract::MAX_STR_SHORT {
             panic_with_error!(&env, ContractError::InputStringTooLong);
-            panic!("Owner name exceeds maximum length");
-        }
-
-        if email.len() > PetChainContract::MAX_STR_SHORT {
-            panic!("Email exceeds maximum length");
-        }
-
-        if emergency_contact.len() > PetChainContract::MAX_STR_SHORT {
-            panic!("Emergency contact exceeds maximum length");
         }
 
         let key = PetChainContract::get_encryption_key(&env);
@@ -5335,10 +5337,6 @@ impl PetChainContract {
         days_threshold: u64,
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
-        let threshold = days_threshold
-            .saturating_mul(86400)
-            .saturating_add(current_time);
-        let history = Self::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let threshold = current_time + (days_threshold * 86400);
         let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
@@ -7235,7 +7233,7 @@ impl PetChainContract {
     }
 
     pub fn get_contacts_ordered(env: Env, pet_id: u64, owner: Address) -> Vec<EmergencyContact> {
-        if let Some(mut pet) = env.storage().instance().get::<_, Pet>(&DataKey::Pet(pet_id)) {
+        if let Some(pet) = env.storage().instance().get::<_, Pet>(&DataKey::Pet(pet_id)) {
             if owner != pet.owner {
                 panic_with_error!(&env, ContractError::Unauthorized);
             }
@@ -7761,7 +7759,7 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
         pet.owner.require_auth();
 
-        let mut record: GroomingRecord = env
+        let record: GroomingRecord = env
             .storage()
             .instance()
             .get(&GroomingKey::GroomingRecord(grooming_record_id))

@@ -698,8 +698,8 @@ mod tests {
         };
         use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
         use crate::two_factor::TwoFactorData;
-        use totp_rs::Algorithm;
         use std::sync::Arc;
+        use totp_rs::Algorithm;
 
         fn caller(id: &str) -> AuthenticatedUser {
             AuthenticatedUser::new(id)
@@ -798,7 +798,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -813,7 +816,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -828,7 +834,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -1574,7 +1583,10 @@ mod integration_tests {
         );
 
         assert!(blocked.is_err());
-        assert!(blocked.unwrap_err().message.contains("Too many failed attempts"));
+        assert!(blocked
+            .unwrap_err()
+            .message
+            .contains("Too many failed attempts"));
     }
 
     /// A successful login resets the failure counter so the user is not
@@ -2938,11 +2950,11 @@ mod canary_tests {
     };
     use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
-    use totp_rs::Algorithm;
     use std::sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
     };
+    use totp_rs::Algorithm;
 
     struct RecordingHttpClient {
         calls: Arc<Mutex<Vec<String>>>,
@@ -3087,16 +3099,16 @@ mod canary_tests {
 
         // Set up a normal user
         let store = get_two_factor_store_for_tests();
-            store
-                .save(
-                    "normal-user",
-                    crate::two_factor::TwoFactorData {
-                        secret: "JBSWY3DPEHPK3PXP".to_string(),
-                        backup_codes: vec![],
-                        enabled: true,
-                        algorithm: Algorithm::SHA1,
-                    },
-                )
+        store
+            .save(
+                "normal-user",
+                crate::two_factor::TwoFactorData {
+                    secret: "JBSWY3DPEHPK3PXP".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                    algorithm: Algorithm::SHA1,
+                },
+            )
             .unwrap();
 
         // Verification attempt on a normal user should NOT fire canary webhook
@@ -3178,8 +3190,7 @@ mod distributed_rate_limiter_tests {
     /// Bad Redis URL → fails open (returns Allowed via fallback).
     #[test]
     fn redis_unavailable_falls_back_to_in_memory() {
-        let limiter =
-            DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
+        let limiter = DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
         assert!(matches!(
             limiter.record_failure("user:fallback-redis"),
             RateLimitResult::Allowed { .. }
@@ -3295,7 +3306,9 @@ mod progressive_two_factor_lockout_tests {
     fn admin_unlock_clears_lockout_state() {
         let store = InMemoryStore::default();
         for _ in 0..10 {
-            store.record_failed_two_fa_attempt("user-admin-unlock").unwrap();
+            store
+                .record_failed_two_fa_attempt("user-admin-unlock")
+                .unwrap();
         }
         assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
 
@@ -3378,7 +3391,8 @@ mod pool_stats_tests {
 
     #[test]
     fn pool_stats_handler_returns_sentinel_in_test_mode() {
-        let stats = PoolMetricsHandlers::pool_stats().expect("pool_stats must succeed in test mode");
+        let stats =
+            PoolMetricsHandlers::pool_stats().expect("pool_stats must succeed in test mode");
         assert_eq!(stats.active, 0);
         assert_eq!(stats.idle, 0);
         assert_eq!(stats.max, 0);

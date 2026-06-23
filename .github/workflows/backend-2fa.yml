@@ -20,7 +20,7 @@ jobs:
         run: cargo install cargo-audit
       - name: Run cargo audit
         working-directory: backend-2fa
-        run: cargo audit --deny warnings
+        run: cargo audit --deny warnings --file audit.toml
 
   fmt:
     runs-on: ubuntu-latest
@@ -61,6 +61,6 @@ jobs:
         with:
           node-version: '20'
       - name: Install Spectral CLI
-        run: npm install -g @stoplight/spectral-cli
+        run: npm install -g @stoplight/spectral-cli @stoplight/spectral-oas
       - name: Validate docs/openapi.yaml
-        run: spectral lint docs/openapi.yaml --ruleset @stoplight/spectral-oas --fail-severity warn
+        run: spectral lint docs/openapi.yaml --ruleset 'https://unpkg.com/@stoplight/spectral-oas/rulesets/oas/index.mjs' --fail-severity warn

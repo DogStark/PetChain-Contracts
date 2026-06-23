@@ -1,6 +1,6 @@
 use actix_web::{
-    body::MessageBody,
     body::BoxBody,
+    body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
     Error, HttpResponse, ResponseError,
