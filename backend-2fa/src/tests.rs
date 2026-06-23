@@ -715,6 +715,7 @@ mod tests {
             fn record_success(&self, _key: &str) {}
         }
 
+        #[allow(dead_code)]
         struct AlwaysAllowedLimiter;
         impl RateLimiter for AlwaysAllowedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
@@ -1267,13 +1268,13 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use crate::handlers::{
-        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, AuthenticatedUser,
-        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
-        RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests, AdminRecoveryHandlers,
+        AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest,
+        LoginWithTwoFactorRequest, RecoverWithBackupRequest, TwoFactorHandlers,
+        VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
-    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+    use crate::two_factor::TwoFactorData;
     use std::sync::Arc;
     use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -2545,7 +2546,6 @@ mod redis_rate_limiter_tests {
 
     mod admin_score_handlers {
         use crate::handlers::AdminScoreHandlers;
-        use crate::leaderboard::FlaggedScoreSubmission;
 
         #[test]
         fn admin_get_all_flagged_empty() {
@@ -2841,9 +2841,9 @@ impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedi
 mod admin_dashboard_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
-        AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
+        AuthenticatedAdmin, AuthenticatedUser,
     };
-    use crate::two_factor::{TwoFactorData, TwoFactorStore};
+    use crate::two_factor::TwoFactorData;
     use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
@@ -2948,12 +2948,8 @@ mod canary_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
         CanaryHandlers, CreateCanaryRequest,
     };
-    use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
-    use std::sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
-    };
+    use std::sync::{Arc, Mutex};
     use totp_rs::Algorithm;
 
     struct RecordingHttpClient {
@@ -2996,7 +2992,7 @@ mod canary_tests {
     #[test]
     fn test_create_canary_account() {
         clear_two_factor_store_for_tests();
-        let (handlers, _calls) = make_canary_handlers();
+        let (_handlers, _calls) = make_canary_handlers();
 
         let resp = CanaryHandlers::create_canary(
             &admin(),
@@ -3124,7 +3120,6 @@ mod canary_tests {
 #[cfg(test)]
 mod webhook_handler_tests {
     use crate::webhooks::{SecurityEventType, WebhookManager};
-    use std::sync::Arc;
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {

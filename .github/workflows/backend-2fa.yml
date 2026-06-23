@@ -61,6 +61,6 @@ jobs:
         with:
           node-version: '20'
       - name: Install Spectral CLI
-        run: npm install -g @stoplight/spectral-cli @stoplight/spectral-oas
+        run: npm install -g @stoplight/spectral-cli
       - name: Validate docs/openapi.yaml
-        run: spectral lint docs/openapi.yaml --ruleset 'https://unpkg.com/@stoplight/spectral-oas/rulesets/oas/index.mjs' --fail-severity warn
+        run: spectral lint docs/openapi.yaml --ruleset spectral:oas --fail-severity warn
