@@ -15,7 +15,7 @@ pub use db::PostgresTwoFactorStore;
 pub use db::{
     select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats, SecretProvider,
 };
-pub use error::{ApiError, ErrorResponseMiddleware};
+pub use error::{ApiError, ErrorResponseMiddleware, NoCacheMiddleware};
 pub use handlers::{
     leaderboard_ws, AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers,
     AuthenticatedAdmin, AuthenticatedUser, CanaryHandlers, CreateCanaryRequest,
