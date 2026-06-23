@@ -53,6 +53,53 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
         .clone()
 }
 
+
+const IDEMPOTENCY_TTL_SECS: u64 = 300; // 5 minutes
+
+#[derive(Clone)]
+struct IdempotencyEntry {
+    response: EnableTwoFactorResponse,
+    stored_at: u64,
+}
+
+#[cfg(test)]
+fn test_idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    std::thread_local! {
+        static STORE: Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+    }
+    STORE.with(|store| store.clone())
+}
+
+#[cfg(test)]
+fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    test_idempotency_store()
+}
+
+#[cfg(not(test))]
+fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    static STORE: OnceLock<Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>>> = OnceLock::new();
+    STORE
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn idempotency_key(user_id: &str, key: &str) -> String {
+    format!("{}::{}", user_id, key)
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_idempotency_store_for_tests() {
+    test_idempotency_store().lock().unwrap().clear();
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -77,9 +124,11 @@ impl AuthenticatedUser {
 pub struct EnableTwoFactorRequest {
     pub user_id: String,
     pub email: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct EnableTwoFactorResponse {
     pub secret: String,
     pub otpauth_uri: String,
@@ -224,6 +273,17 @@ impl TwoFactorHandlers {
     ) -> Result<EnableTwoFactorResponse, String> {
         caller.authorize(&req.user_id)?;
 
+        if let Some(key) = req.idempotency_key.as_deref() {
+            let lookup = idempotency_key(&req.user_id, key);
+            let store = idempotency_store();
+            let guard = store.lock().unwrap();
+            if let Some(entry) = guard.get(&lookup) {
+                if current_unix_secs().saturating_sub(entry.stored_at) < IDEMPOTENCY_TTL_SECS {
+                    return Ok(entry.response.clone());
+                }
+            }
+        }
+
         if let Ok(existing) = self.store_get(&req.user_id) {
             if existing.enabled {
                 return Err(
@@ -244,12 +304,25 @@ impl TwoFactorHandlers {
             },
         )?;
 
-        Ok(EnableTwoFactorResponse {
+        let response = EnableTwoFactorResponse {
             secret: setup.secret,
             otpauth_uri: setup.otpauth_uri,
             qr_code: setup.qr_code_base64,
             backup_codes: setup.backup_codes,
-        })
+        };
+
+        if let Some(key) = req.idempotency_key.as_deref() {
+            let lookup = idempotency_key(&req.user_id, key);
+            idempotency_store().lock().unwrap().insert(
+                lookup,
+                IdempotencyEntry {
+                    response: response.clone(),
+                    stored_at: current_unix_secs(),
+                },
+            );
+        }
+
+        Ok(response)
     }
 
     pub fn verify_and_activate(
