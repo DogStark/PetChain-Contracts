@@ -103,27 +103,33 @@ impl PostgresTwoFactorStore {
         self.runtime.block_on(future).map_err(|e| e.to_string())
     }
 
-    /// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
-    /// Only retries on connection-class errors; other errors are returned immediately.
-    fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+    fn block_on_typed<F, T>(&self, future: F) -> Result<T, sqlx::Error>
     where
-        F: FnMut() -> Result<T, String>,
-    {
-        const MAX_ATTEMPTS: u32 = 3;
-        let mut delay_ms = 100u64;
-        for attempt in 1..=MAX_ATTEMPTS {
-            match op() {
-                Ok(v) => return Ok(v),
-                Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                    delay_ms *= 2;
-                }
-                Err(e) => return Err(e),
+    F: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    self.runtime.block_on(future)
+}
+/// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
+/// The closure must return `sqlx::Error` so retry eligibility is checked on the
+/// typed variant before the error is stringified.
+   fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, sqlx::Error>,
+{
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut delay_ms = 100u64;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms *= 2;
             }
+            Err(e) => return Err(e.to_string()),
         }
-        unreachable!()
     }
-
+    unreachable!()
+}
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
     pub fn health_check(&self) -> Result<(), String> {
@@ -144,45 +150,51 @@ impl PostgresTwoFactorStore {
     }
 }
 
-pub(crate) fn is_connection_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("connection") || m.contains("timeout") || m.contains("pool") || m.contains("io error")
+pub(crate) fn is_connection_error(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Io(_) => true,
+        sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::PoolClosed => true,
+        _ => false,
+    }
 }
 
 impl TwoFactorStore for PostgresTwoFactorStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
         let user_id = user_id.to_string();
+
         self.with_retry(|| {
-            self.block_on(
-                sqlx::query(
-                    r#"
-            INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled, algorithm)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                secret = EXCLUDED.secret,
-                backup_codes = EXCLUDED.backup_codes,
-                enabled = EXCLUDED.enabled,
-                algorithm = EXCLUDED.algorithm,
-                updated_at = CURRENT_TIMESTAMP
-            "#,
-                )
-                .bind(&user_id)
-                .bind(&data.secret)
-                .bind(&backup_codes)
-                .bind(data.enabled)
-                .bind(Self::algorithm_to_db(data.algorithm))
-                .execute(&self.pool),
-            )?;
-            Ok(())
-        })
+    self.block_on_typed(
+        sqlx::query(
+            r#"
+    INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled, algorithm)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (user_id)
+    DO UPDATE SET
+        secret = EXCLUDED.secret,
+        backup_codes = EXCLUDED.backup_codes,
+        enabled = EXCLUDED.enabled,
+        algorithm = EXCLUDED.algorithm,
+        updated_at = CURRENT_TIMESTAMP
+    "#,
+        )
+        .bind(&user_id)
+        .bind(&data.secret)
+        .bind(&backup_codes)
+        .bind(data.enabled)
+        .bind(Self::algorithm_to_db(data.algorithm))
+        .execute(&self.pool),
+    )
+    .map(|_| ())
+})
+
     }
 
     fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
         let user_id = user_id.to_string();
         let row = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, (String, String, bool, Option<String>)>(
                     r#"
             SELECT secret, backup_codes, enabled, algorithm
@@ -659,4 +671,33 @@ mod tests {
         let val = prov.get_secret("MYKEY").unwrap();
         assert_eq!(val, "VAL");
     }
+
+    #[test]
+fn io_error_is_retryable() {
+    let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset");
+    assert!(is_connection_error(&sqlx::Error::Io(io_err)));
+}
+
+#[test]
+fn pool_timed_out_is_retryable() {
+    assert!(is_connection_error(&sqlx::Error::PoolTimedOut));
+}
+
+#[test]
+fn pool_closed_is_retryable() {
+    assert!(is_connection_error(&sqlx::Error::PoolClosed));
+}
+
+#[test]
+fn row_not_found_is_not_retryable() {
+    assert!(!is_connection_error(&sqlx::Error::RowNotFound));
+}
+
+#[test]
+fn column_name_containing_connection_is_not_retryable() {
+    // Old string-matching would have retried this — typed matching won't
+    assert!(!is_connection_error(&sqlx::Error::ColumnNotFound(
+        "connection_id".to_string()
+    )));
+}
 }
