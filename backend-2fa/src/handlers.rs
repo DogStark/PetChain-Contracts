@@ -1,13 +1,12 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, leaderboard_ws_endpoint};
+use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{
     progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
 };
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, TotpConfig, TwoFactorAuth, TwoFactorData,
-    TwoFactorStore,
-    UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
+    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
@@ -194,7 +193,10 @@ impl TwoFactorHandlers {
     fn ensure_not_locked(&self, user_id: &str) -> Result<(), String> {
         let state = self.store.get_lockout_state(user_id)?;
         if state.locked {
-            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -202,7 +204,10 @@ impl TwoFactorHandlers {
     fn record_failed_verification(&self, user_id: &str) -> Result<String, String> {
         let state = self.store.record_failed_two_fa_attempt(user_id)?;
         if state.locked {
-            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
         }
         if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
             return Ok(format!("Invalid 2FA token. Retry after {} seconds.", delay));
@@ -565,7 +570,8 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: SetUserQuotaRequest,
     ) -> Result<(), String> {
-        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        self.quota_store
+            .set_quota(&req.user_id, req.requests_per_minute);
         Ok(())
     }
 
@@ -575,7 +581,8 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: GrantUnlimitedRequest,
     ) -> Result<(), String> {
-        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        self.quota_store
+            .grant_unlimited(&req.user_id, req.expires_at);
         Ok(())
     }
 }
@@ -840,10 +847,7 @@ impl MultiTenantHandlers {
         caller.authorize(user_id)?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = format!(
-            "{}::verify::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::verify::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -873,10 +877,7 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id)?;
 
-        let key = format!(
-            "{}::disable::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::disable::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -960,16 +961,17 @@ impl PoolMetricsHandlers {
     pub fn pool_stats() -> Result<PoolStatsResponse, String> {
         // In tests there is no real pool; return a fixed sentinel so the
         // endpoint handler can be exercised without a database.
-        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+        Ok(PoolStatsResponse {
+            active: 0,
+            idle: 0,
+            max: 0,
+        })
     }
 }
 
 /// WebSocket endpoint for real-time leaderboard updates.
 ///
 /// Mount this at `GET /leaderboard/ws`.
-pub async fn leaderboard_ws(
-    req: HttpRequest,
-    stream: Payload,
-) -> Result<HttpResponse, Error> {
+pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
     leaderboard_ws_endpoint(req, stream).await
 }

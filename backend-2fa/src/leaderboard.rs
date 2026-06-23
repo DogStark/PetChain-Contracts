@@ -106,7 +106,8 @@ impl FlaggedScoreStore {
 
     pub fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
         if let Ok(store) = self.flagged.lock() {
-            store.iter()
+            store
+                .iter()
                 .filter(|f| f.user_id == user_id)
                 .cloned()
                 .collect()
@@ -372,12 +373,17 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for LeaderboardWsSess
     }
 }
 
-impl StreamHandler<Result<LeaderboardScoreUpdate, tokio_stream::wrappers::errors::BroadcastStreamRecvError>>
-    for LeaderboardWsSession
+impl
+    StreamHandler<
+        Result<LeaderboardScoreUpdate, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
+    > for LeaderboardWsSession
 {
     fn handle(
         &mut self,
-        item: Result<LeaderboardScoreUpdate, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
+        item: Result<
+            LeaderboardScoreUpdate,
+            tokio_stream::wrappers::errors::BroadcastStreamRecvError,
+        >,
         ctx: &mut Self::Context,
     ) {
         match item {
@@ -883,7 +889,7 @@ mod tests {
     fn decay_affects_ranking() {
         let now = 100_000_000;
         let entries = vec![
-            ("recent_low".to_string(), 50, now - 1),      // Recent, low score
+            ("recent_low".to_string(), 50, now - 1), // Recent, low score
             ("old_high".to_string(), 1000, now - 30 * 86400), // Old, high score
         ];
 

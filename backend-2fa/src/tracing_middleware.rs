@@ -68,12 +68,22 @@ impl TraceContext {
 
     /// Generate a traceparent header value
     pub fn to_header(&self) -> String {
-        format!("00-{}-{}-{}", self.trace_id, self.parent_span_id, self.flags)
+        format!(
+            "00-{}-{}-{}",
+            self.trace_id, self.parent_span_id, self.flags
+        )
     }
 }
 
 /// List of sensitive fields that should be redacted in logs
-const SENSITIVE_FIELDS: &[&str] = &["totp_code", "secret", "recovery_code", "password", "token", "backup_code"];
+const SENSITIVE_FIELDS: &[&str] = &[
+    "totp_code",
+    "secret",
+    "recovery_code",
+    "password",
+    "token",
+    "backup_code",
+];
 
 /// Sanitize JSON by redacting sensitive fields
 pub fn sanitize_json_body(body: &str) -> String {
@@ -206,7 +216,9 @@ where
 
             // Propagate traceparent header in response if available
             if let Some(tc) = trace_context {
-                if let Ok(header_val) = actix_web::http::header::HeaderValue::from_str(&tc.to_header()) {
+                if let Ok(header_val) =
+                    actix_web::http::header::HeaderValue::from_str(&tc.to_header())
+                {
                     res.headers_mut().insert(
                         actix_web::http::header::HeaderName::from_static(TRACEPARENT_HEADER),
                         header_val,
