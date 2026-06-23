@@ -242,7 +242,7 @@ mod tests {
         // 3. Subsequent enrollment attempt - must fail/refuse to re-disclose
         let result2 = TwoFactorHandlers::enable_two_factor(&caller, req);
         assert!(result2.is_err());
-        assert!(result2.unwrap_err().contains("already enabled"));
+        assert!(result2.unwrap_err().message.contains("already enabled"));
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Forbidden"));
+        assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         // Nothing was written to the store
         assert!(get_two_factor_data_for_tests("victim").is_none());
     }
@@ -400,7 +400,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not configured"));
+        assert!(result.unwrap_err().message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -667,7 +667,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, "save failed");
+        assert_eq!(err.message, "save failed");
 
         let timeout_get = std::sync::Arc::new(MockTwoFactorStore::with_config(MockStoreConfig {
             get: Some(MockStoreFailure::Timeout),
@@ -683,7 +683,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(err.contains("not configured"));
+        assert!(err.message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -798,7 +798,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
         }
 
         #[test]
@@ -813,7 +813,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
         }
 
         #[test]
@@ -828,7 +828,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result.unwrap_err().message.contains("Too many failed attempts"));
         }
 
         #[test]
@@ -888,7 +888,7 @@ mod tests {
                 !disable_result
                     .as_ref()
                     .err()
-                    .map(|e| e.contains("Too many"))
+                    .map(|e| e.message.contains("Too many"))
                     .unwrap_or(false),
                 "disable endpoint should not be blocked by login failures"
             );
@@ -950,7 +950,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -964,7 +964,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -978,7 +978,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -992,7 +992,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1008,11 +1008,12 @@ mod tests {
             // Should fail on missing record or invalid code, NOT on authorization
             let err = result.unwrap_err();
             assert!(
-                err.contains("Invalid backup code")
-                    || err.contains("not configured")
-                    || err.contains("not enabled"),
-                "Correct user should reach the backup code validation step, got: {}",
-                err
+                err.message.contains("Invalid backup code")
+                    || err.message.contains("not configured")
+                    || err.message.contains("not enabled"),
+                "Correct user should reach the backup code validation step, got: {} ({})",
+                err.message,
+                err.code
             );
         }
 
@@ -1026,7 +1027,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1038,7 +1039,7 @@ mod tests {
         fn test_authorize_different_user_err() {
             let result = caller("alice").authorize("bob");
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1111,7 +1112,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not configured"));
+        assert!(err.unwrap_err().message.contains("not configured"));
     }
 
     #[test]
@@ -1222,7 +1223,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -1246,7 +1247,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not enabled"));
+        assert!(err.unwrap_err().message.contains("not enabled"));
     }
 }
 
@@ -1529,9 +1530,9 @@ mod integration_tests {
         assert!(blocked.is_err(), "locked-out user must receive an error");
         let err = blocked.unwrap_err();
         assert!(
-            err.contains("Too many failed attempts"),
+            err.message.contains("Too many failed attempts"),
             "error must mention rate limiting, got: {}",
-            err
+            err.message
         );
     }
 
@@ -1573,7 +1574,7 @@ mod integration_tests {
         );
 
         assert!(blocked.is_err());
-        assert!(blocked.unwrap_err().contains("Too many failed attempts"));
+        assert!(blocked.unwrap_err().message.contains("Too many failed attempts"));
     }
 
     /// A successful login resets the failure counter so the user is not
@@ -1831,7 +1832,7 @@ mod integration_tests {
         );
 
         assert!(second.is_err());
-        assert!(second.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(second.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -3349,7 +3350,7 @@ mod progressive_two_factor_lockout_tests {
                 },
             )
             .unwrap_err();
-        assert!(locked.contains("locked after 10"));
+        assert!(locked.message.contains("locked after 10"));
 
         store
             .unlock_two_fa_account(user_id, &AuthenticatedAdmin::new("admin").admin_id)
@@ -3364,5 +3365,31 @@ mod progressive_two_factor_lockout_tests {
                 },
             )
             .unwrap());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #850 — Pool stats handler tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod pool_stats_tests {
+    use crate::handlers::PoolMetricsHandlers;
+    use crate::two_factor::{InMemoryStore, TwoFactorStore};
+
+    #[test]
+    fn pool_stats_handler_returns_sentinel_in_test_mode() {
+        let stats = PoolMetricsHandlers::pool_stats().expect("pool_stats must succeed in test mode");
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.max, 0);
+    }
+
+    #[test]
+    fn in_memory_store_try_pool_stats_returns_none() {
+        let store = InMemoryStore::default();
+        assert!(
+            store.try_pool_stats().is_none(),
+            "InMemoryStore has no pool; try_pool_stats must return None"
+        );
     }
 }

@@ -567,6 +567,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
     }
+
+    fn try_pool_stats(&self) -> Option<PoolStats> {
+        Some(self.pool_stats())
+    }
 }
 
 impl PostgresTwoFactorStore {
@@ -658,5 +662,22 @@ mod tests {
         let prov = select_secret_provider();
         let val = prov.get_secret("MYKEY").unwrap();
         assert_eq!(val, "VAL");
+    }
+
+    #[test]
+    fn postgres_store_try_pool_stats_when_database_url_is_set() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        use crate::two_factor::TwoFactorStore;
+        let store = PostgresTwoFactorStore::connect(&database_url).unwrap();
+        let maybe_stats = store.try_pool_stats();
+        assert!(maybe_stats.is_some(), "PostgresTwoFactorStore must return Some from try_pool_stats");
+        let stats = maybe_stats.unwrap();
+        assert!(stats.max > 0, "pool max must be positive");
+        assert!(
+            stats.active + stats.idle <= stats.max,
+            "active + idle must not exceed max"
+        );
     }
 }

@@ -339,6 +339,10 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return pool utilisation stats when the backing store supports it.
+    /// Returns `None` for stores that have no connection pool (e.g. in-memory).
+    fn try_pool_stats(&self) -> Option<crate::db::PoolStats> { None }
 }
 
 /// In-memory implementation of TwoFactorStore for testing

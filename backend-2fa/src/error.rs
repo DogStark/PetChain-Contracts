@@ -57,6 +57,14 @@ impl ApiError {
     pub fn internal_error(message: impl Into<String>, details: Option<Value>) -> Self {
         Self::new("INTERNAL_SERVER_ERROR", message, details)
     }
+
+    pub fn locked(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self::new("LOCKED", message, details)
+    }
+
+    pub fn too_many_requests(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self::new("TOO_MANY_REQUESTS", message, details)
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -75,6 +83,8 @@ impl ResponseError for ApiError {
             "FORBIDDEN" => StatusCode::FORBIDDEN,
             "NOT_FOUND" => StatusCode::NOT_FOUND,
             "CONFLICT" => StatusCode::CONFLICT,
+            "LOCKED" => StatusCode::LOCKED,
+            "TOO_MANY_REQUESTS" => StatusCode::TOO_MANY_REQUESTS,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
