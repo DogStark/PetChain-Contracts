@@ -2960,7 +2960,7 @@ mod canary_tests {
     }
 
     impl HttpClient for RecordingHttpClient {
-        fn post(&self, url: &str, body: &str) -> Result<(), String> {
+        fn post(&self, url: &str, body: &str, _signature_header: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!("{}:{}", url, body));
             Ok(())
         }
@@ -2972,7 +2972,10 @@ mod canary_tests {
 
     fn make_canary_handlers() -> (CanaryHandlers, Arc<Mutex<Vec<String>>>) {
         let (http_client, calls) = RecordingHttpClient::new();
-        let wm = Arc::new(WebhookManager::new(Arc::new(http_client)));
+        let wm = Arc::new(WebhookManager::new(
+            Arc::new(http_client),
+            "canary-test-signing-secret".to_string(),
+        ));
         wm.configure(
             SecurityEventType::CanaryTriggered,
             "http://alert.example.com/hook".to_string(),

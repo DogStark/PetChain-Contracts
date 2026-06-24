@@ -42,6 +42,6 @@ pub use two_factor::{
     TwoFactorStore, UserTwoFactorSummary,
 };
 pub use webhooks::{
-    DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog, WebhookManager,
-    WebhookPayload,
+    sign_webhook_payload, verify_webhook_signature, DefaultHttpClient, HttpClient,
+    SecurityEventType, WebhookDeliveryLog, WebhookManager, WebhookPayload, SIGNATURE_HEADER,
 };

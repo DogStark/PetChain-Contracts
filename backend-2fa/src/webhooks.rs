@@ -1,7 +1,45 @@
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Header under which the webhook signature is sent.
+pub const SIGNATURE_HEADER: &str = "X-PetChain-Signature";
+
+/// Compute the `sha256=<hex>` HMAC-SHA256 signature for a webhook body.
+pub fn sign_webhook_payload(secret: &str, body: &[u8]) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take a key of any size");
+    mac.update(body);
+    let digest = mac.finalize().into_bytes();
+    format!("sha256={}", hex::encode(digest))
+}
+
+/// Verify a webhook signature header against the expected secret and body.
+///
+/// `header_value` is expected to be in the form `sha256=<hex>`. Returns
+/// `false` for malformed headers, tampered bodies, or mismatched secrets.
+/// Comparison is constant-time to avoid timing side channels.
+pub fn verify_webhook_signature(secret: &str, body: &[u8], header_value: &str) -> bool {
+    let Some(provided_hex) = header_value.strip_prefix("sha256=") else {
+        return false;
+    };
+
+    let Ok(provided_bytes) = hex::decode(provided_hex) else {
+        return false;
+    };
+
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(body);
+
+    mac.verify_slice(&provided_bytes).is_ok()
+}
 
 /// Security event types that can trigger webhook notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,7 +87,7 @@ pub struct WebhookDeliveryLog {
 
 /// Trait for sending HTTP POST requests (injectable for testing).
 pub trait HttpClient: Send + Sync {
-    fn post(&self, url: &str, body: &str) -> Result<(), String>;
+    fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String>;
 }
 
 /// Production HTTP client using ureq (or a stub if not available).
@@ -57,8 +95,9 @@ pub trait HttpClient: Send + Sync {
 pub struct DefaultHttpClient;
 
 impl HttpClient for DefaultHttpClient {
-    fn post(&self, _url: &str, _body: &str) -> Result<(), String> {
-        // In a real deployment this would use reqwest/ureq.
+    fn post(&self, _url: &str, _body: &str, _signature_header: &str) -> Result<(), String> {
+        // In a real deployment this would use reqwest/ureq and would attach
+        // `signature_header` as the `X-PetChain-Signature` header.
         // For the library crate we keep it as a no-op stub so no extra
         // async runtime dependency is needed.
         Ok(())
@@ -71,20 +110,24 @@ pub struct WebhookManager {
     config: Arc<Mutex<HashMap<String, String>>>,
     delivery_log: Arc<Mutex<Vec<WebhookDeliveryLog>>>,
     http_client: Arc<dyn HttpClient>,
+    /// Secret used to sign outbound webhook payloads (HMAC-SHA256).
+    /// Distinct from any JWT secret used elsewhere in this crate.
+    signing_secret: String,
 }
 
 impl Default for WebhookManager {
     fn default() -> Self {
-        Self::new(Arc::new(DefaultHttpClient))
+        Self::new(Arc::new(DefaultHttpClient), String::new())
     }
 }
 
 impl WebhookManager {
-    pub fn new(http_client: Arc<dyn HttpClient>) -> Self {
+    pub fn new(http_client: Arc<dyn HttpClient>, signing_secret: String) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
             delivery_log: Arc::new(Mutex::new(Vec::new())),
             http_client,
+            signing_secret,
         }
     }
 
@@ -132,13 +175,14 @@ impl WebhookManager {
         };
 
         let body = serde_json::to_string(&payload).unwrap_or_default();
+        let signature_header = sign_webhook_payload(&self.signing_secret, body.as_bytes());
 
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
         let mut success = false;
 
         while attempts < 3 {
-            match self.http_client.post(&url, &body) {
+            match self.http_client.post(&url, &body, &signature_header) {
                 Ok(()) => {
                     success = true;
                     break;
@@ -207,7 +251,7 @@ mod tests {
     }
 
     impl HttpClient for MockHttpClient {
-        fn post(&self, _url: &str, _body: &str) -> Result<(), String> {
+        fn post(&self, _url: &str, _body: &str, _signature_header: &str) -> Result<(), String> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let remaining = self.fail_times.load(Ordering::SeqCst);
             if remaining > 0 {
@@ -219,9 +263,11 @@ mod tests {
         }
     }
 
+    const TEST_SIGNING_SECRET: &str = "test-signing-secret";
+
     fn make_manager(fail_times: u32) -> (WebhookManager, Arc<MockHttpClient>) {
         let client = Arc::new(MockHttpClient::new(fail_times));
-        let manager = WebhookManager::new(client.clone());
+        let manager = WebhookManager::new(client.clone(), TEST_SIGNING_SECRET.to_string());
         (manager, client)
     }
 
@@ -327,5 +373,33 @@ mod tests {
         manager.remove_config(&SecurityEventType::FailedTwoFa);
         manager.fire(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_verify_webhook_signature_valid() {
+        let secret = "supersecret";
+        let body = b"{\"event_type\":\"failed_two_fa\",\"user_id\":\"user1\"}";
+        let header = sign_webhook_payload(secret, body);
+        assert!(verify_webhook_signature(secret, body, &header));
+    }
+
+    #[test]
+    fn test_verify_webhook_signature_tampered_body_fails() {
+        let secret = "supersecret";
+        let body = b"{\"event_type\":\"failed_two_fa\",\"user_id\":\"user1\"}";
+        let header = sign_webhook_payload(secret, body);
+
+        let tampered_body = b"{\"event_type\":\"failed_two_fa\",\"user_id\":\"attacker\"}";
+        assert!(!verify_webhook_signature(secret, tampered_body, &header));
+    }
+
+    #[test]
+    fn test_verify_webhook_signature_wrong_secret_fails() {
+        let secret = "supersecret";
+        let wrong_secret = "wrongsecret";
+        let body = b"{\"event_type\":\"failed_two_fa\",\"user_id\":\"user1\"}";
+        let header = sign_webhook_payload(secret, body);
+
+        assert!(!verify_webhook_signature(wrong_secret, body, &header));
     }
 }
