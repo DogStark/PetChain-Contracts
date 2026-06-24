@@ -24,11 +24,13 @@ pub use handlers::{
 };
 pub use leaderboard::{
     broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, LeaderboardEntry,
-    LeaderboardScoreUpdate, LeaderboardWsHub, ScoreSubmissionError, ScoreValidationConfig,
+    LeaderboardScoreUpdate, LeaderboardWsHub, LeaderboardWsSession, ScoreSubmissionError,
+    ScoreValidationConfig,
 };
 pub use metrics::{
-    metrics, record_rate_limit_hit, record_recovery_code_use, record_totp_verification,
-    render_metrics, set_db_pool_stats, start_request_timer,
+    dec_leaderboard_ws_connections, inc_leaderboard_ws_connections, metrics, record_rate_limit_hit,
+    record_recovery_code_use, record_totp_verification, render_metrics, set_db_pool_stats,
+    start_request_timer,
 };
 pub use rate_limiter::{
     progressive_delay_secs, DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter,

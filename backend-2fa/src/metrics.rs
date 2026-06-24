@@ -14,6 +14,7 @@
 //! | `db_pool_active` | Gauge | — |
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
+//! | `leaderboard_ws_connections_total` | Gauge | — |
 
 use prometheus::{
     register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
@@ -32,6 +33,8 @@ pub struct Metrics {
     pub db_pool_active: Gauge,
     pub db_pool_idle: Gauge,
     pub request_duration_seconds: HistogramVec,
+    /// Tracks the current number of open leaderboard WebSocket connections.
+    pub leaderboard_ws_connections_total: Gauge,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -75,6 +78,12 @@ pub fn metrics() -> &'static Metrics {
             &["endpoint"]
         )
         .expect("register request_duration_seconds"),
+
+        leaderboard_ws_connections_total: register_gauge!(
+            "leaderboard_ws_connections_total",
+            "Current number of open leaderboard WebSocket connections"
+        )
+        .expect("register leaderboard_ws_connections_total"),
     })
 }
 
@@ -111,6 +120,16 @@ pub fn start_request_timer(endpoint: &str) -> prometheus::HistogramTimer {
         .request_duration_seconds
         .with_label_values(&[endpoint])
         .start_timer()
+}
+
+/// Increment the leaderboard WebSocket connection gauge by 1.
+pub fn inc_leaderboard_ws_connections() {
+    metrics().leaderboard_ws_connections_total.inc();
+}
+
+/// Decrement the leaderboard WebSocket connection gauge by 1.
+pub fn dec_leaderboard_ws_connections() {
+    metrics().leaderboard_ws_connections_total.dec();
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +181,8 @@ mod tests {
         set_db_pool_stats(2.0, 8.0);
         let _timer = start_request_timer("/verify");
         // timer dropped immediately — records a near-zero observation
+        inc_leaderboard_ws_connections();
+        dec_leaderboard_ws_connections();
 
         let output = render_metrics().expect("render");
         assert!(output.contains("totp_verifications_total"), "missing totp counter");
@@ -170,6 +191,7 @@ mod tests {
         assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
         assert!(output.contains("request_duration_seconds"), "missing histogram");
+        assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
     }
 
     #[test]
