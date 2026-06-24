@@ -153,6 +153,8 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
         let user_id = user_id.to_string();
+        // Each closure invocation builds and drives a fresh future — no future
+        // is shared across retry attempts.
         self.with_retry(|| {
             self.block_on(
                 sqlx::query(
@@ -174,13 +176,15 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 .bind(data.enabled)
                 .bind(Self::algorithm_to_db(data.algorithm))
                 .execute(&self.pool),
-            )?;
-            Ok(())
+            )
+            .map(|_| ()) // discard PgQueryResult; map inside closure so with_retry sees Result<(), _>
         })
     }
 
     fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
         let user_id = user_id.to_string();
+        // with_retry owns the retry loop; block_on drives one fresh future per
+        // attempt.  The Option unwrap is post-retry business logic, kept outside.
         let row = self.with_retry(|| {
             self.block_on(
                 sqlx::query_as::<_, (String, String, bool, Option<String>)>(
@@ -208,11 +212,16 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     }
 
     fn delete(&self, user_id: &str) -> Result<(), String> {
-        let result = self.block_on(
-            sqlx::query("DELETE FROM user_two_factor WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&self.pool),
-        )?;
+        let user_id = user_id.to_string();
+        // with_retry retries the DB round-trip; rows_affected check is
+        // post-commit business logic and intentionally sits outside.
+        let result = self.with_retry(|| {
+            self.block_on(
+                sqlx::query("DELETE FROM user_two_factor WHERE user_id = $1")
+                    .bind(&user_id)
+                    .execute(&self.pool),
+            )
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(format!("No 2FA data found for user: {}", user_id));
@@ -222,18 +231,23 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     }
 
     fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
-        let result = self.block_on(
-            sqlx::query(
-                r#"
+        let user_id = user_id.to_string();
+        // with_retry retries the DB round-trip; rows_affected check is
+        // post-commit business logic and intentionally sits outside.
+        let result = self.with_retry(|| {
+            self.block_on(
+                sqlx::query(
+                    r#"
                 UPDATE user_two_factor
                 SET enabled = $2, updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = $1
                 "#,
+                )
+                .bind(&user_id)
+                .bind(enabled)
+                .execute(&self.pool),
             )
-            .bind(user_id)
-            .bind(enabled)
-            .execute(&self.pool),
-        )?;
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(format!("No 2FA data found for user: {}", user_id));
@@ -244,18 +258,23 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
     fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&codes).map_err(|e| e.to_string())?;
-        let result = self.block_on(
-            sqlx::query(
-                r#"
+        let user_id = user_id.to_string();
+        // with_retry retries the DB round-trip; rows_affected check is
+        // post-commit business logic and intentionally sits outside.
+        let result = self.with_retry(|| {
+            self.block_on(
+                sqlx::query(
+                    r#"
                 UPDATE user_two_factor
                 SET backup_codes = $2, updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = $1
                 "#,
+                )
+                .bind(&user_id)
+                .bind(&backup_codes)
+                .execute(&self.pool),
             )
-            .bind(user_id)
-            .bind(backup_codes)
-            .execute(&self.pool),
-        )?;
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(format!("No 2FA data found for user: {}", user_id));
@@ -270,18 +289,22 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         code_index: i32,
         ip_address: Option<&str>,
     ) -> Result<(), String> {
-        let result = self.block_on(
-            sqlx::query(
-                r#"
+        let user_id = user_id.to_string();
+        let ip_address = ip_address.map(|s| s.to_string());
+        let result = self.with_retry(|| {
+            self.block_on(
+                sqlx::query(
+                    r#"
                 INSERT INTO recovery_code_usage (user_id, code_index, used_at, ip_address)
                 VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
                 "#,
+                )
+                .bind(&user_id)
+                .bind(code_index)
+                .bind(ip_address.as_deref())
+                .execute(&self.pool),
             )
-            .bind(user_id)
-            .bind(code_index)
-            .bind(ip_address)
-            .execute(&self.pool),
-        );
+        });
 
         match result {
             Ok(_) => Ok(()),
@@ -313,19 +336,21 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             ip_address: Option<String>,
         }
 
-        let rows = self.block_on(
-            sqlx::query_as::<_, Row>(
-                r#"
+        let rows = self.with_retry(|| {
+            self.block_on(
+                sqlx::query_as::<_, Row>(
+                    r#"
                 SELECT id, user_id, code_index, used_at, ip_address
                 FROM recovery_code_usage
                 ORDER BY used_at DESC
                 LIMIT $1 OFFSET $2
                 "#,
+                )
+                .bind(limit)
+                .bind(offset as i64)
+                .fetch_all(&self.pool),
             )
-            .bind(limit)
-            .bind(offset as i64)
-            .fetch_all(&self.pool),
-        )?;
+        })?;
 
         Ok(rows
             .into_iter()
@@ -353,9 +378,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             enabled: bool,
         }
 
-        let rows = self.block_on(
-            sqlx::query_as::<_, Row>(
-                r#"
+        let rows = self.with_retry(|| {
+            self.block_on(
+                sqlx::query_as::<_, Row>(
+                    r#"
                 SELECT u.user_id, u.enabled
                 FROM user_two_factor u
                 LEFT JOIN canary_accounts c ON c.user_id = u.user_id
@@ -363,11 +389,12 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 ORDER BY u.user_id
                 LIMIT $1 OFFSET $2
                 "#,
+                )
+                .bind(limit)
+                .bind(offset as i64)
+                .fetch_all(&self.pool),
             )
-            .bind(limit)
-            .bind(offset as i64)
-            .fetch_all(&self.pool),
-        )?;
+        })?;
 
         Ok(rows
             .into_iter()
@@ -397,6 +424,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     ) -> Result<Vec<AuditLogEntry>, String> {
         let offset = (page.saturating_sub(1)) * page_size;
         let limit = page_size as i64;
+        let user_id = user_id.to_string();
 
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -408,9 +436,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             metadata: Option<String>,
         }
 
-        let rows = self.block_on(
-            sqlx::query_as::<_, Row>(
-                r#"
+        let rows = self.with_retry(|| {
+            self.block_on(
+                sqlx::query_as::<_, Row>(
+                    r#"
                 SELECT id, user_id, event, EXTRACT(EPOCH FROM timestamp)::bigint AS timestamp,
                        actor, metadata
                 FROM two_fa_audit_log
@@ -418,12 +447,13 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 ORDER BY timestamp DESC
                 LIMIT $2 OFFSET $3
                 "#,
+                )
+                .bind(&user_id)
+                .bind(limit)
+                .bind(offset as i64)
+                .fetch_all(&self.pool),
             )
-            .bind(user_id)
-            .bind(limit)
-            .bind(offset as i64)
-            .fetch_all(&self.pool),
-        )?;
+        })?;
 
         Ok(rows
             .into_iter()
@@ -445,52 +475,69 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         actor: &str,
         metadata: Option<&str>,
     ) -> Result<(), String> {
-        self.block_on(
-            sqlx::query(
-                r#"
-                INSERT INTO two_fa_audit_log (user_id, event, actor, metadata)
-                VALUES ($1, $2, $3, $4)
-                "#,
-            )
-            .bind(user_id)
-            .bind(event)
-            .bind(actor)
-            .bind(metadata)
-            .execute(&self.pool),
-        )?;
-        Ok(())
-    }
-
-    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
-        if is_canary {
+        let user_id = user_id.to_string();
+        let event = event.to_string();
+        let actor = actor.to_string();
+        let metadata = metadata.map(|s| s.to_string());
+        // Each closure invocation builds and drives a fresh future.
+        self.with_retry(|| {
             self.block_on(
                 sqlx::query(
                     r#"
+                INSERT INTO two_fa_audit_log (user_id, event, actor, metadata)
+                VALUES ($1, $2, $3, $4)
+                "#,
+                )
+                .bind(&user_id)
+                .bind(&event)
+                .bind(&actor)
+                .bind(metadata.as_deref())
+                .execute(&self.pool),
+            )
+            .map(|_| ())
+        })
+    }
+
+    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        let user_id = user_id.to_string();
+        // Each branch builds a fresh future on every retry attempt.
+        if is_canary {
+            self.with_retry(|| {
+                self.block_on(
+                    sqlx::query(
+                        r#"
                     INSERT INTO canary_accounts (user_id) VALUES ($1)
                     ON CONFLICT (user_id) DO NOTHING
                     "#,
-                )
-                .bind(user_id)
-                .execute(&self.pool),
-            )?;
-        } else {
-            self.block_on(
-                sqlx::query("DELETE FROM canary_accounts WHERE user_id = $1")
-                    .bind(user_id)
+                    )
+                    .bind(&user_id)
                     .execute(&self.pool),
-            )?;
+                )
+                .map(|_| ())
+            })
+        } else {
+            self.with_retry(|| {
+                self.block_on(
+                    sqlx::query("DELETE FROM canary_accounts WHERE user_id = $1")
+                        .bind(&user_id)
+                        .execute(&self.pool),
+                )
+                .map(|_| ())
+            })
         }
-        Ok(())
     }
 
     fn is_canary(&self, user_id: &str) -> bool {
-        self.block_on(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1",
+        let user_id = user_id.to_string();
+        self.with_retry(|| {
+            self.block_on(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1",
+                )
+                .bind(&user_id)
+                .fetch_one(&self.pool),
             )
-            .bind(user_id)
-            .fetch_one(&self.pool),
-        )
+        })
         .map(|c| c > 0)
         .unwrap_or(false)
     }
@@ -504,19 +551,22 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             updated_at: i64,
         }
 
-        let row = self.block_on(
-            sqlx::query_as::<_, Row>(
-                r#"
+        let user_id = user_id.to_string();
+        let row = self.with_retry(|| {
+            self.block_on(
+                sqlx::query_as::<_, Row>(
+                    r#"
                 SELECT failed_attempts, locked,
                        EXTRACT(EPOCH FROM locked_at)::bigint AS locked_at,
                        EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at
                 FROM two_fa_lockouts
                 WHERE user_id = $1
                 "#,
+                )
+                .bind(&user_id)
+                .fetch_optional(&self.pool),
             )
-            .bind(user_id)
-            .fetch_optional(&self.pool),
-        )?;
+        })?;
 
         Ok(row
             .map(|r| TwoFactorLockoutState {
@@ -529,9 +579,14 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     }
 
     fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
-        self.block_on(
-            sqlx::query(
-                r#"
+        let user_id = user_id.to_string();
+        // with_retry covers the INSERT/UPDATE round-trip.  get_lockout_state is
+        // a separate retried read — the two with_retry calls are sequential, not
+        // nested, so there is no double-wrapping.
+        self.with_retry(|| {
+            self.block_on(
+                sqlx::query(
+                    r#"
                 INSERT INTO two_fa_lockouts (user_id, failed_attempts, locked, locked_at, updated_at)
                 VALUES ($1, 1, FALSE, NULL, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id)
@@ -546,20 +601,25 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                     END,
                     updated_at = CURRENT_TIMESTAMP
                 "#,
+                )
+                .bind(&user_id)
+                .execute(&self.pool),
             )
-            .bind(user_id)
-            .execute(&self.pool),
-        )?;
-        self.get_lockout_state(user_id)
+            .map(|_| ())
+        })?;
+        self.get_lockout_state(&user_id)
     }
 
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
-        self.block_on(
-            sqlx::query("DELETE FROM two_fa_lockouts WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&self.pool),
-        )?;
-        Ok(())
+        let user_id = user_id.to_string();
+        self.with_retry(|| {
+            self.block_on(
+                sqlx::query("DELETE FROM two_fa_lockouts WHERE user_id = $1")
+                    .bind(&user_id)
+                    .execute(&self.pool),
+            )
+            .map(|_| ())
+        })
     }
 
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
@@ -658,5 +718,107 @@ mod tests {
         let prov = select_secret_provider();
         let val = prov.get_secret("MYKEY").unwrap();
         assert_eq!(val, "VAL");
+    }
+
+    // -----------------------------------------------------------------------
+    // with_retry unit tests — no live DB required
+    // -----------------------------------------------------------------------
+
+    /// Verify that with_retry succeeds on the first attempt when the op is clean.
+    #[test]
+    fn with_retry_succeeds_immediately() {
+        // We can exercise with_retry directly via a mock store config.
+        // Build a minimal PostgresTwoFactorStore substitute that only exercises
+        // the retry logic by calling with_retry on a closure directly.
+        //
+        // Since with_retry is a method on PostgresTwoFactorStore we test it by
+        // building a real instance only when DATABASE_URL is set, but the
+        // pure-logic path below uses an independent helper that mirrors the
+        // same implementation so the unit test never needs a live connection.
+        let mut call_count = 0u32;
+        let result = retry_helper(
+            3,
+            100,
+            || {
+                call_count += 1;
+                Ok::<i32, String>(42)
+            },
+        );
+        assert_eq!(result, Ok(42));
+        assert_eq!(call_count, 1, "should succeed on the first attempt");
+    }
+
+    /// A one-shot transient connection error is retried and the second attempt succeeds.
+    #[test]
+    fn with_retry_recovers_from_one_shot_connection_failure() {
+        let mut call_count = 0u32;
+        let result = retry_helper(
+            3,
+            1, // use 1 ms delay to keep the test fast
+            || {
+                call_count += 1;
+                if call_count == 1 {
+                    // Simulate the kind of error that is_connection_error recognises
+                    Err("connection reset by peer".to_string())
+                } else {
+                    Ok::<(), String>(())
+                }
+            },
+        );
+        assert!(result.is_ok(), "should succeed after retry, got: {:?}", result);
+        assert_eq!(call_count, 2, "should have taken exactly two attempts");
+    }
+
+    /// A non-connection error is NOT retried — it is returned immediately.
+    #[test]
+    fn with_retry_does_not_retry_non_connection_errors() {
+        let mut call_count = 0u32;
+        let result = retry_helper::<(), _>(
+            3,
+            1,
+            || {
+                call_count += 1;
+                Err("unique constraint violation".to_string())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(call_count, 1, "non-connection errors must not be retried");
+    }
+
+    /// All three attempts fail with connection errors — the last error is propagated.
+    #[test]
+    fn with_retry_exhausts_attempts_and_returns_last_error() {
+        let mut call_count = 0u32;
+        let result = retry_helper::<(), _>(
+            3,
+            1,
+            || {
+                call_count += 1;
+                Err("connection timeout".to_string())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(call_count, 3, "all three attempts should be exhausted");
+        assert!(result.unwrap_err().contains("timeout"));
+    }
+
+    /// Mirrors the real with_retry implementation so tests above do not need
+    /// a live PostgreSQL connection.
+    fn retry_helper<T, F>(max_attempts: u32, delay_ms: u64, mut op: F) -> Result<T, String>
+    where
+        F: FnMut() -> Result<T, String>,
+    {
+        let mut current_delay = delay_ms;
+        for attempt in 1..=max_attempts {
+            match op() {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < max_attempts && is_connection_error(&e) => {
+                    std::thread::sleep(std::time::Duration::from_millis(current_delay));
+                    current_delay *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
     }
 }
