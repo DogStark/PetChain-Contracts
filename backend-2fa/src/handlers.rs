@@ -773,6 +773,12 @@ pub struct ProvisionTenantRequest {
 pub struct ProvisionTenantResponse {
     pub tenant_id: String,
     pub totp_issuer: String,
+    pub rate_limit_max_failures: u32,
+    /// `true` if `tenant_id` already existed and this call returned the
+    /// existing tenant's config instead of creating a new one. Lets
+    /// infrastructure automation safely retry `POST /tenant/provision`
+    /// without erroring or creating duplicates.
+    pub already_existed: bool,
 }
 
 /// Handlers that operate within a single tenant's namespace.
@@ -911,7 +917,13 @@ impl TenantProvisioningHandlers {
         Self { registry }
     }
 
-    /// Provision a new tenant (super-admin only — caller must be verified externally).
+    /// Provision a tenant (super-admin only — caller must be verified externally).
+    ///
+    /// Idempotent: calling this repeatedly with the same `tenant_id` never
+    /// errors or creates a duplicate. The first call creates the tenant and
+    /// returns `already_existed: false`; subsequent calls return the
+    /// existing tenant's config with `already_existed: true`. This lets
+    /// infrastructure automation safely retry provisioning on failure.
     pub fn provision_tenant(
         &self,
         _super_admin: &AuthenticatedAdmin,
@@ -922,10 +934,12 @@ impl TenantProvisioningHandlers {
             totp_issuer: req.totp_issuer.clone(),
             rate_limit_max_failures: req.rate_limit_max_failures,
         };
-        self.registry.provision(config)?;
+        let (existing_or_new, already_existed) = self.registry.provision(config)?;
         Ok(ProvisionTenantResponse {
-            tenant_id: req.tenant_id,
-            totp_issuer: req.totp_issuer,
+            tenant_id: existing_or_new.tenant_id,
+            totp_issuer: existing_or_new.totp_issuer,
+            rate_limit_max_failures: existing_or_new.rate_limit_max_failures,
+            already_existed,
         })
     }
 

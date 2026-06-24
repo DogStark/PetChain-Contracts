@@ -927,14 +927,26 @@ pub struct TenantRegistry {
 }
 
 impl TenantRegistry {
-    /// Provision a new tenant. Returns `Err` if the tenant already exists.
-    pub fn provision(&self, config: TenantConfig) -> Result<(), String> {
+    /// Provision a tenant idempotently.
+    ///
+    /// If `tenant_id` is unknown, it is created and `(config, false)` is
+    /// returned. If it already exists, the existing config is returned
+    /// unchanged along with `(existing_config, true)` — the caller can use
+    /// the `bool` to signal `already_existed` without treating this as an
+    /// error. The check-and-insert happens under a single lock acquisition
+    /// (via `Entry`), so concurrent calls for the same `tenant_id` cannot
+    /// race past each other and create duplicates.
+    pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
-        if map.contains_key(&config.tenant_id) {
-            return Err(format!("Tenant '{}' already exists", config.tenant_id));
+        match map.entry(config.tenant_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                Ok((entry.get().clone(), true))
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(config.clone());
+                Ok((config, false))
+            }
         }
-        map.insert(config.tenant_id.clone(), config);
-        Ok(())
     }
 
     /// Retrieve a scoped store for the given tenant. Returns `Err` if the
