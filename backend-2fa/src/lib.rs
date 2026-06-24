@@ -34,6 +34,7 @@ pub use rate_limiter::{
     progressive_delay_secs, DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter,
     LiveRedisBackend, MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend,
     RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter,
+    TenantRateLimitKey,
 };
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
@@ -43,5 +44,5 @@ pub use two_factor::{
 };
 pub use webhooks::{
     DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog, WebhookManager,
-    WebhookPayload,
+    WebhookPayload, WebhookUrlError, validate_webhook_url,
 };

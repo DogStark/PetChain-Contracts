@@ -65,6 +65,61 @@ pub trait RedisBackend: Send + Sync {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tenant-scoped rate-limit key helper (Issue #854)
+// ---------------------------------------------------------------------------
+
+/// A typed helper that builds rate-limit keys with guaranteed tenant isolation.
+///
+/// Using `TenantRateLimitKey` instead of ad-hoc `format!` strings ensures that
+/// every rate-limit key is prefixed by the tenant ID, preventing cross-tenant
+/// bucket sharing.
+///
+/// # Examples
+/// ```
+/// use petchain_2fa::rate_limiter::TenantRateLimitKey;
+///
+/// let key = TenantRateLimitKey::new("tenant_a", "verify", "user42");
+/// assert_eq!(key.as_str(), "tenant_a::verify::user42");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TenantRateLimitKey {
+    inner: String,
+}
+
+impl TenantRateLimitKey {
+    /// Build a tenant-scoped rate-limit key.
+    ///
+    /// * `tenant_id` — the tenant identifier (must not be empty)
+    /// * `action`    — the action being rate-limited (e.g. `"verify"`, `"login"`)
+    /// * `user_id`   — the user within the tenant
+    pub fn new(tenant_id: &str, action: &str, user_id: &str) -> Self {
+        debug_assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
+        debug_assert!(!action.is_empty(), "action must not be empty");
+        Self {
+            inner: format!("{tenant_id}::{action}::{user_id}"),
+        }
+    }
+
+    /// Return the key as a string slice, suitable for passing to
+    /// `RateLimiter::record_failure` / `record_success`.
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
+}
+
+impl std::fmt::Display for TenantRateLimitKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.inner)
+    }
+}
+
+impl AsRef<str> for TenantRateLimitKey {
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
+}
+
 pub fn progressive_delay_secs(attempt: u32) -> Option<u64> {
     if attempt == 0 || attempt >= 10 {
         None
@@ -642,5 +697,77 @@ impl RateLimiter for DistributedRateLimiter {
             }
         }
         self.fallback.record_success(key);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for TenantRateLimitKey (Issue #854)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tenant_key_tests {
+    use super::*;
+
+    #[test]
+    fn test_tenant_key_format() {
+        let key = TenantRateLimitKey::new("tenant_a", "verify", "user42");
+        assert_eq!(key.as_str(), "tenant_a::verify::user42");
+    }
+
+    #[test]
+    fn test_tenant_key_display() {
+        let key = TenantRateLimitKey::new("org1", "login", "bob");
+        assert_eq!(format!("{key}"), "org1::login::bob");
+    }
+
+    #[test]
+    fn test_tenant_key_as_ref() {
+        let key = TenantRateLimitKey::new("t1", "action", "u1");
+        let s: &str = key.as_ref();
+        assert_eq!(s, "t1::action::u1");
+    }
+
+    #[test]
+    fn test_different_tenants_same_user_get_different_keys() {
+        let key_a = TenantRateLimitKey::new("tenant_a", "verify", "user1");
+        let key_b = TenantRateLimitKey::new("tenant_b", "verify", "user1");
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a.as_str(), key_b.as_str());
+    }
+
+    #[test]
+    fn test_cross_tenant_isolation_with_in_memory_limiter() {
+        // Two tenants with the same user_id must have independent rate-limit state.
+        let limiter = InMemoryRateLimiter::new(2, 60, 300);
+
+        let key_a = TenantRateLimitKey::new("tenant_a", "verify", "shared_user");
+        let key_b = TenantRateLimitKey::new("tenant_b", "verify", "shared_user");
+
+        // Exhaust tenant_a's limit
+        limiter.record_failure(key_a.as_str());
+        limiter.record_failure(key_a.as_str());
+        let result_a = limiter.record_failure(key_a.as_str());
+        assert!(matches!(result_a, RateLimitResult::Blocked { .. }));
+
+        // tenant_b should still be allowed
+        let result_b = limiter.record_failure(key_b.as_str());
+        assert!(matches!(result_b, RateLimitResult::Allowed { .. }));
+    }
+
+    #[test]
+    fn test_same_tenant_different_actions_are_independent() {
+        let limiter = InMemoryRateLimiter::new(1, 60, 300);
+
+        let verify_key = TenantRateLimitKey::new("t1", "verify", "user1");
+        let disable_key = TenantRateLimitKey::new("t1", "disable", "user1");
+
+        // Exhaust verify limit
+        limiter.record_failure(verify_key.as_str());
+        let result_v = limiter.record_failure(verify_key.as_str());
+        assert!(matches!(result_v, RateLimitResult::Blocked { .. }));
+
+        // disable action should still be allowed
+        let result_d = limiter.record_failure(disable_key.as_str());
+        assert!(matches!(result_d, RateLimitResult::Allowed { .. }));
     }
 }

@@ -2972,11 +2972,12 @@ mod canary_tests {
 
     fn make_canary_handlers() -> (CanaryHandlers, Arc<Mutex<Vec<String>>>) {
         let (http_client, calls) = RecordingHttpClient::new();
-        let wm = Arc::new(WebhookManager::new(Arc::new(http_client)));
+        let wm = Arc::new(WebhookManager::new_with_http_allowed(Arc::new(http_client)));
         wm.configure(
             SecurityEventType::CanaryTriggered,
             "http://alert.example.com/hook".to_string(),
-        );
+        )
+        .unwrap();
         (CanaryHandlers::new(wm), calls)
     }
 
@@ -3054,6 +3055,9 @@ mod canary_tests {
             .verify_with_canary_check("canary-003", "000000", Some("192.168.1.1"))
             .unwrap();
 
+        // fire() spawns a thread — give it time to complete
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
         let fired = calls.lock().unwrap();
         assert!(!fired.is_empty());
         assert!(fired[0].contains("canary_triggered"));
@@ -3115,12 +3119,16 @@ mod webhook_handler_tests {
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {
-        let manager = WebhookManager::default();
+        let manager = WebhookManager::new_with_http_allowed(
+            Arc::new(crate::webhooks::DefaultHttpClient),
+        );
         manager.configure(
             SecurityEventType::FailedTwoFa,
             "http://example.com/hook".to_string(),
-        );
-        manager.fire(
+        )
+        .unwrap();
+        // Use fire_sync to avoid needing to wait for a spawned thread
+        manager.fire_sync(
             SecurityEventType::FailedTwoFa,
             "user1",
             std::collections::HashMap::new(),
