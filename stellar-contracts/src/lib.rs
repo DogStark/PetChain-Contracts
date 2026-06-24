@@ -1284,6 +1284,18 @@ pub struct BiomarkerTrendAlert {
     pub window: u32,
 }
 
+/// Event emitted when a biomarker value deviates more than 3 standard deviations from
+/// the pet's historical baseline (z-score scaled by 100, so 305 = z-score 3.05).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabResultAnomaly {
+    pub version: u32,
+    pub pet_id: u64,
+    pub biomarker: String,
+    pub value: i128,
+    pub z_score: i128,
+}
+
 /// Event emitted for each consent revoked during a cascade revocation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5244,6 +5256,164 @@ impl PetChainContract {
         vaccine_id
     }
 
+    // -----------------------------------------------------------------------
+    // Lab Results
+    // -----------------------------------------------------------------------
+
+    /// Integer square root (Newton's method).  Returns floor(sqrt(n)); 0 for n ≤ 0.
+    fn isqrt(n: i128) -> i128 {
+        if n <= 0 {
+            return 0;
+        }
+        let mut x = n;
+        let mut y = (x + 1) / 2;
+        while y < x {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        x
+    }
+
+    /// Compute z-score × 100 (integer arithmetic) for `value` against `history`.
+    /// Returns 0 when stddev is 0 (all values identical).
+    fn zscore_scaled(value: i128, history: &[i128]) -> i128 {
+        let n = history.len() as i128;
+        let sum: i128 = history.iter().fold(0i128, |acc, &v| acc.saturating_add(v));
+        let mean = sum / n;
+        let variance = history
+            .iter()
+            .fold(0i128, |acc, &v| {
+                let diff = v.saturating_sub(mean);
+                acc.saturating_add(diff.saturating_mul(diff))
+            })
+            / n;
+        let stddev = Self::isqrt(variance);
+        if stddev == 0 {
+            return 0;
+        }
+        value.saturating_sub(mean).saturating_mul(100) / stddev
+    }
+
+    /// Add a lab result for a pet.  If the result includes biomarker values and
+    /// the pet already has at least 3 prior readings for a given biomarker, the
+    /// z-score of the new value is computed against the last 10 readings.
+    /// A [`LabResultAnomaly`] event is emitted for every biomarker whose
+    /// |z-score × 100| exceeds 300 (i.e. z > 3.0).  The call is never blocked.
+    pub fn add_lab_result(
+        env: Env,
+        pet_id: u64,
+        vet_address: Address,
+        test_type: String,
+        results: String,
+        reference_ranges: String,
+        attachment_hash: Option<String>,
+        medical_record_id: Option<u64>,
+        biomarkers: Map<String, i128>,
+    ) -> u64 {
+        vet_address.require_auth();
+
+        // --- allocate ID ---
+        let lab_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::LabResultCount)
+            .unwrap_or(0);
+        let lab_id = safe_increment(lab_count);
+
+        // --- anomaly detection: run BEFORE storing so we see only prior readings ---
+        let prior_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        // For each biomarker in the new result, collect up to 10 prior values.
+        for biomarker_name in biomarkers.keys() {
+            let new_value = biomarkers.get(biomarker_name.clone()).unwrap();
+
+            // Walk the most recent prior results (up to 10).
+            let window_start = if prior_count >= 10 { prior_count - 9 } else { 1 };
+            let mut history: [i128; 10] = [0i128; 10];
+            let mut history_len: usize = 0;
+
+            let mut idx = prior_count;
+            while idx >= window_start && history_len < 10 {
+                if let Some(prev_lab_id) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, idx)))
+                {
+                    if let Some(prev_lab) = env
+                        .storage()
+                        .instance()
+                        .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(prev_lab_id))
+                    {
+                        if let Some(v) = prev_lab.biomarkers.get(biomarker_name.clone()) {
+                            history[history_len] = v;
+                            history_len += 1;
+                        }
+                    }
+                }
+                if idx == 0 { break; }
+                idx -= 1;
+            }
+
+            // Need at least 3 readings to compute a meaningful z-score.
+            if history_len < 3 {
+                continue;
+            }
+
+            let z = Self::zscore_scaled(new_value, &history[..history_len]);
+            // Emit anomaly when |z × 100| > 300  (i.e. z > 3.0).
+            let abs_z = if z < 0 { z.saturating_neg() } else { z };
+            if abs_z > 300 {
+                env.events().publish(
+                    (String::from_str(&env, "LAB_RESULT_ANOMALY"), pet_id),
+                    LabResultAnomaly {
+                        version: EVENT_SCHEMA_VERSION,
+                        pet_id,
+                        biomarker: biomarker_name,
+                        value: new_value,
+                        z_score: z,
+                    },
+                );
+            }
+        }
+
+        // --- store the new lab result ---
+        let now = env.ledger().timestamp();
+        let lab_result = LabResult {
+            id: lab_id,
+            pet_id,
+            test_type,
+            date: now,
+            results,
+            vet_address,
+            reference_ranges,
+            attachment_hash,
+            medical_record_id,
+            biomarkers,
+            biomarker_flags: Map::new(&env),
+        };
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::LabResult(lab_id), &lab_result);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::LabResultCount, &lab_id);
+
+        let new_pet_lab_count = safe_increment(prior_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::PetLabResultCount(pet_id), &new_pet_lab_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::PetLabResultIndex((pet_id, new_pet_lab_count)), &lab_id);
+
+        lab_id
+    }
+
     pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
         if let Some(record) = env
             .storage()
@@ -8293,4 +8463,162 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
         block_index = block_index.saturating_add(1);
     }
     output
+}
+
+// =============================================================================
+// LAB RESULT ANOMALY DETECTION TESTS  (Issue #811)
+// =============================================================================
+//
+// History setup: 9 readings of value 100 and 1 reading of value 200.
+//   mean     = (9×100 + 200) / 10 = 110
+//   variance = (9×(100-110)² + (200-110)²) / 10 = (900 + 8100) / 10 = 900
+//   stddev   = 30
+//
+// z-scores (×100):
+//   value=100 → (100-110)×100/30 = -33  → |z|=33  → no anomaly
+//   value=200 → (200-110)×100/30 = 300  → |z|=300 → no anomaly (NOT > 300)
+//   value=210 → (210-110)×100/30 = 333  → |z|=333 → anomaly!
+#[cfg(test)]
+mod test_lab_result_anomaly {
+    use crate::{
+        Gender, LabResultAnomaly, PetChainContract, PetChainContractClient, PrivacyLevel,
+        Species, EVENT_SCHEMA_VERSION,
+    };
+    use soroban_sdk::{
+        testutils::{Address as _, Events, Ledger as _},
+        Address, Env, Map, String, TryFromVal, Val,
+    };
+
+    fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, u64) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        client.init_admin(&admin);
+
+        let owner = Address::generate(&env);
+        let vet = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &String::from_str(&env, "Brown"),
+            &25u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        client.register_vet(
+            &vet,
+            &String::from_str(&env, "Dr. Smith"),
+            &String::from_str(&env, "LIC-001"),
+            &String::from_str(&env, "General"),
+        );
+        client.verify_vet(&admin, &vet);
+
+        (env, client, owner, vet, pet_id)
+    }
+
+    fn add_glucose(
+        env: &Env,
+        client: &PetChainContractClient,
+        pet_id: u64,
+        vet: &Address,
+        glucose: i128,
+        ts: u64,
+    ) {
+        env.ledger().set_timestamp(ts);
+        let mut bm = Map::new(env);
+        bm.set(String::from_str(env, "glucose"), glucose);
+        client.add_lab_result(
+            &pet_id,
+            vet,
+            &String::from_str(env, "Blood Test"),
+            &String::from_str(env, "Normal"),
+            &String::from_str(env, "0-200"),
+            &None,
+            &None,
+            &bm,
+        );
+    }
+
+    fn seed_history(env: &Env, client: &PetChainContractClient, pet_id: u64, vet: &Address) {
+        // 9 readings of 100
+        for i in 0..9u64 {
+            add_glucose(env, client, pet_id, vet, 100, 1000 + i * 100);
+        }
+        // 1 reading of 200  →  mean=110, stddev=30
+        add_glucose(env, client, pet_id, vet, 200, 2000);
+    }
+
+    fn anomaly_events(env: &Env) -> soroban_sdk::Vec<(soroban_sdk::Vec<Val>, Val)> {
+        let topic = String::from_str(env, "LAB_RESULT_ANOMALY");
+        let all = env.events().all();
+        let mut out = soroban_sdk::Vec::new(env);
+        for i in 0..all.len() {
+            // Events are (contract_id, topics, data)
+            let (_contract, topics, data): (Address, soroban_sdk::Vec<Val>, Val) =
+                all.get(i).unwrap();
+            if topics.len() > 0 {
+                let t0: Val = topics.get(0).unwrap();
+                if let Ok(s) = String::try_from_val(env, &t0) {
+                    if s == topic {
+                        out.push_back((topics, data));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    // Test 1: normal value – z-score well within threshold, no event emitted.
+    #[test]
+    fn test_normal_value_no_anomaly() {
+        let (env, client, _owner, vet, pet_id) = setup();
+        seed_history(&env, &client, pet_id, &vet);
+
+        // value=100 → z=-33 → |z|<300 → no anomaly
+        add_glucose(&env, &client, pet_id, &vet, 100, 3000);
+
+        assert_eq!(anomaly_events(&env).len(), 0);
+    }
+
+    // Test 2: borderline value – z-score exactly 300 (not strictly > 300), no event.
+    #[test]
+    fn test_borderline_value_no_anomaly() {
+        let (env, client, _owner, vet, pet_id) = setup();
+        seed_history(&env, &client, pet_id, &vet);
+
+        // value=200 → z=300 → |z|=300, NOT > 300 → no anomaly
+        add_glucose(&env, &client, pet_id, &vet, 200, 3000);
+
+        assert_eq!(anomaly_events(&env).len(), 0);
+    }
+
+    // Test 3: clear anomaly – z-score 333 > 300, event must be emitted.
+    #[test]
+    fn test_clear_anomaly_emits_event() {
+        let (env, client, _owner, vet, pet_id) = setup();
+        seed_history(&env, &client, pet_id, &vet);
+
+        // value=210 → z=333 → |z|>300 → anomaly
+        add_glucose(&env, &client, pet_id, &vet, 210, 3000);
+
+        let events = anomaly_events(&env);
+        assert_eq!(events.len(), 1);
+
+        // Decode and verify the event payload.
+        let (_topics, data) = events.get(0).unwrap();
+        let anomaly: LabResultAnomaly = LabResultAnomaly::try_from_val(&env, &data).unwrap();
+        assert_eq!(anomaly.pet_id, pet_id);
+        assert_eq!(anomaly.biomarker, String::from_str(&env, "glucose"));
+        assert_eq!(anomaly.value, 210);
+        assert_eq!(anomaly.z_score, 333);
+        assert_eq!(anomaly.version, EVENT_SCHEMA_VERSION);
+    }
 }
