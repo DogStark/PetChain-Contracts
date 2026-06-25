@@ -28,6 +28,9 @@ redis = "0.27"
 prometheus = { version = "0.13", features = ["process"] }
 url = "2"
 
+[features]
+webhook-client = []
+
 [[example]]
 name = "example_integration"
 path = "examples/example_integration.rs"
