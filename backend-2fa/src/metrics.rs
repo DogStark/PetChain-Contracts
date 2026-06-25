@@ -41,6 +41,10 @@ pub struct Metrics {
     pub request_duration_seconds: HistogramVec,
     /// Tracks the current number of open leaderboard WebSocket connections.
     pub leaderboard_ws_connections_total: Gauge,
+    /// Webhook delivery outcomes, labelled by `result` (`ok` or `fail`).
+    pub webhook_delivery_total: CounterVec,
+    /// Total number of webhook retry attempts (excludes the initial attempt).
+    pub webhook_delivery_retries_total: prometheus::Counter,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -162,6 +166,20 @@ pub fn dec_leaderboard_ws_connections() {
     metrics().leaderboard_ws_connections_total.dec();
 }
 
+/// Record a completed webhook delivery attempt. `success` maps to label `ok`/`fail`.
+pub fn record_webhook_delivery(success: bool) {
+    let label = if success { "ok" } else { "fail" };
+    metrics()
+        .webhook_delivery_total
+        .with_label_values(&[label])
+        .inc();
+}
+
+/// Record one webhook delivery retry (called once per retry, not per initial attempt).
+pub fn record_webhook_retry() {
+    metrics().webhook_delivery_retries_total.inc();
+}
+
 // ---------------------------------------------------------------------------
 // /metrics handler (framework-agnostic: returns the raw text body)
 // ---------------------------------------------------------------------------
@@ -215,6 +233,10 @@ mod tests {
         inc_leaderboard_ws_connections();
         dec_leaderboard_ws_connections();
 
+        record_webhook_delivery(true);
+        record_webhook_delivery(false);
+        record_webhook_retry();
+
         let output = render_metrics().expect("render");
         assert!(
             output.contains("totp_verifications_total"),
@@ -262,5 +284,31 @@ mod tests {
         let output = render_metrics().expect("render");
         assert!(output.contains(r#"result="ok""#));
         assert!(output.contains(r#"result="fail""#));
+    }
+
+    #[test]
+    fn webhook_delivery_counters_increment() {
+        record_webhook_delivery(true);
+        record_webhook_delivery(false);
+        record_webhook_retry();
+        record_webhook_retry();
+
+        let output = render_metrics().expect("render");
+        assert!(
+            output.contains("webhook_delivery_total"),
+            "webhook_delivery_total must appear in metrics output"
+        );
+        assert!(
+            output.contains(r#"webhook_delivery_total{result="ok"}"#),
+            "webhook_delivery_total ok label must appear"
+        );
+        assert!(
+            output.contains(r#"webhook_delivery_total{result="fail"}"#),
+            "webhook_delivery_total fail label must appear"
+        );
+        assert!(
+            output.contains("webhook_delivery_retries_total"),
+            "webhook_delivery_retries_total must appear in metrics output"
+        );
     }
 }
