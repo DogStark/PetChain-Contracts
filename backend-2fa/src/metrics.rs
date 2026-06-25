@@ -54,57 +54,57 @@ pub fn metrics() -> &'static Metrics {
         )
         .expect("register build_info");
         build_info
-            .with_label_values(&[
-                env!("CARGO_PKG_VERSION"),
-                env!("GIT_SHA"),
-            ])
+            .with_label_values(&[env!("CARGO_PKG_VERSION"), env!("GIT_SHA")])
             .set(1.0);
 
         Metrics {
             build_info,
             totp_verifications_total: register_counter_vec!(
-            "totp_verifications_total",
-            "Total TOTP verification attempts",
-            &["result"]
-        )
-        .expect("register totp_verifications_total"),
+                "totp_verifications_total",
+                "Total TOTP verification attempts",
+                &["result"]
+            )
+            .expect("register totp_verifications_total"),
 
-        recovery_code_uses_total: prometheus::register_counter!(
-            "recovery_code_uses_total",
-            "Total recovery code uses"
-        )
-        .expect("register recovery_code_uses_total"),
+            recovery_code_uses_total: prometheus::register_counter!(
+                "recovery_code_uses_total",
+                "Total recovery code uses"
+            )
+            .expect("register recovery_code_uses_total"),
 
-        rate_limit_hits_total: prometheus::register_counter!(
-            "rate_limit_hits_total",
-            "Total rate limit blocks"
-        )
-        .expect("register rate_limit_hits_total"),
+            rate_limit_hits_total: prometheus::register_counter!(
+                "rate_limit_hits_total",
+                "Total rate limit blocks"
+            )
+            .expect("register rate_limit_hits_total"),
 
-        rate_limiter_redis_fallback_total: prometheus::register_counter!(
-            "rate_limiter_redis_fallback_total",
-            "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
-        )
-        .expect("register rate_limiter_redis_fallback_total"),
+            rate_limiter_redis_fallback_total: prometheus::register_counter!(
+                "rate_limiter_redis_fallback_total",
+                "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
+            )
+            .expect("register rate_limiter_redis_fallback_total"),
 
-        db_pool_active: register_gauge!("db_pool_active", "Number of active DB pool connections")
+            db_pool_active: register_gauge!(
+                "db_pool_active",
+                "Number of active DB pool connections"
+            )
             .expect("register db_pool_active"),
 
-        db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
-            .expect("register db_pool_idle"),
+            db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
+                .expect("register db_pool_idle"),
 
-        request_duration_seconds: register_histogram_vec!(
-            "request_duration_seconds",
-            "HTTP request duration in seconds",
-            &["endpoint"]
-        )
-        .expect("register request_duration_seconds"),
+            request_duration_seconds: register_histogram_vec!(
+                "request_duration_seconds",
+                "HTTP request duration in seconds",
+                &["endpoint"]
+            )
+            .expect("register request_duration_seconds"),
 
-        leaderboard_ws_connections_total: register_gauge!(
-            "leaderboard_ws_connections_total",
-            "Current number of open leaderboard WebSocket connections"
-        )
-        .expect("register leaderboard_ws_connections_total"),
+            leaderboard_ws_connections_total: register_gauge!(
+                "leaderboard_ws_connections_total",
+                "Current number of open leaderboard WebSocket connections"
+            )
+            .expect("register leaderboard_ws_connections_total"),
         }
     })
 }
@@ -216,13 +216,28 @@ mod tests {
         dec_leaderboard_ws_connections();
 
         let output = render_metrics().expect("render");
-        assert!(output.contains("totp_verifications_total"), "missing totp counter");
-        assert!(output.contains("recovery_code_uses_total"), "missing recovery counter");
-        assert!(output.contains("rate_limit_hits_total"), "missing rate limit counter");
+        assert!(
+            output.contains("totp_verifications_total"),
+            "missing totp counter"
+        );
+        assert!(
+            output.contains("recovery_code_uses_total"),
+            "missing recovery counter"
+        );
+        assert!(
+            output.contains("rate_limit_hits_total"),
+            "missing rate limit counter"
+        );
         assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
-        assert!(output.contains("request_duration_seconds"), "missing histogram");
-        assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
+        assert!(
+            output.contains("request_duration_seconds"),
+            "missing histogram"
+        );
+        assert!(
+            output.contains("leaderboard_ws_connections_total"),
+            "missing leaderboard ws gauge"
+        );
         assert!(output.contains("build_info"), "missing build_info gauge");
     }
 
@@ -230,8 +245,14 @@ mod tests {
     fn build_info_gauge_present() {
         let output = render_metrics().expect("render");
         assert!(output.contains("build_info"), "build_info gauge missing");
-        assert!(output.contains(r#"version=""#), "build_info missing version label");
-        assert!(output.contains(r#"git_sha=""#), "build_info missing git_sha label");
+        assert!(
+            output.contains(r#"version=""#),
+            "build_info missing version label"
+        );
+        assert!(
+            output.contains(r#"git_sha=""#),
+            "build_info missing git_sha label"
+        );
     }
 
     #[test]

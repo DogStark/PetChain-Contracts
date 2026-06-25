@@ -253,7 +253,10 @@ mod tests {
     fn fallback_trace_id_is_32_lowercase_hex() {
         let trace_id = hex::encode(rand::random::<[u8; 16]>());
         assert_eq!(trace_id.len(), 32, "trace_id must be 32 chars");
-        assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()), "trace_id must be hex");
+        assert!(
+            trace_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "trace_id must be hex"
+        );
         // Ensure TraceContext::parse accepts it
         let header = format!("00-{trace_id}-0000000000000000-01");
         assert!(TraceContext::parse(&header).is_some());
