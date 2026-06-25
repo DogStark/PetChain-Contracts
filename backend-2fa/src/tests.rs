@@ -762,6 +762,9 @@ mod tests {
         impl RateLimiter for AlwaysBlockedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
                 RateLimitResult::Blocked {
+                    limit: 5,
+                    remaining: 0,
+                    reset_at: 0,
                     retry_after_secs: 300,
                 }
             }
@@ -772,7 +775,7 @@ mod tests {
         struct AlwaysAllowedLimiter;
         impl RateLimiter for AlwaysAllowedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
-                RateLimitResult::Allowed { remaining: 99 }
+                RateLimitResult::Allowed { limit: 5, remaining: 99, reset_at: 0 }
             }
             fn record_success(&self, _key: &str) {}
         }
@@ -782,7 +785,7 @@ mod tests {
             let limiter = InMemoryRateLimiter::new(5, 60, 300);
             for i in 1..5 {
                 match limiter.record_failure("user:test") {
-                    RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 5 - i),
+                    RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 5 - i),
                     RateLimitResult::Blocked { .. } => panic!("should not be blocked before limit"),
                 }
             }
@@ -795,7 +798,7 @@ mod tests {
                 limiter.record_failure("user:lockout");
             }
             match limiter.record_failure("user:lockout") {
-                RateLimitResult::Blocked { retry_after_secs } => assert!(
+                RateLimitResult::Blocked { retry_after_secs, .. } => assert!(
                     retry_after_secs >= 299 && retry_after_secs <= 300,
                     "retry_after_secs was {}",
                     retry_after_secs
@@ -811,7 +814,7 @@ mod tests {
             limiter.record_failure("user:clear");
             limiter.record_success("user:clear");
             match limiter.record_failure("user:clear") {
-                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+                RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 2),
                 RateLimitResult::Blocked { .. } => panic!("should not be blocked after success"),
             }
         }

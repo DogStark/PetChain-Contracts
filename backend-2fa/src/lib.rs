@@ -4,6 +4,7 @@ pub mod handlers;
 pub mod ip_access;
 pub mod leaderboard;
 pub mod metrics;
+pub mod rate_limit_middleware;
 pub mod rate_limiter;
 pub mod tracing_middleware;
 pub mod two_factor;
@@ -36,6 +37,9 @@ pub use leaderboard::{
 pub use metrics::{
     metrics, record_rate_limit_hit, record_recovery_code_use, record_totp_verification,
     render_metrics, set_db_pool_stats, start_request_timer,
+};
+pub use rate_limit_middleware::{
+    RateLimitMiddleware, HEADER_LIMIT, HEADER_REMAINING, HEADER_RESET, HEADER_RETRY_AFTER,
 };
 pub use rate_limiter::{
     progressive_delay_secs, DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter,
