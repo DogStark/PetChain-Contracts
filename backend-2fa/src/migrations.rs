@@ -64,7 +64,9 @@ impl std::error::Error for MigrationError {}
 /// A trait for executing SQL against a database.
 pub trait SqlExecutor {
     fn execute(&self, sql: &str) -> Result<(), String>;
+    fn execute_with_params(&self, sql: &str, params: &[&str]) -> Result<(), String>;
     fn query_scalar(&self, sql: &str) -> Result<Option<i64>, String>;
+    fn query_scalar_with_params(&self, sql: &str, params: &[&str]) -> Result<Option<i64>, String>;
 }
 
 /// The migration runner that tracks and applies migrations.
@@ -97,9 +99,11 @@ impl MigrationRunner {
         self.ensure_tracking_table(executor)?;
         let mut applied = Vec::new();
         for migration in &self.migrations {
-            let count = executor.query_scalar(&format!(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = {}", migration.version
-            )).map_err(|e| MigrationError::Sql(e))?.unwrap_or(0);
+            let version_str = migration.version.to_string();
+            let count = executor.query_scalar_with_params(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
+                &[version_str.as_str()]
+            ).map_err(|e| MigrationError::Sql(e))?.unwrap_or(0);
             if count > 0 {
                 applied.push((migration.version, migration.name.clone()));
             }
@@ -122,12 +126,12 @@ impl MigrationRunner {
         for migration in &pending {
             executor.execute(&migration.up_script)
                 .map_err(|e| MigrationError::Sql(format!("migration {} up: {}", migration.version, e)))?;
-            executor.execute(&format!(
-                "INSERT INTO schema_migrations (version, name, checksum) VALUES ({}, '{}', '{}')",
-                migration.version,
-                migration.name.replace('\'', "''"),
-                migration.checksum
-            )).map_err(|e| MigrationError::Sql(format!("recording migration {}: {}", migration.version, e)))?;
+            
+            let version_str = migration.version.to_string();
+            executor.execute_with_params(
+                "INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
+                &[version_str.as_str(), migration.name.as_str(), migration.checksum.as_str()]
+            ).map_err(|e| MigrationError::Sql(format!("recording migration {}: {}", migration.version, e)))?;
         }
         Ok(pending.len())
     }
@@ -145,8 +149,12 @@ impl MigrationRunner {
             executor.execute(&migration.down_script)
                 .map_err(|e| MigrationError::Sql(format!("migration {} down: {}", migration.version, e)))?;
         }
-        executor.execute(&format!("DELETE FROM schema_migrations WHERE version = {}", migration.version))
-            .map_err(|e| MigrationError::Sql(e))?;
+        
+        let version_str = migration.version.to_string();
+        executor.execute_with_params(
+            "DELETE FROM schema_migrations WHERE version = $1",
+            &[version_str.as_str()]
+        ).map_err(|e| MigrationError::Sql(e))?;
         Ok(migration.version)
     }
 
@@ -186,7 +194,34 @@ mod tests {
         fn execute(&self, _sql: &str) -> Result<(), String> {
             Ok(())
         }
-        fn query_scalar(&self, _sql: &str) -> Result<Option<i64>, String> {
+        fn execute_with_params(&self, sql: &str, params: &[&str]) -> Result<(), String> {
+            if sql.starts_with("INSERT INTO schema_migrations") {
+                let mut map = HashMap::new();
+                map.insert("version".to_string(), params[0].to_string());
+                self.tables.borrow_mut().get_mut("schema_migrations").unwrap().push(map);
+            } else if sql.starts_with("DELETE FROM schema_migrations") {
+                let version = params[0].to_string();
+                self.tables.borrow_mut().get_mut("schema_migrations").unwrap().retain(|row| row.get("version") != Some(&version));
+            }
+            Ok(())
+        }
+        fn query_scalar(&self, sql: &str) -> Result<Option<i64>, String> {
+            if sql.starts_with("SELECT MAX(version)") {
+                let max = self.tables.borrow().get("schema_migrations").unwrap().iter()
+                    .filter_map(|row| row.get("version").and_then(|v| v.parse::<i64>().ok()))
+                    .max();
+                return Ok(Some(max.unwrap_or(0)));
+            }
+            Ok(Some(0))
+        }
+        fn query_scalar_with_params(&self, sql: &str, params: &[&str]) -> Result<Option<i64>, String> {
+            if sql.starts_with("SELECT COUNT(*)") {
+                let version = params[0].to_string();
+                let count = self.tables.borrow().get("schema_migrations").unwrap().iter()
+                    .filter(|row| row.get("version") == Some(&version))
+                    .count();
+                return Ok(Some(count as i64));
+            }
             Ok(Some(0))
         }
     }

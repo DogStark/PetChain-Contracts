@@ -3374,6 +3374,186 @@ mod progressive_two_factor_lockout_tests {
             )
             .unwrap());
     }
+
+    mod ip_access_tests {
+        use crate::handlers::{AddIpRuleRequest, AdminIpAccessHandlers, AuthenticatedAdmin};
+        use crate::ip_access::{
+            CidrBlock, InMemoryIpAccessStore, IpAccessDecision, IpAccessStore, IpListType,
+        };
+        use std::net::IpAddr;
+        use std::sync::Arc;
+
+        fn admin() -> AuthenticatedAdmin {
+            AuthenticatedAdmin::new("admin-1")
+        }
+
+        fn ip(s: &str) -> IpAddr {
+            s.parse().unwrap()
+        }
+
+        // --- CIDR parsing / containment ---
+
+        #[test]
+        fn cidr_parses_bare_ipv4_as_slash_32() {
+            let block = CidrBlock::parse("192.168.1.10").unwrap();
+            assert!(block.contains(&ip("192.168.1.10")));
+            assert!(!block.contains(&ip("192.168.1.11")));
+        }
+
+        #[test]
+        fn cidr_matches_ipv4_range() {
+            let block = CidrBlock::parse("192.168.1.0/24").unwrap();
+            assert!(block.contains(&ip("192.168.1.0")));
+            assert!(block.contains(&ip("192.168.1.255")));
+            assert!(!block.contains(&ip("192.168.2.1")));
+        }
+
+        #[test]
+        fn cidr_matches_ipv6_range() {
+            let block = CidrBlock::parse("2001:db8::/32").unwrap();
+            assert!(block.contains(&ip("2001:db8::1")));
+            assert!(!block.contains(&ip("2001:db9::1")));
+        }
+
+        #[test]
+        fn cidr_zero_prefix_matches_everything_in_family() {
+            let block = CidrBlock::parse("0.0.0.0/0").unwrap();
+            assert!(block.contains(&ip("8.8.8.8")));
+            assert!(!block.contains(&ip("::1")));
+        }
+
+        #[test]
+        fn cidr_rejects_invalid_address() {
+            assert!(CidrBlock::parse("not-an-ip/24").is_err());
+        }
+
+        #[test]
+        fn cidr_rejects_out_of_range_prefix() {
+            assert!(CidrBlock::parse("10.0.0.0/33").is_err());
+            assert!(CidrBlock::parse("::1/129").is_err());
+        }
+
+        #[test]
+        fn cidr_v4_and_v6_never_cross_match() {
+            let block = CidrBlock::parse("0.0.0.0/0").unwrap();
+            assert!(!block.contains(&ip("::1")));
+        }
+
+        // --- InMemoryIpAccessStore + decision logic ---
+
+        #[test]
+        fn unknown_ip_is_allowed_by_default() {
+            let store = InMemoryIpAccessStore::new();
+            assert_eq!(store.check(ip("1.2.3.4")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn blocked_cidr_blocks_matching_ip() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("10.1.2.3")), IpAccessDecision::Blocked);
+            assert_eq!(store.check(ip("11.1.2.3")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn allowlist_takes_precedence_over_blocklist() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            store
+                .add_entry("10.1.2.3/32", IpListType::Allow, Some("trusted ops host"), "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("10.1.2.3")), IpAccessDecision::Allowed);
+            assert_eq!(store.check(ip("10.1.2.4")), IpAccessDecision::Blocked);
+        }
+
+        #[test]
+        fn add_entry_rejects_invalid_cidr() {
+            let store = InMemoryIpAccessStore::new();
+            assert!(store
+                .add_entry("garbage", IpListType::Block, None, "admin-1")
+                .is_err());
+        }
+
+        #[test]
+        fn remove_entry_drops_it_from_list() {
+            let store = InMemoryIpAccessStore::new();
+            let entry = store
+                .add_entry("192.168.0.0/16", IpListType::Block, None, "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("192.168.1.1")), IpAccessDecision::Blocked);
+
+            store.remove_entry(entry.id).unwrap();
+            assert_eq!(store.check(ip("192.168.1.1")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn remove_entry_unknown_id_errors() {
+            let store = InMemoryIpAccessStore::new();
+            assert!(store.remove_entry(999).is_err());
+        }
+
+        #[test]
+        fn list_entries_filters_by_type() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            store
+                .add_entry("172.16.0.0/12", IpListType::Allow, None, "admin-1")
+                .unwrap();
+
+            assert_eq!(store.list_entries(IpListType::Block).len(), 1);
+            assert_eq!(store.list_entries(IpListType::Allow).len(), 1);
+        }
+
+        // --- AdminIpAccessHandlers ---
+
+        #[test]
+        fn admin_handlers_allow_and_block_round_trip() {
+            let store: Arc<dyn IpAccessStore> = Arc::new(InMemoryIpAccessStore::new());
+            let handlers = AdminIpAccessHandlers::new(store);
+
+            let allow_entry = handlers
+                .allow_ip(
+                    &admin(),
+                    AddIpRuleRequest { cidr: "203.0.113.5/32".to_string(), note: None },
+                )
+                .unwrap();
+            assert_eq!(allow_entry.created_by, "admin-1");
+            assert_eq!(handlers.list_allow().len(), 1);
+
+            let block_entry = handlers
+                .block_ip(
+                    &admin(),
+                    AddIpRuleRequest {
+                        cidr: "198.51.100.0/24".to_string(),
+                        note: Some("known abuse range".to_string()),
+                    },
+                )
+                .unwrap();
+            assert_eq!(handlers.list_block().len(), 1);
+
+            handlers.remove_entry(&admin(), block_entry.id).unwrap();
+            assert!(handlers.list_block().is_empty());
+            assert_eq!(handlers.list_allow().len(), 1);
+        }
+
+        #[test]
+        fn admin_handlers_reject_invalid_cidr() {
+            let store: Arc<dyn IpAccessStore> = Arc::new(InMemoryIpAccessStore::new());
+            let handlers = AdminIpAccessHandlers::new(store);
+
+            let result = handlers.block_ip(
+                &admin(),
+                AddIpRuleRequest { cidr: "not-a-cidr".to_string(), note: None },
+            );
+            assert!(result.is_err());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

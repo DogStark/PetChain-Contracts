@@ -52,15 +52,40 @@ pub trait HttpClient: Send + Sync {
     fn post(&self, url: &str, body: &str) -> Result<(), String>;
 }
 
-/// Production HTTP client using ureq (or a stub if not available).
-/// In tests this is replaced by a mock.
+/// Production HTTP client using ureq (if webhook-client feature is enabled),
+/// otherwise a no-op stub.
 pub struct DefaultHttpClient;
 
+#[cfg(feature = "webhook-client")]
+static HTTP_CLIENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+
+#[cfg(feature = "webhook-client")]
+impl HttpClient for DefaultHttpClient {
+    fn post(&self, url: &str, body: &str) -> Result<(), String> {
+        let agent = HTTP_CLIENT.get_or_init(|| {
+            ureq::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+        });
+
+        let response = agent
+            .post(url)
+            .set("Content-Type", "application/json")
+            .send_string(body)
+            .map_err(|e| format!("request failed: {}", e))?;
+
+        if response.status() >= 200 && response.status() < 300 {
+            Ok(())
+        } else {
+            Err(format!("server returned error status: {}", response.status()))
+        }
+    }
+}
+
+#[cfg(not(feature = "webhook-client"))]
 impl HttpClient for DefaultHttpClient {
     fn post(&self, _url: &str, _body: &str) -> Result<(), String> {
-        // In a real deployment this would use reqwest/ureq.
-        // For the library crate we keep it as a no-op stub so no extra
-        // async runtime dependency is needed.
+        // Webhooks disabled: compile with `webhook-client` feature to enable real HTTP requests
         Ok(())
     }
 }
@@ -316,5 +341,22 @@ mod tests {
         manager.remove_config(&SecurityEventType::FailedTwoFa);
         manager.fire(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "webhook-client")]
+    fn test_default_http_client_real_request() {
+        let mut server = mockito::Server::new();
+        let mock = server.mock("POST", "/")
+            .match_header("content-type", "application/json")
+            .match_body("{\"test\":true}")
+            .with_status(200)
+            .create();
+
+        let client = DefaultHttpClient;
+        let result = client.post(&server.url(), "{\"test\":true}");
+        
+        assert!(result.is_ok());
+        mock.assert();
     }
 }

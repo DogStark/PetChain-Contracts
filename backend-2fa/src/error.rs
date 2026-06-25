@@ -147,3 +147,59 @@ where
         })
     }
 }
+
+pub struct NoCacheMiddleware;
+
+impl<S, B> Transform<S, ServiceRequest> for NoCacheMiddleware
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Transform = NoCacheMiddlewareService<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(NoCacheMiddlewareService { service })
+    }
+}
+
+pub struct NoCacheMiddlewareService<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for NoCacheMiddlewareService<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let fut = self.service.call(req);
+
+        Box::pin(async move {
+            let mut res = fut.await?;
+            let headers = res.headers_mut();
+            headers.insert(
+                actix_web::http::header::CACHE_CONTROL,
+                actix_web::http::header::HeaderValue::from_static("no-store"),
+            );
+            headers.insert(
+                actix_web::http::header::PRAGMA,
+                actix_web::http::header::HeaderValue::from_static("no-cache"),
+            );
+            headers.insert(
+                actix_web::http::header::X_CONTENT_TYPE_OPTIONS,
+                actix_web::http::header::HeaderValue::from_static("nosniff"),
+            );
+            Ok(res)
+        })
+    }
+}
