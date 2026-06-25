@@ -76,11 +76,17 @@ impl PostgresTwoFactorStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
+        let acquire_timeout_secs: u64 = std::env::var("DB_POOL_ACQUIRE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+
         let pool = runtime
             .block_on(
                 PgPoolOptions::new()
                     .min_connections(min_conns)
                     .max_connections(max_conns)
+                    .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
                     .connect(database_url),
             )
             .map_err(|e| e.to_string())?;
