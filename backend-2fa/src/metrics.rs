@@ -16,6 +16,8 @@
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
 //! | `leaderboard_ws_connections_total` | Gauge | — |
+//! | `webhook_delivery_total` | Counter | `result` (`ok`/`fail`) |
+//! | `webhook_delivery_retries_total` | Counter | — |
 
 use prometheus::{
     register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
@@ -37,6 +39,10 @@ pub struct Metrics {
     pub request_duration_seconds: HistogramVec,
     /// Tracks the current number of open leaderboard WebSocket connections.
     pub leaderboard_ws_connections_total: Gauge,
+    /// Webhook delivery outcomes, labelled by `result` (`ok` or `fail`).
+    pub webhook_delivery_total: CounterVec,
+    /// Total number of webhook retry attempts (excludes the initial attempt).
+    pub webhook_delivery_retries_total: prometheus::Counter,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -86,6 +92,19 @@ pub fn metrics() -> &'static Metrics {
             "Current number of open leaderboard WebSocket connections"
         )
         .expect("register leaderboard_ws_connections_total"),
+
+        webhook_delivery_total: register_counter_vec!(
+            "webhook_delivery_total",
+            "Total webhook delivery attempts",
+            &["result"]
+        )
+        .expect("register webhook_delivery_total"),
+
+        webhook_delivery_retries_total: prometheus::register_counter!(
+            "webhook_delivery_retries_total",
+            "Total webhook delivery retry attempts (excludes initial attempt)"
+        )
+        .expect("register webhook_delivery_retries_total"),
     })
 }
 
@@ -142,6 +161,20 @@ pub fn dec_leaderboard_ws_connections() {
     metrics().leaderboard_ws_connections_total.dec();
 }
 
+/// Record a completed webhook delivery attempt. `success` maps to label `ok`/`fail`.
+pub fn record_webhook_delivery(success: bool) {
+    let label = if success { "ok" } else { "fail" };
+    metrics()
+        .webhook_delivery_total
+        .with_label_values(&[label])
+        .inc();
+}
+
+/// Record one webhook delivery retry (called once per retry, not per initial attempt).
+pub fn record_webhook_retry() {
+    metrics().webhook_delivery_retries_total.inc();
+}
+
 // ---------------------------------------------------------------------------
 // /metrics handler (framework-agnostic: returns the raw text body)
 // ---------------------------------------------------------------------------
@@ -195,6 +228,10 @@ mod tests {
         inc_leaderboard_ws_connections();
         dec_leaderboard_ws_connections();
 
+        record_webhook_delivery(true);
+        record_webhook_delivery(false);
+        record_webhook_retry();
+
         let output = render_metrics().expect("render");
         assert!(output.contains("totp_verifications_total"), "missing totp counter");
         assert!(output.contains("recovery_code_uses_total"), "missing recovery counter");
@@ -203,6 +240,8 @@ mod tests {
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
         assert!(output.contains("request_duration_seconds"), "missing histogram");
         assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
+        assert!(output.contains("webhook_delivery_total"), "missing webhook delivery counter");
+        assert!(output.contains("webhook_delivery_retries_total"), "missing webhook retry counter");
     }
 
     #[test]
@@ -212,5 +251,31 @@ mod tests {
         let output = render_metrics().expect("render");
         assert!(output.contains(r#"result="ok""#));
         assert!(output.contains(r#"result="fail""#));
+    }
+
+    #[test]
+    fn webhook_delivery_counters_increment() {
+        record_webhook_delivery(true);
+        record_webhook_delivery(false);
+        record_webhook_retry();
+        record_webhook_retry();
+
+        let output = render_metrics().expect("render");
+        assert!(
+            output.contains("webhook_delivery_total"),
+            "webhook_delivery_total must appear in metrics output"
+        );
+        assert!(
+            output.contains(r#"webhook_delivery_total{result="ok"}"#),
+            "webhook_delivery_total ok label must appear"
+        );
+        assert!(
+            output.contains(r#"webhook_delivery_total{result="fail"}"#),
+            "webhook_delivery_total fail label must appear"
+        );
+        assert!(
+            output.contains("webhook_delivery_retries_total"),
+            "webhook_delivery_retries_total must appear in metrics output"
+        );
     }
 }
