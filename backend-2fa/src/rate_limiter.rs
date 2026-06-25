@@ -175,18 +175,9 @@ pub struct LiveRedisBackend {
 
 impl LiveRedisBackend {
     pub fn new(redis_url: &str) -> Result<Self, redis::RedisError> {
-        Ok(Self { 
+        Ok(Self {
             client: redis::Client::open(redis_url)?,
-            connection: Mutex::new(None),
         })
-    }
-
-    fn get_connection(&self) -> Result<redis::Connection, redis::RedisError> {
-        let mut conn_guard = self.connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if conn_guard.is_none() {
-            *conn_guard = Some(self.client.get_connection()?);
-        }
-        Ok(conn_guard.as_ref().unwrap().clone())
     }
 }
 
@@ -199,11 +190,18 @@ impl RedisBackend for LiveRedisBackend {
         con.ttl(key).unwrap_or(-2)
     }
 
-    fn sliding_window_add(&self, key: &str, now_ms: u64, cutoff_ms: u64, member: &str, ttl_secs: u64) -> u64 {
-        let mut con = match self.get_connection() {
+    fn sliding_window_add(
+        &self,
+        key: &str,
+        now_ms: u64,
+        cutoff_ms: u64,
+        member: &str,
+        ttl_secs: u64,
+    ) -> u64 {
+        let mut con = match self.client.get_connection() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[LiveRedisBackend] connection error: {e}");
+                tracing::error!(key = key, error = %e, "[LiveRedisBackend] connection error");
                 return 0;
             }
         };
@@ -230,7 +228,7 @@ impl RedisBackend for LiveRedisBackend {
         match result {
             Ok((card,)) => card,
             Err(e) => {
-                eprintln!("[LiveRedisBackend] pipeline error: {e}");
+                tracing::error!(key = key, error = %e, "[LiveRedisBackend] pipeline error");
                 0
             }
         }
@@ -528,18 +526,12 @@ impl RateLimiter for InMemoryRateLimiter {
 
         if record.failures > self.max_failures {
             record.locked_until = Some(now + self.lockout);
-            let lockout_secs = self.lockout.as_secs();
             RateLimitResult::Blocked {
-                limit: self.max_failures,
-                remaining: 0,
-                reset_at: unix_now + lockout_secs,
-                retry_after_secs: lockout_secs,
+                retry_after_secs: self.lockout.as_secs(),
             }
         } else {
             RateLimitResult::Allowed {
-                limit: self.max_failures,
                 remaining: self.max_failures.saturating_sub(record.failures),
-                reset_at,
             }
         }
     }
@@ -624,12 +616,8 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
 
         let lockout_ttl = self.backend.ttl(&lockout_key);
         if lockout_ttl > 0 {
-            let retry_after_secs = lockout_ttl as u64;
             return RateLimitResult::Blocked {
-                limit: cfg.max_failures,
-                remaining: 0,
-                reset_at: unix_now + retry_after_secs,
-                retry_after_secs,
+                retry_after_secs: lockout_ttl as u64,
             };
         }
 
@@ -648,17 +636,12 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
         if count > cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
             return RateLimitResult::Blocked {
-                limit: cfg.max_failures,
-                remaining: 0,
-                reset_at: unix_now + cfg.lockout_secs,
                 retry_after_secs: cfg.lockout_secs,
             };
         }
 
         RateLimitResult::Allowed {
-            limit: cfg.max_failures,
             remaining: cfg.max_failures.saturating_sub(count as u32),
-            reset_at: unix_now + cfg.window_secs,
         }
     }
 
@@ -783,10 +766,7 @@ impl DistributedRateLimiter {
 
         if count > self.max_requests as u64 {
             Some(RateLimitResult::Blocked {
-                limit: self.max_requests,
-                remaining: 0,
-                reset_at,
-                retry_after_secs: ttl_secs,
+                retry_after_secs: self.window_secs,
             })
         } else {
             Some(RateLimitResult::Allowed {
@@ -803,7 +783,11 @@ impl RateLimiter for DistributedRateLimiter {
         let result = match self.try_redis(key) {
             Some(result) => result,
             None => {
-                eprintln!("[DistributedRateLimiter] Redis unavailable, falling back to in-memory for key={key}");
+                tracing::warn!(
+                    key = key,
+                    "[DistributedRateLimiter] Redis unavailable, falling back to in-memory"
+                );
+                crate::metrics::record_redis_fallback();
                 self.fallback.record_failure(key)
             }
         };
@@ -822,5 +806,79 @@ impl RateLimiter for DistributedRateLimiter {
             }
         }
         self.fallback.record_success(key);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Minimal tracing subscriber that counts every event emitted.
+    struct CountingSubscriber {
+        event_count: Arc<AtomicUsize>,
+    }
+
+    impl tracing::Subscriber for CountingSubscriber {
+        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _id: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {
+            self.event_count.fetch_add(1, Ordering::SeqCst);
+        }
+        fn enter(&self, _id: &tracing::span::Id) {}
+        fn exit(&self, _id: &tracing::span::Id) {}
+    }
+
+    /// Issue #852 — LiveRedisBackend emits a tracing::error! when the Redis
+    /// connection fails, and returns 0 instead of panicking.
+    #[test]
+    fn live_redis_backend_logs_on_connection_error() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let subscriber = CountingSubscriber {
+            event_count: Arc::clone(&counter),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            let backend = LiveRedisBackend::new("redis://127.0.0.1:1/").unwrap();
+            let result = backend.sliding_window_add("test_key", 1_000, 500, "m", 60);
+            assert_eq!(result, 0, "should return 0 on connection failure");
+        });
+
+        assert!(
+            counter.load(Ordering::SeqCst) >= 1,
+            "expected at least one tracing event on connection error"
+        );
+    }
+
+    /// Issue #853 — DistributedRateLimiter increments rate_limiter_redis_fallback_total
+    /// by exactly 1 each time it falls back to the in-memory limiter.
+    #[test]
+    fn distributed_rate_limiter_increments_fallback_counter() {
+        let before = crate::metrics::metrics()
+            .rate_limiter_redis_fallback_total
+            .get();
+
+        let limiter = DistributedRateLimiter::new(Some("redis://127.0.0.1:1/"), 5, 60, "test:");
+        let _ = limiter.record_failure("test_key");
+
+        let after = crate::metrics::metrics()
+            .rate_limiter_redis_fallback_total
+            .get();
+        assert_eq!(
+            after - before,
+            1.0,
+            "fallback counter should increment by exactly 1 on each Redis-unavailable fallback"
+        );
     }
 }

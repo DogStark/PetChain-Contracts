@@ -1,8 +1,9 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::error::ApiError;
 use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
-use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore};
+use crate::rate_limiter::{
+    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+};
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
     TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
@@ -198,10 +199,10 @@ impl TwoFactorHandlers {
             .get_lockout_state(user_id)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err(ApiError::locked(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
-                None,
-            ));
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -212,10 +213,13 @@ impl TwoFactorHandlers {
             .record_failed_two_fa_attempt(user_id)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err(ApiError::locked(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
-                None,
-            ));
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
+        }
+        if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
+            return Ok(format!("Invalid 2FA token. Retry after {} seconds.", delay));
         }
         Ok(())
     }
@@ -930,18 +934,12 @@ impl MultiTenantHandlers {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = format!(
-            "{}::verify::{}",
-            self.store.config.tenant_id, user_id
-        );
-        {
-            let rate_result = self.limiter.record_failure(&key);
-            if rate_result.is_blocked() {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    rate_result.retry_after_secs()
-                ));
-            }
+        let key = format!("{}::verify::{}", self.store.config.tenant_id, user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
@@ -966,18 +964,12 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let key = format!(
-            "{}::disable::{}",
-            self.store.config.tenant_id, user_id
-        );
-        {
-            let rate_result = self.limiter.record_failure(&key);
-            if rate_result.is_blocked() {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    rate_result.retry_after_secs()
-                ));
-            }
+        let key = format!("{}::disable::{}", self.store.config.tenant_id, user_id);
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                retry_after_secs
+            ));
         }
 
         let data = self.store.get(user_id)?;

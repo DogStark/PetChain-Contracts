@@ -3091,7 +3091,10 @@ mod canary_tests {
         CanaryHandlers, CreateCanaryRequest,
     };
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    };
     use totp_rs::Algorithm;
 
     struct RecordingHttpClient {
