@@ -43,7 +43,7 @@ where
 impl<S, B, F> Transform<S, ServiceRequest> for RateLimitMiddleware<F>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
-    B: 'static,
+    B: actix_web::body::MessageBody + 'static,
     F: Fn(&ServiceRequest) -> String + Clone + 'static,
 {
     type Response = ServiceResponse<BoxBody>;
@@ -75,7 +75,7 @@ where
 impl<S, B, F> Service<ServiceRequest> for RateLimitMiddlewareService<S, F>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
-    B: 'static,
+    B: actix_web::body::MessageBody + 'static,
     F: Fn(&ServiceRequest) -> String + Clone + 'static,
 {
     type Response = ServiceResponse<BoxBody>;

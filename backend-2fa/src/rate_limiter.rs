@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use redis::Commands;
 
@@ -225,7 +225,6 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
 
 pub struct LiveRedisBackend {
     client: redis::Client,
-    connection: Mutex<Option<redis::Connection>>,
 }
 
 impl LiveRedisBackend {
@@ -233,6 +232,10 @@ impl LiveRedisBackend {
         Ok(Self {
             client: redis::Client::open(redis_url)?,
         })
+    }
+
+    fn get_connection(&self) -> redis::RedisResult<redis::Connection> {
+        self.client.get_connection()
     }
 }
 
@@ -582,11 +585,16 @@ impl RateLimiter for InMemoryRateLimiter {
         if record.failures > self.max_failures {
             record.locked_until = Some(now + self.lockout);
             RateLimitResult::Blocked {
+                limit: self.max_failures,
+                remaining: 0,
+                reset_at: unix_now + self.lockout.as_secs(),
                 retry_after_secs: self.lockout.as_secs(),
             }
         } else {
             RateLimitResult::Allowed {
+                limit: self.max_failures,
                 remaining: self.max_failures.saturating_sub(record.failures),
+                reset_at,
             }
         }
     }
@@ -672,6 +680,9 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
         let lockout_ttl = self.backend.ttl(&lockout_key);
         if lockout_ttl > 0 {
             return RateLimitResult::Blocked {
+                limit: cfg.max_failures,
+                remaining: 0,
+                reset_at: unix_now + lockout_ttl as u64,
                 retry_after_secs: lockout_ttl as u64,
             };
         }
@@ -691,12 +702,17 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
         if count > cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
             return RateLimitResult::Blocked {
+                limit: cfg.max_failures,
+                remaining: 0,
+                reset_at: unix_now + cfg.lockout_secs,
                 retry_after_secs: cfg.lockout_secs,
             };
         }
 
         RateLimitResult::Allowed {
+            limit: cfg.max_failures,
             remaining: cfg.max_failures.saturating_sub(count as u32),
+            reset_at: unix_now + cfg.window_secs,
         }
     }
 
@@ -821,6 +837,9 @@ impl DistributedRateLimiter {
 
         if count > self.max_requests as u64 {
             Some(RateLimitResult::Blocked {
+                limit: self.max_requests,
+                remaining: 0,
+                reset_at,
                 retry_after_secs: self.window_secs,
             })
         } else {
@@ -847,7 +866,8 @@ impl RateLimiter for DistributedRateLimiter {
             }
         };
         if matches!(result, RateLimitResult::Blocked { .. }) {
-            crate::metrics::record_rate_limit_hit();
+            let endpoint = key.split(':').next().unwrap_or(key);
+            crate::metrics::record_rate_limit_hit(endpoint, "limit_exceeded");
         }
         result
     }

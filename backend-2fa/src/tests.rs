@@ -2339,6 +2339,9 @@ mod redis_rate_limiter_tests {
 
         if s.ttl(&lockout_key) > 0 {
             return RateLimitResult::Blocked {
+                limit: 0,
+                remaining: 0,
+                reset_at: 0,
                 retry_after_secs: s.ttl(&lockout_key) as u64,
             };
         }
@@ -2351,12 +2354,17 @@ mod redis_rate_limiter_tests {
         if count >= max_failures as u64 {
             s.set_ex(&lockout_key, lockout_secs);
             return RateLimitResult::Blocked {
+                limit: 0,
+                remaining: 0,
+                reset_at: 0,
                 retry_after_secs: lockout_secs,
             };
         }
 
         RateLimitResult::Allowed {
+            limit: 0,
             remaining: max_failures - count as u32,
+            reset_at: 0,
         }
     }
 
@@ -2382,7 +2390,7 @@ mod redis_rate_limiter_tests {
         assert!(
             matches!(
                 limiter.record_failure("any:key"),
-                RateLimitResult::Allowed { remaining: 5 }
+                RateLimitResult::Allowed { remaining: 5, .. }
             ),
             "unreachable Redis must return Allowed with full remaining count"
         );
@@ -2406,7 +2414,7 @@ mod redis_rate_limiter_tests {
         let now_ms = 1_000_000u64;
         for i in 1u32..5 {
             match mock_record_failure(&state, "user:a", now_ms + i as u64, 5, 60, 300) {
-                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 5 - i),
+                RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 5 - i),
                 RateLimitResult::Blocked { .. } => panic!("should not block before limit"),
             }
         }
@@ -2422,7 +2430,8 @@ mod redis_rate_limiter_tests {
         assert!(matches!(
             mock_record_failure(&state, "user:b", now_ms + 3, 3, 60, 300),
             RateLimitResult::Blocked {
-                retry_after_secs: 300
+                retry_after_secs: 300,
+                ..
             }
         ));
     }
@@ -2437,7 +2446,7 @@ mod redis_rate_limiter_tests {
         // 61 seconds later — all three are outside the 60 s window
         let later_ms = 61_000u64;
         match mock_record_failure(&state, "user:c", later_ms, 3, 60, 300) {
-            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 2),
             RateLimitResult::Blocked { .. } => panic!("stale entries should have been evicted"),
         }
     }
@@ -2469,7 +2478,7 @@ mod redis_rate_limiter_tests {
         mock_record_failure(&state, "user:e", now_ms + 1, 3, 60, 300);
         mock_record_success(&state, "user:e");
         match mock_record_failure(&state, "user:e", now_ms + 2, 3, 60, 300) {
-            RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 2),
+            RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 2),
             RateLimitResult::Blocked { .. } => panic!("should not block after success reset"),
         }
     }
@@ -2497,7 +2506,7 @@ mod redis_rate_limiter_tests {
             mock_record_failure(&state, "user:h", now_ms + i, 3, 60, 120);
         }
         match mock_record_failure(&state, "user:h", now_ms + 3, 3, 60, 120) {
-            RateLimitResult::Blocked { retry_after_secs } => {
+            RateLimitResult::Blocked { retry_after_secs, .. } => {
                 assert_eq!(retry_after_secs, 120, "retry_after must equal lockout_secs");
             }
             RateLimitResult::Allowed { .. } => panic!("should be blocked"),
@@ -2518,7 +2527,7 @@ mod redis_rate_limiter_tests {
 
         for i in 1u32..5 {
             match limiter.record_failure(&key) {
-                RateLimitResult::Allowed { remaining } => {
+                RateLimitResult::Allowed { remaining, .. } => {
                     assert_eq!(remaining, 5 - i, "remaining should decrease by 1 each call");
                 }
                 RateLimitResult::Blocked { .. } => panic!("should not be blocked before the limit"),
@@ -2560,7 +2569,7 @@ mod redis_rate_limiter_tests {
         limiter.record_success(&key);
 
         match limiter.record_failure(&key) {
-            RateLimitResult::Allowed { remaining } => {
+            RateLimitResult::Allowed { remaining, .. } => {
                 assert_eq!(remaining, 2, "counter must reset to 0 after success");
             }
             RateLimitResult::Blocked { .. } => panic!("should not be blocked after record_success"),
@@ -2928,10 +2937,10 @@ mod mock_redis_tests {
     fn allows_requests_below_limit() {
         let l = limiter(3, 60, 300);
         for i in 1u32..3 {
-            assert_eq!(
-                l.record_failure("u:a"),
-                RateLimitResult::Allowed { remaining: 3 - i }
-            );
+            match l.record_failure("u:a") {
+                RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 3 - i),
+                RateLimitResult::Blocked { .. } => panic!("should not be blocked below limit"),
+            }
         }
     }
 
@@ -2941,12 +2950,13 @@ mod mock_redis_tests {
         for _ in 0..3 {
             l.record_failure("u:b");
         }
-        assert_eq!(
+        assert!(matches!(
             l.record_failure("u:b"),
             RateLimitResult::Blocked {
-                retry_after_secs: 120
-            },
-        );
+                retry_after_secs: 120,
+                ..
+            }
+        ));
     }
 
     // --- reset ---
@@ -2957,10 +2967,10 @@ mod mock_redis_tests {
         l.record_failure("u:c");
         l.record_failure("u:c");
         l.record_success("u:c");
-        assert_eq!(
-            l.record_failure("u:c"),
-            RateLimitResult::Allowed { remaining: 2 }
-        );
+        match l.record_failure("u:c") {
+            RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("should not be blocked after success reset"),
+        }
     }
 
     #[test]
@@ -2972,10 +2982,10 @@ mod mock_redis_tests {
         // Advance clock past the 60-second window — entries are evicted on next call
         l.backend_advance_ms(61_000);
         // Window has expired; the two old entries are outside the cutoff, so Allowed with remaining=2
-        assert_eq!(
-            l.record_failure("u:d"),
-            RateLimitResult::Allowed { remaining: 2 }
-        );
+        match l.record_failure("u:d") {
+            RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 2),
+            RateLimitResult::Blocked { .. } => panic!("should not be blocked after window expiry"),
+        }
     }
 
     // --- concurrent / independent keys ---
@@ -3391,7 +3401,7 @@ mod distributed_rate_limiter_tests {
         let limiter = DistributedRateLimiter::new(None, 3, 60, "test:");
         for i in 1..=3u32 {
             match limiter.record_failure("user:fallback") {
-                RateLimitResult::Allowed { remaining } => assert_eq!(remaining, 3 - i),
+                RateLimitResult::Allowed { remaining, .. } => assert_eq!(remaining, 3 - i),
                 RateLimitResult::Blocked { .. } => panic!("should not block below limit"),
             }
         }
