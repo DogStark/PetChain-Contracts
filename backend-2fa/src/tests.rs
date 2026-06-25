@@ -276,6 +276,7 @@ mod tests {
         let user_id = "user123";
         let caller = AuthenticatedUser::new(user_id);
         let req = EnableTwoFactorRequest {
+            idempotency_key: None,
             user_id: user_id.to_string(),
             email: "user@example.com".to_string(),
         };
@@ -370,6 +371,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "persist@petchain.com".to_string(),
             },
@@ -397,6 +399,7 @@ mod tests {
         let resp1 = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "overwrite@petchain.com".to_string(),
             },
@@ -406,6 +409,7 @@ mod tests {
         let resp2 = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "overwrite@petchain.com".to_string(),
             },
@@ -418,6 +422,63 @@ mod tests {
         // The first secret is gone
         assert_ne!(stored.secret, resp1.secret);
     }
+    
+    #[test]
+    fn test_enroll_same_idempotency_key_returns_identical_secret() {
+        clear_two_factor_store_for_tests();
+        crate::handlers::clear_idempotency_store_for_tests();
+
+        let user_id = "user-idempotent";
+        let req = EnableTwoFactorRequest {
+            user_id: user_id.to_string(),
+            email: "idempotent@petchain.com".to_string(),
+            idempotency_key: Some("retry-key-1".to_string()),
+        };
+
+        let resp1 = TwoFactorHandlers::enable_two_factor(&caller(user_id), req.clone()).unwrap();
+        let resp2 = TwoFactorHandlers::enable_two_factor(&caller(user_id), req).unwrap();
+
+        assert_eq!(resp1.secret, resp2.secret);
+        assert_eq!(resp1.backup_codes, resp2.backup_codes);
+        assert_eq!(resp1.otpauth_uri, resp2.otpauth_uri);
+    }
+
+    #[test]
+    fn test_enroll_different_idempotency_key_generates_new_secret() {
+        clear_two_factor_store_for_tests();
+        crate::handlers::clear_idempotency_store_for_tests();
+
+        let user_id = "user-idempotent-2";
+
+        let resp1 = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "idempotent2@petchain.com".to_string(),
+                idempotency_key: Some("key-a".to_string()),
+            },
+        )
+        .unwrap();
+
+        // Same user, different key — but enroll() rejects a second enroll
+        // once a record exists unless it is still unverified, so this proves
+        // the new key path does NOT hit the cached response and instead
+        // re-runs normal enroll logic overwriting the prior unverified record.
+        let resp2 = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "idempotent2@petchain.com".to_string(),
+                idempotency_key: Some("key-b".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_ne!(resp1.secret, resp2.secret);
+    }
+
+
+
 
     /// Failure path: wrong caller is rejected before any persistence occurs.
     #[test]
@@ -427,6 +488,7 @@ mod tests {
         let result = TwoFactorHandlers::enable_two_factor(
             &caller("attacker"),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: "victim".to_string(),
                 email: "victim@petchain.com".to_string(),
             },
@@ -468,6 +530,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "activate@petchain.com".to_string(),
             },
@@ -501,6 +564,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "no-partial@petchain.com".to_string(),
             },
@@ -570,6 +634,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "enabled@petchain.com".to_string(),
             },
@@ -649,6 +714,7 @@ mod tests {
             .enroll(
                 &caller(user_id),
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: user_id.to_string(),
                     email: "mock+user@example.com".to_string(),
                 },
@@ -715,6 +781,7 @@ mod tests {
             .enroll(
                 &caller("mock-fail"),
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: "mock-fail".to_string(),
                     email: "mock-fail@example.com".to_string(),
                 },
@@ -1082,6 +1149,7 @@ mod tests {
             let result = TwoFactorHandlers::enable_two_factor(
                 &caller("user-1"),
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: "user-1".to_string(),
                     email: "user1@petchain.com".to_string(),
                 },
@@ -1097,6 +1165,7 @@ mod tests {
             let result = TwoFactorHandlers::enable_two_factor(
                 &caller("user-1"),
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: "user-2".to_string(),
                     email: "user2@petchain.com".to_string(),
                 },
@@ -1239,6 +1308,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u1@petchain.com".to_string(),
             },
@@ -1274,6 +1344,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u2@petchain.com".to_string(),
             },
@@ -1301,6 +1372,7 @@ mod tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u3@petchain.com".to_string(),
             },
@@ -1327,6 +1399,7 @@ mod tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u6@petchain.com".to_string(),
             },
@@ -1352,6 +1425,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u8@petchain.com".to_string(),
             },
@@ -1385,6 +1459,7 @@ mod tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u9@petchain.com".to_string(),
             },
@@ -1454,6 +1529,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user1@petchain.com".to_string(),
             },
@@ -1537,6 +1613,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "recover@petchain.com".to_string(),
             },
@@ -1643,6 +1720,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "rate-limit-login@petchain.com".to_string(),
             },
@@ -1699,6 +1777,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user4@petchain.com".to_string(),
             },
@@ -1748,6 +1827,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "reset-rate@petchain.com".to_string(),
             },
@@ -1903,6 +1983,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -1945,6 +2026,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2000,6 +2082,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2055,6 +2138,7 @@ mod integration_tests {
             let setup = TwoFactorHandlers::enable_two_factor(
                 &c,
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: user_id.clone(),
                     email: format!("{}@petchain.com", user_id),
                 },
@@ -2108,6 +2192,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
+            idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -3474,6 +3559,7 @@ mod progressive_two_factor_lockout_tests {
             .enroll(
                 &caller,
                 EnableTwoFactorRequest {
+            idempotency_key: None,
                     user_id: user_id.to_string(),
                     email: "lockout@example.com".to_string(),
                 },
