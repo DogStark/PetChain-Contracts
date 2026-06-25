@@ -1,13 +1,12 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
-use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, leaderboard_ws_endpoint};
+use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{
     progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
 };
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, TotpConfig, TwoFactorAuth, TwoFactorData,
-    TwoFactorStore,
-    UserTwoFactorSummary, TenantConfig, TenantRegistry, TenantScopedStore,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
+    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
@@ -53,6 +52,53 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
         .clone()
 }
 
+
+const IDEMPOTENCY_TTL_SECS: u64 = 300; // 5 minutes
+
+#[derive(Clone)]
+struct IdempotencyEntry {
+    response: EnableTwoFactorResponse,
+    stored_at: u64,
+}
+
+#[cfg(test)]
+fn test_idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    std::thread_local! {
+        static STORE: Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+    }
+    STORE.with(|store| store.clone())
+}
+
+#[cfg(test)]
+fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    test_idempotency_store()
+}
+
+#[cfg(not(test))]
+fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
+    static STORE: OnceLock<Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>>> = OnceLock::new();
+    STORE
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn idempotency_key(user_id: &str, key: &str) -> String {
+    format!("{}::{}", user_id, key)
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_idempotency_store_for_tests() {
+    test_idempotency_store().lock().unwrap().clear();
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -65,9 +111,12 @@ impl AuthenticatedUser {
         }
     }
 
-    pub fn authorize(&self, requested_user_id: &str) -> Result<(), String> {
+    pub fn authorize(&self, requested_user_id: &str) -> Result<(), ApiError> {
         if self.user_id != requested_user_id {
-            return Err("Forbidden: you can only manage your own 2FA".to_string());
+            return Err(ApiError::forbidden(
+                "Forbidden: you can only manage your own 2FA",
+                None,
+            ));
         }
         Ok(())
     }
@@ -77,9 +126,11 @@ impl AuthenticatedUser {
 pub struct EnableTwoFactorRequest {
     pub user_id: String,
     pub email: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct EnableTwoFactorResponse {
     pub secret: String,
     pub otpauth_uri: String,
@@ -185,35 +236,47 @@ impl TwoFactorHandlers {
         format!("{}:{}", prefix, user_id)
     }
 
-    fn store_get(&self, user_id: &str) -> Result<TwoFactorData, String> {
-        self.store
-            .get(user_id)
-            .map_err(|_| format!("2FA not configured for user {}", user_id))
+    fn store_get(&self, user_id: &str) -> Result<TwoFactorData, ApiError> {
+        self.store.get(user_id).map_err(|_| {
+            ApiError::not_found(format!("2FA not configured for user {}", user_id), None)
+        })
     }
 
-    fn ensure_not_locked(&self, user_id: &str) -> Result<(), String> {
-        let state = self.store.get_lockout_state(user_id)?;
+    fn ensure_not_locked(&self, user_id: &str) -> Result<(), ApiError> {
+        let state = self
+            .store
+            .get_lockout_state(user_id)
+            .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
         }
         Ok(())
     }
 
-    fn record_failed_verification(&self, user_id: &str) -> Result<String, String> {
-        let state = self.store.record_failed_two_fa_attempt(user_id)?;
+    fn record_failed_verification(&self, user_id: &str) -> Result<(), ApiError> {
+        let state = self
+            .store
+            .record_failed_two_fa_attempt(user_id)
+            .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err("2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.".to_string());
+            return Err(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
+                    .to_string(),
+            );
         }
         if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
             return Ok(format!("Invalid 2FA token. Retry after {} seconds.", delay));
         }
-        Ok("Invalid 2FA token.".to_string())
+        Ok(())
     }
 
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
-    ) -> Result<EnableTwoFactorResponse, String> {
+    ) -> Result<EnableTwoFactorResponse, ApiError> {
         Self::new().enroll(caller, req)
     }
 
@@ -221,54 +284,80 @@ impl TwoFactorHandlers {
         &self,
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
-    ) -> Result<EnableTwoFactorResponse, String> {
+    ) -> Result<EnableTwoFactorResponse, ApiError> {
         caller.authorize(&req.user_id)?;
 
-        if let Ok(existing) = self.store_get(&req.user_id) {
-            if existing.enabled {
-                return Err(
-                    "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
-                );
+        if let Some(key) = req.idempotency_key.as_deref() {
+            let lookup = idempotency_key(&req.user_id, key);
+            let store = idempotency_store();
+            let guard = store.lock().unwrap();
+            if let Some(entry) = guard.get(&lookup) {
+                if current_unix_secs().saturating_sub(entry.stored_at) < IDEMPOTENCY_TTL_SECS {
+                    return Ok(entry.response.clone());
+                }
             }
         }
 
-        let setup = TwoFactorAuth::setup(&req.email, &self.issuer)?;
+        if let Ok(existing) = self.store_get(&req.user_id) {
+            if existing.enabled {
+                return Err(ApiError::conflict(
+                    "2FA is already enabled. To re-enroll, you must first disable it.",
+                    None,
+                ));
+            }
+        }
 
-        self.store.save(
-            &req.user_id,
-            TwoFactorData {
-                secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
-                enabled: false,
-                algorithm: setup.config.algorithm,
-            },
-        )?;
+        let setup = TwoFactorAuth::setup(&req.email, &self.issuer)
+            .map_err(|e| ApiError::internal_error(e, None))?;
 
-        Ok(EnableTwoFactorResponse {
+        self.store
+            .save(
+                &req.user_id,
+                TwoFactorData {
+                    secret: setup.secret.clone(),
+                    backup_codes: setup.backup_codes.clone(),
+                    enabled: false,
+                    algorithm: setup.config.algorithm,
+                },
+            )
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        let response = EnableTwoFactorResponse {
             secret: setup.secret,
             otpauth_uri: setup.otpauth_uri,
             qr_code: setup.qr_code_base64,
             backup_codes: setup.backup_codes,
-        })
+        };
+
+        if let Some(key) = req.idempotency_key.as_deref() {
+            let lookup = idempotency_key(&req.user_id, key);
+            idempotency_store().lock().unwrap().insert(
+                lookup,
+                IdempotencyEntry {
+                    response: response.clone(),
+                    stored_at: current_unix_secs(),
+                },
+            );
+        }
+
+        Ok(response)
     }
 
     pub fn verify_and_activate(
         &self,
         caller: &AuthenticatedUser,
         req: VerifyTwoFactorRequest,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ApiError> {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("verify", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -276,15 +365,20 @@ impl TwoFactorHandlers {
             &data.secret,
             &req.token,
             verification_config(data.algorithm),
-        )?;
+        )
+        .map_err(|e| ApiError::internal_error(e, None))?;
         if result {
-            self.store.update_enabled(&req.user_id, true)?;
-            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.store
+                .update_enabled(&req.user_id, true)
+                .map_err(|e| ApiError::internal_error(e, None))?;
+            self.store
+                .reset_two_fa_failures(&req.user_id)
+                .map_err(|e| ApiError::internal_error(e, None))?;
             self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        let _ = self.record_failed_verification(&req.user_id)?;
+        self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
@@ -292,19 +386,17 @@ impl TwoFactorHandlers {
         &self,
         caller: &AuthenticatedUser,
         req: LoginWithTwoFactorRequest,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ApiError> {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("login", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -316,15 +408,18 @@ impl TwoFactorHandlers {
             &data.secret,
             &req.token,
             verification_config(data.algorithm),
-        )?;
+        )
+        .map_err(|e| ApiError::internal_error(e, None))?;
 
         if is_valid {
-            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.store
+                .reset_two_fa_failures(&req.user_id)
+                .map_err(|e| ApiError::internal_error(e, None))?;
             self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        let _ = self.record_failed_verification(&req.user_id)?;
+        self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
@@ -332,19 +427,17 @@ impl TwoFactorHandlers {
         &self,
         caller: &AuthenticatedUser,
         req: DisableTwoFactorRequest,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ApiError> {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
         let key = Self::rate_limit_key("disable", &req.user_id);
-        match self.limiter.record_failure(&key) {
-            RateLimitResult::Blocked { retry_after_secs } => {
-                return Err(format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ));
-            }
-            RateLimitResult::Allowed { .. } => {}
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(format!(
+                "Too many failed attempts. Retry after {} seconds.",
+                rate_result.retry_after_secs()
+            ));
         }
 
         let data = self.store_get(&req.user_id)?;
@@ -356,22 +449,27 @@ impl TwoFactorHandlers {
             &data.secret,
             &req.token,
             verification_config(data.algorithm),
-        )?;
+        )
+        .map_err(|e| ApiError::internal_error(e, None))?;
         if result {
-            self.store.update_enabled(&req.user_id, false)?;
-            self.store.reset_two_fa_failures(&req.user_id)?;
+            self.store
+                .update_enabled(&req.user_id, false)
+                .map_err(|e| ApiError::internal_error(e, None))?;
+            self.store
+                .reset_two_fa_failures(&req.user_id)
+                .map_err(|e| ApiError::internal_error(e, None))?;
             self.limiter.record_success(&key);
             return Ok(true);
         }
 
-        let _ = self.record_failed_verification(&req.user_id)?;
+        self.record_failed_verification(&req.user_id)?;
         Ok(false)
     }
 
     pub fn recover_with_backup(
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
-    ) -> Result<RecoverWithBackupResponse, String> {
+    ) -> Result<RecoverWithBackupResponse, ApiError> {
         Self::new().recover(caller, req, None)
     }
 
@@ -379,7 +477,7 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
         ip_address: Option<&str>,
-    ) -> Result<RecoverWithBackupResponse, String> {
+    ) -> Result<RecoverWithBackupResponse, ApiError> {
         Self::new().recover(caller, req, ip_address)
     }
 
@@ -388,13 +486,13 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
         ip_address: Option<&str>,
-    ) -> Result<RecoverWithBackupResponse, String> {
+    ) -> Result<RecoverWithBackupResponse, ApiError> {
         caller.authorize(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
 
         if !data.enabled {
-            return Err("2FA not enabled for user".to_string());
+            return Err(ApiError::bad_request("2FA not enabled for user", None));
         }
 
         let backup_codes = &data.backup_codes;
@@ -402,39 +500,42 @@ impl TwoFactorHandlers {
         let code_index = match TwoFactorAuth::verify_backup_code(backup_codes, &req.backup_code) {
             Some(idx) => idx as i32,
             None => {
-                // Even if code not in current list, check recovery log for single-use enforcement
-                // This handles the case where codes were already used in a previous recovery
-                // Try to find this code in recovery log (this is expensive but ensures single-use)
-                // For now, just return the standard error
-                return Err("InvalidRecoveryCode".to_string());
+                return Err(ApiError::bad_request("InvalidRecoveryCode", None));
             }
         };
 
         // Check if code has already been used and log the usage atomically
-        if let Err(e) = self
-            .store
+        self.store
             .log_recovery_code_usage(&req.user_id, code_index, ip_address)
-        {
-            return Err(e);
-        }
+            .map_err(|e| {
+                if e.contains("InvalidRecoveryCode") {
+                    ApiError::bad_request("InvalidRecoveryCode", None)
+                } else {
+                    ApiError::internal_error(e, None)
+                }
+            })?;
 
         // Now consume the code and generate new secret
         let mut backup_codes = backup_codes.clone();
         TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code);
 
-        let setup = TwoFactorAuth::setup("recovery", &self.issuer)?;
+        let setup = TwoFactorAuth::setup("recovery", &self.issuer)
+            .map_err(|e| ApiError::internal_error(e, None))?;
 
-        self.store.save(
-            &req.user_id,
-            TwoFactorData {
-                secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
-                enabled: true,
-                algorithm: setup.config.algorithm,
-            },
-        )?;
         self.store
-            .unlock_two_fa_account(&req.user_id, "recovery_code")?;
+            .save(
+                &req.user_id,
+                TwoFactorData {
+                    secret: setup.secret.clone(),
+                    backup_codes: setup.backup_codes.clone(),
+                    enabled: true,
+                    algorithm: setup.config.algorithm,
+                },
+            )
+            .map_err(|e| ApiError::internal_error(e, None))?;
+        self.store
+            .unlock_two_fa_account(&req.user_id, "recovery_code")
+            .map_err(|e| ApiError::internal_error(e, None))?;
 
         Ok(RecoverWithBackupResponse {
             new_secret: setup.secret,
@@ -565,7 +666,8 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: SetUserQuotaRequest,
     ) -> Result<(), String> {
-        self.quota_store.set_quota(&req.user_id, req.requests_per_minute);
+        self.quota_store
+            .set_quota(&req.user_id, req.requests_per_minute);
         Ok(())
     }
 
@@ -575,8 +677,67 @@ impl AdminRateLimitHandlers {
         _admin: &AuthenticatedAdmin,
         req: GrantUnlimitedRequest,
     ) -> Result<(), String> {
-        self.quota_store.grant_unlimited(&req.user_id, req.expires_at);
+        self.quota_store
+            .grant_unlimited(&req.user_id, req.expires_at);
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Admin IP allowlist / blocklist management (Issue #701)
+// ---------------------------------------------------------------------------
+
+use crate::ip_access::{IpAccessEntry, IpAccessStore, IpListType};
+
+/// Request body for `POST /admin/ip/allow` and `POST /admin/ip/block`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AddIpRuleRequest {
+    pub cidr: String,
+    pub note: Option<String>,
+}
+
+/// Admin handlers for managing the IP allowlist and blocklist consulted by
+/// [`crate::ip_access::IpAccessMiddleware`] on every request.
+pub struct AdminIpAccessHandlers {
+    store: Arc<dyn IpAccessStore>,
+}
+
+impl AdminIpAccessHandlers {
+    pub fn new(store: Arc<dyn IpAccessStore>) -> Self {
+        Self { store }
+    }
+
+    /// POST /admin/ip/allow
+    pub fn allow_ip(
+        &self,
+        admin: &AuthenticatedAdmin,
+        req: AddIpRuleRequest,
+    ) -> Result<IpAccessEntry, String> {
+        self.store
+            .add_entry(&req.cidr, IpListType::Allow, req.note.as_deref(), &admin.admin_id)
+    }
+
+    /// POST /admin/ip/block
+    pub fn block_ip(
+        &self,
+        admin: &AuthenticatedAdmin,
+        req: AddIpRuleRequest,
+    ) -> Result<IpAccessEntry, String> {
+        self.store
+            .add_entry(&req.cidr, IpListType::Block, req.note.as_deref(), &admin.admin_id)
+    }
+
+    /// DELETE /admin/ip/{entry_id} — removes an entry from whichever list it's on.
+    pub fn remove_entry(&self, _admin: &AuthenticatedAdmin, entry_id: i64) -> Result<(), String> {
+        self.store.remove_entry(entry_id)
+    }
+
+    pub fn list_allow(&self) -> Vec<IpAccessEntry> {
+        self.store.list_entries(IpListType::Allow)
+    }
+
+    pub fn list_block(&self) -> Vec<IpAccessEntry> {
+        self.store.list_entries(IpListType::Block)
     }
 }
 
@@ -773,6 +934,12 @@ pub struct ProvisionTenantRequest {
 pub struct ProvisionTenantResponse {
     pub tenant_id: String,
     pub totp_issuer: String,
+    pub rate_limit_max_failures: u32,
+    /// `true` if `tenant_id` already existed and this call returned the
+    /// existing tenant's config instead of creating a new one. Lets
+    /// infrastructure automation safely retry `POST /tenant/provision`
+    /// without erroring or creating duplicates.
+    pub already_existed: bool,
 }
 
 /// Handlers that operate within a single tenant's namespace.
@@ -801,7 +968,7 @@ impl MultiTenantHandlers {
         user_id: &str,
         email: &str,
     ) -> Result<EnableTwoFactorResponse, String> {
-        caller.authorize(user_id)?;
+        caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         if let Ok(existing) = self.store.get(user_id) {
             if existing.enabled {
@@ -837,13 +1004,10 @@ impl MultiTenantHandlers {
         user_id: &str,
         token: &str,
     ) -> Result<bool, String> {
-        caller.authorize(user_id)?;
+        caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = format!(
-            "{}::verify::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::verify::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -871,12 +1035,9 @@ impl MultiTenantHandlers {
         user_id: &str,
         token: &str,
     ) -> Result<bool, String> {
-        caller.authorize(user_id)?;
+        caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let key = format!(
-            "{}::disable::{}",
-            self.store.config.tenant_id, user_id
-        );
+        let key = format!("{}::disable::{}", self.store.config.tenant_id, user_id);
         if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
@@ -911,7 +1072,13 @@ impl TenantProvisioningHandlers {
         Self { registry }
     }
 
-    /// Provision a new tenant (super-admin only — caller must be verified externally).
+    /// Provision a tenant (super-admin only — caller must be verified externally).
+    ///
+    /// Idempotent: calling this repeatedly with the same `tenant_id` never
+    /// errors or creates a duplicate. The first call creates the tenant and
+    /// returns `already_existed: false`; subsequent calls return the
+    /// existing tenant's config with `already_existed: true`. This lets
+    /// infrastructure automation safely retry provisioning on failure.
     pub fn provision_tenant(
         &self,
         _super_admin: &AuthenticatedAdmin,
@@ -922,10 +1089,12 @@ impl TenantProvisioningHandlers {
             totp_issuer: req.totp_issuer.clone(),
             rate_limit_max_failures: req.rate_limit_max_failures,
         };
-        self.registry.provision(config)?;
+        let (existing_or_new, already_existed) = self.registry.provision(config)?;
         Ok(ProvisionTenantResponse {
-            tenant_id: req.tenant_id,
-            totp_issuer: req.totp_issuer,
+            tenant_id: existing_or_new.tenant_id,
+            totp_issuer: existing_or_new.totp_issuer,
+            rate_limit_max_failures: existing_or_new.rate_limit_max_failures,
+            already_existed,
         })
     }
 
@@ -947,11 +1116,20 @@ pub struct PoolMetricsHandlers;
 
 #[cfg(not(test))]
 impl PoolMetricsHandlers {
-    /// Return current pool utilisation. Only available when backed by Postgres.
-    /// Requires `POOL_STATS_ENABLED=1` to be set; otherwise returns an error
-    /// to avoid coupling the handler to a concrete store type at runtime.
+    /// Return current pool utilisation. Only available when backed by Postgres
+    /// and `POOL_STATS_ENABLED=1` is set in the environment.
     pub fn pool_stats() -> Result<PoolStatsResponse, String> {
-        Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string())
+        if std::env::var("POOL_STATS_ENABLED").as_deref() != Ok("1") {
+            return Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string());
+        }
+        match two_factor_store().try_pool_stats() {
+            Some(stats) => Ok(PoolStatsResponse {
+                active: stats.active,
+                idle: stats.idle,
+                max: stats.max,
+            }),
+            None => Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string()),
+        }
     }
 }
 
@@ -960,16 +1138,17 @@ impl PoolMetricsHandlers {
     pub fn pool_stats() -> Result<PoolStatsResponse, String> {
         // In tests there is no real pool; return a fixed sentinel so the
         // endpoint handler can be exercised without a database.
-        Ok(PoolStatsResponse { active: 0, idle: 0, max: 0 })
+        Ok(PoolStatsResponse {
+            active: 0,
+            idle: 0,
+            max: 0,
+        })
     }
 }
 
 /// WebSocket endpoint for real-time leaderboard updates.
 ///
 /// Mount this at `GET /leaderboard/ws`.
-pub async fn leaderboard_ws(
-    req: HttpRequest,
-    stream: Payload,
-) -> Result<HttpResponse, Error> {
+pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
     leaderboard_ws_endpoint(req, stream).await
 }

@@ -2,11 +2,11 @@
 //! Run with: cargo run --example example_integration
 
 use actix_web::{middleware, web, App, HttpResponse, HttpServer};
-use petchain_2fa::{ApiError, ErrorResponseMiddleware};
 use petchain_2fa::handlers::{
     AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
     RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
 };
+use petchain_2fa::{ApiError, ErrorResponseMiddleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -41,7 +41,10 @@ struct LoginResponse {
 // Endpoint 1 – POST /api/auth/login
 // ---------------------------------------------------------------------------
 
-async fn login(state: web::Data<AppState>, req: web::Json<LoginRequest>) -> Result<HttpResponse, ApiError> {
+async fn login(
+    state: web::Data<AppState>,
+    req: web::Json<LoginRequest>,
+) -> Result<HttpResponse, ApiError> {
     // Placeholder: validate email/password against your database.
     let _ = (&req.email, &req.password);
     let user_id = "user123"; // replace with real DB lookup

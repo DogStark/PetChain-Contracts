@@ -1,0 +1,16 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0437: protobuf 2.28.0 uncontrolled recursion.
+    # Brought in transitively by prometheus 0.13. Protobuf is only used for
+    # prometheus text/binary encoding of internal metrics, never for
+    # parsing external input, so the recursive-parsing crash is unreachable.
+    # Track: upgrade prometheus to a release that depends on protobuf >=3.7.2.
+    { id = "RUSTSEC-2024-0437", reason = "protobuf only used for internal prometheus metrics encoding, not for parsing external input" },
+
+    # RUSTSEC-2023-0071: rsa 0.9.10 Marvin Attack timing side-channel.
+    # Brought in transitively by sqlx-mysql. No fixed version is available
+    # upstream. This crate does not use RSA decryption in any hot path; 2FA
+    # secrets use TOTP/HMAC, not RSA. Remove this ignore once a patched rsa
+    # crate is published.
+    { id = "RUSTSEC-2023-0071", reason = "rsa used transitively by sqlx-mysql only; no RSA decryption performed in this service" },
+]
