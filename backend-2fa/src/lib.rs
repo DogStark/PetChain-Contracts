@@ -17,7 +17,7 @@ pub use db::{
     select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats,
     PostgresIpAccessStore, SecretProvider,
 };
-pub use error::{ApiError, ErrorResponseMiddleware};
+pub use error::{ApiError, ErrorResponseMiddleware, NoCacheMiddleware};
 pub use handlers::{
     leaderboard_ws, AddIpRuleRequest, AdminDashboardHandlers, AdminIpAccessHandlers,
     AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin, AuthenticatedUser,
