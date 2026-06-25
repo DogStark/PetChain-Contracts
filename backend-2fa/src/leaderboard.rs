@@ -1018,7 +1018,6 @@ mod tests {
 
     #[test]
     fn connect_limit_never_exceeded_under_concurrent_calls() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
 
         let hub = {
@@ -1030,28 +1029,18 @@ mod tests {
         };
 
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        let success_count = StdArc::new(AtomicUsize::new(0));
-        let threads: Vec<_> = (0..20)
-            .map(|_| {
-                let hub = StdArc::clone(&hub);
-                let count = StdArc::clone(&success_count);
-                std::thread::spawn(move || {
-                    if hub.connect(ip).is_ok() {
-                        count.fetch_add(1, Ordering::SeqCst);
-                    }
-                })
-            })
-            .collect();
 
-        for t in threads {
-            t.join().unwrap();
-        }
+        // Hold all guards alive simultaneously so the limit is tested under
+        // concurrent conditions — if guards were dropped between attempts the
+        // counter would reset and every attempt would succeed.
+        let guards: Vec<_> = (0..20).map(|_| hub.connect(ip)).collect();
+        let success_count = guards.iter().filter(|r| r.is_ok()).count();
 
         // The per-IP limit is 5; no more than 5 connects must succeed.
         assert!(
-            success_count.load(Ordering::SeqCst) <= 5,
+            success_count <= 5,
             "connection limit exceeded: {}",
-            success_count.load(Ordering::SeqCst)
+            success_count
         );
     }
 

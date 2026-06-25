@@ -1,9 +1,9 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
+use crate::error::ApiError;
 use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{
-    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter,
-    TenantRateLimitKey, UserQuotaStore,
+    InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
@@ -249,10 +249,10 @@ impl TwoFactorHandlers {
             .get_lockout_state(user_id)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
-                    .to_string(),
-            );
+            return Err(ApiError::locked(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
+                None,
+            ));
         }
         Ok(())
     }
@@ -263,13 +263,10 @@ impl TwoFactorHandlers {
             .record_failed_two_fa_attempt(user_id)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
-            return Err(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code."
-                    .to_string(),
-            );
-        }
-        if let Some(delay) = progressive_delay_secs(state.failed_attempts) {
-            return Ok(format!("Invalid 2FA token. Retry after {} seconds.", delay));
+            return Err(ApiError::locked(
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
+                None,
+            ));
         }
         Ok(())
     }
@@ -355,9 +352,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("verify", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                rate_result.retry_after_secs()
+            return Err(ApiError::too_many_requests(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                None,
             ));
         }
 
@@ -394,9 +394,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("login", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                rate_result.retry_after_secs()
+            return Err(ApiError::too_many_requests(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                None,
             ));
         }
 
@@ -435,9 +438,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("disable", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                rate_result.retry_after_secs()
+            return Err(ApiError::too_many_requests(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                None,
             ));
         }
 
@@ -1013,7 +1019,7 @@ impl MultiTenantHandlers {
             "verify",
             user_id,
         );
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(key.as_str()) {
+        if let RateLimitResult::Blocked { retry_after_secs, .. } = self.limiter.record_failure(key.as_str()) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
                 retry_after_secs
@@ -1047,7 +1053,7 @@ impl MultiTenantHandlers {
             "disable",
             user_id,
         );
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(key.as_str()) {
+        if let RateLimitResult::Blocked { retry_after_secs, .. } = self.limiter.record_failure(key.as_str()) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
                 retry_after_secs

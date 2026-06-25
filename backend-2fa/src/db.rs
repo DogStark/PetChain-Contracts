@@ -1,3 +1,4 @@
+use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
     AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
@@ -178,7 +179,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // Each closure invocation builds and drives a fresh future — no future
         // is shared across retry attempts.
         self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
             INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled, algorithm)
@@ -238,7 +239,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // with_retry retries the DB round-trip; rows_affected check is
         // post-commit business logic and intentionally sits outside.
         let result = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query("DELETE FROM user_two_factor WHERE user_id = $1")
                     .bind(&user_id)
                     .execute(&self.pool),
@@ -257,7 +258,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // with_retry retries the DB round-trip; rows_affected check is
         // post-commit business logic and intentionally sits outside.
         let result = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
                 UPDATE user_two_factor
@@ -284,7 +285,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // with_retry retries the DB round-trip; rows_affected check is
         // post-commit business logic and intentionally sits outside.
         let result = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
                 UPDATE user_two_factor
@@ -314,7 +315,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         let user_id = user_id.to_string();
         let ip_address = ip_address.map(|s| s.to_string());
         let result = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
                 INSERT INTO recovery_code_usage (user_id, code_index, used_at, ip_address)
@@ -359,7 +360,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         }
 
         let rows = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, Row>(
                     r#"
                 SELECT id, user_id, code_index, used_at, ip_address
@@ -397,7 +398,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         }
 
         let rows = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, Row>(
                     r#"
                 SELECT u.user_id, u.enabled
@@ -451,7 +452,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         }
 
         let rows = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, Row>(
                     r#"
                 SELECT id, user_id, event, EXTRACT(EPOCH FROM timestamp)::bigint AS timestamp,
@@ -495,7 +496,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         let metadata = metadata.map(|s| s.to_string());
         // Each closure invocation builds and drives a fresh future.
         self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
                 INSERT INTO two_fa_audit_log (user_id, event, actor, metadata)
@@ -517,7 +518,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // Each branch builds a fresh future on every retry attempt.
         if is_canary {
             self.with_retry(|| {
-                self.block_on(
+                self.block_on_typed(
                     sqlx::query(
                         r#"
                     INSERT INTO canary_accounts (user_id) VALUES ($1)
@@ -531,7 +532,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             })
         } else {
             self.with_retry(|| {
-                self.block_on(
+                self.block_on_typed(
                     sqlx::query("DELETE FROM canary_accounts WHERE user_id = $1")
                         .bind(&user_id)
                         .execute(&self.pool),
@@ -544,7 +545,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn is_canary(&self, user_id: &str) -> bool {
         let user_id = user_id.to_string();
         self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_scalar::<_, i64>(
                     "SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1",
                 )
@@ -567,7 +568,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
         let user_id = user_id.to_string();
         let row = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, Row>(
                     r#"
                 SELECT failed_attempts, locked,
@@ -598,7 +599,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // a separate retried read — the two with_retry calls are sequential, not
         // nested, so there is no double-wrapping.
         self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query(
                     r#"
                 INSERT INTO two_fa_lockouts (user_id, failed_attempts, locked, locked_at, updated_at)
@@ -627,7 +628,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
         let user_id = user_id.to_string();
         self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query("DELETE FROM two_fa_lockouts WHERE user_id = $1")
                     .bind(&user_id)
                     .execute(&self.pool),
@@ -943,6 +944,13 @@ mod tests {
         assert!(result.unwrap_err().contains("timeout"));
     }
 
+    /// String-based analogue of `is_connection_error` used by the test helper
+    /// below (which works with `String` errors rather than `sqlx::Error`).
+    fn is_connection_error_str(e: &str) -> bool {
+        let lower = e.to_lowercase();
+        lower.contains("connection") || lower.contains("timeout") || lower.contains("pool")
+    }
+
     /// Mirrors the real with_retry implementation so tests above do not need
     /// a live PostgreSQL connection.
     fn retry_helper<T, F>(max_attempts: u32, delay_ms: u64, mut op: F) -> Result<T, String>
@@ -953,7 +961,7 @@ mod tests {
         for attempt in 1..=max_attempts {
             match op() {
                 Ok(v) => return Ok(v),
-                Err(e) if attempt < max_attempts && is_connection_error(&e) => {
+                Err(e) if attempt < max_attempts && is_connection_error_str(&e) => {
                     std::thread::sleep(std::time::Duration::from_millis(current_delay));
                     current_delay *= 2;
                 }
