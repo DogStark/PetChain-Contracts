@@ -1,13 +1,13 @@
+use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
     AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
     UserTwoFactorSummary,
 };
-use crate::two_factor::HmacAlgorithm;
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use std::collections::HashMap;
 
 /// Pool utilisation snapshot returned by [`PostgresTwoFactorStore::pool_stats`].
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +50,10 @@ impl SecretProvider for AwsSecretsManagerProvider {
 
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
 pub fn select_secret_provider() -> Box<dyn SecretProvider> {
-    match std::env::var("SECRET_PROVIDER").unwrap_or_else(|_| "env".to_string()).as_str() {
+    match std::env::var("SECRET_PROVIDER")
+        .unwrap_or_else(|_| "env".to_string())
+        .as_str()
+    {
         "aws" => Box::new(AwsSecretsManagerProvider {}),
         _ => Box::new(EnvSecretProvider {}),
     }
@@ -86,7 +89,10 @@ impl PostgresTwoFactorStore {
     }
 
     /// Connect using a SecretProvider to fetch the `secret_key` value.
-    pub fn connect_with_provider(provider: &dyn SecretProvider, secret_key: &str) -> Result<Self, String> {
+    pub fn connect_with_provider(
+        provider: &dyn SecretProvider,
+        secret_key: &str,
+    ) -> Result<Self, String> {
         let database_url = provider.get_secret(secret_key)?;
         PostgresTwoFactorStore::connect(&database_url)
     }
@@ -103,27 +109,33 @@ impl PostgresTwoFactorStore {
         self.runtime.block_on(future).map_err(|e| e.to_string())
     }
 
-    /// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
-    /// Only retries on connection-class errors; other errors are returned immediately.
-    fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+    fn block_on_typed<F, T>(&self, future: F) -> Result<T, sqlx::Error>
     where
-        F: FnMut() -> Result<T, String>,
-    {
-        const MAX_ATTEMPTS: u32 = 3;
-        let mut delay_ms = 100u64;
-        for attempt in 1..=MAX_ATTEMPTS {
-            match op() {
-                Ok(v) => return Ok(v),
-                Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                    delay_ms *= 2;
-                }
-                Err(e) => return Err(e),
+    F: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    self.runtime.block_on(future)
+}
+/// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
+/// The closure must return `sqlx::Error` so retry eligibility is checked on the
+/// typed variant before the error is stringified.
+   fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, sqlx::Error>,
+{
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut delay_ms = 100u64;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms *= 2;
             }
+            Err(e) => return Err(e.to_string()),
         }
-        unreachable!()
     }
-
+    unreachable!()
+}
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
     pub fn health_check(&self) -> Result<(), String> {
@@ -144,9 +156,13 @@ impl PostgresTwoFactorStore {
     }
 }
 
-pub(crate) fn is_connection_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("connection") || m.contains("timeout") || m.contains("pool") || m.contains("io error")
+pub(crate) fn is_connection_error(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Io(_) => true,
+        sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::PoolClosed => true,
+        _ => false,
+    }
 }
 
 impl TwoFactorStore for PostgresTwoFactorStore {
@@ -186,7 +202,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         // with_retry owns the retry loop; block_on drives one fresh future per
         // attempt.  The Option unwrap is post-retry business logic, kept outside.
         let row = self.with_retry(|| {
-            self.block_on(
+            self.block_on_typed(
                 sqlx::query_as::<_, (String, String, bool, Option<String>)>(
                     r#"
             SELECT secret, backup_codes, enabled, algorithm
@@ -364,11 +380,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .collect())
     }
 
-    fn list_users(
-        &self,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String> {
         let offset = (page.saturating_sub(1)) * page_size;
         let limit = page_size as i64;
 
@@ -406,11 +418,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .collect())
     }
 
-    fn admin_disable_two_fa(
-        &self,
-        user_id: &str,
-        admin_id: &str,
-    ) -> Result<(), String> {
+    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String> {
         self.update_enabled(user_id, false)?;
         self.append_audit_log(user_id, "admin_disabled_2fa", admin_id, None)?;
         Ok(())
@@ -626,6 +634,133 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn try_pool_stats(&self) -> Option<PoolStats> {
+        Some(self.pool_stats())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Postgres-backed IP allowlist / blocklist store (Issue #701)
+// ---------------------------------------------------------------------------
+
+fn ip_list_type_to_db(list_type: IpListType) -> &'static str {
+    match list_type {
+        IpListType::Allow => "allow",
+        IpListType::Block => "block",
+    }
+}
+
+#[derive(Clone)]
+pub struct PostgresIpAccessStore {
+    pool: PgPool,
+    runtime: Arc<Runtime>,
+}
+
+impl PostgresIpAccessStore {
+    pub fn connect(database_url: &str) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        let pool = runtime
+            .block_on(PgPoolOptions::new().max_connections(10).connect(database_url))
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool, runtime })
+    }
+
+    pub fn from_pool(pool: PgPool) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        Ok(Self { pool, runtime })
+    }
+
+    fn block_on<F, T>(&self, future: F) -> Result<T, String>
+    where
+        F: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        self.runtime.block_on(future).map_err(|e| e.to_string())
+    }
+}
+
+impl IpAccessStore for PostgresIpAccessStore {
+    fn add_entry(
+        &self,
+        cidr: &str,
+        list_type: IpListType,
+        note: Option<&str>,
+        created_by: &str,
+    ) -> Result<IpAccessEntry, String> {
+        CidrBlock::parse(cidr)?;
+
+        let (id,): (i64,) = self.block_on(
+            sqlx::query_as(
+                r#"
+                INSERT INTO ip_access_list (cidr, list_type, note, created_by)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+                "#,
+            )
+            .bind(cidr)
+            .bind(ip_list_type_to_db(list_type))
+            .bind(note)
+            .bind(created_by)
+            .fetch_one(&self.pool),
+        )?;
+
+        Ok(IpAccessEntry {
+            id,
+            cidr: cidr.to_string(),
+            list_type,
+            note: note.map(str::to_string),
+            created_by: created_by.to_string(),
+        })
+    }
+
+    fn remove_entry(&self, id: i64) -> Result<(), String> {
+        let result = self.block_on(
+            sqlx::query("DELETE FROM ip_access_list WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool),
+        )?;
+
+        if result.rows_affected() == 0 {
+            return Err(format!("no IP access entry with id {id}"));
+        }
+        Ok(())
+    }
+
+    fn list_entries(&self, list_type: IpListType) -> Vec<IpAccessEntry> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: i64,
+            cidr: String,
+            note: Option<String>,
+            created_by: String,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT id, cidr, note, created_by
+                FROM ip_access_list
+                WHERE list_type = $1
+                ORDER BY id
+                "#,
+            )
+            .bind(ip_list_type_to_db(list_type))
+            .fetch_all(&self.pool),
+        );
+
+        rows.map(|rows| {
+            rows.into_iter()
+                .map(|r| IpAccessEntry {
+                    id: r.id,
+                    cidr: r.cidr,
+                    list_type,
+                    note: r.note,
+                    created_by: r.created_by,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
 }
 
