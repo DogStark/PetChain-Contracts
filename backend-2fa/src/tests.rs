@@ -3364,6 +3364,7 @@ mod canary_tests {
 #[cfg(test)]
 mod webhook_handler_tests {
     use crate::webhooks::{SecurityEventType, WebhookManager};
+    use std::sync::Arc;
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {

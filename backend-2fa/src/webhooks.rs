@@ -209,7 +209,7 @@ static HTTP_CLIENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new(
 
 #[cfg(feature = "webhook-client")]
 impl HttpClient for DefaultHttpClient {
-    fn post(&self, url: &str, body: &str) -> Result<(), String> {
+    fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String> {
         let agent = HTTP_CLIENT.get_or_init(|| {
             ureq::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -219,6 +219,7 @@ impl HttpClient for DefaultHttpClient {
         let response = agent
             .post(url)
             .set("Content-Type", "application/json")
+            .set(SIGNATURE_HEADER, signature_header)
             .send_string(body)
             .map_err(|e| format!("request failed: {}", e))?;
 
@@ -232,7 +233,7 @@ impl HttpClient for DefaultHttpClient {
 
 #[cfg(not(feature = "webhook-client"))]
 impl HttpClient for DefaultHttpClient {
-    fn post(&self, url: &str, body: &str) -> Result<(), String> {
+    fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String> {
         // Use ureq for a synchronous blocking HTTP POST with a sane timeout.
         // ureq is lightweight and does not require an async runtime.
         // If ureq is not available, we fall back to a minimal TCP implementation.
@@ -290,6 +291,7 @@ impl HttpClient for DefaultHttpClient {
             "POST {path} HTTP/1.1\r\n\
              Host: {host}\r\n\
              Content-Type: application/json\r\n\
+             {SIGNATURE_HEADER}: {signature_header}\r\n\
              Content-Length: {}\r\n\
              Connection: close\r\n\
              \r\n\
@@ -335,6 +337,9 @@ pub struct WebhookManager {
     http_client: Arc<dyn HttpClient>,
     /// When true, allow http:// URLs (for test/dev environments).
     allow_http: bool,
+    /// HMAC-SHA256 signing secret used to compute `X-PetChain-Signature` headers.
+    /// Empty string disables signing.
+    signing_secret: String,
 }
 
 impl Default for WebhookManager {
@@ -350,6 +355,7 @@ impl WebhookManager {
             delivery_log: Arc::new(Mutex::new(Vec::new())),
             http_client,
             allow_http: false,
+            signing_secret,
         }
     }
 
@@ -360,6 +366,7 @@ impl WebhookManager {
             delivery_log: Arc::new(Mutex::new(Vec::new())),
             http_client,
             allow_http: true,
+            signing_secret: String::new(),
         }
     }
 
@@ -416,6 +423,7 @@ impl WebhookManager {
         };
 
         let body = serde_json::to_string(&payload).unwrap_or_default();
+        let signature = sign_webhook_payload(&self.signing_secret, body.as_bytes());
         let client = self.http_client.clone();
         let delivery_log = self.delivery_log.clone();
         let url_clone = url.clone();
@@ -430,7 +438,7 @@ impl WebhookManager {
             let mut success = false;
 
             while attempts < 3 {
-                match client.post(&url_clone, &body) {
+                match client.post(&url_clone, &body, &signature) {
                     Ok(()) => {
                         success = true;
                         break;
@@ -490,6 +498,7 @@ impl WebhookManager {
         };
 
         let body = serde_json::to_string(&payload).unwrap_or_default();
+        let signature_header = sign_webhook_payload(&self.signing_secret, body.as_bytes());
 
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
