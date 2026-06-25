@@ -1,16 +1,58 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use redis::Commands;
 
-/// Result returned when checking a rate limit for a given key.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RateLimitResult {
-    /// The attempt is allowed. Contains remaining attempts in the window.
-    Allowed { remaining: u32 },
-    /// The key is locked out. Contains seconds until the lockout expires.
-    Blocked { retry_after_secs: u64 },
+    /// The attempt is allowed.
+    Allowed {
+        limit: u32,
+        remaining: u32,
+        reset_at: u64,
+    },
+    /// The key is locked out.
+    Blocked {
+        limit: u32,
+        remaining: u32,
+        reset_at: u64,
+        retry_after_secs: u64,
+    },
+}
+
+impl RateLimitResult {
+    pub fn limit(&self) -> u32 {
+        match self {
+            RateLimitResult::Allowed { limit, .. } => *limit,
+            RateLimitResult::Blocked { limit, .. } => *limit,
+        }
+    }
+
+    pub fn remaining(&self) -> u32 {
+        match self {
+            RateLimitResult::Allowed { remaining, .. } => *remaining,
+            RateLimitResult::Blocked { remaining, .. } => *remaining,
+        }
+    }
+
+    pub fn reset_at(&self) -> u64 {
+        match self {
+            RateLimitResult::Allowed { reset_at, .. } => *reset_at,
+            RateLimitResult::Blocked { reset_at, .. } => *reset_at,
+        }
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        matches!(self, RateLimitResult::Blocked { .. })
+    }
+
+    pub fn retry_after_secs(&self) -> u64 {
+        match self {
+            RateLimitResult::Allowed { .. } => 0,
+            RateLimitResult::Blocked { retry_after_secs, .. } => *retry_after_secs,
+        }
+    }
 }
 
 /// A pluggable rate limiter interface.
@@ -128,6 +170,7 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
 
 pub struct LiveRedisBackend {
     client: redis::Client,
+    connection: Mutex<Option<redis::Connection>>,
 }
 
 impl LiveRedisBackend {
@@ -140,7 +183,7 @@ impl LiveRedisBackend {
 
 impl RedisBackend for LiveRedisBackend {
     fn ttl(&self, key: &str) -> i64 {
-        let mut con = match self.client.get_connection() {
+        let mut con = match self.get_connection() {
             Ok(c) => c,
             Err(_) => return -2,
         };
@@ -192,19 +235,19 @@ impl RedisBackend for LiveRedisBackend {
     }
 
     fn set_ex(&self, key: &str, value: &str, ttl_secs: u64) {
-        if let Ok(mut con) = self.client.get_connection() {
+        if let Ok(mut con) = self.get_connection() {
             let _: Result<(), _> = con.set_ex(key, value, ttl_secs);
         }
     }
 
     fn del(&self, keys: &[&str]) {
-        if let Ok(mut con) = self.client.get_connection() {
+        if let Ok(mut con) = self.get_connection() {
             let _: Result<(), _> = redis::cmd("DEL").arg(keys).query(&mut con);
         }
     }
 
     fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> u64 {
-        let mut con = match self.client.get_connection() {
+        let mut con = match self.get_connection() {
             Ok(c) => c,
             Err(_) => return 0,
         };
@@ -216,7 +259,7 @@ impl RedisBackend for LiveRedisBackend {
     }
 
     fn get_u64(&self, key: &str) -> Option<u64> {
-        let mut con = self.client.get_connection().ok()?;
+        let mut con = self.get_connection().ok()?;
         redis::cmd("GET").arg(key).query(&mut con).ok()
     }
 }
@@ -438,8 +481,13 @@ impl Default for InMemoryRateLimiter {
 
 impl RateLimiter for InMemoryRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
-        let mut records = self.records.lock().expect("rate limiter lock poisoned");
+        // Recover from poisoned lock: data is still valid, just recover the Mutex
+        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         let record = records.entry(key.to_string()).or_insert(AttemptRecord {
             failures: 0,
@@ -450,7 +498,13 @@ impl RateLimiter for InMemoryRateLimiter {
         if let Some(locked_until) = record.locked_until {
             if now < locked_until {
                 let retry_after_secs = (locked_until - now).as_secs().max(1);
-                return RateLimitResult::Blocked { retry_after_secs };
+                let reset_at = unix_now + retry_after_secs;
+                return RateLimitResult::Blocked {
+                    limit: self.max_failures,
+                    remaining: 0,
+                    reset_at,
+                    retry_after_secs,
+                };
             } else {
                 record.failures = 0;
                 record.window_start = now;
@@ -465,6 +519,11 @@ impl RateLimiter for InMemoryRateLimiter {
 
         record.failures += 1;
 
+        // reset_at = end of the current window
+        let elapsed_secs = now.duration_since(record.window_start).as_secs();
+        let window_remaining_secs = self.window.as_secs().saturating_sub(elapsed_secs);
+        let reset_at = unix_now + window_remaining_secs;
+
         if record.failures > self.max_failures {
             record.locked_until = Some(now + self.lockout);
             RateLimitResult::Blocked {
@@ -478,7 +537,8 @@ impl RateLimiter for InMemoryRateLimiter {
     }
 
     fn record_success(&self, key: &str) {
-        let mut records = self.records.lock().expect("rate limiter lock poisoned");
+        // Recover from poisoned lock: data is still valid, just recover the Mutex
+        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         records.remove(key);
     }
 }
@@ -548,6 +608,11 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
         let cfg = self.config_for(key);
         let lockout_key = format!("rate:{key}:lockout");
         let window_key = format!("rate:{key}:window");
+
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         let lockout_ttl = self.backend.ttl(&lockout_key);
         if lockout_ttl > 0 {
@@ -627,14 +692,15 @@ impl RateLimiter for RedisRateLimiter {
 // ---------------------------------------------------------------------------
 
 /// Lua script: atomically increment a counter and set TTL on first use.
-/// Returns the new counter value.
+/// Returns {count, ttl} so callers can compute reset_at.
 /// KEYS[1] = rate-limit key, ARGV[1] = window_secs, ARGV[2] = max_requests
 const INCR_EXPIRE_SCRIPT: &str = r#"
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
     redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
-return current
+local ttl = redis.call('TTL', KEYS[1])
+return {current, ttl}
 "#;
 
 /// Distributed rate limiter using Redis INCR + EXPIRE (Lua atomic script).
@@ -681,13 +747,22 @@ impl DistributedRateLimiter {
         let client = self.client.as_ref()?;
         let mut con = client.get_connection().ok()?;
 
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         let redis_key = self.redis_key(key);
-        let count: u64 = redis::Script::new(INCR_EXPIRE_SCRIPT)
+        let (count, ttl): (u64, i64) = redis::Script::new(INCR_EXPIRE_SCRIPT)
             .key(&redis_key)
             .arg(self.window_secs)
             .arg(self.max_requests)
             .invoke(&mut con)
             .ok()?;
+
+        // ttl may be -1 (no expiry) or -2 (key missing); fall back to window_secs
+        let ttl_secs = if ttl > 0 { ttl as u64 } else { self.window_secs };
+        let reset_at = unix_now + ttl_secs;
 
         if count > self.max_requests as u64 {
             Some(RateLimitResult::Blocked {
@@ -695,7 +770,9 @@ impl DistributedRateLimiter {
             })
         } else {
             Some(RateLimitResult::Allowed {
+                limit: self.max_requests,
                 remaining: self.max_requests.saturating_sub(count as u32),
+                reset_at,
             })
         }
     }
@@ -703,7 +780,7 @@ impl DistributedRateLimiter {
 
 impl RateLimiter for DistributedRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
-        match self.try_redis(key) {
+        let result = match self.try_redis(key) {
             Some(result) => result,
             None => {
                 tracing::warn!(
@@ -713,7 +790,11 @@ impl RateLimiter for DistributedRateLimiter {
                 crate::metrics::record_redis_fallback();
                 self.fallback.record_failure(key)
             }
+        };
+        if matches!(result, RateLimitResult::Blocked { .. }) {
+            crate::metrics::record_rate_limit_hit();
         }
+        result
     }
 
     fn record_success(&self, key: &str) {

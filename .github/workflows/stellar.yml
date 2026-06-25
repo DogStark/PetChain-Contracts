@@ -79,4 +79,5 @@ jobs:
         run: |
           cargo install cargo-audit
           cd stellar-contracts
+          cargo generate-lockfile
           cargo audit

@@ -2,7 +2,6 @@ use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
 use actix_web::error::{ErrorBadRequest, ErrorTooManyRequests};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::f64;

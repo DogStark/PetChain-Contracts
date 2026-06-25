@@ -34,6 +34,27 @@ impl Default for TotpConfig {
 }
 
 impl TotpConfig {
+    pub fn new(algorithm: Algorithm, digits: usize, period: u64, window: u8) -> Result<Self, String> {
+        // Validate digits: RFC 6238 recommends 6-8 digits
+        if digits < 6 || digits > 8 {
+            return Err(format!("digits must be between 6 and 8, got {}", digits));
+        }
+        // Validate period: must be > 0
+        if period == 0 {
+            return Err("period must be greater than 0".to_string());
+        }
+        // Validate window: reasonable bound (0-10 is sane)
+        if window > 10 {
+            return Err(format!("window must be <= 10, got {}", window));
+        }
+        Ok(Self {
+            algorithm,
+            digits,
+            period,
+            window,
+        })
+    }
+
     pub fn legacy_sha1() -> Self {
         Self {
             algorithm: Algorithm::SHA1,
@@ -339,6 +360,12 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return pool utilisation stats when the backing store supports it.
+    /// Returns `None` for stores that have no connection pool (e.g. in-memory).
+    fn try_pool_stats(&self) -> Option<crate::db::PoolStats> {
+        None
+    }
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -931,14 +958,26 @@ pub struct TenantRegistry {
 }
 
 impl TenantRegistry {
-    /// Provision a new tenant. Returns `Err` if the tenant already exists.
-    pub fn provision(&self, config: TenantConfig) -> Result<(), String> {
+    /// Provision a tenant idempotently.
+    ///
+    /// If `tenant_id` is unknown, it is created and `(config, false)` is
+    /// returned. If it already exists, the existing config is returned
+    /// unchanged along with `(existing_config, true)` — the caller can use
+    /// the `bool` to signal `already_existed` without treating this as an
+    /// error. The check-and-insert happens under a single lock acquisition
+    /// (via `Entry`), so concurrent calls for the same `tenant_id` cannot
+    /// race past each other and create duplicates.
+    pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
-        if map.contains_key(&config.tenant_id) {
-            return Err(format!("Tenant '{}' already exists", config.tenant_id));
+        match map.entry(config.tenant_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                Ok((entry.get().clone(), true))
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(config.clone());
+                Ok((config, false))
+            }
         }
-        map.insert(config.tenant_id.clone(), config);
-        Ok(())
     }
 
     /// Retrieve a scoped store for the given tenant. Returns `Err` if the
