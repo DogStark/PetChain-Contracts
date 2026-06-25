@@ -11,6 +11,7 @@
 //! | `totp_verifications_total` | Counter | `result` (`ok`/`fail`) |
 //! | `recovery_code_uses_total` | Counter | — |
 //! | `rate_limit_hits_total` | Counter | — |
+//! | `rate_limiter_redis_fallback_total` | Counter | — |
 //! | `db_pool_active` | Gauge | — |
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
@@ -30,6 +31,7 @@ pub struct Metrics {
     pub totp_verifications_total: CounterVec,
     pub recovery_code_uses_total: prometheus::Counter,
     pub rate_limit_hits_total: prometheus::Counter,
+    pub rate_limiter_redis_fallback_total: prometheus::Counter,
     pub db_pool_active: Gauge,
     pub db_pool_idle: Gauge,
     pub request_duration_seconds: HistogramVec,
@@ -60,17 +62,17 @@ pub fn metrics() -> &'static Metrics {
         )
         .expect("register rate_limit_hits_total"),
 
-        db_pool_active: register_gauge!(
-            "db_pool_active",
-            "Number of active DB pool connections"
+        rate_limiter_redis_fallback_total: prometheus::register_counter!(
+            "rate_limiter_redis_fallback_total",
+            "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
         )
-        .expect("register db_pool_active"),
+        .expect("register rate_limiter_redis_fallback_total"),
 
-        db_pool_idle: register_gauge!(
-            "db_pool_idle",
-            "Number of idle DB pool connections"
-        )
-        .expect("register db_pool_idle"),
+        db_pool_active: register_gauge!("db_pool_active", "Number of active DB pool connections")
+            .expect("register db_pool_active"),
+
+        db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
+            .expect("register db_pool_idle"),
 
         request_duration_seconds: register_histogram_vec!(
             "request_duration_seconds",
@@ -94,7 +96,10 @@ pub fn metrics() -> &'static Metrics {
 /// Record a TOTP verification result. `success` maps to label `ok`/`fail`.
 pub fn record_totp_verification(success: bool) {
     let label = if success { "ok" } else { "fail" };
-    metrics().totp_verifications_total.with_label_values(&[label]).inc();
+    metrics()
+        .totp_verifications_total
+        .with_label_values(&[label])
+        .inc();
 }
 
 /// Record a recovery code use.
@@ -105,6 +110,11 @@ pub fn record_recovery_code_use() {
 /// Record a rate-limit block.
 pub fn record_rate_limit_hit() {
     metrics().rate_limit_hits_total.inc();
+}
+
+/// Record a Redis-unavailable fallback in DistributedRateLimiter.
+pub fn record_redis_fallback() {
+    metrics().rate_limiter_redis_fallback_total.inc();
 }
 
 /// Update DB pool gauges.
@@ -178,6 +188,7 @@ mod tests {
         record_totp_verification(false);
         record_recovery_code_use();
         record_rate_limit_hit();
+        record_redis_fallback();
         set_db_pool_stats(2.0, 8.0);
         let _timer = start_request_timer("/verify");
         // timer dropped immediately — records a near-zero observation
