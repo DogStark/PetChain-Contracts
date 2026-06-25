@@ -124,6 +124,9 @@ use soroban_sdk::{
     Env, Map, String, Symbol, Vec,
 };
 
+#[cfg(test)]
+mod test_dispute_voting;
+
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -2085,6 +2088,24 @@ pub enum DisputeStatus {
     Cancelled = 5,
 }
 
+/// A stakeholder's vote on a dispute resolution.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum DisputeVote {
+    Approve = 1,
+    Reject = 2,
+}
+
+/// A single recorded vote on a dispute, tracking who voted and how.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeVoteRecord {
+    pub voter: Address,
+    pub vote: DisputeVote,
+    pub timestamp: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dispute {
@@ -2120,6 +2141,10 @@ pub enum DisputeKey {
     DisputeEvidence(u64, u64),
     DisputeEvidenceCount(u64),
     PartyEvidenceCount(u64, Address),
+    /// Vote cast by a given address on a given dispute.
+    DisputeVoteByVoter(u64, Address),
+    /// Ordered list of addresses that have voted on a dispute (for enumeration).
+    DisputeVoters(u64),
 }
 
 #[contract]
@@ -7467,6 +7492,9 @@ impl PetChainContract {
             .get(&DisputeKey::Dispute(dispute_id))
     }
 
+    /// Admin override: forcibly resolves a dispute, bypassing the consensus
+    /// vote. Requires admin authorization. Use `vote_on_dispute` for the
+    /// standard multi-party consensus path.
     pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool {
         Self::require_admin(&env);
 
@@ -7475,10 +7503,154 @@ impl PetChainContract {
             dispute.status = status;
             dispute.resolved_at = Some(env.ledger().timestamp());
             env.storage().instance().set(&key, &dispute);
+
+            env.events().publish(
+                (Symbol::new(&env, "DisputeResolved"),),
+                (dispute_id, status, env.ledger().timestamp()),
+            );
             true
         } else {
             false
         }
+    }
+
+    /// Returns true if `voter` is an eligible stakeholder for `dispute`:
+    /// the pet owner (claimer), the opposing party (target), or a multisig
+    /// admin.
+    fn is_dispute_stakeholder(env: &Env, dispute: &Dispute, voter: &Address) -> bool {
+        voter == &dispute.claimer || voter == &dispute.target || Self::is_admin_address(env, voter)
+    }
+
+    /// Casts a vote on a dispute's resolution. Eligible voters are the pet
+    /// owner (claimer), the opposing party (target/vet/groomer), or a
+    /// multisig admin. Once at least 2 of these 3 stakeholder classes have
+    /// cast matching votes, the dispute is automatically resolved:
+    /// `Approve` votes resolve in favor of the claimer, `Reject` votes
+    /// resolve in favor of the target. Returns `true` if this vote caused
+    /// the dispute to auto-resolve.
+    pub fn vote_on_dispute(env: Env, voter: Address, dispute_id: u64, vote: DisputeVote) -> bool {
+        voter.require_auth();
+
+        let dispute_key = DisputeKey::Dispute(dispute_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&dispute_key)
+            .unwrap_or_else(|| panic!("Dispute not found"));
+
+        assert!(
+            dispute.status == DisputeStatus::Pending
+                || dispute.status == DisputeStatus::EvidencePhase,
+            "Dispute is not open for voting"
+        );
+
+        assert!(
+            Self::is_dispute_stakeholder(&env, &dispute, &voter),
+            "Only the pet owner, the opposing party, or an admin may vote"
+        );
+
+        let vote_key = DisputeKey::DisputeVoteByVoter(dispute_id, voter.clone());
+        let is_new_voter = !env.storage().instance().has(&vote_key);
+
+        env.storage().instance().set(
+            &vote_key,
+            &DisputeVoteRecord {
+                voter: voter.clone(),
+                vote,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        if is_new_voter {
+            let voters_key = DisputeKey::DisputeVoters(dispute_id);
+            let mut voters: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&voters_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            voters.push_back(voter.clone());
+            env.storage().instance().set(&voters_key, &voters);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "DisputeVoteCast"),),
+            (dispute_id, voter.clone(), vote, env.ledger().timestamp()),
+        );
+
+        // Tally votes across all distinct stakeholders who have voted so far.
+        let voters_key = DisputeKey::DisputeVoters(dispute_id);
+        let voters: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&voters_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut approve_count: u32 = 0;
+        let mut reject_count: u32 = 0;
+        for addr in voters.iter() {
+            if let Some(record) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, DisputeVoteRecord>(&DisputeKey::DisputeVoteByVoter(
+                    dispute_id,
+                    addr.clone(),
+                ))
+            {
+                match record.vote {
+                    DisputeVote::Approve => approve_count += 1,
+                    DisputeVote::Reject => reject_count += 1,
+                }
+            }
+        }
+
+        const RESOLUTION_THRESHOLD: u32 = 2;
+
+        let resolved_status = if approve_count >= RESOLUTION_THRESHOLD {
+            Some(DisputeStatus::ResolvedInFavorOfClaimer)
+        } else if reject_count >= RESOLUTION_THRESHOLD {
+            Some(DisputeStatus::ResolvedInFavorOfTarget)
+        } else {
+            None
+        };
+
+        if let Some(final_status) = resolved_status {
+            dispute.status = final_status;
+            dispute.resolved_at = Some(env.ledger().timestamp());
+            env.storage().instance().set(&dispute_key, &dispute);
+
+            env.events().publish(
+                (Symbol::new(&env, "DisputeResolved"),),
+                (dispute_id, final_status, env.ledger().timestamp()),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns all recorded votes for a dispute.
+    pub fn get_dispute_votes(env: Env, dispute_id: u64) -> Vec<DisputeVoteRecord> {
+        let voters_key = DisputeKey::DisputeVoters(dispute_id);
+        let voters: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&voters_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut result = Vec::new(&env);
+        for addr in voters.iter() {
+            if let Some(record) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, DisputeVoteRecord>(&DisputeKey::DisputeVoteByVoter(
+                    dispute_id,
+                    addr.clone(),
+                ))
+            {
+                result.push_back(record);
+            }
+        }
+        result
     }
 
     pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute> {
