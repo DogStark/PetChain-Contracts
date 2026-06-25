@@ -90,10 +90,37 @@ pub trait HttpClient: Send + Sync {
     fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String>;
 }
 
-/// Production HTTP client using ureq (or a stub if not available).
-/// In tests this is replaced by a mock.
+/// Production HTTP client using ureq (if webhook-client feature is enabled),
+/// otherwise a no-op stub.
 pub struct DefaultHttpClient;
 
+#[cfg(feature = "webhook-client")]
+static HTTP_CLIENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+
+#[cfg(feature = "webhook-client")]
+impl HttpClient for DefaultHttpClient {
+    fn post(&self, url: &str, body: &str) -> Result<(), String> {
+        let agent = HTTP_CLIENT.get_or_init(|| {
+            ureq::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+        });
+
+        let response = agent
+            .post(url)
+            .set("Content-Type", "application/json")
+            .send_string(body)
+            .map_err(|e| format!("request failed: {}", e))?;
+
+        if response.status() >= 200 && response.status() < 300 {
+            Ok(())
+        } else {
+            Err(format!("server returned error status: {}", response.status()))
+        }
+    }
+}
+
+#[cfg(not(feature = "webhook-client"))]
 impl HttpClient for DefaultHttpClient {
     fn post(&self, _url: &str, _body: &str, _signature_header: &str) -> Result<(), String> {
         // In a real deployment this would use reqwest/ureq and would attach
@@ -141,10 +168,7 @@ impl WebhookManager {
 
     /// Remove a webhook configuration for an event type.
     pub fn remove_config(&self, event_type: &SecurityEventType) {
-        self.config
-            .lock()
-            .unwrap()
-            .remove(&event_type.to_string());
+        self.config.lock().unwrap().remove(&event_type.to_string());
     }
 
     /// Fire a webhook for the given event. Retries up to 3 times with
@@ -278,11 +302,7 @@ mod tests {
             SecurityEventType::FailedTwoFa,
             "http://example.com/hook".to_string(),
         );
-        manager.fire(
-            SecurityEventType::FailedTwoFa,
-            "user1",
-            HashMap::new(),
-        );
+        manager.fire(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
         assert_eq!(manager.delivery_log_count(), 1);
         let log = manager.get_delivery_log(1, 10);
@@ -305,11 +325,7 @@ mod tests {
             SecurityEventType::RecoveryCodeUsed,
             "http://example.com/hook".to_string(),
         );
-        manager.fire(
-            SecurityEventType::RecoveryCodeUsed,
-            "user2",
-            HashMap::new(),
-        );
+        manager.fire(SecurityEventType::RecoveryCodeUsed, "user2", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 2);
         let log = manager.get_delivery_log(1, 10);
         assert!(log[0].success);
