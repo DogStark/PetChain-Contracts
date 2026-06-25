@@ -1,15 +1,23 @@
+use crate::metrics::{record_webhook_delivery, record_webhook_retry};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Header under which the webhook signature is sent.
 pub const SIGNATURE_HEADER: &str = "X-PetChain-Signature";
+
+/// Default maximum number of entries retained in the delivery log.
+/// Override with the `WEBHOOK_LOG_MAX_ENTRIES` environment variable.
+const DEFAULT_MAX_LOG_ENTRIES: usize = 1000;
 
 /// Compute the `sha256=<hex>` HMAC-SHA256 signature for a webhook body.
 pub fn sign_webhook_payload(secret: &str, body: &[u8]) -> String {
@@ -147,10 +155,8 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 /// * Must use `https` (or `http` only when `allow_http` is true for testing).
 /// * Must not resolve to loopback, private, or link-local addresses.
 pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), WebhookUrlError> {
-    // Step 1: parse the URL
     let parsed = url::Url::parse(url).map_err(|e| WebhookUrlError::InvalidUrl(e.to_string()))?;
 
-    // Step 2: check scheme
     let scheme = parsed.scheme();
     match scheme {
         "https" => {}
@@ -158,14 +164,11 @@ pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), WebhookUr
         other => return Err(WebhookUrlError::DisallowedScheme(other.to_string())),
     }
 
-    // Step 3: extract host
     let host = parsed.host_str().ok_or(WebhookUrlError::MissingHost)?;
 
-    // Step 4: resolve hostname and check all addresses
     let port = parsed.port().unwrap_or(if scheme == "https" { 443 } else { 80 });
     let addr_str = format!("{host}:{port}");
 
-    // Try DNS resolution; if it fails we still reject known-bad hostnames
     if let Ok(addrs) = addr_str.to_socket_addrs() {
         for addr in addrs {
             if is_private_ip(&addr.ip()) {
@@ -173,7 +176,6 @@ pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), WebhookUr
             }
         }
     } else {
-        // DNS resolution failed — check for obvious private hostnames
         let lower = host.to_lowercase();
         if lower == "localhost"
             || lower == "127.0.0.1"
@@ -198,10 +200,10 @@ pub trait HttpClient: Send + Sync {
     fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String>;
 }
 
-/// Production HTTP client that performs a real HTTP POST via `ureq`.
+/// Production HTTP client that performs a real HTTP POST via raw TCP.
 ///
-/// Uses a 10-second timeout per request.  Falls back to no-op when URL
-/// validation has already been performed at configure() time.
+/// Uses a 10-second timeout per request. For HTTPS, inject a TLS-capable
+/// implementation via `WebhookManager::new`.
 pub struct DefaultHttpClient;
 
 #[cfg(feature = "webhook-client")]
@@ -249,14 +251,7 @@ impl HttpClient for DefaultHttpClient {
             .ok_or_else(|| "URL has no host".to_string())?;
         let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
 
-        // For HTTPS we cannot do raw TLS without a dependency, so for non-test
-        // deployments that need HTTPS, a TLS-capable client (reqwest/ureq) should
-        // be injected via `WebhookManager::new(client)`.
-        //
-        // This default implementation handles HTTP (test mode) to fulfil #860.
         if parsed.scheme() == "https" {
-            // HTTPS stub — log and succeed so that the delivery log is accurate.
-            // Production deployments should inject a TLS-capable HttpClient.
             eprintln!(
                 "[DefaultHttpClient] HTTPS not supported in default client; \
                  inject a TLS-capable HttpClient for production. url={url}"
@@ -275,12 +270,8 @@ impl HttpClient for DefaultHttpClient {
         )
         .map_err(|e| format!("connection failed: {e}"))?;
 
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
-            .ok();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .ok();
+        stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
         let path = if parsed.path().is_empty() {
             "/"
@@ -308,7 +299,6 @@ impl HttpClient for DefaultHttpClient {
             .read_to_string(&mut response)
             .map_err(|e| format!("read failed: {e}"))?;
 
-        // Check for a 2xx status
         if let Some(status_line) = response.lines().next() {
             let parts: Vec<&str> = status_line.split_whitespace().collect();
             if parts.len() >= 2 {
@@ -326,14 +316,27 @@ impl HttpClient for DefaultHttpClient {
 }
 
 // ---------------------------------------------------------------------------
-// WebhookManager (Issues #861, #862)
+// WebhookManager (Issues #861, #862, #863, #864)
 // ---------------------------------------------------------------------------
+
+/// Read the delivery-log capacity from the environment, falling back to `DEFAULT_MAX_LOG_ENTRIES`.
+fn log_cap_from_env() -> usize {
+    std::env::var("WEBHOOK_LOG_MAX_ENTRIES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_LOG_ENTRIES)
+}
 
 /// Manages webhook configuration and delivery with retry logic.
 pub struct WebhookManager {
-    /// event_type -> webhook URL
-    config: Arc<Mutex<HashMap<String, String>>>,
-    delivery_log: Arc<Mutex<Vec<WebhookDeliveryLog>>>,
+    /// event_type -> list of webhook URLs (multiple endpoints supported per event).
+    config: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Bounded ring buffer; oldest entries are evicted when `max_log_entries` is reached.
+    delivery_log: Arc<Mutex<VecDeque<WebhookDeliveryLog>>>,
+    /// Monotonically-increasing counter for log-entry IDs (survives eviction).
+    next_log_id: Arc<AtomicUsize>,
+    /// Maximum number of entries kept in `delivery_log`.
+    max_log_entries: usize,
     http_client: Arc<dyn HttpClient>,
     /// When true, allow http:// URLs (for test/dev environments).
     allow_http: bool,
@@ -352,7 +355,9 @@ impl WebhookManager {
     pub fn new(http_client: Arc<dyn HttpClient>, signing_secret: String) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
-            delivery_log: Arc::new(Mutex::new(Vec::new())),
+            delivery_log: Arc::new(Mutex::new(VecDeque::new())),
+            next_log_id: Arc::new(AtomicUsize::new(0)),
+            max_log_entries: log_cap_from_env(),
             http_client,
             allow_http: false,
             signing_secret,
@@ -363,17 +368,19 @@ impl WebhookManager {
     pub fn new_with_http_allowed(http_client: Arc<dyn HttpClient>) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
-            delivery_log: Arc::new(Mutex::new(Vec::new())),
+            delivery_log: Arc::new(Mutex::new(VecDeque::new())),
+            next_log_id: Arc::new(AtomicUsize::new(0)),
+            max_log_entries: log_cap_from_env(),
             http_client,
             allow_http: true,
             signing_secret: String::new(),
         }
     }
 
-    /// Admin: configure a webhook URL for a specific event type.
+    /// Register a webhook URL for a specific event type.
     ///
-    /// The URL is validated before being stored. Returns an error if the URL
-    /// is invalid, uses a disallowed scheme, or resolves to a private address.
+    /// Multiple URLs may be registered for the same event type; each call appends
+    /// rather than replacing. All registered URLs receive the event on `fire`.
     pub fn configure(
         &self,
         event_type: SecurityEventType,
@@ -383,32 +390,112 @@ impl WebhookManager {
         self.config
             .lock()
             .unwrap()
-            .insert(event_type.to_string(), url);
+            .entry(event_type.to_string())
+            .or_default()
+            .push(url);
         Ok(())
     }
 
-    /// Remove a webhook configuration for an event type.
+    /// Remove all webhook URLs registered for an event type.
     pub fn remove_config(&self, event_type: &SecurityEventType) {
         self.config.lock().unwrap().remove(&event_type.to_string());
     }
 
-    /// Fire a webhook for the given event.
+    /// Remove a single URL from the list registered for an event type.
+    pub fn remove_config_url(&self, event_type: &SecurityEventType, url: &str) {
+        let mut cfg = self.config.lock().unwrap();
+        if let Some(urls) = cfg.get_mut(&event_type.to_string()) {
+            urls.retain(|u| u != url);
+            if urls.is_empty() {
+                cfg.remove(&event_type.to_string());
+            }
+        }
+    }
+
+    /// Append an entry to the delivery log, evicting the oldest entry if the cap is reached.
+    fn append_log(&self, log: &mut VecDeque<WebhookDeliveryLog>, entry: WebhookDeliveryLog) {
+        if self.max_log_entries > 0 && log.len() >= self.max_log_entries {
+            log.pop_front();
+        }
+        log.push_back(entry);
+    }
+
+    /// Run the retry loop for a single URL and push a log entry.
     ///
-    /// Retries up to 3 times with exponential backoff. The retry loop is
-    /// spawned onto a dedicated thread so the caller is never blocked
-    /// (Issue #861).
+    /// Used by both `fire` (in a spawned thread) and `fire_sync` (on the
+    /// calling thread). Each URL is handled independently — one failure does
+    /// not prevent delivery to the remaining URLs.
+    fn deliver_one(
+        client: &dyn HttpClient,
+        url: &str,
+        body: &str,
+        signature: &str,
+        event_str: &str,
+        user_str: &str,
+        timestamp: u64,
+        delivery_log: &Mutex<VecDeque<WebhookDeliveryLog>>,
+        next_log_id: &AtomicUsize,
+        max_log_entries: usize,
+    ) {
+        let mut attempts = 0u32;
+        let mut last_error: Option<String> = None;
+        let mut success = false;
+
+        while attempts < 3 {
+            match client.post(url, body, signature) {
+                Ok(()) => {
+                    success = true;
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    attempts += 1;
+                    if attempts < 3 {
+                        record_webhook_retry();
+                        let wait = Duration::from_secs(1u64 << (attempts - 1));
+                        std::thread::sleep(wait);
+                    }
+                }
+            }
+        }
+
+        record_webhook_delivery(success);
+
+        let id = next_log_id.fetch_add(1, Ordering::Relaxed);
+        let entry = WebhookDeliveryLog {
+            id,
+            event_type: event_str.to_string(),
+            user_id: user_str.to_string(),
+            timestamp,
+            url: url.to_string(),
+            attempts: attempts + if success { 1 } else { 0 },
+            success,
+            last_error,
+        };
+        let mut log = delivery_log.lock().unwrap();
+        if max_log_entries > 0 && log.len() >= max_log_entries {
+            log.pop_front();
+        }
+        log.push_back(entry);
+    }
+
+    /// Fire a webhook for the given event, delivering to all registered URLs.
+    ///
+    /// Each URL is dispatched on its own thread so failures are fully
+    /// independent and the caller is never blocked (Issue #861).
     pub fn fire(
         &self,
         event_type: SecurityEventType,
         user_id: &str,
         metadata: HashMap<String, String>,
     ) {
-        let url = {
+        let urls = {
             let cfg = self.config.lock().unwrap();
-            cfg.get(&event_type.to_string()).cloned()
+            cfg.get(&event_type.to_string()).cloned().unwrap_or_default()
         };
-
-        let Some(url) = url else { return };
+        if urls.is_empty() {
+            return;
+        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -467,23 +554,26 @@ impl WebhookManager {
                 success,
                 last_error,
             });
-        });
+        }
     }
 
-    /// Synchronous fire for testing — runs retry loop on the calling thread.
-    /// Use `fire` in production to avoid blocking the caller.
+    /// Synchronous fire — runs each URL's retry loop on the calling thread.
+    ///
+    /// Each URL is delivered independently; a failure on one URL does not
+    /// prevent delivery to subsequent URLs.
     pub fn fire_sync(
         &self,
         event_type: SecurityEventType,
         user_id: &str,
         metadata: HashMap<String, String>,
     ) {
-        let url = {
+        let urls = {
             let cfg = self.config.lock().unwrap();
-            cfg.get(&event_type.to_string()).cloned()
+            cfg.get(&event_type.to_string()).cloned().unwrap_or_default()
         };
-
-        let Some(url) = url else { return };
+        if urls.is_empty() {
+            return;
+        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -500,42 +590,23 @@ impl WebhookManager {
         let body = serde_json::to_string(&payload).unwrap_or_default();
         let signature_header = sign_webhook_payload(&self.signing_secret, body.as_bytes());
 
-        let mut attempts = 0u32;
-        let mut last_error: Option<String> = None;
-        let mut success = false;
-
-        while attempts < 3 {
-            match self.http_client.post(&url, &body, &signature_header) {
-                Ok(()) => {
-                    success = true;
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    attempts += 1;
-                    if attempts < 3 {
-                        let wait = Duration::from_secs(1u64 << (attempts - 1));
-                        std::thread::sleep(wait);
-                    }
-                }
-            }
+        for url in urls {
+            Self::deliver_one(
+                self.http_client.as_ref(),
+                &url,
+                &body,
+                &signature,
+                &event_str,
+                &user_str,
+                timestamp,
+                &self.delivery_log,
+                &self.next_log_id,
+                self.max_log_entries,
+            );
         }
-
-        let mut log = self.delivery_log.lock().unwrap();
-        let id = log.len();
-        log.push(WebhookDeliveryLog {
-            id,
-            event_type: event_type.to_string(),
-            user_id: user_id.to_string(),
-            timestamp,
-            url,
-            attempts: attempts + if success { 1 } else { 0 },
-            success,
-            last_error,
-        });
     }
 
-    /// Admin: query the delivery log (paginated, page starts at 1).
+    /// Admin: query the delivery log (paginated, page starts at 1, newest first).
     pub fn get_delivery_log(&self, page: u32, page_size: u32) -> Vec<WebhookDeliveryLog> {
         let log = self.delivery_log.lock().unwrap();
         let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
@@ -547,7 +618,7 @@ impl WebhookManager {
             .collect()
     }
 
-    /// Return the number of entries in the delivery log.
+    /// Return the number of entries currently in the delivery log.
     pub fn delivery_log_count(&self) -> usize {
         self.delivery_log.lock().unwrap().len()
     }
@@ -585,15 +656,18 @@ mod tests {
         }
     }
 
-    const TEST_SIGNING_SECRET: &str = "test-signing-secret";
-
     fn make_manager(fail_times: u32) -> (WebhookManager, Arc<MockHttpClient>) {
         let client = Arc::new(MockHttpClient::new(fail_times));
         let manager = WebhookManager::new_with_http_allowed(client.clone());
         (manager, client)
     }
 
-    // --- Existing tests updated to use fire_sync and configure returning Result ---
+    fn make_manager_with_cap(fail_times: u32, cap: usize) -> (WebhookManager, Arc<MockHttpClient>) {
+        let client = Arc::new(MockHttpClient::new(fail_times));
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        manager.max_log_entries = cap;
+        (manager, client)
+    }
 
     #[test]
     fn test_configure_and_fire_success() {
@@ -604,11 +678,7 @@ mod tests {
                 "http://example.com/hook".to_string(),
             )
             .unwrap();
-        manager.fire_sync(
-            SecurityEventType::FailedTwoFa,
-            "user1",
-            HashMap::new(),
-        );
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
         assert_eq!(manager.delivery_log_count(), 1);
         let log = manager.get_delivery_log(1, 10);
@@ -731,46 +801,31 @@ mod tests {
     #[test]
     fn test_validate_localhost_rejected() {
         let result = validate_webhook_url("https://localhost/hook", false);
-        assert!(matches!(
-            result,
-            Err(WebhookUrlError::PrivateAddress(_))
-        ));
+        assert!(matches!(result, Err(WebhookUrlError::PrivateAddress(_))));
     }
 
     #[test]
     fn test_validate_127_0_0_1_rejected() {
         let result = validate_webhook_url("https://127.0.0.1/hook", false);
-        assert!(matches!(
-            result,
-            Err(WebhookUrlError::PrivateAddress(_))
-        ));
+        assert!(matches!(result, Err(WebhookUrlError::PrivateAddress(_))));
     }
 
     #[test]
     fn test_validate_link_local_metadata_rejected() {
         let result = validate_webhook_url("http://169.254.169.254/latest/meta-data", true);
-        assert!(matches!(
-            result,
-            Err(WebhookUrlError::PrivateAddress(_))
-        ));
+        assert!(matches!(result, Err(WebhookUrlError::PrivateAddress(_))));
     }
 
     #[test]
     fn test_validate_private_10_range_rejected() {
         let result = validate_webhook_url("http://10.0.0.1/internal", true);
-        assert!(matches!(
-            result,
-            Err(WebhookUrlError::PrivateAddress(_))
-        ));
+        assert!(matches!(result, Err(WebhookUrlError::PrivateAddress(_))));
     }
 
     #[test]
     fn test_validate_private_192_168_rejected() {
         let result = validate_webhook_url("http://192.168.1.1/hook", true);
-        assert!(matches!(
-            result,
-            Err(WebhookUrlError::PrivateAddress(_))
-        ));
+        assert!(matches!(result, Err(WebhookUrlError::PrivateAddress(_))));
     }
 
     #[test]
@@ -817,24 +872,246 @@ mod tests {
             )
             .unwrap();
 
-        // fire() should return immediately (spawns a thread)
         let start = std::time::Instant::now();
-        manager.fire(
-            SecurityEventType::FailedTwoFa,
-            "user1",
-            HashMap::new(),
-        );
+        manager.fire(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         let elapsed = start.elapsed();
 
-        // Should return nearly instantly (well under 100ms)
         assert!(
             elapsed < Duration::from_millis(100),
             "fire() blocked for {:?}",
             elapsed
         );
 
-        // Wait for the spawned thread to complete
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    // --- Bounded log tests (Issue #863) ---
+
+    #[test]
+    fn test_log_does_not_exceed_cap() {
+        let cap = 5;
+        let (manager, _mock) = make_manager_with_cap(0, cap);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        for i in 0..10 {
+            manager.fire_sync(
+                SecurityEventType::FailedTwoFa,
+                &format!("user{}", i),
+                HashMap::new(),
+            );
+        }
+
+        assert_eq!(
+            manager.delivery_log_count(),
+            cap,
+            "log should be capped at {cap}"
+        );
+    }
+
+    #[test]
+    fn test_eviction_preserves_newest_entries() {
+        let cap = 3;
+        let (manager, _mock) = make_manager_with_cap(0, cap);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        for i in 0..5u32 {
+            manager.fire_sync(
+                SecurityEventType::FailedTwoFa,
+                &format!("user{}", i),
+                HashMap::new(),
+            );
+        }
+
+        // get_delivery_log returns newest-first; the 3 newest users are user4, user3, user2
+        let log = manager.get_delivery_log(1, cap as u32);
+        assert_eq!(log.len(), cap);
+        assert_eq!(log[0].user_id, "user4");
+        assert_eq!(log[1].user_id, "user3");
+        assert_eq!(log[2].user_id, "user2");
+    }
+
+    #[test]
+    fn test_log_ids_are_monotonic_after_eviction() {
+        let cap = 3;
+        let (manager, _mock) = make_manager_with_cap(0, cap);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        for i in 0..6 {
+            manager.fire_sync(
+                SecurityEventType::FailedTwoFa,
+                &format!("user{}", i),
+                HashMap::new(),
+            );
+        }
+
+        let log = manager.get_delivery_log(1, cap as u32);
+        // IDs should be monotonically increasing (newest first means descending IDs)
+        assert!(log[0].id > log[1].id);
+        assert!(log[1].id > log[2].id);
+    }
+
+    // --- Fan-out delivery tests (Issue #864) ---
+
+    /// A client that fails for a specific URL and succeeds for all others.
+    struct UrlSelectiveFailClient {
+        failing_url: String,
+        call_count: AtomicU32,
+    }
+
+    impl UrlSelectiveFailClient {
+        fn new(failing_url: &str) -> Self {
+            Self {
+                failing_url: failing_url.to_string(),
+                call_count: AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl HttpClient for UrlSelectiveFailClient {
+        fn post(&self, url: &str, _body: &str, _sig: &str) -> Result<(), String> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            if url == self.failing_url {
+                Err("simulated permanent failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn test_configure_accumulates_multiple_urls() {
+        let (manager, _mock) = make_manager(0);
+        manager
+            .configure(
+                SecurityEventType::CanaryTriggered,
+                "http://example.com/hook1".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::CanaryTriggered,
+                "http://example.com/hook2".to_string(),
+            )
+            .unwrap();
+
+        // Both URLs should be in the config; firing produces 2 log entries.
+        manager.fire_sync(SecurityEventType::CanaryTriggered, "u1", HashMap::new());
+        assert_eq!(manager.delivery_log_count(), 2);
+    }
+
+    #[test]
+    fn test_fanout_delivers_to_all_urls() {
+        let (manager, mock) = make_manager(0);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook1".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook2".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook3".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "u1", HashMap::new());
+
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 3, "all 3 URLs should be called");
+        assert_eq!(manager.delivery_log_count(), 3);
+        let log = manager.get_delivery_log(1, 10);
+        assert!(log.iter().all(|e| e.success), "all deliveries should succeed");
+    }
+
+    #[test]
+    fn test_partial_failure_does_not_block_other_urls() {
+        let client = Arc::new(UrlSelectiveFailClient::new("http://example.com/failing"));
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        manager.max_log_entries = 100;
+
+        manager
+            .configure(
+                SecurityEventType::AccountLockout,
+                "http://example.com/failing".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::AccountLockout,
+                "http://example.com/ok1".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::AccountLockout,
+                "http://example.com/ok2".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(SecurityEventType::AccountLockout, "u1", HashMap::new());
+
+        // All 3 URLs were attempted (failing one retries 3 times).
+        // call_count = 3 retries on failing + 1 on ok1 + 1 on ok2 = 5
+        assert_eq!(client.call_count.load(Ordering::SeqCst), 5);
+        assert_eq!(manager.delivery_log_count(), 3);
+
+        let log = manager.get_delivery_log(1, 10);
+        let successes: Vec<_> = log.iter().filter(|e| e.success).collect();
+        let failures: Vec<_> = log.iter().filter(|e| !e.success).collect();
+        assert_eq!(successes.len(), 2, "two URLs should succeed");
+        assert_eq!(failures.len(), 1, "one URL should fail");
+        assert_eq!(failures[0].url, "http://example.com/failing");
+    }
+
+    #[test]
+    fn test_remove_config_url_removes_single_endpoint() {
+        let (manager, mock) = make_manager(0);
+        manager
+            .configure(
+                SecurityEventType::CanaryTriggered,
+                "http://example.com/hook1".to_string(),
+            )
+            .unwrap();
+        manager
+            .configure(
+                SecurityEventType::CanaryTriggered,
+                "http://example.com/hook2".to_string(),
+            )
+            .unwrap();
+
+        // Remove only hook1.
+        manager.remove_config_url(
+            &SecurityEventType::CanaryTriggered,
+            "http://example.com/hook1",
+        );
+
+        manager.fire_sync(SecurityEventType::CanaryTriggered, "u1", HashMap::new());
+
+        // Only hook2 should be called.
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
+        let log = manager.get_delivery_log(1, 10);
+        assert_eq!(log[0].url, "http://example.com/hook2");
     }
 }

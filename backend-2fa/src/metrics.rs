@@ -8,6 +8,7 @@
 //! # Metrics
 //! | Name | Type | Labels |
 //! |------|------|--------|
+//! | `build_info` | Gauge | `version`, `git_sha` |
 //! | `totp_verifications_total` | Counter | `result` (`ok`/`fail`) |
 //! | `recovery_code_uses_total` | Counter | — |
 //! | `rate_limit_hits_total` | Counter | `endpoint`, `reason` |
@@ -35,6 +36,7 @@ use std::sync::OnceLock;
 // ---------------------------------------------------------------------------
 
 pub struct Metrics {
+    pub build_info: GaugeVec,
     pub totp_verifications_total: CounterVec,
     pub recovery_code_uses_total: prometheus::Counter,
     pub rate_limit_hits_total: CounterVec,
@@ -218,6 +220,20 @@ pub fn dec_leaderboard_ws_connections() {
     metrics().leaderboard_ws_connections_total.dec();
 }
 
+/// Record a completed webhook delivery attempt. `success` maps to label `ok`/`fail`.
+pub fn record_webhook_delivery(success: bool) {
+    let label = if success { "ok" } else { "fail" };
+    metrics()
+        .webhook_delivery_total
+        .with_label_values(&[label])
+        .inc();
+}
+
+/// Record one webhook delivery retry (called once per retry, not per initial attempt).
+pub fn record_webhook_retry() {
+    metrics().webhook_delivery_retries_total.inc();
+}
+
 // ---------------------------------------------------------------------------
 // /metrics handler (framework-agnostic: returns the raw text body)
 // ---------------------------------------------------------------------------
@@ -274,14 +290,48 @@ mod tests {
         inc_leaderboard_ws_connections();
         dec_leaderboard_ws_connections();
 
+        record_webhook_delivery(true);
+        record_webhook_delivery(false);
+        record_webhook_retry();
+
         let output = render_metrics().expect("render");
-        assert!(output.contains("totp_verifications_total"), "missing totp counter");
-        assert!(output.contains("recovery_code_uses_total"), "missing recovery counter");
-        assert!(output.contains("rate_limit_hits_total"), "missing rate limit counter");
+        assert!(
+            output.contains("totp_verifications_total"),
+            "missing totp counter"
+        );
+        assert!(
+            output.contains("recovery_code_uses_total"),
+            "missing recovery counter"
+        );
+        assert!(
+            output.contains("rate_limit_hits_total"),
+            "missing rate limit counter"
+        );
         assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
-        assert!(output.contains("request_duration_seconds"), "missing histogram");
-        assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
+        assert!(
+            output.contains("request_duration_seconds"),
+            "missing histogram"
+        );
+        assert!(
+            output.contains("leaderboard_ws_connections_total"),
+            "missing leaderboard ws gauge"
+        );
+        assert!(output.contains("build_info"), "missing build_info gauge");
+    }
+
+    #[test]
+    fn build_info_gauge_present() {
+        let output = render_metrics().expect("render");
+        assert!(output.contains("build_info"), "build_info gauge missing");
+        assert!(
+            output.contains(r#"version=""#),
+            "build_info missing version label"
+        );
+        assert!(
+            output.contains(r#"git_sha=""#),
+            "build_info missing git_sha label"
+        );
     }
 
     #[test]
