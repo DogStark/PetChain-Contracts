@@ -1,6 +1,7 @@
 pub mod db;
 pub mod error;
 pub mod handlers;
+pub mod ip_access;
 pub mod leaderboard;
 pub mod metrics;
 pub mod rate_limit_middleware;
@@ -8,20 +9,26 @@ pub mod rate_limiter;
 pub mod tracing_middleware;
 pub mod two_factor;
 pub mod webhooks;
+pub mod migrations;
 
 #[cfg(test)]
 mod tests;
 
 pub use db::PostgresTwoFactorStore;
 pub use db::{
-    select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats, SecretProvider,
+    select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats,
+    PostgresIpAccessStore, SecretProvider,
 };
-pub use error::{ApiError, ErrorResponseMiddleware};
+pub use error::{ApiError, ErrorResponseMiddleware, NoCacheMiddleware};
 pub use handlers::{
-    leaderboard_ws, AdminDashboardHandlers, AdminRateLimitHandlers, AdminScoreHandlers,
-    AuthenticatedAdmin, AuthenticatedUser, CanaryHandlers, CreateCanaryRequest,
-    CreateCanaryResponse, GrantUnlimitedRequest, PoolMetricsHandlers, PoolStatsResponse,
-    SetUserQuotaRequest, TwoFactorHandlers,
+    leaderboard_ws, AddIpRuleRequest, AdminDashboardHandlers, AdminIpAccessHandlers,
+    AdminRateLimitHandlers, AdminScoreHandlers, AuthenticatedAdmin, AuthenticatedUser,
+    CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse, GrantUnlimitedRequest,
+    PoolMetricsHandlers, PoolStatsResponse, SetUserQuotaRequest, TwoFactorHandlers,
+};
+pub use ip_access::{
+    CidrBlock, InMemoryIpAccessStore, IpAccessDecision, IpAccessEntry, IpAccessMiddleware,
+    IpAccessStore, IpListType,
 };
 pub use leaderboard::{
     broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, LeaderboardEntry,
