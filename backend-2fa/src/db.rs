@@ -1,14 +1,13 @@
+use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
     AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
     UserTwoFactorSummary,
 };
-use crate::two_factor::HmacAlgorithm;
-use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use std::collections::HashMap;
 
 /// Pool utilisation snapshot returned by [`PostgresTwoFactorStore::pool_stats`].
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +50,10 @@ impl SecretProvider for AwsSecretsManagerProvider {
 
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
 pub fn select_secret_provider() -> Box<dyn SecretProvider> {
-    match std::env::var("SECRET_PROVIDER").unwrap_or_else(|_| "env".to_string()).as_str() {
+    match std::env::var("SECRET_PROVIDER")
+        .unwrap_or_else(|_| "env".to_string())
+        .as_str()
+    {
         "aws" => Box::new(AwsSecretsManagerProvider {}),
         _ => Box::new(EnvSecretProvider {}),
     }
@@ -87,7 +89,10 @@ impl PostgresTwoFactorStore {
     }
 
     /// Connect using a SecretProvider to fetch the `secret_key` value.
-    pub fn connect_with_provider(provider: &dyn SecretProvider, secret_key: &str) -> Result<Self, String> {
+    pub fn connect_with_provider(
+        provider: &dyn SecretProvider,
+        secret_key: &str,
+    ) -> Result<Self, String> {
         let database_url = provider.get_secret(secret_key)?;
         PostgresTwoFactorStore::connect(&database_url)
     }
@@ -147,7 +152,10 @@ impl PostgresTwoFactorStore {
 
 pub(crate) fn is_connection_error(msg: &str) -> bool {
     let m = msg.to_lowercase();
-    m.contains("connection") || m.contains("timeout") || m.contains("pool") || m.contains("io error")
+    m.contains("connection")
+        || m.contains("timeout")
+        || m.contains("pool")
+        || m.contains("io error")
 }
 
 impl TwoFactorStore for PostgresTwoFactorStore {
@@ -340,11 +348,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .collect())
     }
 
-    fn list_users(
-        &self,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<UserTwoFactorSummary>, String> {
+    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String> {
         let offset = (page.saturating_sub(1)) * page_size;
         let limit = page_size as i64;
 
@@ -380,11 +384,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .collect())
     }
 
-    fn admin_disable_two_fa(
-        &self,
-        user_id: &str,
-        admin_id: &str,
-    ) -> Result<(), String> {
+    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String> {
         self.update_enabled(user_id, false)?;
         self.append_audit_log(user_id, "admin_disabled_2fa", admin_id, None)?;
         Ok(())
@@ -486,11 +486,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
     fn is_canary(&self, user_id: &str) -> bool {
         self.block_on(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1",
-            )
-            .bind(user_id)
-            .fetch_one(&self.pool),
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&self.pool),
         )
         .map(|c| c > 0)
         .unwrap_or(false)
@@ -567,6 +565,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn try_pool_stats(&self) -> Option<PoolStats> {
+        Some(self.pool_stats())
     }
 }
 
@@ -782,5 +784,25 @@ mod tests {
         let prov = select_secret_provider();
         let val = prov.get_secret("MYKEY").unwrap();
         assert_eq!(val, "VAL");
+    }
+
+    #[test]
+    fn postgres_store_try_pool_stats_when_database_url_is_set() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        use crate::two_factor::TwoFactorStore;
+        let store = PostgresTwoFactorStore::connect(&database_url).unwrap();
+        let maybe_stats = store.try_pool_stats();
+        assert!(
+            maybe_stats.is_some(),
+            "PostgresTwoFactorStore must return Some from try_pool_stats"
+        );
+        let stats = maybe_stats.unwrap();
+        assert!(stats.max > 0, "pool max must be positive");
+        assert!(
+            stats.active + stats.idle <= stats.max,
+            "active + idle must not exceed max"
+        );
     }
 }

@@ -242,7 +242,7 @@ mod tests {
         // 3. Subsequent enrollment attempt - must fail/refuse to re-disclose
         let result2 = TwoFactorHandlers::enable_two_factor(&caller, req);
         assert!(result2.is_err());
-        assert!(result2.unwrap_err().contains("already enabled"));
+        assert!(result2.unwrap_err().message.contains("already enabled"));
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Forbidden"));
+        assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         // Nothing was written to the store
         assert!(get_two_factor_data_for_tests("victim").is_none());
     }
@@ -400,7 +400,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not configured"));
+        assert!(result.unwrap_err().message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -667,7 +667,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, "save failed");
+        assert_eq!(err.message, "save failed");
 
         let timeout_get = std::sync::Arc::new(MockTwoFactorStore::with_config(MockStoreConfig {
             get: Some(MockStoreFailure::Timeout),
@@ -683,7 +683,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(err.contains("not configured"));
+        assert!(err.message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -698,8 +698,8 @@ mod tests {
         };
         use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
         use crate::two_factor::TwoFactorData;
-        use totp_rs::Algorithm;
         use std::sync::Arc;
+        use totp_rs::Algorithm;
 
         fn caller(id: &str) -> AuthenticatedUser {
             AuthenticatedUser::new(id)
@@ -715,6 +715,7 @@ mod tests {
             fn record_success(&self, _key: &str) {}
         }
 
+        #[allow(dead_code)]
         struct AlwaysAllowedLimiter;
         impl RateLimiter for AlwaysAllowedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
@@ -798,7 +799,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -813,7 +817,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -828,7 +835,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -888,7 +898,7 @@ mod tests {
                 !disable_result
                     .as_ref()
                     .err()
-                    .map(|e| e.contains("Too many"))
+                    .map(|e| e.message.contains("Too many"))
                     .unwrap_or(false),
                 "disable endpoint should not be blocked by login failures"
             );
@@ -950,7 +960,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -964,7 +974,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -978,7 +988,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -992,7 +1002,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1008,11 +1018,12 @@ mod tests {
             // Should fail on missing record or invalid code, NOT on authorization
             let err = result.unwrap_err();
             assert!(
-                err.contains("Invalid backup code")
-                    || err.contains("not configured")
-                    || err.contains("not enabled"),
-                "Correct user should reach the backup code validation step, got: {}",
-                err
+                err.message.contains("Invalid backup code")
+                    || err.message.contains("not configured")
+                    || err.message.contains("not enabled"),
+                "Correct user should reach the backup code validation step, got: {} ({})",
+                err.message,
+                err.code
             );
         }
 
@@ -1026,7 +1037,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1038,7 +1049,7 @@ mod tests {
         fn test_authorize_different_user_err() {
             let result = caller("alice").authorize("bob");
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1111,7 +1122,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not configured"));
+        assert!(err.unwrap_err().message.contains("not configured"));
     }
 
     #[test]
@@ -1222,7 +1233,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -1246,7 +1257,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not enabled"));
+        assert!(err.unwrap_err().message.contains("not enabled"));
     }
 }
 
@@ -1257,13 +1268,13 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use crate::handlers::{
-        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, AuthenticatedUser,
-        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
-        RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests, AdminRecoveryHandlers,
+        AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest,
+        LoginWithTwoFactorRequest, RecoverWithBackupRequest, TwoFactorHandlers,
+        VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
-    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+    use crate::two_factor::TwoFactorData;
     use std::sync::Arc;
     use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -1529,9 +1540,9 @@ mod integration_tests {
         assert!(blocked.is_err(), "locked-out user must receive an error");
         let err = blocked.unwrap_err();
         assert!(
-            err.contains("Too many failed attempts"),
+            err.message.contains("Too many failed attempts"),
             "error must mention rate limiting, got: {}",
-            err
+            err.message
         );
     }
 
@@ -1573,7 +1584,10 @@ mod integration_tests {
         );
 
         assert!(blocked.is_err());
-        assert!(blocked.unwrap_err().contains("Too many failed attempts"));
+        assert!(blocked
+            .unwrap_err()
+            .message
+            .contains("Too many failed attempts"));
     }
 
     /// A successful login resets the failure counter so the user is not
@@ -1831,7 +1845,7 @@ mod integration_tests {
         );
 
         assert!(second.is_err());
-        assert!(second.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(second.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -2532,7 +2546,6 @@ mod redis_rate_limiter_tests {
 
     mod admin_score_handlers {
         use crate::handlers::AdminScoreHandlers;
-        use crate::leaderboard::FlaggedScoreSubmission;
 
         #[test]
         fn admin_get_all_flagged_empty() {
@@ -2828,9 +2841,9 @@ impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedi
 mod admin_dashboard_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
-        AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
+        AuthenticatedAdmin, AuthenticatedUser,
     };
-    use crate::two_factor::{TwoFactorData, TwoFactorStore};
+    use crate::two_factor::TwoFactorData;
     use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
@@ -2935,13 +2948,9 @@ mod canary_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
         CanaryHandlers, CreateCanaryRequest,
     };
-    use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
+    use std::sync::{Arc, Mutex};
     use totp_rs::Algorithm;
-    use std::sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
-    };
 
     struct RecordingHttpClient {
         calls: Arc<Mutex<Vec<String>>>,
@@ -2983,7 +2992,7 @@ mod canary_tests {
     #[test]
     fn test_create_canary_account() {
         clear_two_factor_store_for_tests();
-        let (handlers, _calls) = make_canary_handlers();
+        let (_handlers, _calls) = make_canary_handlers();
 
         let resp = CanaryHandlers::create_canary(
             &admin(),
@@ -3086,16 +3095,16 @@ mod canary_tests {
 
         // Set up a normal user
         let store = get_two_factor_store_for_tests();
-            store
-                .save(
-                    "normal-user",
-                    crate::two_factor::TwoFactorData {
-                        secret: "JBSWY3DPEHPK3PXP".to_string(),
-                        backup_codes: vec![],
-                        enabled: true,
-                        algorithm: Algorithm::SHA1,
-                    },
-                )
+        store
+            .save(
+                "normal-user",
+                crate::two_factor::TwoFactorData {
+                    secret: "JBSWY3DPEHPK3PXP".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                    algorithm: Algorithm::SHA1,
+                },
+            )
             .unwrap();
 
         // Verification attempt on a normal user should NOT fire canary webhook
@@ -3111,7 +3120,6 @@ mod canary_tests {
 #[cfg(test)]
 mod webhook_handler_tests {
     use crate::webhooks::{SecurityEventType, WebhookManager};
-    use std::sync::Arc;
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {
@@ -3177,8 +3185,7 @@ mod distributed_rate_limiter_tests {
     /// Bad Redis URL → fails open (returns Allowed via fallback).
     #[test]
     fn redis_unavailable_falls_back_to_in_memory() {
-        let limiter =
-            DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
+        let limiter = DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
         assert!(matches!(
             limiter.record_failure("user:fallback-redis"),
             RateLimitResult::Allowed { .. }
@@ -3294,7 +3301,9 @@ mod progressive_two_factor_lockout_tests {
     fn admin_unlock_clears_lockout_state() {
         let store = InMemoryStore::default();
         for _ in 0..10 {
-            store.record_failed_two_fa_attempt("user-admin-unlock").unwrap();
+            store
+                .record_failed_two_fa_attempt("user-admin-unlock")
+                .unwrap();
         }
         assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
 
@@ -3349,7 +3358,7 @@ mod progressive_two_factor_lockout_tests {
                 },
             )
             .unwrap_err();
-        assert!(locked.contains("locked after 10"));
+        assert!(locked.message.contains("locked after 10"));
 
         store
             .unlock_two_fa_account(user_id, &AuthenticatedAdmin::new("admin").admin_id)
@@ -3544,5 +3553,32 @@ mod progressive_two_factor_lockout_tests {
             );
             assert!(result.is_err());
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #850 — Pool stats handler tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod pool_stats_tests {
+    use crate::handlers::PoolMetricsHandlers;
+    use crate::two_factor::{InMemoryStore, TwoFactorStore};
+
+    #[test]
+    fn pool_stats_handler_returns_sentinel_in_test_mode() {
+        let stats =
+            PoolMetricsHandlers::pool_stats().expect("pool_stats must succeed in test mode");
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.max, 0);
+    }
+
+    #[test]
+    fn in_memory_store_try_pool_stats_returns_none() {
+        let store = InMemoryStore::default();
+        assert!(
+            store.try_pool_stats().is_none(),
+            "InMemoryStore has no pool; try_pool_stats must return None"
+        );
     }
 }

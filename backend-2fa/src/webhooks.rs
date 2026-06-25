@@ -123,10 +123,7 @@ impl WebhookManager {
 
     /// Remove a webhook configuration for an event type.
     pub fn remove_config(&self, event_type: &SecurityEventType) {
-        self.config
-            .lock()
-            .unwrap()
-            .remove(&event_type.to_string());
+        self.config.lock().unwrap().remove(&event_type.to_string());
     }
 
     /// Fire a webhook for the given event. Retries up to 3 times with
@@ -257,11 +254,7 @@ mod tests {
             SecurityEventType::FailedTwoFa,
             "http://example.com/hook".to_string(),
         );
-        manager.fire(
-            SecurityEventType::FailedTwoFa,
-            "user1",
-            HashMap::new(),
-        );
+        manager.fire(SecurityEventType::FailedTwoFa, "user1", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
         assert_eq!(manager.delivery_log_count(), 1);
         let log = manager.get_delivery_log(1, 10);
@@ -284,11 +277,7 @@ mod tests {
             SecurityEventType::RecoveryCodeUsed,
             "http://example.com/hook".to_string(),
         );
-        manager.fire(
-            SecurityEventType::RecoveryCodeUsed,
-            "user2",
-            HashMap::new(),
-        );
+        manager.fire(SecurityEventType::RecoveryCodeUsed, "user2", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 2);
         let log = manager.get_delivery_log(1, 10);
         assert!(log[0].success);
