@@ -580,6 +580,64 @@ impl AdminRateLimitHandlers {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Admin IP allowlist / blocklist management (Issue #701)
+// ---------------------------------------------------------------------------
+
+use crate::ip_access::{IpAccessEntry, IpAccessStore, IpListType};
+
+/// Request body for `POST /admin/ip/allow` and `POST /admin/ip/block`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AddIpRuleRequest {
+    pub cidr: String,
+    pub note: Option<String>,
+}
+
+/// Admin handlers for managing the IP allowlist and blocklist consulted by
+/// [`crate::ip_access::IpAccessMiddleware`] on every request.
+pub struct AdminIpAccessHandlers {
+    store: Arc<dyn IpAccessStore>,
+}
+
+impl AdminIpAccessHandlers {
+    pub fn new(store: Arc<dyn IpAccessStore>) -> Self {
+        Self { store }
+    }
+
+    /// POST /admin/ip/allow
+    pub fn allow_ip(
+        &self,
+        admin: &AuthenticatedAdmin,
+        req: AddIpRuleRequest,
+    ) -> Result<IpAccessEntry, String> {
+        self.store
+            .add_entry(&req.cidr, IpListType::Allow, req.note.as_deref(), &admin.admin_id)
+    }
+
+    /// POST /admin/ip/block
+    pub fn block_ip(
+        &self,
+        admin: &AuthenticatedAdmin,
+        req: AddIpRuleRequest,
+    ) -> Result<IpAccessEntry, String> {
+        self.store
+            .add_entry(&req.cidr, IpListType::Block, req.note.as_deref(), &admin.admin_id)
+    }
+
+    /// DELETE /admin/ip/{entry_id} — removes an entry from whichever list it's on.
+    pub fn remove_entry(&self, _admin: &AuthenticatedAdmin, entry_id: i64) -> Result<(), String> {
+        self.store.remove_entry(entry_id)
+    }
+
+    pub fn list_allow(&self) -> Vec<IpAccessEntry> {
+        self.store.list_entries(IpListType::Allow)
+    }
+
+    pub fn list_block(&self) -> Vec<IpAccessEntry> {
+        self.store.list_entries(IpListType::Block)
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
     two_factor_store().get(user_id).ok()
