@@ -3724,3 +3724,103 @@ mod pool_stats_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #807 — Tenant Provisioning Idempotency
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tenant_provisioning_idempotency_tests {
+    use crate::handlers::{
+        AuthenticatedAdmin, ProvisionTenantRequest, TenantProvisioningHandlers,
+    };
+    use crate::two_factor::TenantRegistry;
+    use std::sync::Arc;
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("super-admin")
+    }
+
+    fn provision_req(tenant_id: &str) -> ProvisionTenantRequest {
+        ProvisionTenantRequest {
+            tenant_id: tenant_id.to_string(),
+            totp_issuer: "AcmeCo".to_string(),
+            rate_limit_max_failures: 7,
+        }
+    }
+
+    #[test]
+    fn test_first_provision_creates_tenant() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let response = handlers
+            .provision_tenant(&admin(), provision_req("tenant-fresh"))
+            .unwrap();
+
+        assert_eq!(response.tenant_id, "tenant-fresh");
+        assert_eq!(response.totp_issuer, "AcmeCo");
+        assert_eq!(response.rate_limit_max_failures, 7);
+        assert!(!response.already_existed);
+
+        // The tenant is now retrievable from the registry.
+        let config = handlers.get_tenant_config("tenant-fresh").unwrap();
+        assert_eq!(config.tenant_id, "tenant-fresh");
+    }
+
+    #[test]
+    fn test_repeat_provision_returns_existing_tenant_with_flag() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let first = handlers
+            .provision_tenant(&admin(), provision_req("tenant-repeat"))
+            .unwrap();
+        assert!(!first.already_existed);
+
+        // Retry with the same tenant_id, as an infra automation tool would
+        // do after a flaky failure. A different `totp_issuer` is sent to
+        // confirm the *original* config wins rather than being overwritten.
+        let mut retry_req = provision_req("tenant-repeat");
+        retry_req.totp_issuer = "SomeoneElseCo".to_string();
+        let second = handlers.provision_tenant(&admin(), retry_req).unwrap();
+
+        assert!(second.already_existed);
+        assert_eq!(second.tenant_id, "tenant-repeat");
+        // Existing config is returned unchanged, not the new request's data.
+        assert_eq!(second.totp_issuer, "AcmeCo");
+        assert_eq!(second.rate_limit_max_failures, 7);
+
+        // Only one entry exists in the registry — no duplicate was created.
+        let config = handlers.get_tenant_config("tenant-repeat").unwrap();
+        assert_eq!(config.totp_issuer, "AcmeCo");
+    }
+
+    #[test]
+    fn test_concurrent_provision_is_idempotent_and_atomic() {
+        use std::thread;
+
+        let registry = Arc::new(TenantRegistry::default());
+        let handlers = Arc::new(TenantProvisioningHandlers::new(registry));
+
+        let mut join_handles = Vec::new();
+        for _ in 0..16 {
+            let handlers = Arc::clone(&handlers);
+            join_handles.push(thread::spawn(move || {
+                handlers
+                    .provision_tenant(&admin(), provision_req("tenant-concurrent"))
+                    .unwrap()
+            }));
+        }
+
+        let responses: Vec<_> = join_handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+
+        // Exactly one caller observed creation; all others observed it as
+        // already existing — proving the check-and-insert was atomic.
+        let created_count = responses.iter().filter(|r| !r.already_existed).count();
+        assert_eq!(created_count, 1);
+
+        let existed_count = responses.iter().filter(|r| r.already_existed).count();
+        assert_eq!(existed_count, 15);
+    }
+}
