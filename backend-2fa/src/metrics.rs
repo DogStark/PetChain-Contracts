@@ -8,6 +8,7 @@
 //! # Metrics
 //! | Name | Type | Labels |
 //! |------|------|--------|
+//! | `build_info` | Gauge | `version`, `git_sha` |
 //! | `totp_verifications_total` | Counter | `result` (`ok`/`fail`) |
 //! | `recovery_code_uses_total` | Counter | — |
 //! | `rate_limit_hits_total` | Counter | — |
@@ -16,12 +17,12 @@
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
 //! | `leaderboard_ws_connections_total` | Gauge | — |
-//! | `webhook_delivery_total` | Counter | `result` (`ok`/`fail`) |
-//! | `webhook_delivery_retries_total` | Counter | — |
+//! | `webhook_deliveries_total` | Counter | `status` (`success`/`failure`) |
+//! | `webhook_delivery_duration_seconds` | Histogram | — |
 
 use prometheus::{
-    register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
-    TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -30,6 +31,7 @@ use std::sync::OnceLock;
 // ---------------------------------------------------------------------------
 
 pub struct Metrics {
+    pub build_info: GaugeVec,
     pub totp_verifications_total: CounterVec,
     pub recovery_code_uses_total: prometheus::Counter,
     pub rate_limit_hits_total: prometheus::Counter,
@@ -48,63 +50,66 @@ pub struct Metrics {
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub fn metrics() -> &'static Metrics {
-    METRICS.get_or_init(|| Metrics {
-        totp_verifications_total: register_counter_vec!(
-            "totp_verifications_total",
-            "Total TOTP verification attempts",
-            &["result"]
+    METRICS.get_or_init(|| {
+        let build_info = register_gauge_vec!(
+            "build_info",
+            "Build information (always 1)",
+            &["version", "git_sha"]
         )
-        .expect("register totp_verifications_total"),
+        .expect("register build_info");
+        build_info
+            .with_label_values(&[env!("CARGO_PKG_VERSION"), env!("GIT_SHA")])
+            .set(1.0);
 
-        recovery_code_uses_total: prometheus::register_counter!(
-            "recovery_code_uses_total",
-            "Total recovery code uses"
-        )
-        .expect("register recovery_code_uses_total"),
+        Metrics {
+            build_info,
+            totp_verifications_total: register_counter_vec!(
+                "totp_verifications_total",
+                "Total TOTP verification attempts",
+                &["result"]
+            )
+            .expect("register totp_verifications_total"),
 
-        rate_limit_hits_total: prometheus::register_counter!(
-            "rate_limit_hits_total",
-            "Total rate limit blocks"
-        )
-        .expect("register rate_limit_hits_total"),
+            recovery_code_uses_total: prometheus::register_counter!(
+                "recovery_code_uses_total",
+                "Total recovery code uses"
+            )
+            .expect("register recovery_code_uses_total"),
 
-        rate_limiter_redis_fallback_total: prometheus::register_counter!(
-            "rate_limiter_redis_fallback_total",
-            "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
-        )
-        .expect("register rate_limiter_redis_fallback_total"),
+            rate_limit_hits_total: prometheus::register_counter!(
+                "rate_limit_hits_total",
+                "Total rate limit blocks"
+            )
+            .expect("register rate_limit_hits_total"),
 
-        db_pool_active: register_gauge!("db_pool_active", "Number of active DB pool connections")
+            rate_limiter_redis_fallback_total: prometheus::register_counter!(
+                "rate_limiter_redis_fallback_total",
+                "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
+            )
+            .expect("register rate_limiter_redis_fallback_total"),
+
+            db_pool_active: register_gauge!(
+                "db_pool_active",
+                "Number of active DB pool connections"
+            )
             .expect("register db_pool_active"),
 
-        db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
-            .expect("register db_pool_idle"),
+            db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
+                .expect("register db_pool_idle"),
 
-        request_duration_seconds: register_histogram_vec!(
-            "request_duration_seconds",
-            "HTTP request duration in seconds",
-            &["endpoint"]
-        )
-        .expect("register request_duration_seconds"),
+            request_duration_seconds: register_histogram_vec!(
+                "request_duration_seconds",
+                "HTTP request duration in seconds",
+                &["endpoint"]
+            )
+            .expect("register request_duration_seconds"),
 
-        leaderboard_ws_connections_total: register_gauge!(
-            "leaderboard_ws_connections_total",
-            "Current number of open leaderboard WebSocket connections"
-        )
-        .expect("register leaderboard_ws_connections_total"),
-
-        webhook_delivery_total: register_counter_vec!(
-            "webhook_delivery_total",
-            "Total webhook delivery attempts",
-            &["result"]
-        )
-        .expect("register webhook_delivery_total"),
-
-        webhook_delivery_retries_total: prometheus::register_counter!(
-            "webhook_delivery_retries_total",
-            "Total webhook delivery retry attempts (excludes initial attempt)"
-        )
-        .expect("register webhook_delivery_retries_total"),
+            leaderboard_ws_connections_total: register_gauge!(
+                "leaderboard_ws_connections_total",
+                "Current number of open leaderboard WebSocket connections"
+            )
+            .expect("register leaderboard_ws_connections_total"),
+        }
     })
 }
 
@@ -233,15 +238,43 @@ mod tests {
         record_webhook_retry();
 
         let output = render_metrics().expect("render");
-        assert!(output.contains("totp_verifications_total"), "missing totp counter");
-        assert!(output.contains("recovery_code_uses_total"), "missing recovery counter");
-        assert!(output.contains("rate_limit_hits_total"), "missing rate limit counter");
+        assert!(
+            output.contains("totp_verifications_total"),
+            "missing totp counter"
+        );
+        assert!(
+            output.contains("recovery_code_uses_total"),
+            "missing recovery counter"
+        );
+        assert!(
+            output.contains("rate_limit_hits_total"),
+            "missing rate limit counter"
+        );
         assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
-        assert!(output.contains("request_duration_seconds"), "missing histogram");
-        assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
-        assert!(output.contains("webhook_delivery_total"), "missing webhook delivery counter");
-        assert!(output.contains("webhook_delivery_retries_total"), "missing webhook retry counter");
+        assert!(
+            output.contains("request_duration_seconds"),
+            "missing histogram"
+        );
+        assert!(
+            output.contains("leaderboard_ws_connections_total"),
+            "missing leaderboard ws gauge"
+        );
+        assert!(output.contains("build_info"), "missing build_info gauge");
+    }
+
+    #[test]
+    fn build_info_gauge_present() {
+        let output = render_metrics().expect("render");
+        assert!(output.contains("build_info"), "build_info gauge missing");
+        assert!(
+            output.contains(r#"version=""#),
+            "build_info missing version label"
+        );
+        assert!(
+            output.contains(r#"git_sha=""#),
+            "build_info missing git_sha label"
+        );
     }
 
     #[test]
