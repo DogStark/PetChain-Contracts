@@ -2,7 +2,8 @@
 use crate::db::PostgresTwoFactorStore;
 use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{
-    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+    progressive_delay_secs, InMemoryRateLimiter, RateLimitResult, RateLimiter,
+    TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
@@ -1007,8 +1008,12 @@ impl MultiTenantHandlers {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = format!("{}::verify::{}", self.store.config.tenant_id, user_id);
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+        let key = TenantRateLimitKey::new(
+            &self.store.config.tenant_id,
+            "verify",
+            user_id,
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(key.as_str()) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
                 retry_after_secs
@@ -1024,7 +1029,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, true)?;
-            self.limiter.record_success(&key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1037,8 +1042,12 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let key = format!("{}::disable::{}", self.store.config.tenant_id, user_id);
-        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(&key) {
+        let key = TenantRateLimitKey::new(
+            &self.store.config.tenant_id,
+            "disable",
+            user_id,
+        );
+        if let RateLimitResult::Blocked { retry_after_secs } = self.limiter.record_failure(key.as_str()) {
             return Err(format!(
                 "Too many failed attempts. Retry after {} seconds.",
                 retry_after_secs
@@ -1056,7 +1065,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, false)?;
-            self.limiter.record_success(&key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }

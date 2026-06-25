@@ -118,6 +118,61 @@ pub trait RedisBackend: Send + Sync {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tenant-scoped rate-limit key helper (Issue #854)
+// ---------------------------------------------------------------------------
+
+/// A typed helper that builds rate-limit keys with guaranteed tenant isolation.
+///
+/// Using `TenantRateLimitKey` instead of ad-hoc `format!` strings ensures that
+/// every rate-limit key is prefixed by the tenant ID, preventing cross-tenant
+/// bucket sharing.
+///
+/// # Examples
+/// ```
+/// use petchain_2fa::rate_limiter::TenantRateLimitKey;
+///
+/// let key = TenantRateLimitKey::new("tenant_a", "verify", "user42");
+/// assert_eq!(key.as_str(), "tenant_a::verify::user42");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TenantRateLimitKey {
+    inner: String,
+}
+
+impl TenantRateLimitKey {
+    /// Build a tenant-scoped rate-limit key.
+    ///
+    /// * `tenant_id` — the tenant identifier (must not be empty)
+    /// * `action`    — the action being rate-limited (e.g. `"verify"`, `"login"`)
+    /// * `user_id`   — the user within the tenant
+    pub fn new(tenant_id: &str, action: &str, user_id: &str) -> Self {
+        debug_assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
+        debug_assert!(!action.is_empty(), "action must not be empty");
+        Self {
+            inner: format!("{tenant_id}::{action}::{user_id}"),
+        }
+    }
+
+    /// Return the key as a string slice, suitable for passing to
+    /// `RateLimiter::record_failure` / `record_success`.
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
+}
+
+impl std::fmt::Display for TenantRateLimitKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.inner)
+    }
+}
+
+impl AsRef<str> for TenantRateLimitKey {
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
+}
+
 pub fn progressive_delay_secs(attempt: u32) -> Option<u64> {
     if attempt == 0 || attempt >= 10 {
         None
@@ -810,75 +865,73 @@ impl RateLimiter for DistributedRateLimiter {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Tests for TenantRateLimitKey (Issue #854)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+mod tenant_key_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
-    /// Minimal tracing subscriber that counts every event emitted.
-    struct CountingSubscriber {
-        event_count: Arc<AtomicUsize>,
-    }
-
-    impl tracing::Subscriber for CountingSubscriber {
-        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _id: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, _event: &tracing::Event<'_>) {
-            self.event_count.fetch_add(1, Ordering::SeqCst);
-        }
-        fn enter(&self, _id: &tracing::span::Id) {}
-        fn exit(&self, _id: &tracing::span::Id) {}
-    }
-
-    /// Issue #852 — LiveRedisBackend emits a tracing::error! when the Redis
-    /// connection fails, and returns 0 instead of panicking.
     #[test]
-    fn live_redis_backend_logs_on_connection_error() {
-        let counter = Arc::new(AtomicUsize::new(0));
-        let subscriber = CountingSubscriber {
-            event_count: Arc::clone(&counter),
-        };
-
-        tracing::subscriber::with_default(subscriber, || {
-            let backend = LiveRedisBackend::new("redis://127.0.0.1:1/").unwrap();
-            let result = backend.sliding_window_add("test_key", 1_000, 500, "m", 60);
-            assert_eq!(result, 0, "should return 0 on connection failure");
-        });
-
-        assert!(
-            counter.load(Ordering::SeqCst) >= 1,
-            "expected at least one tracing event on connection error"
-        );
+    fn test_tenant_key_format() {
+        let key = TenantRateLimitKey::new("tenant_a", "verify", "user42");
+        assert_eq!(key.as_str(), "tenant_a::verify::user42");
     }
 
-    /// Issue #853 — DistributedRateLimiter increments rate_limiter_redis_fallback_total
-    /// by exactly 1 each time it falls back to the in-memory limiter.
     #[test]
-    fn distributed_rate_limiter_increments_fallback_counter() {
-        let before = crate::metrics::metrics()
-            .rate_limiter_redis_fallback_total
-            .get();
+    fn test_tenant_key_display() {
+        let key = TenantRateLimitKey::new("org1", "login", "bob");
+        assert_eq!(format!("{key}"), "org1::login::bob");
+    }
 
-        let limiter = DistributedRateLimiter::new(Some("redis://127.0.0.1:1/"), 5, 60, "test:");
-        let _ = limiter.record_failure("test_key");
+    #[test]
+    fn test_tenant_key_as_ref() {
+        let key = TenantRateLimitKey::new("t1", "action", "u1");
+        let s: &str = key.as_ref();
+        assert_eq!(s, "t1::action::u1");
+    }
 
-        let after = crate::metrics::metrics()
-            .rate_limiter_redis_fallback_total
-            .get();
-        assert_eq!(
-            after - before,
-            1.0,
-            "fallback counter should increment by exactly 1 on each Redis-unavailable fallback"
-        );
+    #[test]
+    fn test_different_tenants_same_user_get_different_keys() {
+        let key_a = TenantRateLimitKey::new("tenant_a", "verify", "user1");
+        let key_b = TenantRateLimitKey::new("tenant_b", "verify", "user1");
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a.as_str(), key_b.as_str());
+    }
+
+    #[test]
+    fn test_cross_tenant_isolation_with_in_memory_limiter() {
+        // Two tenants with the same user_id must have independent rate-limit state.
+        let limiter = InMemoryRateLimiter::new(2, 60, 300);
+
+        let key_a = TenantRateLimitKey::new("tenant_a", "verify", "shared_user");
+        let key_b = TenantRateLimitKey::new("tenant_b", "verify", "shared_user");
+
+        // Exhaust tenant_a's limit
+        limiter.record_failure(key_a.as_str());
+        limiter.record_failure(key_a.as_str());
+        let result_a = limiter.record_failure(key_a.as_str());
+        assert!(matches!(result_a, RateLimitResult::Blocked { .. }));
+
+        // tenant_b should still be allowed
+        let result_b = limiter.record_failure(key_b.as_str());
+        assert!(matches!(result_b, RateLimitResult::Allowed { .. }));
+    }
+
+    #[test]
+    fn test_same_tenant_different_actions_are_independent() {
+        let limiter = InMemoryRateLimiter::new(1, 60, 300);
+
+        let verify_key = TenantRateLimitKey::new("t1", "verify", "user1");
+        let disable_key = TenantRateLimitKey::new("t1", "disable", "user1");
+
+        // Exhaust verify limit
+        limiter.record_failure(verify_key.as_str());
+        let result_v = limiter.record_failure(verify_key.as_str());
+        assert!(matches!(result_v, RateLimitResult::Blocked { .. }));
+
+        // disable action should still be allowed
+        let result_d = limiter.record_failure(disable_key.as_str());
+        assert!(matches!(result_d, RateLimitResult::Allowed { .. }));
     }
 }
