@@ -169,7 +169,7 @@ where
             .or_else(|| {
                 // Fall back to generating a fresh trace context
                 Some(TraceContext {
-                    trace_id: Uuid::new_v4().to_string().replace("-", ""),
+                    trace_id: hex::encode(rand::random::<[u8; 16]>()),
                     parent_span_id: "0000000000000000".to_string(),
                     flags: "01".to_string(),
                 })
@@ -243,4 +243,33 @@ pub fn init_tracing() {
         .json()
         .with_env_filter(EnvFilter::from_default_env())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_trace_id_is_32_lowercase_hex() {
+        let trace_id = hex::encode(rand::random::<[u8; 16]>());
+        assert_eq!(trace_id.len(), 32, "trace_id must be 32 chars");
+        assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()), "trace_id must be hex");
+        // Ensure TraceContext::parse accepts it
+        let header = format!("00-{trace_id}-0000000000000000-01");
+        assert!(TraceContext::parse(&header).is_some());
+    }
+
+    #[test]
+    fn traceparent_parse_roundtrip() {
+        let tc = TraceContext {
+            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".to_string(),
+            parent_span_id: "00f067aa0ba902b7".to_string(),
+            flags: "01".to_string(),
+        };
+        let header = tc.to_header();
+        let parsed = TraceContext::parse(&header).expect("should parse");
+        assert_eq!(parsed.trace_id, tc.trace_id);
+        assert_eq!(parsed.parent_span_id, tc.parent_span_id);
+        assert_eq!(parsed.flags, tc.flags);
+    }
 }

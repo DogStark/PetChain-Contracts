@@ -8,6 +8,7 @@
 //! # Metrics
 //! | Name | Type | Labels |
 //! |------|------|--------|
+//! | `build_info` | Gauge | `version`, `git_sha` |
 //! | `totp_verifications_total` | Counter | `result` (`ok`/`fail`) |
 //! | `recovery_code_uses_total` | Counter | — |
 //! | `rate_limit_hits_total` | Counter | — |
@@ -16,10 +17,12 @@
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
 //! | `leaderboard_ws_connections_total` | Gauge | — |
+//! | `webhook_deliveries_total` | Counter | `status` (`success`/`failure`) |
+//! | `webhook_delivery_duration_seconds` | Histogram | — |
 
 use prometheus::{
-    register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
-    TextEncoder,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
+    Gauge, GaugeVec, HistogramVec, TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -28,6 +31,7 @@ use std::sync::OnceLock;
 // ---------------------------------------------------------------------------
 
 pub struct Metrics {
+    pub build_info: GaugeVec,
     pub totp_verifications_total: CounterVec,
     pub recovery_code_uses_total: prometheus::Counter,
     pub rate_limit_hits_total: prometheus::Counter,
@@ -42,8 +46,23 @@ pub struct Metrics {
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub fn metrics() -> &'static Metrics {
-    METRICS.get_or_init(|| Metrics {
-        totp_verifications_total: register_counter_vec!(
+    METRICS.get_or_init(|| {
+        let build_info = register_gauge_vec!(
+            "build_info",
+            "Build information (always 1)",
+            &["version", "git_sha"]
+        )
+        .expect("register build_info");
+        build_info
+            .with_label_values(&[
+                env!("CARGO_PKG_VERSION"),
+                env!("GIT_SHA"),
+            ])
+            .set(1.0);
+
+        Metrics {
+            build_info,
+            totp_verifications_total: register_counter_vec!(
             "totp_verifications_total",
             "Total TOTP verification attempts",
             &["result"]
@@ -86,6 +105,7 @@ pub fn metrics() -> &'static Metrics {
             "Current number of open leaderboard WebSocket connections"
         )
         .expect("register leaderboard_ws_connections_total"),
+        }
     })
 }
 
@@ -203,6 +223,15 @@ mod tests {
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
         assert!(output.contains("request_duration_seconds"), "missing histogram");
         assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
+        assert!(output.contains("build_info"), "missing build_info gauge");
+    }
+
+    #[test]
+    fn build_info_gauge_present() {
+        let output = render_metrics().expect("render");
+        assert!(output.contains("build_info"), "build_info gauge missing");
+        assert!(output.contains(r#"version=""#), "build_info missing version label");
+        assert!(output.contains(r#"git_sha=""#), "build_info missing git_sha label");
     }
 
     #[test]
