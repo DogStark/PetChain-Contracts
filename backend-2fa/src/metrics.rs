@@ -11,9 +11,11 @@
 //! | `totp_verifications_total` | Counter | `result` (`ok`/`fail`) |
 //! | `recovery_code_uses_total` | Counter | — |
 //! | `rate_limit_hits_total` | Counter | — |
+//! | `rate_limiter_redis_fallback_total` | Counter | — |
 //! | `db_pool_active` | Gauge | — |
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
+//! | `leaderboard_ws_connections_total` | Gauge | — |
 
 use prometheus::{
     register_counter_vec, register_gauge, register_histogram_vec, CounterVec, Gauge, HistogramVec,
@@ -29,9 +31,12 @@ pub struct Metrics {
     pub totp_verifications_total: CounterVec,
     pub recovery_code_uses_total: prometheus::Counter,
     pub rate_limit_hits_total: prometheus::Counter,
+    pub rate_limiter_redis_fallback_total: prometheus::Counter,
     pub db_pool_active: Gauge,
     pub db_pool_idle: Gauge,
     pub request_duration_seconds: HistogramVec,
+    /// Tracks the current number of open leaderboard WebSocket connections.
+    pub leaderboard_ws_connections_total: Gauge,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -57,17 +62,17 @@ pub fn metrics() -> &'static Metrics {
         )
         .expect("register rate_limit_hits_total"),
 
-        db_pool_active: register_gauge!(
-            "db_pool_active",
-            "Number of active DB pool connections"
+        rate_limiter_redis_fallback_total: prometheus::register_counter!(
+            "rate_limiter_redis_fallback_total",
+            "Total times DistributedRateLimiter fell back to in-memory due to Redis unavailability"
         )
-        .expect("register db_pool_active"),
+        .expect("register rate_limiter_redis_fallback_total"),
 
-        db_pool_idle: register_gauge!(
-            "db_pool_idle",
-            "Number of idle DB pool connections"
-        )
-        .expect("register db_pool_idle"),
+        db_pool_active: register_gauge!("db_pool_active", "Number of active DB pool connections")
+            .expect("register db_pool_active"),
+
+        db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
+            .expect("register db_pool_idle"),
 
         request_duration_seconds: register_histogram_vec!(
             "request_duration_seconds",
@@ -75,6 +80,12 @@ pub fn metrics() -> &'static Metrics {
             &["endpoint"]
         )
         .expect("register request_duration_seconds"),
+
+        leaderboard_ws_connections_total: register_gauge!(
+            "leaderboard_ws_connections_total",
+            "Current number of open leaderboard WebSocket connections"
+        )
+        .expect("register leaderboard_ws_connections_total"),
     })
 }
 
@@ -85,7 +96,10 @@ pub fn metrics() -> &'static Metrics {
 /// Record a TOTP verification result. `success` maps to label `ok`/`fail`.
 pub fn record_totp_verification(success: bool) {
     let label = if success { "ok" } else { "fail" };
-    metrics().totp_verifications_total.with_label_values(&[label]).inc();
+    metrics()
+        .totp_verifications_total
+        .with_label_values(&[label])
+        .inc();
 }
 
 /// Record a recovery code use.
@@ -96,6 +110,11 @@ pub fn record_recovery_code_use() {
 /// Record a rate-limit block.
 pub fn record_rate_limit_hit() {
     metrics().rate_limit_hits_total.inc();
+}
+
+/// Record a Redis-unavailable fallback in DistributedRateLimiter.
+pub fn record_redis_fallback() {
+    metrics().rate_limiter_redis_fallback_total.inc();
 }
 
 /// Update DB pool gauges.
@@ -111,6 +130,16 @@ pub fn start_request_timer(endpoint: &str) -> prometheus::HistogramTimer {
         .request_duration_seconds
         .with_label_values(&[endpoint])
         .start_timer()
+}
+
+/// Increment the leaderboard WebSocket connection gauge by 1.
+pub fn inc_leaderboard_ws_connections() {
+    metrics().leaderboard_ws_connections_total.inc();
+}
+
+/// Decrement the leaderboard WebSocket connection gauge by 1.
+pub fn dec_leaderboard_ws_connections() {
+    metrics().leaderboard_ws_connections_total.dec();
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +188,12 @@ mod tests {
         record_totp_verification(false);
         record_recovery_code_use();
         record_rate_limit_hit();
+        record_redis_fallback();
         set_db_pool_stats(2.0, 8.0);
         let _timer = start_request_timer("/verify");
         // timer dropped immediately — records a near-zero observation
+        inc_leaderboard_ws_connections();
+        dec_leaderboard_ws_connections();
 
         let output = render_metrics().expect("render");
         assert!(output.contains("totp_verifications_total"), "missing totp counter");
@@ -170,6 +202,7 @@ mod tests {
         assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
         assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
         assert!(output.contains("request_duration_seconds"), "missing histogram");
+        assert!(output.contains("leaderboard_ws_connections_total"), "missing leaderboard ws gauge");
     }
 
     #[test]

@@ -2125,6 +2125,7 @@ dependencies = [
  "base32 0.5.1",
  "futures-util",
  "hex",
+ "hmac",
  "prometheus",
  "rand 0.8.6",
  "redis",

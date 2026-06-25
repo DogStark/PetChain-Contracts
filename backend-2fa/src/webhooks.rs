@@ -1,8 +1,46 @@
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Header under which the webhook signature is sent.
+pub const SIGNATURE_HEADER: &str = "X-PetChain-Signature";
+
+/// Compute the `sha256=<hex>` HMAC-SHA256 signature for a webhook body.
+pub fn sign_webhook_payload(secret: &str, body: &[u8]) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take a key of any size");
+    mac.update(body);
+    let digest = mac.finalize().into_bytes();
+    format!("sha256={}", hex::encode(digest))
+}
+
+/// Verify a webhook signature header against the expected secret and body.
+///
+/// `header_value` is expected to be in the form `sha256=<hex>`. Returns
+/// `false` for malformed headers, tampered bodies, or mismatched secrets.
+/// Comparison is constant-time to avoid timing side channels.
+pub fn verify_webhook_signature(secret: &str, body: &[u8], header_value: &str) -> bool {
+    let Some(provided_hex) = header_value.strip_prefix("sha256=") else {
+        return false;
+    };
+
+    let Ok(provided_bytes) = hex::decode(provided_hex) else {
+        return false;
+    };
+
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(body);
+
+    mac.verify_slice(&provided_bytes).is_ok()
+}
 
 /// Security event types that can trigger webhook notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -157,7 +195,7 @@ pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), WebhookUr
 
 /// Trait for sending HTTP POST requests (injectable for testing).
 pub trait HttpClient: Send + Sync {
-    fn post(&self, url: &str, body: &str) -> Result<(), String>;
+    fn post(&self, url: &str, body: &str, signature_header: &str) -> Result<(), String>;
 }
 
 /// Production HTTP client that performs a real HTTP POST via `ureq`.
@@ -166,6 +204,33 @@ pub trait HttpClient: Send + Sync {
 /// validation has already been performed at configure() time.
 pub struct DefaultHttpClient;
 
+#[cfg(feature = "webhook-client")]
+static HTTP_CLIENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+
+#[cfg(feature = "webhook-client")]
+impl HttpClient for DefaultHttpClient {
+    fn post(&self, url: &str, body: &str) -> Result<(), String> {
+        let agent = HTTP_CLIENT.get_or_init(|| {
+            ureq::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+        });
+
+        let response = agent
+            .post(url)
+            .set("Content-Type", "application/json")
+            .send_string(body)
+            .map_err(|e| format!("request failed: {}", e))?;
+
+        if response.status() >= 200 && response.status() < 300 {
+            Ok(())
+        } else {
+            Err(format!("server returned error status: {}", response.status()))
+        }
+    }
+}
+
+#[cfg(not(feature = "webhook-client"))]
 impl HttpClient for DefaultHttpClient {
     fn post(&self, url: &str, body: &str) -> Result<(), String> {
         // Use ureq for a synchronous blocking HTTP POST with a sane timeout.
@@ -274,12 +339,12 @@ pub struct WebhookManager {
 
 impl Default for WebhookManager {
     fn default() -> Self {
-        Self::new(Arc::new(DefaultHttpClient))
+        Self::new(Arc::new(DefaultHttpClient), String::new())
     }
 }
 
 impl WebhookManager {
-    pub fn new(http_client: Arc<dyn HttpClient>) -> Self {
+    pub fn new(http_client: Arc<dyn HttpClient>, signing_secret: String) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
             delivery_log: Arc::new(Mutex::new(Vec::new())),
@@ -317,10 +382,7 @@ impl WebhookManager {
 
     /// Remove a webhook configuration for an event type.
     pub fn remove_config(&self, event_type: &SecurityEventType) {
-        self.config
-            .lock()
-            .unwrap()
-            .remove(&event_type.to_string());
+        self.config.lock().unwrap().remove(&event_type.to_string());
     }
 
     /// Fire a webhook for the given event.
@@ -434,7 +496,7 @@ impl WebhookManager {
         let mut success = false;
 
         while attempts < 3 {
-            match self.http_client.post(&url, &body) {
+            match self.http_client.post(&url, &body, &signature_header) {
                 Ok(()) => {
                     success = true;
                     break;
@@ -502,7 +564,7 @@ mod tests {
     }
 
     impl HttpClient for MockHttpClient {
-        fn post(&self, _url: &str, _body: &str) -> Result<(), String> {
+        fn post(&self, _url: &str, _body: &str, _signature_header: &str) -> Result<(), String> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let remaining = self.fail_times.load(Ordering::SeqCst);
             if remaining > 0 {
@@ -513,6 +575,8 @@ mod tests {
             }
         }
     }
+
+    const TEST_SIGNING_SECRET: &str = "test-signing-secret";
 
     fn make_manager(fail_times: u32) -> (WebhookManager, Arc<MockHttpClient>) {
         let client = Arc::new(MockHttpClient::new(fail_times));
