@@ -1,6 +1,6 @@
 use actix_web::{
-    body::MessageBody,
     body::BoxBody,
+    body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
     Error, HttpResponse, ResponseError,
@@ -57,6 +57,14 @@ impl ApiError {
     pub fn internal_error(message: impl Into<String>, details: Option<Value>) -> Self {
         Self::new("INTERNAL_SERVER_ERROR", message, details)
     }
+
+    pub fn locked(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self::new("LOCKED", message, details)
+    }
+
+    pub fn too_many_requests(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self::new("TOO_MANY_REQUESTS", message, details)
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -75,6 +83,8 @@ impl ResponseError for ApiError {
             "FORBIDDEN" => StatusCode::FORBIDDEN,
             "NOT_FOUND" => StatusCode::NOT_FOUND,
             "CONFLICT" => StatusCode::CONFLICT,
+            "LOCKED" => StatusCode::LOCKED,
+            "TOO_MANY_REQUESTS" => StatusCode::TOO_MANY_REQUESTS,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -134,6 +144,62 @@ where
                     Ok(ServiceResponse::new(request, response))
                 }
             }
+        })
+    }
+}
+
+pub struct NoCacheMiddleware;
+
+impl<S, B> Transform<S, ServiceRequest> for NoCacheMiddleware
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Transform = NoCacheMiddlewareService<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(NoCacheMiddlewareService { service })
+    }
+}
+
+pub struct NoCacheMiddlewareService<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for NoCacheMiddlewareService<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let fut = self.service.call(req);
+
+        Box::pin(async move {
+            let mut res = fut.await?;
+            let headers = res.headers_mut();
+            headers.insert(
+                actix_web::http::header::CACHE_CONTROL,
+                actix_web::http::header::HeaderValue::from_static("no-store"),
+            );
+            headers.insert(
+                actix_web::http::header::PRAGMA,
+                actix_web::http::header::HeaderValue::from_static("no-cache"),
+            );
+            headers.insert(
+                actix_web::http::header::X_CONTENT_TYPE_OPTIONS,
+                actix_web::http::header::HeaderValue::from_static("nosniff"),
+            );
+            Ok(res)
         })
     }
 }

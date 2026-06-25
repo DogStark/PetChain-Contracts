@@ -360,6 +360,12 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return pool utilisation stats when the backing store supports it.
+    /// Returns `None` for stores that have no connection pool (e.g. in-memory).
+    fn try_pool_stats(&self) -> Option<crate::db::PoolStats> {
+        None
+    }
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -583,7 +589,10 @@ impl TwoFactorStore for MockTwoFactorStore {
         Ok(TwoFactorLockoutState::default())
     }
 
-    fn record_failed_two_fa_attempt(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> {
+    fn record_failed_two_fa_attempt(
+        &self,
+        _user_id: &str,
+    ) -> Result<TwoFactorLockoutState, String> {
         Ok(TwoFactorLockoutState::default())
     }
 
@@ -904,7 +913,8 @@ impl TenantScopedStore {
         page: u32,
         page_size: u32,
     ) -> Result<Vec<AuditLogEntry>, String> {
-        self.inner.get_audit_log(&self.key(user_id), page, page_size)
+        self.inner
+            .get_audit_log(&self.key(user_id), page, page_size)
     }
 
     pub fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {

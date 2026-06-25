@@ -295,7 +295,7 @@ mod tests {
         // 3. Subsequent enrollment attempt - must fail/refuse to re-disclose
         let result2 = TwoFactorHandlers::enable_two_factor(&caller, req);
         assert!(result2.is_err());
-        assert!(result2.unwrap_err().contains("already enabled"));
+        assert!(result2.unwrap_err().message.contains("already enabled"));
     }
 
     #[test]
@@ -433,7 +433,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Forbidden"));
+        assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         // Nothing was written to the store
         assert!(get_two_factor_data_for_tests("victim").is_none());
     }
@@ -453,7 +453,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not configured"));
+        assert!(result.unwrap_err().message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -720,7 +720,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, "save failed");
+        assert_eq!(err.message, "save failed");
 
         let timeout_get = std::sync::Arc::new(MockTwoFactorStore::with_config(MockStoreConfig {
             get: Some(MockStoreFailure::Timeout),
@@ -736,7 +736,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(err.contains("not configured"));
+        assert!(err.message.contains("not configured"));
     }
 
     // -----------------------------------------------------------------------
@@ -751,8 +751,8 @@ mod tests {
         };
         use crate::rate_limiter::{InMemoryRateLimiter, RateLimitResult, RateLimiter};
         use crate::two_factor::TwoFactorData;
-        use totp_rs::Algorithm;
         use std::sync::Arc;
+        use totp_rs::Algorithm;
 
         fn caller(id: &str) -> AuthenticatedUser {
             AuthenticatedUser::new(id)
@@ -768,6 +768,7 @@ mod tests {
             fn record_success(&self, _key: &str) {}
         }
 
+        #[allow(dead_code)]
         struct AlwaysAllowedLimiter;
         impl RateLimiter for AlwaysAllowedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
@@ -851,7 +852,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -866,7 +870,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -881,7 +888,10 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Too many failed attempts"));
+            assert!(result
+                .unwrap_err()
+                .message
+                .contains("Too many failed attempts"));
         }
 
         #[test]
@@ -941,7 +951,7 @@ mod tests {
                 !disable_result
                     .as_ref()
                     .err()
-                    .map(|e| e.contains("Too many"))
+                    .map(|e| e.message.contains("Too many"))
                     .unwrap_or(false),
                 "disable endpoint should not be blocked by login failures"
             );
@@ -1089,7 +1099,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1103,7 +1113,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1117,7 +1127,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1131,7 +1141,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1147,11 +1157,12 @@ mod tests {
             // Should fail on missing record or invalid code, NOT on authorization
             let err = result.unwrap_err();
             assert!(
-                err.contains("Invalid backup code")
-                    || err.contains("not configured")
-                    || err.contains("not enabled"),
-                "Correct user should reach the backup code validation step, got: {}",
-                err
+                err.message.contains("Invalid backup code")
+                    || err.message.contains("not configured")
+                    || err.message.contains("not enabled"),
+                "Correct user should reach the backup code validation step, got: {} ({})",
+                err.message,
+                err.code
             );
         }
 
@@ -1165,7 +1176,7 @@ mod tests {
                 },
             );
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1177,7 +1188,7 @@ mod tests {
         fn test_authorize_different_user_err() {
             let result = caller("alice").authorize("bob");
             assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Forbidden"));
+            assert_eq!(result.unwrap_err().code, "FORBIDDEN");
         }
 
         #[test]
@@ -1250,7 +1261,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not configured"));
+        assert!(err.unwrap_err().message.contains("not configured"));
     }
 
     #[test]
@@ -1361,7 +1372,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -1385,7 +1396,7 @@ mod tests {
             },
         );
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("not enabled"));
+        assert!(err.unwrap_err().message.contains("not enabled"));
     }
 }
 
@@ -1396,13 +1407,13 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use crate::handlers::{
-        clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AdminRecoveryHandlers, AuthenticatedUser,
-        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
-        RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests, AdminRecoveryHandlers,
+        AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest,
+        LoginWithTwoFactorRequest, RecoverWithBackupRequest, TwoFactorHandlers,
+        VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
-    use crate::two_factor::{TwoFactorAuth, TwoFactorData};
+    use crate::two_factor::TwoFactorData;
     use std::sync::Arc;
     use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -1668,9 +1679,9 @@ mod integration_tests {
         assert!(blocked.is_err(), "locked-out user must receive an error");
         let err = blocked.unwrap_err();
         assert!(
-            err.contains("Too many failed attempts"),
+            err.message.contains("Too many failed attempts"),
             "error must mention rate limiting, got: {}",
-            err
+            err.message
         );
     }
 
@@ -1712,7 +1723,10 @@ mod integration_tests {
         );
 
         assert!(blocked.is_err());
-        assert!(blocked.unwrap_err().contains("Too many failed attempts"));
+        assert!(blocked
+            .unwrap_err()
+            .message
+            .contains("Too many failed attempts"));
     }
 
     /// A successful login resets the failure counter so the user is not
@@ -1970,7 +1984,7 @@ mod integration_tests {
         );
 
         assert!(second.is_err());
-        assert!(second.unwrap_err().contains("InvalidRecoveryCode"));
+        assert!(second.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 
     #[test]
@@ -2671,7 +2685,6 @@ mod redis_rate_limiter_tests {
 
     mod admin_score_handlers {
         use crate::handlers::AdminScoreHandlers;
-        use crate::leaderboard::FlaggedScoreSubmission;
 
         #[test]
         fn admin_get_all_flagged_empty() {
@@ -2967,9 +2980,9 @@ impl crate::rate_limiter::SlidingWindowRateLimiter<crate::rate_limiter::MockRedi
 mod admin_dashboard_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
-        AuthenticatedAdmin, AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers,
+        AuthenticatedAdmin, AuthenticatedUser,
     };
-    use crate::two_factor::{TwoFactorData, TwoFactorStore};
+    use crate::two_factor::TwoFactorData;
     use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
@@ -3074,13 +3087,9 @@ mod canary_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AuthenticatedAdmin,
         CanaryHandlers, CreateCanaryRequest,
     };
-    use crate::two_factor::TwoFactorStore;
     use crate::webhooks::{HttpClient, SecurityEventType, WebhookManager};
+    use std::sync::{Arc, Mutex};
     use totp_rs::Algorithm;
-    use std::sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
-    };
 
     struct RecordingHttpClient {
         calls: Arc<Mutex<Vec<String>>>,
@@ -3122,7 +3131,7 @@ mod canary_tests {
     #[test]
     fn test_create_canary_account() {
         clear_two_factor_store_for_tests();
-        let (handlers, _calls) = make_canary_handlers();
+        let (_handlers, _calls) = make_canary_handlers();
 
         let resp = CanaryHandlers::create_canary(
             &admin(),
@@ -3225,16 +3234,16 @@ mod canary_tests {
 
         // Set up a normal user
         let store = get_two_factor_store_for_tests();
-            store
-                .save(
-                    "normal-user",
-                    crate::two_factor::TwoFactorData {
-                        secret: "JBSWY3DPEHPK3PXP".to_string(),
-                        backup_codes: vec![],
-                        enabled: true,
-                        algorithm: Algorithm::SHA1,
-                    },
-                )
+        store
+            .save(
+                "normal-user",
+                crate::two_factor::TwoFactorData {
+                    secret: "JBSWY3DPEHPK3PXP".to_string(),
+                    backup_codes: vec![],
+                    enabled: true,
+                    algorithm: Algorithm::SHA1,
+                },
+            )
             .unwrap();
 
         // Verification attempt on a normal user should NOT fire canary webhook
@@ -3250,7 +3259,6 @@ mod canary_tests {
 #[cfg(test)]
 mod webhook_handler_tests {
     use crate::webhooks::{SecurityEventType, WebhookManager};
-    use std::sync::Arc;
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {
@@ -3316,8 +3324,7 @@ mod distributed_rate_limiter_tests {
     /// Bad Redis URL → fails open (returns Allowed via fallback).
     #[test]
     fn redis_unavailable_falls_back_to_in_memory() {
-        let limiter =
-            DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
+        let limiter = DistributedRateLimiter::new(Some("redis://127.0.0.1:1"), 5, 60, "test:");
         assert!(matches!(
             limiter.record_failure("user:fallback-redis"),
             RateLimitResult::Allowed { .. }
@@ -3433,7 +3440,9 @@ mod progressive_two_factor_lockout_tests {
     fn admin_unlock_clears_lockout_state() {
         let store = InMemoryStore::default();
         for _ in 0..10 {
-            store.record_failed_two_fa_attempt("user-admin-unlock").unwrap();
+            store
+                .record_failed_two_fa_attempt("user-admin-unlock")
+                .unwrap();
         }
         assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
 
@@ -3488,7 +3497,7 @@ mod progressive_two_factor_lockout_tests {
                 },
             )
             .unwrap_err();
-        assert!(locked.contains("locked after 10"));
+        assert!(locked.message.contains("locked after 10"));
 
         store
             .unlock_two_fa_account(user_id, &AuthenticatedAdmin::new("admin").admin_id)
@@ -3503,5 +3512,212 @@ mod progressive_two_factor_lockout_tests {
                 },
             )
             .unwrap());
+    }
+
+    mod ip_access_tests {
+        use crate::handlers::{AddIpRuleRequest, AdminIpAccessHandlers, AuthenticatedAdmin};
+        use crate::ip_access::{
+            CidrBlock, InMemoryIpAccessStore, IpAccessDecision, IpAccessStore, IpListType,
+        };
+        use std::net::IpAddr;
+        use std::sync::Arc;
+
+        fn admin() -> AuthenticatedAdmin {
+            AuthenticatedAdmin::new("admin-1")
+        }
+
+        fn ip(s: &str) -> IpAddr {
+            s.parse().unwrap()
+        }
+
+        // --- CIDR parsing / containment ---
+
+        #[test]
+        fn cidr_parses_bare_ipv4_as_slash_32() {
+            let block = CidrBlock::parse("192.168.1.10").unwrap();
+            assert!(block.contains(&ip("192.168.1.10")));
+            assert!(!block.contains(&ip("192.168.1.11")));
+        }
+
+        #[test]
+        fn cidr_matches_ipv4_range() {
+            let block = CidrBlock::parse("192.168.1.0/24").unwrap();
+            assert!(block.contains(&ip("192.168.1.0")));
+            assert!(block.contains(&ip("192.168.1.255")));
+            assert!(!block.contains(&ip("192.168.2.1")));
+        }
+
+        #[test]
+        fn cidr_matches_ipv6_range() {
+            let block = CidrBlock::parse("2001:db8::/32").unwrap();
+            assert!(block.contains(&ip("2001:db8::1")));
+            assert!(!block.contains(&ip("2001:db9::1")));
+        }
+
+        #[test]
+        fn cidr_zero_prefix_matches_everything_in_family() {
+            let block = CidrBlock::parse("0.0.0.0/0").unwrap();
+            assert!(block.contains(&ip("8.8.8.8")));
+            assert!(!block.contains(&ip("::1")));
+        }
+
+        #[test]
+        fn cidr_rejects_invalid_address() {
+            assert!(CidrBlock::parse("not-an-ip/24").is_err());
+        }
+
+        #[test]
+        fn cidr_rejects_out_of_range_prefix() {
+            assert!(CidrBlock::parse("10.0.0.0/33").is_err());
+            assert!(CidrBlock::parse("::1/129").is_err());
+        }
+
+        #[test]
+        fn cidr_v4_and_v6_never_cross_match() {
+            let block = CidrBlock::parse("0.0.0.0/0").unwrap();
+            assert!(!block.contains(&ip("::1")));
+        }
+
+        // --- InMemoryIpAccessStore + decision logic ---
+
+        #[test]
+        fn unknown_ip_is_allowed_by_default() {
+            let store = InMemoryIpAccessStore::new();
+            assert_eq!(store.check(ip("1.2.3.4")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn blocked_cidr_blocks_matching_ip() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("10.1.2.3")), IpAccessDecision::Blocked);
+            assert_eq!(store.check(ip("11.1.2.3")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn allowlist_takes_precedence_over_blocklist() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            store
+                .add_entry("10.1.2.3/32", IpListType::Allow, Some("trusted ops host"), "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("10.1.2.3")), IpAccessDecision::Allowed);
+            assert_eq!(store.check(ip("10.1.2.4")), IpAccessDecision::Blocked);
+        }
+
+        #[test]
+        fn add_entry_rejects_invalid_cidr() {
+            let store = InMemoryIpAccessStore::new();
+            assert!(store
+                .add_entry("garbage", IpListType::Block, None, "admin-1")
+                .is_err());
+        }
+
+        #[test]
+        fn remove_entry_drops_it_from_list() {
+            let store = InMemoryIpAccessStore::new();
+            let entry = store
+                .add_entry("192.168.0.0/16", IpListType::Block, None, "admin-1")
+                .unwrap();
+            assert_eq!(store.check(ip("192.168.1.1")), IpAccessDecision::Blocked);
+
+            store.remove_entry(entry.id).unwrap();
+            assert_eq!(store.check(ip("192.168.1.1")), IpAccessDecision::Allowed);
+        }
+
+        #[test]
+        fn remove_entry_unknown_id_errors() {
+            let store = InMemoryIpAccessStore::new();
+            assert!(store.remove_entry(999).is_err());
+        }
+
+        #[test]
+        fn list_entries_filters_by_type() {
+            let store = InMemoryIpAccessStore::new();
+            store
+                .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
+                .unwrap();
+            store
+                .add_entry("172.16.0.0/12", IpListType::Allow, None, "admin-1")
+                .unwrap();
+
+            assert_eq!(store.list_entries(IpListType::Block).len(), 1);
+            assert_eq!(store.list_entries(IpListType::Allow).len(), 1);
+        }
+
+        // --- AdminIpAccessHandlers ---
+
+        #[test]
+        fn admin_handlers_allow_and_block_round_trip() {
+            let store: Arc<dyn IpAccessStore> = Arc::new(InMemoryIpAccessStore::new());
+            let handlers = AdminIpAccessHandlers::new(store);
+
+            let allow_entry = handlers
+                .allow_ip(
+                    &admin(),
+                    AddIpRuleRequest { cidr: "203.0.113.5/32".to_string(), note: None },
+                )
+                .unwrap();
+            assert_eq!(allow_entry.created_by, "admin-1");
+            assert_eq!(handlers.list_allow().len(), 1);
+
+            let block_entry = handlers
+                .block_ip(
+                    &admin(),
+                    AddIpRuleRequest {
+                        cidr: "198.51.100.0/24".to_string(),
+                        note: Some("known abuse range".to_string()),
+                    },
+                )
+                .unwrap();
+            assert_eq!(handlers.list_block().len(), 1);
+
+            handlers.remove_entry(&admin(), block_entry.id).unwrap();
+            assert!(handlers.list_block().is_empty());
+            assert_eq!(handlers.list_allow().len(), 1);
+        }
+
+        #[test]
+        fn admin_handlers_reject_invalid_cidr() {
+            let store: Arc<dyn IpAccessStore> = Arc::new(InMemoryIpAccessStore::new());
+            let handlers = AdminIpAccessHandlers::new(store);
+
+            let result = handlers.block_ip(
+                &admin(),
+                AddIpRuleRequest { cidr: "not-a-cidr".to_string(), note: None },
+            );
+            assert!(result.is_err());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #850 — Pool stats handler tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod pool_stats_tests {
+    use crate::handlers::PoolMetricsHandlers;
+    use crate::two_factor::{InMemoryStore, TwoFactorStore};
+
+    #[test]
+    fn pool_stats_handler_returns_sentinel_in_test_mode() {
+        let stats =
+            PoolMetricsHandlers::pool_stats().expect("pool_stats must succeed in test mode");
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.max, 0);
+    }
+
+    #[test]
+    fn in_memory_store_try_pool_stats_returns_none() {
+        let store = InMemoryStore::default();
+        assert!(
+            store.try_pool_stats().is_none(),
+            "InMemoryStore has no pool; try_pool_stats must return None"
+        );
     }
 }

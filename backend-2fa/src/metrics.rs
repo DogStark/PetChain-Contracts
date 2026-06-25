@@ -57,17 +57,11 @@ pub fn metrics() -> &'static Metrics {
         )
         .expect("register rate_limit_hits_total"),
 
-        db_pool_active: register_gauge!(
-            "db_pool_active",
-            "Number of active DB pool connections"
-        )
-        .expect("register db_pool_active"),
+        db_pool_active: register_gauge!("db_pool_active", "Number of active DB pool connections")
+            .expect("register db_pool_active"),
 
-        db_pool_idle: register_gauge!(
-            "db_pool_idle",
-            "Number of idle DB pool connections"
-        )
-        .expect("register db_pool_idle"),
+        db_pool_idle: register_gauge!("db_pool_idle", "Number of idle DB pool connections")
+            .expect("register db_pool_idle"),
 
         request_duration_seconds: register_histogram_vec!(
             "request_duration_seconds",
@@ -85,7 +79,10 @@ pub fn metrics() -> &'static Metrics {
 /// Record a TOTP verification result. `success` maps to label `ok`/`fail`.
 pub fn record_totp_verification(success: bool) {
     let label = if success { "ok" } else { "fail" };
-    metrics().totp_verifications_total.with_label_values(&[label]).inc();
+    metrics()
+        .totp_verifications_total
+        .with_label_values(&[label])
+        .inc();
 }
 
 /// Record a recovery code use.
@@ -164,12 +161,30 @@ mod tests {
         // timer dropped immediately — records a near-zero observation
 
         let output = render_metrics().expect("render");
-        assert!(output.contains("totp_verifications_total"), "missing totp counter");
-        assert!(output.contains("recovery_code_uses_total"), "missing recovery counter");
-        assert!(output.contains("rate_limit_hits_total"), "missing rate limit counter");
-        assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
-        assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
-        assert!(output.contains("request_duration_seconds"), "missing histogram");
+        assert!(
+            output.contains("totp_verifications_total"),
+            "missing totp counter"
+        );
+        assert!(
+            output.contains("recovery_code_uses_total"),
+            "missing recovery counter"
+        );
+        assert!(
+            output.contains("rate_limit_hits_total"),
+            "missing rate limit counter"
+        );
+        assert!(
+            output.contains("db_pool_active"),
+            "missing db_pool_active gauge"
+        );
+        assert!(
+            output.contains("db_pool_idle"),
+            "missing db_pool_idle gauge"
+        );
+        assert!(
+            output.contains("request_duration_seconds"),
+            "missing histogram"
+        );
     }
 
     #[test]
