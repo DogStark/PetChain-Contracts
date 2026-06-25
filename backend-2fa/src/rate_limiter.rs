@@ -128,34 +128,37 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
 
 pub struct LiveRedisBackend {
     client: redis::Client,
+    connection: Mutex<Option<redis::Connection>>,
 }
 
 impl LiveRedisBackend {
     pub fn new(redis_url: &str) -> Result<Self, redis::RedisError> {
-        Ok(Self {
+        Ok(Self { 
             client: redis::Client::open(redis_url)?,
+            connection: Mutex::new(None),
         })
+    }
+
+    fn get_connection(&self) -> Result<redis::Connection, redis::RedisError> {
+        let mut conn_guard = self.connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if conn_guard.is_none() {
+            *conn_guard = Some(self.client.get_connection()?);
+        }
+        Ok(conn_guard.as_ref().unwrap().clone())
     }
 }
 
 impl RedisBackend for LiveRedisBackend {
     fn ttl(&self, key: &str) -> i64 {
-        let mut con = match self.client.get_connection() {
+        let mut con = match self.get_connection() {
             Ok(c) => c,
             Err(_) => return -2,
         };
         con.ttl(key).unwrap_or(-2)
     }
 
-    fn sliding_window_add(
-        &self,
-        key: &str,
-        now_ms: u64,
-        cutoff_ms: u64,
-        member: &str,
-        ttl_secs: u64,
-    ) -> u64 {
-        let mut con = match self.client.get_connection() {
+    fn sliding_window_add(&self, key: &str, now_ms: u64, cutoff_ms: u64, member: &str, ttl_secs: u64) -> u64 {
+        let mut con = match self.get_connection() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[LiveRedisBackend] connection error: {e}");
@@ -192,19 +195,19 @@ impl RedisBackend for LiveRedisBackend {
     }
 
     fn set_ex(&self, key: &str, value: &str, ttl_secs: u64) {
-        if let Ok(mut con) = self.client.get_connection() {
+        if let Ok(mut con) = self.get_connection() {
             let _: Result<(), _> = con.set_ex(key, value, ttl_secs);
         }
     }
 
     fn del(&self, keys: &[&str]) {
-        if let Ok(mut con) = self.client.get_connection() {
+        if let Ok(mut con) = self.get_connection() {
             let _: Result<(), _> = redis::cmd("DEL").arg(keys).query(&mut con);
         }
     }
 
     fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> u64 {
-        let mut con = match self.client.get_connection() {
+        let mut con = match self.get_connection() {
             Ok(c) => c,
             Err(_) => return 0,
         };
@@ -216,7 +219,7 @@ impl RedisBackend for LiveRedisBackend {
     }
 
     fn get_u64(&self, key: &str) -> Option<u64> {
-        let mut con = self.client.get_connection().ok()?;
+        let mut con = self.get_connection().ok()?;
         redis::cmd("GET").arg(key).query(&mut con).ok()
     }
 }
@@ -438,7 +441,8 @@ impl Default for InMemoryRateLimiter {
 
 impl RateLimiter for InMemoryRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
-        let mut records = self.records.lock().expect("rate limiter lock poisoned");
+        // Recover from poisoned lock: data is still valid, just recover the Mutex
+        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
 
         let record = records.entry(key.to_string()).or_insert(AttemptRecord {
@@ -478,7 +482,8 @@ impl RateLimiter for InMemoryRateLimiter {
     }
 
     fn record_success(&self, key: &str) {
-        let mut records = self.records.lock().expect("rate limiter lock poisoned");
+        // Recover from poisoned lock: data is still valid, just recover the Mutex
+        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         records.remove(key);
     }
 }
@@ -551,9 +556,8 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
 
         let lockout_ttl = self.backend.ttl(&lockout_key);
         if lockout_ttl > 0 {
-            return RateLimitResult::Blocked {
-                retry_after_secs: lockout_ttl as u64,
-            };
+            crate::metrics::record_rate_limit_hit();
+            return RateLimitResult::Blocked { retry_after_secs: lockout_ttl as u64 };
         }
 
         let now_ms = Self::now_ms();
@@ -570,9 +574,8 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
 
         if count > cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
-            return RateLimitResult::Blocked {
-                retry_after_secs: cfg.lockout_secs,
-            };
+            crate::metrics::record_rate_limit_hit();
+            return RateLimitResult::Blocked { retry_after_secs: cfg.lockout_secs };
         }
 
         RateLimitResult::Allowed {
@@ -703,13 +706,17 @@ impl DistributedRateLimiter {
 
 impl RateLimiter for DistributedRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
-        match self.try_redis(key) {
+        let result = match self.try_redis(key) {
             Some(result) => result,
             None => {
                 eprintln!("[DistributedRateLimiter] Redis unavailable, falling back to in-memory for key={key}");
                 self.fallback.record_failure(key)
             }
+        };
+        if matches!(result, RateLimitResult::Blocked { .. }) {
+            crate::metrics::record_rate_limit_hit();
         }
+        result
     }
 
     fn record_success(&self, key: &str) {
