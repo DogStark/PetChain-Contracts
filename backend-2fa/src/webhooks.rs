@@ -1,3 +1,4 @@
+use crate::metrics::{record_webhook_delivery, record_webhook_retry};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -443,12 +444,15 @@ impl WebhookManager {
                     last_error = Some(e);
                     attempts += 1;
                     if attempts < 3 {
+                        record_webhook_retry();
                         let wait = Duration::from_secs(1u64 << (attempts - 1));
                         std::thread::sleep(wait);
                     }
                 }
             }
         }
+
+        record_webhook_delivery(success);
 
         let id = next_log_id.fetch_add(1, Ordering::Relaxed);
         let entry = WebhookDeliveryLog {
