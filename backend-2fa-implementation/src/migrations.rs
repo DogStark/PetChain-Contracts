@@ -84,6 +84,14 @@ impl<E: SqlExecutor> MigrationRunner<E> {
             .query_applied_migrations()
             .map_err(MigrationError::ExecutionError)?;
 
+        for migration in &self.migrations {
+            if let Some(stored_checksum) = applied.get(&migration.version) {
+                if stored_checksum != &migration.checksum {
+                    return Err(MigrationError::DirtyVersion(migration.version));
+                }
+            }
+        }
+
         let mut applied_versions = Vec::new();
 
         for migration in &self.migrations {
@@ -268,5 +276,39 @@ mod tests {
         let applied = runner.apply_pending().unwrap();
         assert!(applied.is_empty());
         assert!(runner.executor.executed_sql.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_drift_passes_checksum_verification() {
+        let m = Migration::new(1, "create users", "CREATE TABLE users (id INT)");
+        let m2 = Migration::new(2, "create pets", "CREATE TABLE pets (id INT)");
+
+        let mut pre_applied = HashMap::new();
+        pre_applied.insert(1, m.checksum.clone());
+
+        let executor = MockExecutor::with_applied(pre_applied);
+        let runner = MigrationRunner::new(executor, vec![m, m2]);
+
+        let applied = runner.apply_pending().unwrap();
+        assert_eq!(applied, vec![2]);
+    }
+
+    #[test]
+    fn tampered_migration_returns_dirty_version() {
+        let original = Migration::new(1, "create users", "CREATE TABLE users (id INT)");
+
+        let mut pre_applied = HashMap::new();
+        pre_applied.insert(1, original.checksum.clone());
+
+        let tampered = Migration::new(1, "create users", "CREATE TABLE users (id INT, name TEXT)");
+
+        let executor = MockExecutor::with_applied(pre_applied);
+        let runner = MigrationRunner::new(executor, vec![tampered]);
+
+        let err = runner.apply_pending().unwrap_err();
+        match err {
+            MigrationError::DirtyVersion(v) => assert_eq!(v, 1),
+            other => panic!("expected DirtyVersion, got: {}", other),
+        }
     }
 }
