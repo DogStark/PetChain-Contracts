@@ -291,6 +291,13 @@ pub struct TwoFactorLockoutState {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LockedUserSummary {
+    pub user_id: String,
+    pub failed_attempts: u32,
+    pub locked_at: Option<u64>,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -360,6 +367,9 @@ pub trait TwoFactorStore: Send + Sync {
 
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return all currently locked-out user accounts.
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String>;
 
     /// Return pool utilisation stats when the backing store supports it.
     /// Returns `None` for stores that have no connection pool (e.g. in-memory).
@@ -603,6 +613,10 @@ impl TwoFactorStore for MockTwoFactorStore {
     fn unlock_two_fa_account(&self, _user_id: &str, _actor: &str) -> Result<(), String> {
         Ok(())
     }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        Ok(vec![])
+    }
 }
 
 impl TwoFactorStore for InMemoryStore {
@@ -822,6 +836,21 @@ impl TwoFactorStore for InMemoryStore {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        let lockouts = self.lockouts.lock().unwrap();
+        let mut result: Vec<LockedUserSummary> = lockouts
+            .iter()
+            .filter(|(_, state)| state.locked)
+            .map(|(uid, state)| LockedUserSummary {
+                user_id: uid.clone(),
+                failed_attempts: state.failed_attempts,
+                locked_at: state.locked_at,
+            })
+            .collect();
+        result.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+        Ok(result)
     }
 }
 

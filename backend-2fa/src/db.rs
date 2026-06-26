@@ -1,8 +1,8 @@
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
-    AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
-    UserTwoFactorSummary,
+    AuditLogEntry, LockedUserSummary, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState,
+    TwoFactorStore, UserTwoFactorSummary,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::collections::HashMap;
@@ -641,6 +641,39 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+            failed_attempts: i32,
+            locked_at: Option<i64>,
+        }
+
+        let rows = self.with_retry(|| {
+            self.block_on_typed(
+                sqlx::query_as::<_, Row>(
+                    r#"
+                SELECT user_id, failed_attempts,
+                       EXTRACT(EPOCH FROM locked_at)::bigint AS locked_at
+                FROM two_fa_lockouts
+                WHERE locked = TRUE
+                ORDER BY user_id
+                "#,
+                )
+                .fetch_all(&self.pool),
+            )
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| LockedUserSummary {
+                user_id: r.user_id,
+                failed_attempts: r.failed_attempts.max(0) as u32,
+                locked_at: r.locked_at.map(|ts| ts as u64),
+            })
+            .collect())
     }
 
     fn try_pool_stats(&self) -> Option<PoolStats> {

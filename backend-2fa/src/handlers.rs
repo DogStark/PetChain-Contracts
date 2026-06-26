@@ -6,8 +6,9 @@ use crate::rate_limiter::{
     InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
-    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
+    TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore,
+    UserTwoFactorSummary,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
@@ -809,6 +810,13 @@ impl AdminDashboardHandlers {
     /// POST /admin/users/{id}/unlock-2fa — clear persistent lockout state.
     pub fn unlock_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
         two_factor_store().unlock_two_fa_account(user_id, &admin.admin_id)
+    }
+
+    /// GET /admin/locked-users — list all accounts currently in a locked state.
+    pub fn list_locked_users(
+        _admin: &AuthenticatedAdmin,
+    ) -> Result<Vec<LockedUserSummary>, String> {
+        two_factor_store().list_locked_users()
     }
 
     /// GET /admin/users/{id}/audit-log — full 2FA event history (paginated).

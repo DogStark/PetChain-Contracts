@@ -3080,7 +3080,7 @@ mod admin_dashboard_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
         AuthenticatedAdmin, AuthenticatedUser,
     };
-    use crate::two_factor::TwoFactorData;
+    use crate::two_factor::{TwoFactorData, TwoFactorStore};
     use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
@@ -3173,6 +3173,46 @@ mod admin_dashboard_tests {
         let ids: Vec<&str> = users.iter().map(|u| u.user_id.as_str()).collect();
         assert!(ids.contains(&"normal-user"));
         assert!(!ids.contains(&"canary-user"));
+    }
+
+    #[test]
+    fn test_list_locked_users_returns_only_locked_accounts() {
+        clear_two_factor_store_for_tests();
+        setup_user("locked-user-a");
+        setup_user("locked-user-b");
+        setup_user("unlocked-user");
+
+        let store = get_two_factor_store_for_tests();
+        // Lock two accounts by recording 10 failed attempts each
+        for _ in 0..10 {
+            store.record_failed_two_fa_attempt("locked-user-a").unwrap();
+            store.record_failed_two_fa_attempt("locked-user-b").unwrap();
+        }
+        // Record a few failures for the unlocked user (not enough to lock)
+        for _ in 0..3 {
+            store.record_failed_two_fa_attempt("unlocked-user").unwrap();
+        }
+
+        let locked = AdminDashboardHandlers::list_locked_users(&admin()).unwrap();
+        let ids: Vec<&str> = locked.iter().map(|u| u.user_id.as_str()).collect();
+        assert_eq!(locked.len(), 2);
+        assert!(ids.contains(&"locked-user-a"));
+        assert!(ids.contains(&"locked-user-b"));
+        assert!(!ids.contains(&"unlocked-user"));
+
+        for entry in &locked {
+            assert!(entry.failed_attempts >= 10);
+            assert!(entry.locked_at.is_some());
+        }
+    }
+
+    #[test]
+    fn test_list_locked_users_empty_when_none_locked() {
+        clear_two_factor_store_for_tests();
+        setup_user("healthy-user");
+
+        let locked = AdminDashboardHandlers::list_locked_users(&admin()).unwrap();
+        assert!(locked.is_empty());
     }
 }
 
