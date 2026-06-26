@@ -3535,12 +3535,12 @@ mod progressive_two_factor_lockout_tests {
     fn persistent_store_locks_after_ten_failures() {
         let store = InMemoryStore::default();
         for attempt in 1..=9 {
-            let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+            let state = store.record_failed_two_fa_attempt("user-lock", 10).unwrap();
             assert_eq!(state.failed_attempts, attempt);
             assert!(!state.locked);
         }
 
-        let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+        let state = store.record_failed_two_fa_attempt("user-lock", 10).unwrap();
         assert_eq!(state.failed_attempts, 10);
         assert!(state.locked);
         assert!(state.locked_at.is_some());
@@ -3551,7 +3551,7 @@ mod progressive_two_factor_lockout_tests {
         let store = InMemoryStore::default();
         for _ in 0..10 {
             store
-                .record_failed_two_fa_attempt("user-admin-unlock")
+                .record_failed_two_fa_attempt("user-admin-unlock", 10)
                 .unwrap();
         }
         assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
