@@ -13,6 +13,9 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     address public admin;
 
+    // issue #922 — structured medical record category
+    enum RecordType { Checkup, Vaccination, Surgery, LabResult, Other }
+
     struct Vet {
         address vetAddress;
         string  licenseNumber;
@@ -34,6 +37,7 @@ contract PetChainRegistry {
         uint256 recordId;
         uint256 petId;
         address vet;
+        RecordType recordType;   // issue #922
         string  diagnosis;
         string  treatment;
         string  notes;
@@ -177,6 +181,7 @@ contract PetChainRegistry {
     /// issue #919: enforce non-empty and max-length checks on string fields.
     function addMedicalRecord(
         uint256 petId,
+        RecordType recordType,
         string calldata diagnosis,
         string calldata treatment,
         string calldata notes
@@ -191,15 +196,40 @@ contract PetChainRegistry {
 
         recordId = ++_recordCounter;
         _petRecords[petId].push(MedicalRecord({
-            recordId:  recordId,
-            petId:     petId,
-            vet:       msg.sender,
-            diagnosis: diagnosis,
-            treatment: treatment,
-            notes:     notes,
-            timestamp: block.timestamp
+            recordId:   recordId,
+            petId:      petId,
+            vet:        msg.sender,
+            recordType: recordType,
+            diagnosis:  diagnosis,
+            treatment:  treatment,
+            notes:      notes,
+            timestamp:  block.timestamp
         }));
         emit MedicalRecordAdded(petId, recordId, msg.sender);
+    }
+
+    /// @notice Return all of a pet's medical records matching `recordType`. issue #922
+    function getPetRecordsByType(uint256 petId, RecordType recordType)
+        external
+        view
+        returns (MedicalRecord[] memory filtered)
+    {
+        MedicalRecord[] storage all = _petRecords[petId];
+        uint256 total = all.length;
+
+        uint256 count;
+        for (uint256 i = 0; i < total; i++) {
+            if (all[i].recordType == recordType) count++;
+        }
+
+        filtered = new MedicalRecord[](count);
+        uint256 j;
+        for (uint256 i = 0; i < total; i++) {
+            if (all[i].recordType == recordType) {
+                filtered[j] = all[i];
+                j++;
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

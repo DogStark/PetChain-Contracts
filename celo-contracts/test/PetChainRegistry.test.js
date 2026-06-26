@@ -32,6 +32,43 @@ describe("PetChainRegistry", function () {
   }
 
   // ---------------------------------------------------------------------------
+  // Issue #922 — medical record type / category
+  // ---------------------------------------------------------------------------
+  describe("#922 — getPetRecordsByType", function () {
+    // RecordType { Checkup, Vaccination, Surgery, LabResult, Other }
+    const Vaccination = 1;
+    const Surgery = 2;
+    let petId;
+
+    beforeEach(async function () {
+      petId = await registerPet();
+      await registry.connect(vet).addMedicalRecord(petId, Vaccination, "rabies", "shot", "");
+      await registry.connect(vet).addMedicalRecord(petId, Surgery, "fracture", "cast", "");
+      await registry.connect(vet).addMedicalRecord(petId, Vaccination, "parvo", "shot", "");
+    });
+
+    it("stores the record type on the record", async function () {
+      const records = await registry.getPetRecords(petId);
+      expect(records[0].recordType).to.equal(Vaccination);
+      expect(records[1].recordType).to.equal(Surgery);
+    });
+
+    it("returns only records matching the requested type", async function () {
+      const vaccinations = await registry.getPetRecordsByType(petId, Vaccination);
+      expect(vaccinations.length).to.equal(2);
+      expect(vaccinations.every(r => Number(r.recordType) === Vaccination)).to.equal(true);
+
+      const surgeries = await registry.getPetRecordsByType(petId, Surgery);
+      expect(surgeries.length).to.equal(1);
+    });
+
+    it("returns an empty array when no records match the type", async function () {
+      const labResults = await registry.getPetRecordsByType(petId, 3); // LabResult
+      expect(labResults.length).to.equal(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #916 — VetRevoked event
   // ---------------------------------------------------------------------------
   describe("#916 — emit VetRevoked on revokeVet", function () {
@@ -45,7 +82,7 @@ describe("PetChainRegistry", function () {
       const petId = await registerPet();
       await registry.connect(admin).revokeVet(vet.address);
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", "")
       ).to.be.revertedWith("PetChainRegistry: not a verified vet");
     });
   });
@@ -147,7 +184,7 @@ describe("PetChainRegistry", function () {
       // Add 5 records
       for (let i = 0; i < 5; i++) {
         await registry.connect(vet).addMedicalRecord(
-          petId, `Diag${i}`, `Treat${i}`, ""
+          petId, 0, `Diag${i}`, `Treat${i}`, ""
         );
       }
     });
@@ -249,43 +286,43 @@ describe("PetChainRegistry", function () {
 
     it("accepts fields at exactly MAX_LONG_LEN (1000)", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, ok1000, ok1000, ok1000)
+        registry.connect(vet).addMedicalRecord(petId, 0, ok1000, ok1000, ok1000)
       ).to.not.be.reverted;
     });
 
     it("accepts empty notes (notes is optional)", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", "")
       ).to.not.be.reverted;
     });
 
     it("rejects empty diagnosis", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "", "rest", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "", "rest", "")
       ).to.be.revertedWith("PetChainRegistry: invalid diagnosis length");
     });
 
     it("rejects diagnosis over 1000 chars", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, long1001, "rest", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, long1001, "rest", "")
       ).to.be.revertedWith("PetChainRegistry: invalid diagnosis length");
     });
 
     it("rejects empty treatment", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", "", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", "", "")
       ).to.be.revertedWith("PetChainRegistry: invalid treatment length");
     });
 
     it("rejects treatment over 1000 chars", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", long1001, "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", long1001, "")
       ).to.be.revertedWith("PetChainRegistry: invalid treatment length");
     });
 
     it("rejects notes over 1000 chars", async function () {
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", "rest", long1001)
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", long1001)
       ).to.be.revertedWith("PetChainRegistry: notes too long");
     });
   });
