@@ -13,7 +13,7 @@ describe("PetChainRegistry", function () {
     registry = await Factory.deploy();
 
     // Register and verify a vet
-    await registry.connect(vet).registerVet("LIC-001");
+    await registry.connect(vet).registerVet("LIC-001", "General Practice");
     await registry.connect(admin).verifyVet(vet.address);
   });
 
@@ -30,6 +30,30 @@ describe("PetChainRegistry", function () {
     );
     return event.args.petId;
   }
+
+  // ---------------------------------------------------------------------------
+  // Issue #921 — vet specialization
+  // ---------------------------------------------------------------------------
+  describe("#921 — vet specialization", function () {
+    it("stores the specialization given at registration", async function () {
+      await registry.connect(other).registerVet("LIC-002", "Surgery");
+      const v = await registry.vets(other.address);
+      expect(v.specialization).to.equal("Surgery");
+    });
+
+    it("lets the vet update their own specialization and emits an event", async function () {
+      await expect(registry.connect(vet).updateSpecialization("Dentistry"))
+        .to.emit(registry, "VetSpecializationUpdated")
+        .withArgs(vet.address, "Dentistry");
+      const v = await registry.vets(vet.address);
+      expect(v.specialization).to.equal("Dentistry");
+    });
+
+    it("reverts when a non-registered address tries to update", async function () {
+      await expect(registry.connect(other).updateSpecialization("Exotics"))
+        .to.be.revertedWith("PetChainRegistry: not a registered vet");
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // Issue #916 — VetRevoked event
