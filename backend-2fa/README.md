@@ -39,7 +39,9 @@ Or run the numbered migrations in `migrations/` in order.
 
 ### 4. Add routes
 
-See [`examples/example_integration.rs`](examples/example_integration.rs) for a complete Axum setup.
+See [`examples/example_integration.rs`](examples/example_integration.rs) for a complete Actix-web setup including CORS middleware configuration.
+
+If you are integrating a browser-based SPA client, read [configuration.md](configuration.md#2-cors-configuration-for-browser-clients) for CORS security guidance before deploying.
 
 ### 5. Update your login flow
 
@@ -161,6 +163,8 @@ users always verify with the hash they enrolled with.
 - [ ] Rate-limit 2FA endpoints (≤ 5 attempts per minute)
 - [ ] Log all 2FA events for audit
 - [ ] Invalidate backup codes after single use
+- [ ] Set `CORS_ALLOWED_ORIGIN` to an explicit HTTPS origin – never use wildcard `*` with credentials
+- [ ] See [configuration.md](configuration.md) for full CORS and environment configuration guidance
 
 ## Database Integration
 
