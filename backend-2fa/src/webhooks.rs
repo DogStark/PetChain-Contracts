@@ -327,6 +327,22 @@ fn log_cap_from_env() -> usize {
         .unwrap_or(DEFAULT_MAX_LOG_ENTRIES)
 }
 
+/// Configurable retry policy for webhook delivery.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_backoff: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_backoff: Duration::from_secs(1),
+        }
+    }
+}
+
 /// Manages webhook configuration and delivery with retry logic.
 pub struct WebhookManager {
     /// event_type -> list of webhook URLs (multiple endpoints supported per event).
@@ -343,16 +359,21 @@ pub struct WebhookManager {
     /// HMAC-SHA256 signing secret used to compute `X-PetChain-Signature` headers.
     /// Empty string disables signing.
     signing_secret: String,
+    retry_policy: RetryPolicy,
 }
 
 impl Default for WebhookManager {
     fn default() -> Self {
-        Self::new(Arc::new(DefaultHttpClient), String::new())
+        Self::new(Arc::new(DefaultHttpClient), String::new(), None)
     }
 }
 
 impl WebhookManager {
-    pub fn new(http_client: Arc<dyn HttpClient>, signing_secret: String) -> Self {
+    pub fn new(
+        http_client: Arc<dyn HttpClient>,
+        signing_secret: String,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
             delivery_log: Arc::new(Mutex::new(VecDeque::new())),
@@ -361,6 +382,7 @@ impl WebhookManager {
             http_client,
             allow_http: false,
             signing_secret,
+            retry_policy: retry_policy.unwrap_or_default(),
         }
     }
 
@@ -374,6 +396,7 @@ impl WebhookManager {
             http_client,
             allow_http: true,
             signing_secret: String::new(),
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -436,12 +459,13 @@ impl WebhookManager {
         delivery_log: &Mutex<VecDeque<WebhookDeliveryLog>>,
         next_log_id: &AtomicUsize,
         max_log_entries: usize,
+        retry_policy: &RetryPolicy,
     ) {
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
         let mut success = false;
 
-        while attempts < 3 {
+        while attempts < retry_policy.max_attempts {
             match client.post(url, body, signature) {
                 Ok(()) => {
                     success = true;
@@ -450,9 +474,10 @@ impl WebhookManager {
                 Err(e) => {
                     last_error = Some(e);
                     attempts += 1;
-                    if attempts < 3 {
+                    if attempts < retry_policy.max_attempts {
                         record_webhook_retry();
-                        let wait = Duration::from_secs(1u64 << (attempts - 1));
+                        let multiplier = 1u64 << (attempts - 1);
+                        let wait = retry_policy.base_backoff * multiplier as u32;
                         std::thread::sleep(wait);
                     }
                 }
@@ -524,6 +549,7 @@ impl WebhookManager {
             let signature_clone = signature.clone();
             let event_str_clone = event_str.clone();
             let user_str_clone = user_str.clone();
+            let retry_policy = self.retry_policy.clone();
 
             // Spawn the retry loop on a dedicated thread so we never block
             // the caller's async executor (Issue #861).
@@ -539,6 +565,7 @@ impl WebhookManager {
                     &delivery_log,
                     &next_log_id,
                     max_log_entries,
+                    &retry_policy,
                 );
             });
         }
@@ -591,6 +618,7 @@ impl WebhookManager {
                 &self.delivery_log,
                 &self.next_log_id,
                 self.max_log_entries,
+                &self.retry_policy,
             );
         }
     }
