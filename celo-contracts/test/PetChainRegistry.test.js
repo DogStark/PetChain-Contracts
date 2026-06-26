@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, network } = require("hardhat");
 
 describe("PetChainRegistry", function () {
   let registry;
@@ -30,6 +30,41 @@ describe("PetChainRegistry", function () {
     );
     return event.args.petId;
   }
+
+  // ---------------------------------------------------------------------------
+  // Issue #923 — getPetRecordsByDateRange
+  // ---------------------------------------------------------------------------
+  describe("#923 — getPetRecordsByDateRange", function () {
+    let petId, t0, t1, t2;
+
+    beforeEach(async function () {
+      petId = await registerPet();
+      const base = (await ethers.provider.getBlock("latest")).timestamp;
+      t0 = base + 1000;
+      t1 = base + 2000;
+      t2 = base + 3000;
+      for (const ts of [t0, t1, t2]) {
+        await network.provider.send("evm_setNextBlockTimestamp", [ts]);
+        await registry.connect(vet).addMedicalRecord(petId, "diag", "treat", "");
+      }
+    });
+
+    it("returns all record IDs for a full-history range", async function () {
+      const ids = await registry.getPetRecordsByDateRange(petId, 0, t2);
+      expect(ids.length).to.equal(3);
+    });
+
+    it("returns only the records inside a partial-overlap range", async function () {
+      const ids = await registry.getPetRecordsByDateRange(petId, t1, t1);
+      expect(ids.length).to.equal(1);
+      expect(ids[0]).to.equal(2); // second record added
+    });
+
+    it("returns an empty array for a range with no records", async function () {
+      const ids = await registry.getPetRecordsByDateRange(petId, t2 + 1000, t2 + 2000);
+      expect(ids.length).to.equal(0);
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // Issue #916 — VetRevoked event

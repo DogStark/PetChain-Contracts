@@ -213,6 +213,32 @@ contract PetChainRegistry {
         return _petRecords[petId];
     }
 
+    /// @notice Return record IDs for `petId` whose timestamp is in [startDate, endDate]. issue #923
+    function getPetRecordsByDateRange(uint256 petId, uint256 startDate, uint256 endDate)
+        external
+        view
+        returns (uint256[] memory ids)
+    {
+        MedicalRecord[] storage all = _petRecords[petId];
+        uint256 total = all.length;
+
+        uint256 count;
+        for (uint256 i = 0; i < total; i++) {
+            uint256 ts = all[i].timestamp;
+            if (ts >= startDate && ts <= endDate) count++;
+        }
+
+        ids = new uint256[](count);
+        uint256 j;
+        for (uint256 i = 0; i < total; i++) {
+            uint256 ts = all[i].timestamp;
+            if (ts >= startDate && ts <= endDate) {
+                ids[j] = all[i].recordId;
+                j++;
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Paginated view functions (issue #918)
     // -------------------------------------------------------------------------
