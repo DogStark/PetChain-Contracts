@@ -94,6 +94,13 @@ pub struct WebhookDeliveryLog {
     pub last_error: Option<String>,
 }
 
+/// Filter criteria for querying the delivery log.
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryLogFilter {
+    pub event_type: Option<SecurityEventType>,
+    pub success: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // URL Validation (Issue #862)
 // ---------------------------------------------------------------------------
@@ -625,10 +632,35 @@ impl WebhookManager {
 
     /// Admin: query the delivery log (paginated, page starts at 1, newest first).
     pub fn get_delivery_log(&self, page: u32, page_size: u32) -> Vec<WebhookDeliveryLog> {
+        self.get_delivery_log_filtered(page, page_size, None)
+    }
+
+    /// Admin: query the delivery log with optional filters.
+    pub fn get_delivery_log_filtered(
+        &self,
+        page: u32,
+        page_size: u32,
+        filter: Option<&DeliveryLogFilter>,
+    ) -> Vec<WebhookDeliveryLog> {
         let log = self.delivery_log.lock().unwrap();
         let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
         log.iter()
             .rev()
+            .filter(|entry| {
+                if let Some(f) = filter {
+                    if let Some(ref et) = f.event_type {
+                        if entry.event_type != et.to_string() {
+                            return false;
+                        }
+                    }
+                    if let Some(success_only) = f.success {
+                        if entry.success != success_only {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .skip(offset)
             .take(page_size as usize)
             .cloned()
