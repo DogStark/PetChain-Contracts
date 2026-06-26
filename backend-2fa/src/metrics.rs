@@ -27,7 +27,7 @@
 //! no-op, rather than panicking the service.
 
 use prometheus::{
-    CounterVec, Gauge, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+    CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -46,6 +46,10 @@ pub struct Metrics {
     pub request_duration_seconds: HistogramVec,
     /// Tracks the current number of open leaderboard WebSocket connections.
     pub leaderboard_ws_connections_total: Gauge,
+    /// Total webhook delivery attempts with `result` label (`ok`/`fail`).
+    pub webhook_delivery_total: CounterVec,
+    /// Total webhook delivery retries (one per retry, not per initial attempt).
+    pub webhook_delivery_retries_total: prometheus::Counter,
     /// Dedicated Prometheus registry. All metrics in this struct are registered
     /// here, never in the global default registry.
     pub(crate) registry: Registry,
@@ -144,7 +148,41 @@ pub fn metrics() -> &'static Metrics {
             "leaderboard_ws_connections_total",
         );
 
+        let build_info = try_register(
+            &registry,
+            GaugeVec::new(
+                Opts::new("build_info", "Static build information"),
+                &["version", "git_sha"],
+            )
+            .expect("valid metric name"),
+            "build_info",
+        );
+        let version = env!("CARGO_PKG_VERSION");
+        let git_sha = option_env!("GIT_SHA").unwrap_or("");
+        build_info.with_label_values(&[version, git_sha]).set(1.0);
+
+        let webhook_delivery_total = try_register(
+            &registry,
+            CounterVec::new(
+                Opts::new("webhook_delivery_total", "Total webhook delivery attempts"),
+                &["result"],
+            )
+            .expect("valid metric name"),
+            "webhook_delivery_total",
+        );
+
+        let webhook_delivery_retries_total = try_register(
+            &registry,
+            prometheus::Counter::new(
+                "webhook_delivery_retries_total",
+                "Total webhook delivery retries",
+            )
+            .expect("valid metric name"),
+            "webhook_delivery_retries_total",
+        );
+
         Metrics {
+            build_info,
             totp_verifications_total,
             recovery_code_uses_total,
             rate_limit_hits_total,
@@ -153,6 +191,8 @@ pub fn metrics() -> &'static Metrics {
             db_pool_idle,
             request_duration_seconds,
             leaderboard_ws_connections_total,
+            webhook_delivery_total,
+            webhook_delivery_retries_total,
             registry,
         }
     })

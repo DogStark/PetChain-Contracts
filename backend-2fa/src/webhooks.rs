@@ -511,48 +511,35 @@ impl WebhookManager {
 
         let body = serde_json::to_string(&payload).unwrap_or_default();
         let signature = sign_webhook_payload(&self.signing_secret, body.as_bytes());
-        let client = self.http_client.clone();
-        let delivery_log = self.delivery_log.clone();
-        let url_clone = url.clone();
         let event_str = event_type.to_string();
         let user_str = user_id.to_string();
 
-        // Spawn the retry loop on a dedicated thread so we never block
-        // the caller's async executor (Issue #861).
-        std::thread::spawn(move || {
-            let mut attempts = 0u32;
-            let mut last_error: Option<String> = None;
-            let mut success = false;
+        for url in urls {
+            let url_clone = url.clone();
+            let client = self.http_client.clone();
+            let delivery_log = self.delivery_log.clone();
+            let next_log_id = self.next_log_id.clone();
+            let max_log_entries = self.max_log_entries;
+            let body_clone = body.clone();
+            let signature_clone = signature.clone();
+            let event_str_clone = event_str.clone();
+            let user_str_clone = user_str.clone();
 
-            while attempts < 3 {
-                match client.post(&url_clone, &body, &signature) {
-                    Ok(()) => {
-                        success = true;
-                        break;
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        attempts += 1;
-                        if attempts < 3 {
-                            // Exponential backoff: 1s, 2s
-                            let wait = Duration::from_secs(1u64 << (attempts - 1));
-                            std::thread::sleep(wait);
-                        }
-                    }
-                }
-            }
-
-            let mut log = delivery_log.lock().unwrap();
-            let id = log.len();
-            log.push(WebhookDeliveryLog {
-                id,
-                event_type: event_str,
-                user_id: user_str,
-                timestamp,
-                url: url_clone,
-                attempts: attempts + if success { 1 } else { 0 },
-                success,
-                last_error,
+            // Spawn the retry loop on a dedicated thread so we never block
+            // the caller's async executor (Issue #861).
+            std::thread::spawn(move || {
+                Self::deliver_one(
+                    client.as_ref(),
+                    &url_clone,
+                    &body_clone,
+                    &signature_clone,
+                    &event_str_clone,
+                    &user_str_clone,
+                    timestamp,
+                    &delivery_log,
+                    &next_log_id,
+                    max_log_entries,
+                );
             });
         }
     }
@@ -589,13 +576,15 @@ impl WebhookManager {
 
         let body = serde_json::to_string(&payload).unwrap_or_default();
         let signature_header = sign_webhook_payload(&self.signing_secret, body.as_bytes());
+        let event_str = event_type.to_string();
+        let user_str = user_id.to_string();
 
         for url in urls {
             Self::deliver_one(
                 self.http_client.as_ref(),
                 &url,
                 &body,
-                &signature,
+                &signature_header,
                 &event_str,
                 &user_str,
                 timestamp,

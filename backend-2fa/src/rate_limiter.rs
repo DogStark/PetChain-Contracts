@@ -75,6 +75,14 @@ pub struct EndpointConfig {
 
 impl EndpointConfig {
     pub fn new(window_secs: u64, max_failures: u32, lockout_secs: u64) -> Self {
+        assert!(
+            window_secs > 0,
+            "EndpointConfig: window_secs must be greater than zero"
+        );
+        assert!(
+            max_failures > 0,
+            "EndpointConfig: max_failures must be greater than zero"
+        );
         Self {
             window_secs,
             max_failures,
@@ -881,6 +889,35 @@ impl RateLimiter for DistributedRateLimiter {
             }
         }
         self.fallback.record_success(key);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for EndpointConfig validation (Issue #855)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod endpoint_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_endpoint_config_is_accepted() {
+        let cfg = EndpointConfig::new(60, 5, 300);
+        assert_eq!(cfg.window_secs, 60);
+        assert_eq!(cfg.max_failures, 5);
+        assert_eq!(cfg.lockout_secs, 300);
+    }
+
+    #[test]
+    #[should_panic(expected = "EndpointConfig: max_failures must be greater than zero")]
+    fn test_zero_max_failures_panics() {
+        EndpointConfig::new(60, 0, 300);
+    }
+
+    #[test]
+    #[should_panic(expected = "EndpointConfig: window_secs must be greater than zero")]
+    fn test_zero_window_secs_panics() {
+        EndpointConfig::new(0, 5, 300);
     }
 }
 
