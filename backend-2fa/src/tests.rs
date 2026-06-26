@@ -3932,3 +3932,104 @@ mod tenant_provisioning_idempotency_tests {
         assert_eq!(existed_count, 15);
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use crate::two_factor::{TotpConfig, TwoFactorAuth};
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    const ALGORITHMS: [Algorithm; 3] = [Algorithm::SHA1, Algorithm::SHA256, Algorithm::SHA512];
+    const WINDOWS: [u8; 4] = [0, 1, 2, 5];
+
+    #[test]
+    fn setup_then_verify_succeeds_for_all_algorithms_and_windows() {
+        for &algorithm in &ALGORITHMS {
+            for &window in &WINDOWS {
+                let config =
+                    TotpConfig::new(algorithm, 6, 30, window).expect("valid config");
+                let setup = TwoFactorAuth::setup_with_config(
+                    "prop@petchain.com",
+                    "PetChain",
+                    config.clone(),
+                )
+                .unwrap_or_else(|e| {
+                    panic!("setup failed for {:?} window={}: {}", algorithm, window, e)
+                });
+
+                let totp = TOTP::new(
+                    algorithm,
+                    6,
+                    window,
+                    30,
+                    Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+                    None,
+                    String::new(),
+                )
+                .unwrap();
+                let token = totp.generate_current().unwrap();
+
+                let verified =
+                    TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "verify failed for {:?} window={}: {}",
+                                algorithm, window, e
+                            )
+                        });
+                assert!(
+                    verified,
+                    "token generated at current time must verify for {:?} window={}",
+                    algorithm, window
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn algorithm_db_round_trip_preserves_identity() {
+        use crate::db::PostgresTwoFactorStore;
+        for &alg in &ALGORITHMS {
+            let db_val = PostgresTwoFactorStore::algorithm_to_db_pub(alg);
+            let round_tripped = PostgresTwoFactorStore::algorithm_from_db_pub(Some(&db_val));
+            assert_eq!(
+                alg, round_tripped,
+                "algorithm round-trip failed for {:?} (db value: {})",
+                alg, db_val
+            );
+        }
+    }
+
+    #[test]
+    fn cross_algorithm_token_never_verifies() {
+        for &gen_alg in &ALGORITHMS {
+            for &ver_alg in &ALGORITHMS {
+                if gen_alg == ver_alg {
+                    continue;
+                }
+                let secret = TwoFactorAuth::generate_secret();
+                let gen_cfg = TotpConfig::new(gen_alg, 6, 30, 1).unwrap();
+                let ver_cfg = TotpConfig::new(ver_alg, 6, 30, 1).unwrap();
+
+                let totp = TOTP::new(
+                    gen_alg,
+                    6,
+                    1,
+                    30,
+                    Secret::Encoded(secret.clone()).to_bytes().unwrap(),
+                    None,
+                    String::new(),
+                )
+                .unwrap();
+                let token = totp.generate_current().unwrap();
+
+                let result =
+                    TwoFactorAuth::verify_token_with_config(&secret, &token, ver_cfg).unwrap();
+                assert!(
+                    !result,
+                    "token from {:?} must NOT verify under {:?}",
+                    gen_alg, ver_alg
+                );
+            }
+        }
+    }
+}
