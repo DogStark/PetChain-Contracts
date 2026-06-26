@@ -34,6 +34,18 @@ jobs:
         run: cargo fmt --check
         working-directory: backend-2fa
 
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Run clippy (warnings as errors)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: backend-2fa
+
   doc:
     runs-on: ubuntu-latest
     steps:
