@@ -34,6 +34,20 @@ jobs:
         run: cargo fmt --check
         working-directory: backend-2fa
 
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Build documentation (warnings as errors)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+        working-directory: backend-2fa
+      - name: Run doc-tests
+        run: cargo test --doc
+        working-directory: backend-2fa
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:
