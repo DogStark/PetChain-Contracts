@@ -2,6 +2,7 @@ pub mod db;
 pub mod handlers;
 pub mod migrations;
 pub mod rate_limiter;
+pub mod tracing_middleware;
 pub mod two_factor;
 
 #[cfg(test)]
