@@ -32,6 +32,126 @@ describe("PetChainRegistry", function () {
   }
 
   // ---------------------------------------------------------------------------
+  // Issue #924 — core flows & access-control revert paths
+  // ---------------------------------------------------------------------------
+  describe("#924 — vet management", function () {
+    it("registers a vet and emits VetRegistered", async function () {
+      await expect(registry.connect(other).registerVet("LIC-XYZ"))
+        .to.emit(registry, "VetRegistered")
+        .withArgs(other.address, "LIC-XYZ");
+      const v = await registry.vets(other.address);
+      expect(v.licenseNumber).to.equal("LIC-XYZ");
+      expect(v.isVerified).to.equal(false);
+    });
+
+    it("reverts registering with an empty license number", async function () {
+      await expect(registry.connect(other).registerVet(""))
+        .to.be.revertedWith("PetChainRegistry: empty licenseNumber");
+    });
+
+    it("admin verifies a vet and emits VetVerified", async function () {
+      await registry.connect(other).registerVet("LIC-XYZ");
+      await expect(registry.connect(admin).verifyVet(other.address))
+        .to.emit(registry, "VetVerified")
+        .withArgs(other.address);
+      expect((await registry.vets(other.address)).isVerified).to.equal(true);
+    });
+
+    it("admin revokes a vet (verified flag cleared)", async function () {
+      await registry.connect(admin).revokeVet(vet.address);
+      const v = await registry.vets(vet.address);
+      expect(v.isVerified).to.equal(false);
+      expect(v.isRevoked).to.equal(true);
+    });
+
+    it("verifyVet reverts for a revoked vet", async function () {
+      await registry.connect(admin).revokeVet(vet.address);
+      await expect(registry.connect(admin).verifyVet(vet.address))
+        .to.be.revertedWith("PetChainRegistry: vet is revoked");
+    });
+
+    it("onlyAdmin: non-admin cannot verify", async function () {
+      await registry.connect(other).registerVet("LIC-XYZ");
+      await expect(registry.connect(other).verifyVet(other.address))
+        .to.be.revertedWith("PetChainRegistry: not admin");
+    });
+
+    it("onlyAdmin: non-admin cannot revoke", async function () {
+      await expect(registry.connect(other).revokeVet(vet.address))
+        .to.be.revertedWith("PetChainRegistry: not admin");
+    });
+  });
+
+  describe("#924 — pet management", function () {
+    it("registers a pet owned by the caller and marked active", async function () {
+      const petId = await registerPet();
+      const pet = await registry.pets(petId);
+      expect(pet.owner).to.equal(owner.address);
+      expect(pet.active).to.equal(true);
+      expect(await registry.getPetsByOwner(owner.address)).to.deep.equal([petId]);
+    });
+
+    it("transfers a pet and emits PetTransferred", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(owner).transferPet(petId, other.address))
+        .to.emit(registry, "PetTransferred")
+        .withArgs(petId, owner.address, other.address);
+      expect((await registry.pets(petId)).owner).to.equal(other.address);
+    });
+
+    it("transferPet reverts on the zero address", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(owner).transferPet(petId, ethers.ZeroAddress))
+        .to.be.revertedWith("PetChainRegistry: zero address");
+    });
+
+    it("onlyPetOwner: non-owner cannot transfer", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(other).transferPet(petId, other.address))
+        .to.be.revertedWith("PetChainRegistry: not pet owner");
+    });
+
+    it("onlyPetOwner: non-owner cannot deactivate", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(other).deactivatePet(petId))
+        .to.be.revertedWith("PetChainRegistry: not pet owner");
+    });
+  });
+
+  describe("#924 — medical records", function () {
+    it("a verified vet adds a record which is stored and emitted", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "note"))
+        .to.emit(registry, "MedicalRecordAdded")
+        .withArgs(petId, 1, vet.address);
+      const records = await registry.getPetRecords(petId);
+      expect(records.length).to.equal(1);
+      expect(records[0].diagnosis).to.equal("flu");
+      expect(records[0].vet).to.equal(vet.address);
+    });
+
+    it("onlyVerifiedVet: an unregistered address cannot add a record", async function () {
+      const petId = await registerPet();
+      await expect(registry.connect(other).addMedicalRecord(petId, "flu", "rest", ""))
+        .to.be.revertedWith("PetChainRegistry: not a verified vet");
+    });
+
+    it("onlyVerifiedVet: a registered but unverified vet cannot add a record", async function () {
+      const petId = await registerPet();
+      await registry.connect(other).registerVet("LIC-UNVERIFIED");
+      await expect(registry.connect(other).addMedicalRecord(petId, "flu", "rest", ""))
+        .to.be.revertedWith("PetChainRegistry: not a verified vet");
+    });
+
+    it("reverts adding a record for an inactive pet", async function () {
+      const petId = await registerPet();
+      await registry.connect(owner).deactivatePet(petId);
+      await expect(registry.connect(vet).addMedicalRecord(petId, "flu", "rest", ""))
+        .to.be.revertedWith("PetChainRegistry: pet inactive");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #916 — VetRevoked event
   // ---------------------------------------------------------------------------
   describe("#916 — emit VetRevoked on revokeVet", function () {

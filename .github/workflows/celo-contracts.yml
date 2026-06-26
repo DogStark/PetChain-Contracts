@@ -1,0 +1,27 @@
+name: PetChain Celo Contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions: read-all
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: |
+          cd celo-contracts
+          npm ci
+      - name: Run tests
+        run: |
+          cd celo-contracts
+          npx hardhat test
