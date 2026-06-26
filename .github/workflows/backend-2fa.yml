@@ -18,9 +18,9 @@ jobs:
           toolchain: stable
       - name: Install cargo-audit
         run: cargo install cargo-audit
-      - name: Run cargo audit
+      - name: Check RUSTSEC advisories against lockfile
         working-directory: backend-2fa
-        run: cargo audit --deny warnings --file audit.toml
+        run: cargo audit --deny warnings
 
   fmt:
     runs-on: ubuntu-latest
