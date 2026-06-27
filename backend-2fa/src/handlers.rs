@@ -187,6 +187,8 @@ pub struct TwoFactorHandlers {
 }
 
 impl TwoFactorHandlers {
+    const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
+
     pub fn new() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
@@ -260,11 +262,11 @@ impl TwoFactorHandlers {
     fn record_failed_verification(&self, user_id: &str) -> Result<(), ApiError> {
         let state = self
             .store
-            .record_failed_two_fa_attempt(user_id)
+            .record_failed_two_fa_attempt(user_id, Self::DEFAULT_LOCKOUT_THRESHOLD)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
             return Err(ApiError::locked(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
+                "2FA account locked due to too many failed attempts. Use admin unlock or a recovery code.",
                 None,
             ));
         }

@@ -593,11 +593,13 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .unwrap_or_default())
     }
 
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String> {
         let user_id = user_id.to_string();
-        // with_retry covers the INSERT/UPDATE round-trip.  get_lockout_state is
-        // a separate retried read — the two with_retry calls are sequential, not
-        // nested, so there is no double-wrapping.
+        let threshold = lockout_threshold as i32;
         self.with_retry(|| {
             self.block_on_typed(
                 sqlx::query(
@@ -607,9 +609,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     failed_attempts = two_fa_lockouts.failed_attempts + 1,
-                    locked = (two_fa_lockouts.failed_attempts + 1) >= 10,
+                    locked = (two_fa_lockouts.failed_attempts + 1) >= $2,
                     locked_at = CASE
-                        WHEN (two_fa_lockouts.failed_attempts + 1) >= 10
+                        WHEN (two_fa_lockouts.failed_attempts + 1) >= $2
                              AND two_fa_lockouts.locked_at IS NULL
                         THEN CURRENT_TIMESTAMP
                         ELSE two_fa_lockouts.locked_at
@@ -618,6 +620,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 "#,
                 )
                 .bind(&user_id)
+                .bind(threshold)
                 .execute(&self.pool),
             )
             .map(|_| ())
