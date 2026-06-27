@@ -305,6 +305,9 @@ impl Drop for LeaderboardConnectionGuard {
 /// server closes the socket with a policy-violation code.
 const MSG_RATE_LIMIT: u32 = 100;
 
+/// Maximum number of user_ids accepted in a single Subscribe or Replace command.
+const MAX_SUBSCRIPTION_USER_IDS: usize = 200;
+
 pub struct LeaderboardWsSession {
     hub: Arc<LeaderboardWsHub>,
     _connection: LeaderboardConnectionGuard,
@@ -345,9 +348,15 @@ impl LeaderboardWsSession {
         self.subscriptions.is_empty() || self.subscriptions.contains(&update.user_id)
     }
 
-    fn apply_command(&mut self, command: LeaderboardSubscriptionCommand) {
+    fn apply_command(
+        &mut self,
+        command: LeaderboardSubscriptionCommand,
+    ) -> Result<(), &'static str> {
         match command {
             LeaderboardSubscriptionCommand::Subscribe { user_ids } => {
+                if user_ids.len() > MAX_SUBSCRIPTION_USER_IDS {
+                    return Err("too_many_user_ids");
+                }
                 for user_id in user_ids {
                     self.subscriptions.insert(user_id);
                 }
@@ -358,6 +367,9 @@ impl LeaderboardWsSession {
                 }
             }
             LeaderboardSubscriptionCommand::Replace { user_ids } => {
+                if user_ids.len() > MAX_SUBSCRIPTION_USER_IDS {
+                    return Err("too_many_user_ids");
+                }
                 self.subscriptions.clear();
                 for user_id in user_ids {
                     self.subscriptions.insert(user_id);
@@ -367,6 +379,7 @@ impl LeaderboardWsSession {
                 self.subscriptions.clear();
             }
         }
+        Ok(())
     }
 }
 
@@ -393,8 +406,13 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for LeaderboardWsSess
                     return;
                 }
                 if let Ok(command) = serde_json::from_str::<LeaderboardSubscriptionCommand>(&text) {
-                    self.apply_command(command);
-                    ctx.text(r#"{"status":"ok"}"#);
+                    match self.apply_command(command) {
+                        Ok(()) => ctx.text(r#"{"status":"ok"}"#),
+                        Err(reason) => ctx.text(format!(
+                            r#"{{"status":"error","reason":"{}"}}"#,
+                            reason
+                        )),
+                    }
                 } else {
                     ctx.text(r#"{"status":"error","reason":"invalid_subscription_message"}"#);
                 }
@@ -1120,6 +1138,70 @@ mod tests {
         assert!(
             over_limit_count > session.rate_limit,
             "test setup: over_limit_count must exceed rate_limit"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #870 – Limit the Number of user_ids in a Subscription Command
+    // -----------------------------------------------------------------------
+
+    fn make_session() -> LeaderboardWsSession {
+        let (broadcaster, _) = broadcast::channel(16);
+        let hub = Arc::new(LeaderboardWsHub {
+            broadcaster,
+            connections_by_ip: Mutex::new(HashMap::new()),
+        });
+        let ip: IpAddr = "10.1.0.1".parse().unwrap();
+        let guard = hub.connect(ip).expect("connect");
+        LeaderboardWsSession::new(hub, guard)
+    }
+
+    #[test]
+    fn subscribe_at_limit_succeeds() {
+        let mut session = make_session();
+        let user_ids: Vec<String> =
+            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
+        assert!(result.is_ok());
+        assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
+    }
+
+    #[test]
+    fn subscribe_over_limit_rejected() {
+        let mut session = make_session();
+        let user_ids: Vec<String> =
+            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "too_many_user_ids");
+        assert!(session.subscriptions.is_empty(), "subscriptions must not be modified on rejection");
+    }
+
+    #[test]
+    fn replace_at_limit_succeeds() {
+        let mut session = make_session();
+        let user_ids: Vec<String> =
+            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
+        assert!(result.is_ok());
+        assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
+    }
+
+    #[test]
+    fn replace_over_limit_rejected() {
+        let mut session = make_session();
+        // Pre-populate subscriptions to verify they are not wiped on rejection.
+        session
+            .subscriptions
+            .insert("existing_user".to_string());
+        let user_ids: Vec<String> =
+            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "too_many_user_ids");
+        assert!(
+            session.subscriptions.contains("existing_user"),
+            "existing subscriptions must survive a rejected Replace"
         );
     }
 }
