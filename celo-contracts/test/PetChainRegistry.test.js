@@ -540,6 +540,220 @@ describe("PetChainRegistry", function () {
     it("allows distinct license numbers from different addresses", async function () {
       await expect(registry.connect(other).registerVet("LIC-002", "Surgery"))
         .to.not.be.reverted;
+  // Issue — correctMedicalRecord
+  // ---------------------------------------------------------------------------
+  describe("correctMedicalRecord", function () {
+    let petId;
+    let recordId;
+
+    beforeEach(async function () {
+      petId = await registerPet();
+      // vet adds the initial record
+      const tx = await registry.connect(vet).addMedicalRecord(
+        petId, "Initial diagnosis", "Initial treatment", "Initial notes"
+      );
+      const receipt = await tx.wait();
+      const event = receipt.logs.find(
+        l => l.fragment && l.fragment.name === "MedicalRecordAdded"
+      );
+      recordId = event.args.recordId;
+    });
+
+    // --- authorised corrections ---
+
+    it("original vet can correct the record and state is updated", async function () {
+      await registry.connect(vet).correctMedicalRecord(
+        recordId, "Corrected diagnosis", "Corrected treatment", "Corrected notes"
+      );
+      const records = await registry.getPetRecords(petId);
+      expect(records[0].diagnosis).to.equal("Corrected diagnosis");
+      expect(records[0].treatment).to.equal("Corrected treatment");
+      expect(records[0].notes).to.equal("Corrected notes");
+    });
+
+    it("admin can correct the record", async function () {
+      await registry.connect(admin).correctMedicalRecord(
+        recordId, "Admin corrected diag", "Admin corrected treat", ""
+      );
+      const records = await registry.getPetRecords(petId);
+      expect(records[0].diagnosis).to.equal("Admin corrected diag");
+    });
+
+    it("emits MedicalRecordCorrected preserving original values", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "New diag", "New treat", "New notes"
+        )
+      )
+        .to.emit(registry, "MedicalRecordCorrected")
+        .withArgs(
+          recordId,
+          petId,
+          vet.address,
+          "Initial diagnosis",
+          "Initial treatment",
+          "Initial notes",
+          "New diag",
+          "New treat",
+          "New notes"
+        );
+    });
+
+    it("admin correction emits MedicalRecordCorrected with admin as correctedBy", async function () {
+      await expect(
+        registry.connect(admin).correctMedicalRecord(
+          recordId, "Admin diag", "Admin treat", ""
+        )
+      )
+        .to.emit(registry, "MedicalRecordCorrected")
+        .withArgs(
+          recordId,
+          petId,
+          admin.address,
+          "Initial diagnosis",
+          "Initial treatment",
+          "Initial notes",
+          "Admin diag",
+          "Admin treat",
+          ""
+        );
+    });
+
+    it("allows empty notes in correction (notes is optional)", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "Diag", "Treat", ""
+        )
+      ).to.not.be.reverted;
+      const records = await registry.getPetRecords(petId);
+      expect(records[0].notes).to.equal("");
+    });
+
+    it("accepts fields at exactly MAX_LONG_LEN (1000 chars)", async function () {
+      const s1000 = "a".repeat(1000);
+      await expect(
+        registry.connect(vet).correctMedicalRecord(recordId, s1000, s1000, s1000)
+      ).to.not.be.reverted;
+    });
+
+    // --- unauthorised corrections ---
+
+    it("reverts when called by a different verified vet (not the original)", async function () {
+      const [, , , , vet2] = await ethers.getSigners();
+      await registry.connect(vet2).registerVet("LIC-002");
+      await registry.connect(admin).verifyVet(vet2.address);
+
+      await expect(
+        registry.connect(vet2).correctMedicalRecord(
+          recordId, "Hack diag", "Hack treat", ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: not authorised to correct record");
+    });
+
+    it("reverts when called by the pet owner (not vet or admin)", async function () {
+      await expect(
+        registry.connect(owner).correctMedicalRecord(
+          recordId, "Owner diag", "Owner treat", ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: not authorised to correct record");
+    });
+
+    it("reverts when called by an arbitrary address", async function () {
+      await expect(
+        registry.connect(other).correctMedicalRecord(
+          recordId, "Other diag", "Other treat", ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: not authorised to correct record");
+    });
+
+    // --- input validation ---
+
+    it("reverts on empty diagnosis", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(recordId, "", "Treat", "")
+      ).to.be.revertedWith("PetChainRegistry: invalid diagnosis length");
+    });
+
+    it("reverts on diagnosis over 1000 chars", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "a".repeat(1001), "Treat", ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: invalid diagnosis length");
+    });
+
+    it("reverts on empty treatment", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(recordId, "Diag", "", "")
+      ).to.be.revertedWith("PetChainRegistry: invalid treatment length");
+    });
+
+    it("reverts on treatment over 1000 chars", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "Diag", "a".repeat(1001), ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: invalid treatment length");
+    });
+
+    it("reverts on notes over 1000 chars", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "Diag", "Treat", "a".repeat(1001)
+        )
+      ).to.be.revertedWith("PetChainRegistry: notes too long");
+    });
+
+    it("reverts when recordId does not exist", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(9999, "Diag", "Treat", "")
+      ).to.be.revertedWith("PetChainRegistry: record does not exist");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin transfer — transferAdmin
+  // ---------------------------------------------------------------------------
+  describe("transferAdmin", function () {
+    it("emits AdminTransferred with correct previous and new admin", async function () {
+      await expect(registry.connect(admin).transferAdmin(other.address))
+        .to.emit(registry, "AdminTransferred")
+        .withArgs(admin.address, other.address);
+    });
+
+    it("updates the admin state variable", async function () {
+      await registry.connect(admin).transferAdmin(other.address);
+      expect(await registry.admin()).to.equal(other.address);
+    });
+
+    it("old admin loses onlyAdmin access after transfer", async function () {
+      await registry.connect(vet).registerVet("LIC-NEW");
+      await registry.connect(admin).transferAdmin(other.address);
+      // original admin can no longer call verifyVet
+      await expect(
+        registry.connect(admin).verifyVet(vet.address)
+      ).to.be.revertedWith("PetChainRegistry: not admin");
+    });
+
+    it("new admin can exercise onlyAdmin functions", async function () {
+      await registry.connect(vet).registerVet("LIC-NEW");
+      await registry.connect(admin).transferAdmin(other.address);
+      // new admin (other) can now verify vets
+      await expect(
+        registry.connect(other).verifyVet(vet.address)
+      ).to.not.be.reverted;
+    });
+
+    it("reverts when called by non-admin", async function () {
+      await expect(
+        registry.connect(owner).transferAdmin(other.address)
+      ).to.be.revertedWith("PetChainRegistry: not admin");
+    });
+
+    it("reverts when newAdmin is the zero address", async function () {
+      await expect(
+        registry.connect(admin).transferAdmin(ethers.ZeroAddress)
+      ).to.be.revertedWith("PetChainRegistry: zero address");
     });
   });
 });

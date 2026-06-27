@@ -54,6 +54,11 @@ contract PetChainRegistry {
     mapping(address => uint256[]) private _ownerPets;
     mapping(bytes32 => address)  private _licenseToVet; // issue #927 — keyed by normalized (upper-cased) license
 
+    // recordId → petId, so correctMedicalRecord can locate the record
+    mapping(uint256 => uint256) private _recordPetId;
+    // recordId → index inside _petRecords[petId]
+    mapping(uint256 => uint256) private _recordIndex;
+
     // -------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------
@@ -66,6 +71,20 @@ contract PetChainRegistry {
     event PetDeactivated(uint256 indexed petId);     // issue #916
     event PetReactivated(uint256 indexed petId);     // issue #917
     event MedicalRecordAdded(uint256 indexed petId, uint256 indexed recordId, address indexed vet);
+    /// @dev Emitted when a medical record is corrected.
+    ///      The original field values are preserved in the event log for full auditability.
+    event MedicalRecordCorrected(
+        uint256 indexed recordId,
+        uint256 indexed petId,
+        address indexed correctedBy,
+        string  originalDiagnosis,
+        string  originalTreatment,
+        string  originalNotes,
+        string  newDiagnosis,
+        string  newTreatment,
+        string  newNotes
+    );
+    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
 
     // -------------------------------------------------------------------------
     // Modifiers
@@ -91,6 +110,19 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     constructor() {
         admin = msg.sender;
+    }
+
+    // -------------------------------------------------------------------------
+    // Admin management
+    // -------------------------------------------------------------------------
+
+    /// @notice Transfer admin role to a new address.
+    /// @param newAdmin The address that will become the new admin.
+    function transferAdmin(address newAdmin) external onlyAdmin {
+        require(newAdmin != address(0), "PetChainRegistry: zero address");
+        address previous = admin;
+        admin = newAdmin;
+        emit AdminTransferred(previous, newAdmin);
     }
 
     // -------------------------------------------------------------------------
@@ -260,6 +292,9 @@ contract PetChainRegistry {
             notes:      notes,
             timestamp:  block.timestamp
         }));
+        // Store reverse-lookup so correctMedicalRecord can find the record in O(1)
+        _recordPetId[recordId] = petId;
+        _recordIndex[recordId] = _petRecords[petId].length - 1;
         emit MedicalRecordAdded(petId, recordId, msg.sender);
     }
 
@@ -285,6 +320,55 @@ contract PetChainRegistry {
                 j++;
             }
         }
+    /// @notice Correct an existing medical record.
+    /// @dev    Only the vet who originally created the record, or the admin, may call this.
+    ///         The original field values are emitted in MedicalRecordCorrected for auditability.
+    /// @param recordId  The ID of the record to correct.
+    /// @param diagnosis Updated diagnosis text (non-empty, ≤ MAX_LONG_LEN).
+    /// @param treatment Updated treatment text (non-empty, ≤ MAX_LONG_LEN).
+    /// @param notes     Updated notes (may be empty, ≤ MAX_LONG_LEN).
+    function correctMedicalRecord(
+        uint256 recordId,
+        string calldata diagnosis,
+        string calldata treatment,
+        string calldata notes
+    ) external {
+        uint256 petId = _recordPetId[recordId];
+        require(petId != 0, "PetChainRegistry: record does not exist");
+
+        MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
+        require(
+            msg.sender == rec.vet || msg.sender == admin,
+            "PetChainRegistry: not authorised to correct record"
+        );
+
+        require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid diagnosis length");
+        require(bytes(treatment).length > 0 && bytes(treatment).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid treatment length");
+        require(bytes(notes).length <= MAX_LONG_LEN,
+            "PetChainRegistry: notes too long");
+
+        // Snapshot originals for the event before overwriting
+        string memory origDiagnosis = rec.diagnosis;
+        string memory origTreatment = rec.treatment;
+        string memory origNotes     = rec.notes;
+
+        rec.diagnosis = diagnosis;
+        rec.treatment = treatment;
+        rec.notes     = notes;
+
+        emit MedicalRecordCorrected(
+            recordId,
+            petId,
+            msg.sender,
+            origDiagnosis,
+            origTreatment,
+            origNotes,
+            diagnosis,
+            treatment,
+            notes
+        );
     }
 
     // -------------------------------------------------------------------------
