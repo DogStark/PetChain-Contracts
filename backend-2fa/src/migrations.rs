@@ -250,6 +250,82 @@ mod tests {
         let result = runner.rollback_last(&executor);
         assert!(matches!(result, Err(MigrationError::NoMigrationsToRollback)));
     }
+
+    #[test]
+    fn real_migration_files_are_discoverable_and_well_formed() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        assert!(
+            migrations_dir.exists(),
+            "migrations/ directory must exist at {}",
+            migrations_dir.display()
+        );
+
+        let migrations = discover_migrations(&migrations_dir)
+            .expect("discover_migrations must succeed on real migration files");
+        assert!(
+            !migrations.is_empty(),
+            "at least one migration must be discovered"
+        );
+
+        let mut seen_versions = std::collections::HashSet::new();
+        for m in &migrations {
+            assert!(
+                !m.up_script.trim().is_empty(),
+                "migration {} ({}) has empty up script",
+                m.version, m.name
+            );
+            assert!(
+                !m.checksum.is_empty(),
+                "migration {} must have a non-empty checksum",
+                m.version
+            );
+            assert!(
+                seen_versions.insert(m.version),
+                "duplicate migration version {}",
+                m.version
+            );
+        }
+
+        let versions: Vec<u32> = migrations.iter().map(|m| m.version).collect();
+        let mut sorted = versions.clone();
+        sorted.sort();
+        assert_eq!(versions, sorted, "migrations must be sorted by version");
+    }
+
+    #[test]
+    fn migration_sql_contains_expected_tables() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let migrations = discover_migrations(&migrations_dir).unwrap();
+        let all_sql: String = migrations.iter().map(|m| m.up_script.as_str()).collect::<Vec<_>>().join("\n");
+
+        let required_tables = [
+            "schema_migrations",
+            "user_two_factor",
+            "recovery_code_usage",
+            "two_fa_audit_log",
+        ];
+        for table in &required_tables {
+            assert!(
+                all_sql.contains(table),
+                "migration SQL must reference table '{}' but it was not found",
+                table
+            );
+        }
+    }
+
+    #[test]
+    fn every_up_migration_has_a_down_script() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let migrations = discover_migrations(&migrations_dir).unwrap();
+
+        for m in &migrations {
+            assert!(
+                !m.down_script.is_empty(),
+                "migration {} ({}) is missing a .down.sql file",
+                m.version, m.name
+            );
+        }
+    }
 }
 
 pub fn discover_migrations(migrations_dir: &Path) -> Result<Vec<Migration>, MigrationError> {

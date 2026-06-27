@@ -13,7 +13,7 @@ describe("PetChainRegistry", function () {
     registry = await Factory.deploy();
 
     // Register and verify a vet
-    await registry.connect(vet).registerVet("LIC-001");
+    await registry.connect(vet).registerVet("LIC-001", "General Practice");
     await registry.connect(admin).verifyVet(vet.address);
   });
 
@@ -207,6 +207,38 @@ describe("PetChainRegistry", function () {
     it("returns empty array when limit == 0", async function () {
       const page = await registry.getPetRecordsPaged(petId, 0, 0);
       expect(page.length).to.equal(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #914 — transferPet removes petId from previous owner's _ownerPets
+  // ---------------------------------------------------------------------------
+  describe("#914 — transferPet removes stale _ownerPets entry", function () {
+    it("pet no longer appears in previous owner's getPetsByOwner after transfer", async function () {
+      const petId = await registerPet();
+
+      await registry.connect(owner).transferPet(petId, other.address);
+
+      const fromPets = await registry.getPetsByOwner(owner.address);
+      expect(fromPets.map(id => id.toString())).to.not.include(petId.toString());
+
+      const toPets = await registry.getPetsByOwner(other.address);
+      expect(toPets.map(id => id.toString())).to.include(petId.toString());
+    });
+
+    it("multiple transfers leave no stale entries in intermediate owners", async function () {
+      const petId = await registerPet();
+
+      await registry.connect(owner).transferPet(petId, other.address);
+      await registry.connect(other).transferPet(petId, admin.address);
+
+      const ownerPets = await registry.getPetsByOwner(owner.address);
+      const otherPets = await registry.getPetsByOwner(other.address);
+      const adminPets = await registry.getPetsByOwner(admin.address);
+
+      expect(ownerPets.map(id => id.toString())).to.not.include(petId.toString());
+      expect(otherPets.map(id => id.toString())).to.not.include(petId.toString());
+      expect(adminPets.map(id => id.toString())).to.include(petId.toString());
     });
   });
 

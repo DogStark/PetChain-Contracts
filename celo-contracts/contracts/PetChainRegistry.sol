@@ -19,6 +19,7 @@ contract PetChainRegistry {
     struct Vet {
         address vetAddress;
         string  licenseNumber;
+        string  specialization;   // issue #921
         bool    isVerified;
         bool    isRevoked;
     }
@@ -56,6 +57,7 @@ contract PetChainRegistry {
     // Events
     // -------------------------------------------------------------------------
     event VetRegistered(address indexed vet, string licenseNumber);
+    event VetSpecializationUpdated(address indexed vet, string specialization);  // issue #921
     event VetVerified(address indexed vet);
     event VetRevoked(address indexed vet);           // issue #916
     event PetRegistered(uint256 indexed petId, address indexed owner);
@@ -93,15 +95,23 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     // Vet management
     // -------------------------------------------------------------------------
-    function registerVet(string calldata licenseNumber) external {
+    function registerVet(string calldata licenseNumber, string calldata specialization) external {
         require(bytes(licenseNumber).length > 0, "PetChainRegistry: empty licenseNumber");
         vets[msg.sender] = Vet({
-            vetAddress:    msg.sender,
-            licenseNumber: licenseNumber,
-            isVerified:    false,
-            isRevoked:     false
+            vetAddress:     msg.sender,
+            licenseNumber:  licenseNumber,
+            specialization: specialization,
+            isVerified:     false,
+            isRevoked:      false
         });
         emit VetRegistered(msg.sender, licenseNumber);
+    }
+
+    /// @notice Update the calling vet's own specialization. issue #921
+    function updateSpecialization(string calldata specialization) external {
+        require(vets[msg.sender].vetAddress == msg.sender, "PetChainRegistry: not a registered vet");
+        vets[msg.sender].specialization = specialization;
+        emit VetSpecializationUpdated(msg.sender, specialization);
     }
 
     function verifyVet(address vet) external onlyAdmin {
@@ -155,6 +165,17 @@ contract PetChainRegistry {
         require(to != address(0), "PetChainRegistry: zero address");
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         address from = pets[petId].owner;
+
+        // Remove petId from the previous owner's array (swap-and-pop)
+        uint256[] storage fromPets = _ownerPets[from];
+        for (uint256 i = 0; i < fromPets.length; i++) {
+            if (fromPets[i] == petId) {
+                fromPets[i] = fromPets[fromPets.length - 1];
+                fromPets.pop();
+                break;
+            }
+        }
+
         pets[petId].owner = to;
         _ownerPets[to].push(petId);
         emit PetTransferred(petId, from, to);
