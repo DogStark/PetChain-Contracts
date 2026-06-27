@@ -748,6 +748,68 @@ impl AdminIpAccessHandlers {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Issue #907 — Admin Webhook Configuration Handlers
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/webhooks/configure`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConfigureWebhookRequest {
+    pub event_type: SecurityEventType,
+    pub url: String,
+}
+
+/// A single entry in the webhook configuration list.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct WebhookConfigEntry {
+    pub event_type: String,
+    pub urls: Vec<String>,
+}
+
+/// Admin handlers for managing webhook subscriptions.
+pub struct AdminWebhookHandlers {
+    webhook_manager: Arc<WebhookManager>,
+}
+
+impl AdminWebhookHandlers {
+    pub fn new(webhook_manager: Arc<WebhookManager>) -> Self {
+        Self { webhook_manager }
+    }
+
+    /// POST /admin/webhooks/configure — register a URL for a security event type.
+    pub fn configure(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        req: ConfigureWebhookRequest,
+    ) -> Result<(), String> {
+        self.webhook_manager
+            .configure(req.event_type, req.url)
+            .map_err(|e| e.to_string())
+    }
+
+    /// DELETE /admin/webhooks/{event_type} — remove all URLs for an event type.
+    pub fn remove_config(
+        &self,
+        _admin: &AuthenticatedAdmin,
+        event_type: &SecurityEventType,
+    ) -> Result<(), String> {
+        self.webhook_manager.remove_config(event_type);
+        Ok(())
+    }
+
+    /// GET /admin/webhooks — list all configured event→URL mappings.
+    pub fn list_configured_events(&self, _admin: &AuthenticatedAdmin) -> Vec<WebhookConfigEntry> {
+        let mut entries: Vec<WebhookConfigEntry> = self
+            .webhook_manager
+            .list_configs()
+            .into_iter()
+            .map(|(event_type, urls)| WebhookConfigEntry { event_type, urls })
+            .collect();
+        entries.sort_by(|a, b| a.event_type.cmp(&b.event_type));
+        entries
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
     two_factor_store().get(user_id).ok()
