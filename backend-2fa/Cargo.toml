@@ -27,6 +27,8 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 redis = "0.27"
 prometheus = { version = "0.13", features = ["process"] }
 url = "2"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-secretsmanager = "1"
 
 [features]
 webhook-client = []
