@@ -263,6 +263,115 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_empty_string() {
+        assert!(TraceContext::parse("").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_wrong_segment_count() {
+        assert!(TraceContext::parse("00").is_none());
+        assert!(TraceContext::parse("00-abc").is_none());
+        assert!(TraceContext::parse("00-abc-def").is_none());
+        assert!(TraceContext::parse("00-a-b-c-d").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_non_hex_characters() {
+        assert!(TraceContext::parse(
+            "zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-ghijklmnopqrstuv-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-xx"
+        ).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_wrong_length_segments() {
+        assert!(TraceContext::parse(
+            "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0"
+        ).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_multibyte_unicode_that_reports_misleading_len() {
+        let multibyte_32 = "é".repeat(16);
+        assert_eq!(multibyte_32.chars().count(), 16);
+        assert!(multibyte_32.len() > 32);
+        let header = format!("00-{}-0000000000000000-01", multibyte_32);
+        assert!(TraceContext::parse(&header).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_embedded_nulls_and_control_chars() {
+        let with_null = "00-4bf92f3577b34da6a3ce929d\x000e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(with_null).is_none());
+
+        let with_newline = "00-4bf92f3577b34da6a3ce929d\n0e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(with_newline).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_leading_trailing_dashes_and_only_dashes() {
+        assert!(TraceContext::parse("---").is_none());
+        assert!(TraceContext::parse("-00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").is_none());
+        assert!(TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-").is_none());
+    }
+
+    #[test]
+    fn parse_never_panics_on_random_input() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..10_000 {
+            let len = rng.gen_range(0..256);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+            let input = String::from_utf8_lossy(&bytes);
+            let _ = TraceContext::parse(&input);
+        }
+
+        for _ in 0..5_000 {
+            let ndashes = rng.gen_range(0..6);
+            let mut parts = Vec::new();
+            for _ in 0..=ndashes {
+                let seg_len = rng.gen_range(0..40);
+                let seg: String = (0..seg_len)
+                    .map(|_| {
+                        let charset = b"0123456789abcdefABCDEF \x00\n\txyz";
+                        charset[rng.gen_range(0..charset.len())] as char
+                    })
+                    .collect();
+                parts.push(seg);
+            }
+            let input = parts.join("-");
+            let _ = TraceContext::parse(&input);
+        }
+    }
+
+    #[test]
+    fn parse_accepts_all_valid_hex_combinations() {
+        let valid = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-00";
+        assert!(TraceContext::parse(valid).is_some());
+
+        let upper_hex = "00-0123456789ABCDEF0123456789ABCDEF-0123456789ABCDEF-FF";
+        assert!(TraceContext::parse(upper_hex).is_some());
+    }
+
+    #[test]
     fn traceparent_parse_roundtrip() {
         let tc = TraceContext {
             trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".to_string(),

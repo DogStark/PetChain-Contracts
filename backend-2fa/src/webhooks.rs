@@ -1135,6 +1135,70 @@ mod tests {
     }
 
     #[test]
+    fn test_concurrent_fire_logs_every_event_exactly_once() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let thread_count = 20;
+        let client = Arc::new(MockHttpClient::new(0));
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        manager.max_log_entries = thread_count * 2;
+        let manager = Arc::new(manager);
+
+        manager
+            .configure(
+                SecurityEventType::AccountLockout,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let mut handles = Vec::new();
+
+        for i in 0..thread_count {
+            let mgr = manager.clone();
+            let bar = barrier.clone();
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                let mut meta = HashMap::new();
+                meta.insert("index".to_string(), i.to_string());
+                mgr.fire_sync(
+                    SecurityEventType::AccountLockout,
+                    &format!("concurrent-user-{}", i),
+                    meta,
+                );
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        assert_eq!(manager.delivery_log_count(), thread_count);
+
+        let log = manager.get_delivery_log(1, thread_count as u32);
+        assert_eq!(log.len(), thread_count);
+
+        let mut user_ids: Vec<String> = log.iter().map(|e| e.user_id.clone()).collect();
+        user_ids.sort();
+        let mut expected: Vec<String> = (0..thread_count)
+            .map(|i| format!("concurrent-user-{}", i))
+            .collect();
+        expected.sort();
+        assert_eq!(user_ids, expected);
+
+        for entry in &log {
+            assert_eq!(entry.event_type, "account_lockout");
+            assert!(entry.success);
+        }
+
+        let mut ids: Vec<usize> = log.iter().map(|e| e.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), thread_count, "all log IDs must be unique");
+    }
+
+    #[test]
     fn test_remove_config_url_removes_single_endpoint() {
         let (manager, mock) = make_manager(0);
         manager

@@ -56,9 +56,9 @@ pub use health::{
 };
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
-    AuditLogEntry, InMemoryStore, RecoveryResult, TenantConfig, TenantRegistry, TenantScopedStore,
-    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState, TwoFactorSetup,
-    TwoFactorStore, UserTwoFactorSummary,
+    AuditLogEntry, InMemoryStore, LockedUserSummary, RecoveryResult, TenantConfig, TenantRegistry,
+    TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState,
+    TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
 };
 pub use webhooks::{
     DefaultHttpClient, DeliveryLogFilter, HttpClient, RetryPolicy, SecurityEventType,
