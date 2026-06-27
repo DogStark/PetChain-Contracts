@@ -1,3 +1,8 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use rand::RngCore;
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
@@ -60,10 +65,50 @@ pub fn select_secret_provider() -> Box<dyn SecretProvider> {
     }
 }
 
-#[derive(Clone)]
+/// Encrypt `plaintext` with AES-256-GCM using `key` (32 raw bytes, hex-encoded in env).
+/// Returns `nonce_hex || ":" || ciphertext_hex`.
+pub fn encrypt_secret(plaintext: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .map_err(|e| format!("encrypt error: {e}"))?;
+    Ok(format!("{}:{}", hex::encode(nonce_bytes), hex::encode(ciphertext)))
+}
+
+/// Decrypt a value produced by `encrypt_secret`.
+pub fn decrypt_secret(encrypted: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
+    let (nonce_hex, ct_hex) = encrypted
+        .split_once(':')
+        .ok_or("invalid encrypted format")?;
+    let nonce_bytes = hex::decode(nonce_hex).map_err(|e| e.to_string())?;
+    let ct = hex::decode(ct_hex).map_err(|e| e.to_string())?;
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ct.as_ref())
+        .map_err(|_| "decrypt error: authentication tag mismatch".to_string())?;
+    String::from_utf8(plaintext).map_err(|e| e.to_string())
+}
+
+/// Load the 32-byte AES key from the secret provider (key name `TOTP_ENCRYPTION_KEY`).
+/// The env var / secret must be exactly 64 hex characters (32 bytes).
+fn load_encryption_key(provider: &dyn SecretProvider) -> Result<[u8; 32], String> {
+    let hex_key = provider.get_secret("TOTP_ENCRYPTION_KEY")?;
+    let bytes = hex::decode(hex_key.trim()).map_err(|e| format!("invalid key hex: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| "TOTP_ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string())
+}
+
 pub struct PostgresTwoFactorStore {
     pool: PgPool,
     runtime: Arc<Runtime>,
+    enc_key: Option<[u8; 32]>,
 }
 
 impl PostgresTwoFactorStore {
@@ -92,21 +137,26 @@ impl PostgresTwoFactorStore {
             )
             .map_err(|e| e.to_string())?;
 
-        Ok(Self { pool, runtime })
+        Ok(Self { pool, runtime, enc_key: None })
     }
 
     /// Connect using a SecretProvider to fetch the `secret_key` value.
+    /// Also loads `TOTP_ENCRYPTION_KEY` from the same provider for secret encryption.
     pub fn connect_with_provider(
         provider: &dyn SecretProvider,
         secret_key: &str,
     ) -> Result<Self, String> {
         let database_url = provider.get_secret(secret_key)?;
-        PostgresTwoFactorStore::connect(&database_url)
+        let mut store = PostgresTwoFactorStore::connect(&database_url)?;
+        if let Ok(key) = load_encryption_key(provider) {
+            store.enc_key = Some(key);
+        }
+        Ok(store)
     }
 
     pub fn from_pool(pool: PgPool) -> Result<Self, String> {
         let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
-        Ok(Self { pool, runtime })
+        Ok(Self { pool, runtime, enc_key: None })
     }
 
     fn block_on<F, T>(&self, future: F) -> Result<T, String>
@@ -176,8 +226,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
         let user_id = user_id.to_string();
-        // Each closure invocation builds and drives a fresh future — no future
-        // is shared across retry attempts.
+        let secret = match &self.enc_key {
+            Some(key) => encrypt_secret(&data.secret, key)?,
+            None => data.secret.clone(),
+        };
         self.with_retry(|| {
             self.block_on_typed(
                 sqlx::query(
@@ -194,20 +246,18 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             "#,
                 )
                 .bind(&user_id)
-                .bind(&data.secret)
+                .bind(&secret)
                 .bind(&backup_codes)
                 .bind(data.enabled)
                 .bind(Self::algorithm_to_db(data.algorithm))
                 .execute(&self.pool),
             )
-            .map(|_| ()) // discard PgQueryResult; map inside closure so with_retry sees Result<(), _>
+            .map(|_| ())
         })
     }
 
     fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
         let user_id = user_id.to_string();
-        // with_retry owns the retry loop; block_on drives one fresh future per
-        // attempt.  The Option unwrap is post-retry business logic, kept outside.
         let row = self.with_retry(|| {
             self.block_on_typed(
                 sqlx::query_as::<_, (String, String, bool, Option<String>)>(
@@ -222,8 +272,12 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             )
         })?;
 
-        let (secret, backup_codes, enabled, algorithm) =
+        let (raw_secret, backup_codes, enabled, algorithm) =
             row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
+        let secret = match &self.enc_key {
+            Some(key) => decrypt_secret(&raw_secret, key).unwrap_or(raw_secret),
+            None => raw_secret,
+        };
         let backup_codes = serde_json::from_str(&backup_codes).map_err(|e| e.to_string())?;
 
         Ok(TwoFactorData {
@@ -969,5 +1023,49 @@ mod tests {
             }
         }
         unreachable!()
+    }
+
+    // -----------------------------------------------------------------------
+    // AES-256-GCM encryption tests (#832)
+    // -----------------------------------------------------------------------
+
+    fn test_key() -> [u8; 32] {
+        [0x42u8; 32]
+    }
+
+    #[test]
+    fn encryption_roundtrip() {
+        let key = test_key();
+        let plaintext = "JBSWY3DPEHPK3PXP";
+        let encrypted = encrypt_secret(plaintext, &key).unwrap();
+        let decrypted = decrypt_secret(&encrypted, &key).unwrap();
+        assert_eq!(decrypted, plaintext);
+        // ciphertext must differ from plaintext
+        assert_ne!(encrypted, plaintext);
+    }
+
+    #[test]
+    fn tampered_ciphertext_returns_error() {
+        let key = test_key();
+        let encrypted = encrypt_secret("mysecret", &key).unwrap();
+        // Tamper: flip a byte in the ciphertext portion
+        let (nonce_hex, ct_hex) = encrypted.split_once(':').unwrap();
+        let mut ct_bytes = hex::decode(ct_hex).unwrap();
+        ct_bytes[0] ^= 0xFF;
+        let tampered = format!("{}:{}", nonce_hex, hex::encode(ct_bytes));
+        let result = decrypt_secret(&tampered, &key);
+        assert!(result.is_err(), "tampered ciphertext must fail decryption");
+    }
+
+    #[test]
+    fn postgres_store_encrypts_secret_with_key() {
+        // Without a live DB we verify the encrypt/decrypt path in isolation.
+        let key = test_key();
+        let secret = "TOTP_SECRET_ABC123";
+        let encrypted = encrypt_secret(secret, &key).unwrap();
+        // Must not be stored in plain text
+        assert!(!encrypted.contains(secret));
+        // Must round-trip correctly
+        assert_eq!(decrypt_secret(&encrypted, &key).unwrap(), secret);
     }
 }

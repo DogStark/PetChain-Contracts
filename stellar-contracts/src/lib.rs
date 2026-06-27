@@ -126,6 +126,12 @@ use soroban_sdk::{
 
 #[cfg(test)]
 mod test_dispute_voting;
+#[cfg(test)]
+mod test_pet_birthday_validation;
+#[cfg(test)]
+mod test_verify_claim_document;
+#[cfg(test)]
+mod test_license_uniqueness;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -1890,6 +1896,17 @@ pub struct AppealDecisionEvent {
     pub timestamp: u64,
 }
 
+/// Emitted when verify_claim_document is called.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimDocumentIntegrityEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub doc_index: u32,
+    pub matches: bool,
+    pub timestamp: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AccessGrantedEvent {
@@ -3506,8 +3523,19 @@ impl PetChainContract {
         privacy_level: PrivacyLevel,
     ) -> u64 {
         owner.require_auth();
-        if let Err(err) = PetChainContract::parse_birthday_timestamp(&birthday) {
-            env.panic_with_error(err);
+        let birthday_ts = match PetChainContract::parse_birthday_timestamp(&birthday) {
+            Ok(ts) => ts,
+            Err(err) => env.panic_with_error(err),
+        };
+        let now = env.ledger().timestamp();
+        if now > 0 {
+            if birthday_ts > now {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+            const HUNDRED_YEARS_SECS: u64 = 100 * 365 * 86400;
+            if now >= HUNDRED_YEARS_SECS && birthday_ts < now - HUNDRED_YEARS_SECS {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
         }
         Self::validate_pet_name(&env, &name);
         Self::validate_breed(&env, &species, &breed);
@@ -8644,6 +8672,41 @@ impl PetChainContract {
         }
 
         removed
+    }
+
+    /// Verify that a stored claim document hash matches `content_hash`.
+    /// Emits a `ClaimDocumentIntegrity` event with the result.
+    /// Returns `true` if stored hash matches, `false` for mismatch or out-of-bounds index.
+    pub fn verify_claim_document(
+        env: Env,
+        claim_id: u64,
+        doc_index: u32,
+        content_hash: BytesN<32>,
+    ) -> bool {
+        let docs: soroban_sdk::Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimDocuments(claim_id))
+            .unwrap_or(soroban_sdk::Vec::new(&env));
+
+        let matches = if doc_index < docs.len() {
+            docs.get(doc_index).unwrap() == content_hash
+        } else {
+            false
+        };
+
+        env.events().publish(
+            (Symbol::new(&env, "ClaimDocIntegrity"), claim_id),
+            ClaimDocumentIntegrityEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                doc_index,
+                matches,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        matches
     }
 } // end impl PetChainContract
 
