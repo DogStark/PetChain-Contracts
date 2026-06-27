@@ -483,13 +483,25 @@ fn calculate_decayed_score(raw_score: u64, days_since_activity: f64, lambda: f64
     score_f64 * (-lambda * days_since_activity).exp()
 }
 
-/// Get paginated leaderboard with percentile rankings and decay
+/// Maximum page size accepted by `get_leaderboard`.
+pub const MAX_PAGE_SIZE: u32 = 100;
+
+/// Get paginated leaderboard with percentile rankings and decay.
+///
+/// Returns `Err` if `page_size` exceeds `MAX_PAGE_SIZE`.
 pub fn get_leaderboard(
     entries: &[(String, u64, u64)], // (user_id, raw_score, timestamp)
     page: u32,
     page_size: u32,
     now: u64,
-) -> Vec<LeaderboardEntry> {
+) -> Result<Vec<LeaderboardEntry>, String> {
+    if page_size > MAX_PAGE_SIZE {
+        return Err(format!(
+            "page_size {} exceeds maximum allowed value of {}",
+            page_size, MAX_PAGE_SIZE
+        ));
+    }
+
     let lambda = get_decay_lambda();
     let seconds_per_day = 24 * 3600;
 
@@ -512,7 +524,7 @@ pub fn get_leaderboard(
     let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
     let limit = page_size as usize;
 
-    decayed_entries
+    Ok(decayed_entries
         .into_iter()
         .enumerate()
         .map(|(index, (user_id, decayed_score))| {
@@ -526,7 +538,7 @@ pub fn get_leaderboard(
         })
         .skip(offset)
         .take(limit)
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -892,7 +904,7 @@ mod tests {
     #[test]
     fn percentile_single_entry() {
         let entries = vec![("user1".to_string(), 100, 1000)];
-        let result = get_leaderboard(&entries, 1, 10, 1000);
+        let result = get_leaderboard(&entries, 1, 10, 1000).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].user_id, "user1");
         assert_eq!(result[0].percentile, 0.0); // Only entry, 0 below it
@@ -905,7 +917,7 @@ mod tests {
             ("user2".to_string(), 50, 1000),
             ("user3".to_string(), 150, 1000),
         ];
-        let result = get_leaderboard(&entries, 1, 10, 1000);
+        let result = get_leaderboard(&entries, 1, 10, 1000).unwrap();
         assert_eq!(result.len(), 3);
         // Sorted by decayed score: user3 (150), user1 (100), user2 (50)
         assert_eq!(result[0].user_id, "user3");
@@ -922,8 +934,8 @@ mod tests {
             .map(|i| (format!("user{}", i), 100 - i as u64, 1000))
             .collect();
 
-        let page1 = get_leaderboard(&entries, 1, 10, 1000);
-        let page2 = get_leaderboard(&entries, 2, 10, 1000);
+        let page1 = get_leaderboard(&entries, 1, 10, 1000).unwrap();
+        let page2 = get_leaderboard(&entries, 2, 10, 1000).unwrap();
 
         assert_eq!(page1.len(), 10);
         assert_eq!(page2.len(), 5);
@@ -937,7 +949,7 @@ mod tests {
             ("old_high".to_string(), 1000, now - 30 * 86400), // Old, high score
         ];
 
-        let result = get_leaderboard(&entries, 1, 10, now);
+        let result = get_leaderboard(&entries, 1, 10, now).unwrap();
         // With decay, recent_low might rank higher despite lower raw score
         assert_eq!(result.len(), 2);
         // The exact ranking depends on decay function, but both should be present
@@ -945,7 +957,7 @@ mod tests {
 
     #[test]
     fn empty_leaderboard() {
-        let result = get_leaderboard(&[], 1, 10, 1000);
+        let result = get_leaderboard(&[], 1, 10, 1000).unwrap();
         assert!(result.is_empty());
     }
 
@@ -957,11 +969,11 @@ mod tests {
         // Set high decay lambda
         std::env::set_var("LEADERBOARD_DECAY_LAMBDA", "1.0");
         let entries = vec![("user1".to_string(), 100, 100)];
-        let result1 = get_leaderboard(&entries, 1, 10, 1000);
+        let result1 = get_leaderboard(&entries, 1, 10, 1000).unwrap();
 
         // Set low decay lambda
         std::env::set_var("LEADERBOARD_DECAY_LAMBDA", "0.01");
-        let result2 = get_leaderboard(&entries, 1, 10, 1000);
+        let result2 = get_leaderboard(&entries, 1, 10, 1000).unwrap();
 
         // Higher lambda means more decay (lower score)
         assert!(result1[0].decayed_score < result2[0].decayed_score);
@@ -987,12 +999,12 @@ mod tests {
 
         // Old, decayed entry
         let old_entries = vec![("user1".to_string(), 200u64, old_timestamp)];
-        let old_result = get_leaderboard(&old_entries, 1, 10, now);
+        let old_result = get_leaderboard(&old_entries, 1, 10, now).unwrap();
         let old_score = old_result[0].decayed_score;
 
         // Fresh entry with timestamp == now → 0 days of decay
         let fresh_entries = vec![("user1".to_string(), 200u64, now)];
-        let fresh_result = get_leaderboard(&fresh_entries, 1, 10, now);
+        let fresh_result = get_leaderboard(&fresh_entries, 1, 10, now).unwrap();
         let fresh_score = fresh_result[0].decayed_score;
 
         // A fresh submission must be close to the raw score (within 1%)
@@ -1010,6 +1022,39 @@ mod tests {
         );
 
         std::env::remove_var("LEADERBOARD_DECAY_LAMBDA");
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #869 – Upper bound on get_leaderboard page_size
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn page_size_at_limit_succeeds() {
+        let entries = vec![("user1".to_string(), 100u64, 1000u64)];
+        let result = get_leaderboard(&entries, 1, MAX_PAGE_SIZE, 1000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn page_size_over_limit_returns_error() {
+        let entries = vec![("user1".to_string(), 100u64, 1000u64)];
+        let result = get_leaderboard(&entries, 1, MAX_PAGE_SIZE + 1, 1000);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeds maximum"),
+            "error message should explain the cap: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn page_size_large_value_returns_error() {
+        let entries: Vec<(String, u64, u64)> = (0..10)
+            .map(|i| (format!("user{}", i), i as u64, 1000))
+            .collect();
+        let result = get_leaderboard(&entries, 1, 4_000_000_000, 1000);
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------
