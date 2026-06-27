@@ -4910,6 +4910,18 @@ impl PetChainContract {
     #[allow(dead_code)]
     const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 50;
 
+    /// Validates that `value` does not exceed `max` bytes.
+    ///
+    /// `field` names the offending field so callers can surface a clear error.
+    /// Returns `ContractError::InvalidInput` when the limit is exceeded.
+    fn validate_len(field: &str, value: &String, max: u32) -> Result<(), ContractError> {
+        let _ = field;
+        if value.len() > max {
+            return Err(ContractError::InvalidInput);
+        }
+        Ok(())
+    }
+
     pub fn register_vet(
         env: Env,
         vet_address: Address,
@@ -4919,16 +4931,24 @@ impl PetChainContract {
     ) -> bool {
         vet_address.require_auth();
 
-        if name.len() > PetChainContract::MAX_VET_NAME_LEN {
-            panic_with_error!(&env, ContractError::InputStringTooLong);
+        if let Err(e) = Self::validate_len("name", &name, PetChainContract::MAX_VET_NAME_LEN) {
+            panic_with_error!(&env, e);
         }
 
-        if license_number.len() > PetChainContract::MAX_VET_LICENSE_LEN {
-            panic_with_error!(&env, ContractError::InputStringTooLong);
+        if let Err(e) = Self::validate_len(
+            "license_number",
+            &license_number,
+            PetChainContract::MAX_VET_LICENSE_LEN,
+        ) {
+            panic_with_error!(&env, e);
         }
 
-        if specialization.len() > PetChainContract::MAX_VET_SPEC_LEN {
-            panic_with_error!(&env, ContractError::InputStringTooLong);
+        if let Err(e) = Self::validate_len(
+            "specialization",
+            &specialization,
+            PetChainContract::MAX_VET_SPEC_LEN,
+        ) {
+            panic_with_error!(&env, e);
         }
 
         if env
