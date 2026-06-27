@@ -19,6 +19,23 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+match algorithm {
+HmacAlgorithm::SHA512 => TotpConfig::high_security(),
+HmacAlgorithm::SHA256 => TotpConfig::high_security(),
+_ => TotpConfig::legacy_sha1(),
+}
+}
+
+/// Verify a TOTP token with replay protection.
+fn verify_token_with_replay_protection(
+secret: &str,
+token: &str,
+config: TotpConfig,
+last_used_step: Option<u64>,
+) -> Result<bool, String> {
+TwoFactorAuth::verify_token_with_config(secret, token, config, last_used_step)
+}
+(algorithm: HmacAlgorithm) -> TotpConfig {
     match algorithm {
         HmacAlgorithm::SHA512 => TotpConfig::high_security(),
         HmacAlgorithm::SHA256 => TotpConfig::high_security(),
