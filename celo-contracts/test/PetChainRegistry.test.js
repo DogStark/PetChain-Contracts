@@ -810,6 +810,36 @@ describe("PetChainRegistry", function () {
       await expect(
         registry.connect(owner).registerPet(PET.name, PET.species, PET.breed, PET.birthday)
       ).to.not.be.reverted;
+  // Issue #929 — getTotalVets / isPetActive
+  // ---------------------------------------------------------------------------
+  describe("#929 — getTotalVets and isPetActive", function () {
+    it("counts the vet registered in beforeEach", async function () {
+      expect(await registry.getTotalVets()).to.equal(1);
+    });
+
+    it("increments on each new vet registration", async function () {
+      await registry.connect(other).registerVet("LIC-002", "Surgery");
+      expect(await registry.getTotalVets()).to.equal(2);
+    });
+
+    it("does not double-count a vet re-registering with a new license", async function () {
+      await registry.connect(vet).registerVet("LIC-001-B", "Dentistry");
+      expect(await registry.getTotalVets()).to.equal(1);
+    });
+
+    it("returns true for an active pet", async function () {
+      const petId = await registerPet();
+      expect(await registry.isPetActive(petId)).to.equal(true);
+    });
+
+    it("returns false for a deactivated pet", async function () {
+      const petId = await registerPet();
+      await registry.connect(owner).deactivatePet(petId);
+      expect(await registry.isPetActive(petId)).to.equal(false);
+    });
+
+    it("returns false for a non-existent petId", async function () {
+      expect(await registry.isPetActive(9999)).to.equal(false);
     });
   });
 });
