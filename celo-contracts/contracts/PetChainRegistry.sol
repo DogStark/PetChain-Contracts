@@ -48,6 +48,7 @@ contract PetChainRegistry {
     mapping(uint256 => Pet)      public pets;
     mapping(uint256 => MedicalRecord[]) private _petRecords;
     mapping(address => uint256[]) private _ownerPets;
+    mapping(bytes32 => address)  private _licenseToVet; // issue #927 — keyed by normalized (upper-cased) license
 
     // -------------------------------------------------------------------------
     // Events
@@ -93,6 +94,23 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     function registerVet(string calldata licenseNumber, string calldata specialization) external {
         require(bytes(licenseNumber).length > 0, "PetChainRegistry: empty licenseNumber");
+
+        // issue #927 — uniqueness is enforced case-insensitively via a normalized key,
+        // while the originally-submitted casing is still stored on the Vet struct.
+        bytes32 key = _normalizeLicenseKey(licenseNumber);
+        address existingHolder = _licenseToVet[key];
+        require(existingHolder == address(0) || existingHolder == msg.sender,
+            "PetChainRegistry: license already registered");
+
+        bytes memory prevLicense = bytes(vets[msg.sender].licenseNumber);
+        if (prevLicense.length > 0) {
+            bytes32 prevKey = _normalizeLicenseKey(string(prevLicense));
+            if (prevKey != key) {
+                delete _licenseToVet[prevKey];
+            }
+        }
+        _licenseToVet[key] = msg.sender;
+
         vets[msg.sender] = Vet({
             vetAddress:     msg.sender,
             licenseNumber:  licenseNumber,
@@ -101,6 +119,22 @@ contract PetChainRegistry {
             isRevoked:      false
         });
         emit VetRegistered(msg.sender, licenseNumber);
+    }
+
+    /// @notice Upper-cases an ASCII license string and hashes it, used as the
+    /// case-insensitive uniqueness key for `_licenseToVet`. issue #927
+    function _normalizeLicenseKey(string memory licenseNumber) internal pure returns (bytes32) {
+        bytes memory raw = bytes(licenseNumber);
+        bytes memory normalized = new bytes(raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            bytes1 c = raw[i];
+            if (c >= 0x61 && c <= 0x7A) { // 'a'-'z'
+                normalized[i] = bytes1(uint8(c) - 32);
+            } else {
+                normalized[i] = c;
+            }
+        }
+        return keccak256(normalized);
     }
 
     /// @notice Update the calling vet's own specialization. issue #921
