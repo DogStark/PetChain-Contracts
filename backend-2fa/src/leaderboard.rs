@@ -231,11 +231,26 @@ pub struct LeaderboardWsHub {
     connections_by_ip: Mutex<HashMap<IpAddr, usize>>,
 }
 
+fn get_max_conn_per_ip() -> usize {
+    std::env::var("LEADERBOARD_MAX_CONN_PER_IP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5)
+}
+
+fn get_broadcast_capacity() -> usize {
+    std::env::var("LEADERBOARD_BROADCAST_CAPACITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256)
+}
+
 impl LeaderboardWsHub {
     pub fn global() -> Arc<Self> {
         static HUB: OnceLock<Arc<LeaderboardWsHub>> = OnceLock::new();
         HUB.get_or_init(|| {
-            let (broadcaster, _) = broadcast::channel(256);
+            let capacity = get_broadcast_capacity();
+            let (broadcaster, _) = broadcast::channel(capacity);
             Arc::new(Self {
                 broadcaster,
                 connections_by_ip: Mutex::new(HashMap::new()),
@@ -254,9 +269,10 @@ impl LeaderboardWsHub {
         // inside the same lock acquisition.  Do NOT introduce an await point
         // or any other unlock between the read and the write; doing so would
         // reintroduce a TOCTOU race where two concurrent callers could both
-        // pass the `>= 5` check before either increments the counter.
+        // pass the limit check before either increments the counter.
+        let max_conn = get_max_conn_per_ip();
         let count = connections.entry(ip).or_insert(0);
-        if *count >= 5 {
+        if *count >= max_conn {
             return Err(format!("Connection limit exceeded for IP {}", ip));
         }
         *count += 1;
@@ -1042,6 +1058,57 @@ mod tests {
             "connection limit exceeded: {}",
             success_count
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #868 – Configurable per-IP connection limit and broadcast capacity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn custom_max_conn_per_ip_from_env_is_respected() {
+        // Isolate from other tests by using a unique IP.
+        std::env::set_var("LEADERBOARD_MAX_CONN_PER_IP", "2");
+
+        let hub = {
+            let (broadcaster, _) = broadcast::channel(16);
+            Arc::new(LeaderboardWsHub {
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+            })
+        };
+        let ip: IpAddr = "172.16.0.1".parse().unwrap();
+
+        let g1 = hub.connect(ip).expect("first connection must succeed");
+        let g2 = hub.connect(ip).expect("second connection must succeed");
+        let g3 = hub.connect(ip);
+        assert!(
+            g3.is_err(),
+            "third connection must be rejected when limit is 2"
+        );
+
+        drop(g1);
+        drop(g2);
+        std::env::remove_var("LEADERBOARD_MAX_CONN_PER_IP");
+    }
+
+    #[test]
+    fn default_max_conn_per_ip_is_five() {
+        // Ensure the env var is unset so we exercise the default path.
+        std::env::remove_var("LEADERBOARD_MAX_CONN_PER_IP");
+        assert_eq!(get_max_conn_per_ip(), 5);
+    }
+
+    #[test]
+    fn default_broadcast_capacity_is_256() {
+        std::env::remove_var("LEADERBOARD_BROADCAST_CAPACITY");
+        assert_eq!(get_broadcast_capacity(), 256);
+    }
+
+    #[test]
+    fn custom_broadcast_capacity_from_env() {
+        std::env::set_var("LEADERBOARD_BROADCAST_CAPACITY", "512");
+        assert_eq!(get_broadcast_capacity(), 512);
+        std::env::remove_var("LEADERBOARD_BROADCAST_CAPACITY");
     }
 
     // -----------------------------------------------------------------------
