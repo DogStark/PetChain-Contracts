@@ -345,4 +345,64 @@ describe("PetChainRegistry", function () {
       ).to.be.revertedWith("PetChainRegistry: notes too long");
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #928 — Pausable emergency stop
+  // ---------------------------------------------------------------------------
+  describe("#928 — Pausable emergency stop", function () {
+    it("only admin can pause", async function () {
+      await expect(registry.connect(owner).pause())
+        .to.be.revertedWith("PetChainRegistry: not admin");
+    });
+
+    it("only admin can unpause", async function () {
+      await registry.connect(admin).pause();
+      await expect(registry.connect(owner).unpause())
+        .to.be.revertedWith("PetChainRegistry: not admin");
+    });
+
+    it("admin can pause and paused() reflects state", async function () {
+      await registry.connect(admin).pause();
+      expect(await registry.paused()).to.equal(true);
+    });
+
+    it("blocks registerPet while paused", async function () {
+      await registry.connect(admin).pause();
+      await expect(
+        registry.connect(owner).registerPet(PET.name, PET.species, PET.breed, PET.birthday)
+      ).to.be.revertedWithCustomError(registry, "EnforcedPause");
+    });
+
+    it("blocks transferPet while paused", async function () {
+      const petId = await registerPet();
+      await registry.connect(admin).pause();
+      await expect(
+        registry.connect(owner).transferPet(petId, other.address)
+      ).to.be.revertedWithCustomError(registry, "EnforcedPause");
+    });
+
+    it("blocks addMedicalRecord while paused", async function () {
+      const petId = await registerPet();
+      await registry.connect(admin).pause();
+      await expect(
+        registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "")
+      ).to.be.revertedWithCustomError(registry, "EnforcedPause");
+    });
+
+    it("blocks registerVet while paused", async function () {
+      await registry.connect(admin).pause();
+      await expect(
+        registry.connect(other).registerVet("LIC-002", "Surgery")
+      ).to.be.revertedWithCustomError(registry, "EnforcedPause");
+    });
+
+    it("resumes normal operation after unpause", async function () {
+      await registry.connect(admin).pause();
+      await registry.connect(admin).unpause();
+      expect(await registry.paused()).to.equal(false);
+      await expect(
+        registry.connect(owner).registerPet(PET.name, PET.species, PET.breed, PET.birthday)
+      ).to.not.be.reverted;
+    });
+  });
 });
