@@ -810,6 +810,62 @@ mod tests {
     // Rate limiter unit tests
     // -----------------------------------------------------------------------
 
+// -----------------------------------------------------------------------
+// TOTP Replay Prevention Tests (Issue #840)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_totp_replay_single_acceptance() {
+    let secret = TwoFactorAuth::generate_secret();
+    let config = TotpConfig::default();
+    let token = generate_token(&secret);
+
+    // First use should succeed
+    let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config.clone(), None)
+        .unwrap();
+    assert!(result, "First use of token should be valid");
+}
+
+#[test]
+fn test_totp_replay_same_step_rejected() {
+    let secret = TwoFactorAuth::generate_secret();
+    let config = TotpConfig::default();
+    let step = TwoFactorAuth::time_step(config.period);
+    let token = generate_token(&secret);
+
+    // First use: should succeed
+    let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config.clone(), None)
+        .unwrap();
+    assert!(result, "First use of token should be valid");
+
+    // Immediate replay with the same step: should be rejected
+    let replay = TwoFactorAuth::verify_token_with_config(&secret, &token, config.clone(), Some(step))
+        .unwrap();
+    assert!(!replay, "Replay of same time-step should be rejected");
+}
+
+#[test]
+fn test_totp_replay_accepted_after_window_advances() {
+    let secret = TwoFactorAuth::generate_secret();
+    let config = TotpConfig::new(Algorithm::SHA1, 6, 1, 0).unwrap(); // period=1s, no drift window
+    let token = generate_token(&secret);
+
+    // Wait for the next time-step
+    let current_step = TwoFactorAuth::time_step(config.period);
+    loop {
+        let next_step = TwoFactorAuth::time_step(config.period);
+        if next_step > current_step {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let new_token = generate_token(&secret);
+    let result = TwoFactorAuth::verify_token_with_config(&secret, &new_token, config.clone(), Some(current_step))
+        .unwrap();
+    assert!(result, "Token from a new time-step should be accepted");
+}
+
     mod rate_limiter_tests {
         use crate::handlers::{
             clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,

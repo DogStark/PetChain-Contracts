@@ -647,6 +647,19 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.get_lockout_state(&user_id)
     }
 
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query(
+                "UPDATE two_factor_secrets SET last_used_step = $1 WHERE user_id = $2"
+            )
+            .bind(step as i64)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+        })?;
+        Ok(())
+    }
+
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
         let user_id = user_id.to_string();
         self.with_retry(|| {

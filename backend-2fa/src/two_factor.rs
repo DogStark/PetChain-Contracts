@@ -89,6 +89,10 @@ pub struct TwoFactorData {
     pub backup_codes: Vec<String>,
     pub enabled: bool,
     pub algorithm: HmacAlgorithm,
+    /// The last successfully-used TOTP time-step for replay protection.
+    /// Once a token for a given step is accepted, repeated attempts with
+    /// the same step are rejected even if the token is numerically valid.
+    pub last_used_step: Option<u64>,
 }
 
 /// Returned after a successful backup-code recovery.
@@ -369,6 +373,10 @@ pub trait TwoFactorStore: Send + Sync {
     /// Reset failed attempts after a successful TOTP verification or recovery.
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String>;
 
+    /// Record the last successfully-used TOTP time-step for replay protection.
+    /// Returns an error if the store cannot be updated.
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String>;
+
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
 
@@ -615,6 +623,10 @@ impl TwoFactorStore for MockTwoFactorStore {
         Ok(())
     }
 
+    fn set_last_used_step(&self, _user_id: &str, _step: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn unlock_two_fa_account(&self, _user_id: &str, _actor: &str) -> Result<(), String> {
         Ok(())
     }
@@ -841,6 +853,14 @@ impl TwoFactorStore for InMemoryStore {
         Ok(())
     }
 
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        let mut data = self.data.lock().unwrap();
+        if let Some(entry) = data.get_mut(user_id) {
+            entry.last_used_step = Some(step);
+        }
+        Ok(())
+    }
+
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
@@ -979,6 +999,10 @@ impl TenantScopedStore {
 
     pub fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
         self.inner.reset_two_fa_failures(&self.key(user_id))
+    }
+
+    pub fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        self.inner.set_last_used_step(&self.key(user_id), step)
     }
 
     pub fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
