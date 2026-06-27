@@ -358,4 +358,37 @@ describe("PetChainRegistry", function () {
       ).to.be.revertedWith("PetChainRegistry: notes too long");
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #927 — case-insensitive vet license uniqueness
+  // ---------------------------------------------------------------------------
+  describe("#927 — case-insensitive license uniqueness", function () {
+    it("rejects a different-case duplicate of an existing license from another address", async function () {
+      await expect(registry.connect(other).registerVet("lic-001", "Surgery"))
+        .to.be.revertedWith("PetChainRegistry: license already registered");
+    });
+
+    it("rejects an exact-case duplicate from another address", async function () {
+      await expect(registry.connect(other).registerVet("LIC-001", "Surgery"))
+        .to.be.revertedWith("PetChainRegistry: license already registered");
+    });
+
+    it("preserves the originally-submitted casing on the Vet struct", async function () {
+      await registry.connect(other).registerVet("AbC123", "Dermatology");
+      const v = await registry.vets(other.address);
+      expect(v.licenseNumber).to.equal("AbC123");
+    });
+
+    it("allows the same address to re-register with a new license, freeing the old one", async function () {
+      await registry.connect(vet).registerVet("LIC-999", "General Practice");
+      await registry.connect(other).registerVet("lic-001", "Surgery");
+      const v = await registry.vets(other.address);
+      expect(v.licenseNumber).to.equal("lic-001");
+    });
+
+    it("allows distinct license numbers from different addresses", async function () {
+      await expect(registry.connect(other).registerVet("LIC-002", "Surgery"))
+        .to.not.be.reverted;
+    });
+  });
 });
