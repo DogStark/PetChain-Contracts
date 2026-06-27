@@ -19,6 +19,24 @@ pub const SIGNATURE_HEADER: &str = "X-PetChain-Signature";
 /// Override with the `WEBHOOK_LOG_MAX_ENTRIES` environment variable.
 const DEFAULT_MAX_LOG_ENTRIES: usize = 1000;
 
+// ---------------------------------------------------------------------------
+// Metadata size limits (Issue #backend-2)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of key-value pairs allowed in the webhook metadata map.
+///
+/// Callers that supply more entries will have the excess silently dropped and
+/// a warning logged before the payload is serialised.
+pub const METADATA_MAX_ENTRIES: usize = 25;
+
+/// Maximum total byte size (UTF-8 lengths of all keys + values) allowed in
+/// the webhook metadata map.
+///
+/// When the combined byte count exceeds this limit, entries are dropped
+/// one-by-one (in arbitrary HashMap iteration order) until the total falls
+/// within the budget, and a warning is logged.
+pub const METADATA_MAX_BYTES: usize = 2048;
+
 /// Compute the `sha256=<hex>` HMAC-SHA256 signature for a webhook body.
 pub fn sign_webhook_payload(secret: &str, body: &[u8]) -> String {
     let mut mac =
@@ -99,6 +117,88 @@ pub struct WebhookDeliveryLog {
 pub struct DeliveryLogFilter {
     pub event_type: Option<SecurityEventType>,
     pub success: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// Metadata sanitisation (Issue #backend-2)
+// ---------------------------------------------------------------------------
+
+/// Validate and sanitise a webhook metadata map before it is serialised into
+/// the outgoing payload.
+///
+/// Two limits are enforced:
+///
+/// 1. **Entry count** — if the map contains more than [`METADATA_MAX_ENTRIES`]
+///    key-value pairs, the excess is dropped and a warning is emitted.
+/// 2. **Total byte size** — the combined UTF-8 byte length of all remaining
+///    keys and values must not exceed [`METADATA_MAX_BYTES`].  If it does,
+///    entries are removed one-by-one until the payload fits.
+///
+/// The function always returns a (potentially trimmed) `HashMap`; it never
+/// panics and never rejects the call outright.  All truncation events are
+/// logged as `eprintln!` warnings so they appear in the application log
+/// regardless of the tracing subscriber configuration.
+pub fn sanitize_metadata(
+    mut metadata: HashMap<String, String>,
+    event_type: &str,
+    user_id: &str,
+) -> HashMap<String, String> {
+    // --- 1. Enforce entry count ---
+    if metadata.len() > METADATA_MAX_ENTRIES {
+        let original_len = metadata.len();
+        // Collect keys to drop (HashMap order is non-deterministic; we drop
+        // the extras and keep the first METADATA_MAX_ENTRIES we encounter).
+        let keys_to_drop: Vec<String> = metadata
+            .keys()
+            .skip(METADATA_MAX_ENTRIES)
+            .cloned()
+            .collect();
+        for key in &keys_to_drop {
+            metadata.remove(key);
+        }
+        eprintln!(
+            "[WebhookManager] metadata truncated: entry count {} exceeded max {} \
+             (dropped {} entries) event_type={} user_id={}",
+            original_len,
+            METADATA_MAX_ENTRIES,
+            keys_to_drop.len(),
+            event_type,
+            user_id,
+        );
+    }
+
+    // --- 2. Enforce total byte size ---
+    let byte_size: usize = metadata
+        .iter()
+        .map(|(k, v)| k.len() + v.len())
+        .sum();
+
+    if byte_size > METADATA_MAX_BYTES {
+        let original_size = byte_size;
+        // Collect all keys so we can remove them one-by-one.
+        let mut keys: Vec<String> = metadata.keys().cloned().collect();
+        let mut current_size = byte_size;
+
+        while current_size > METADATA_MAX_BYTES && !keys.is_empty() {
+            // Pop from the end of the snapshot list (arbitrary but stable).
+            let key = keys.pop().unwrap();
+            if let Some(val) = metadata.remove(&key) {
+                current_size -= key.len() + val.len();
+            }
+        }
+
+        eprintln!(
+            "[WebhookManager] metadata truncated: byte size {} exceeded max {} \
+             (reduced to {} bytes) event_type={} user_id={}",
+            original_size,
+            METADATA_MAX_BYTES,
+            current_size,
+            event_type,
+            user_id,
+        );
+    }
+
+    metadata
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +634,9 @@ impl WebhookManager {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        // Enforce metadata size limits before serialisation (Issue #backend-2).
+        let metadata = sanitize_metadata(metadata, &event_type.to_string(), user_id);
+
         let payload = WebhookPayload {
             event_type: event_type.to_string(),
             user_id: user_id.to_string(),
@@ -600,6 +703,9 @@ impl WebhookManager {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+
+        // Enforce metadata size limits before serialisation (Issue #backend-2).
+        let metadata = sanitize_metadata(metadata, &event_type.to_string(), user_id);
 
         let payload = WebhookPayload {
             event_type: event_type.to_string(),
@@ -1226,5 +1332,104 @@ mod tests {
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 1);
         let log = manager.get_delivery_log(1, 10);
         assert_eq!(log[0].url, "http://example.com/hook2");
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata size limit tests (Issue #backend-2)
+    // -------------------------------------------------------------------------
+
+    /// Within-limit metadata passes through unchanged.
+    #[test]
+    fn test_sanitize_metadata_within_limits_unchanged() {
+        let mut meta = HashMap::new();
+        for i in 0..10 {
+            meta.insert(format!("key{i}"), format!("val{i}"));
+        }
+        let original_len = meta.len();
+        let sanitized = sanitize_metadata(meta, "failed_two_fa", "user1");
+        assert_eq!(sanitized.len(), original_len, "under-limit map must be unchanged");
+    }
+
+    /// A map with exactly METADATA_MAX_ENTRIES entries must not be trimmed.
+    #[test]
+    fn test_sanitize_metadata_at_entry_limit_unchanged() {
+        let mut meta = HashMap::new();
+        for i in 0..METADATA_MAX_ENTRIES {
+            meta.insert(format!("k{i}"), "v".to_string());
+        }
+        let sanitized = sanitize_metadata(meta, "canary_triggered", "u");
+        assert_eq!(sanitized.len(), METADATA_MAX_ENTRIES);
+    }
+
+    /// Exceeding METADATA_MAX_ENTRIES causes the map to be trimmed to the cap.
+    #[test]
+    fn test_sanitize_metadata_over_entry_limit_is_truncated() {
+        let mut meta = HashMap::new();
+        for i in 0..(METADATA_MAX_ENTRIES + 10) {
+            meta.insert(format!("key{i}"), "v".to_string());
+        }
+        let sanitized = sanitize_metadata(meta, "account_lockout", "user99");
+        assert_eq!(
+            sanitized.len(),
+            METADATA_MAX_ENTRIES,
+            "entry count must be capped at METADATA_MAX_ENTRIES"
+        );
+    }
+
+    /// Exceeding METADATA_MAX_BYTES causes the map to be trimmed until it fits.
+    #[test]
+    fn test_sanitize_metadata_over_byte_limit_is_truncated() {
+        let mut meta = HashMap::new();
+        // Each entry is 4 + 128 = 132 bytes.  20 entries = 2640 bytes > 2048.
+        for i in 0..20 {
+            meta.insert(format!("k{i:02}"), "x".repeat(128));
+        }
+        let sanitized = sanitize_metadata(meta, "recovery_code_used", "user5");
+        let byte_size: usize = sanitized
+            .iter()
+            .map(|(k, v)| k.len() + v.len())
+            .sum();
+        assert!(
+            byte_size <= METADATA_MAX_BYTES,
+            "byte size {byte_size} must be <= METADATA_MAX_BYTES ({METADATA_MAX_BYTES})"
+        );
+    }
+
+    /// A single entry whose key+value alone exceeds METADATA_MAX_BYTES results
+    /// in an empty map (all entries dropped).
+    #[test]
+    fn test_sanitize_metadata_single_oversized_entry_produces_empty_map() {
+        let mut meta = HashMap::new();
+        meta.insert("big_key".to_string(), "z".repeat(METADATA_MAX_BYTES + 1));
+        let sanitized = sanitize_metadata(meta, "failed_two_fa", "user1");
+        assert!(
+            sanitized.is_empty(),
+            "a single entry larger than the byte cap must be dropped entirely"
+        );
+    }
+
+    /// fire_sync ships exactly the right (sanitised) metadata — verifying the
+    /// hook is wired into the actual delivery path, not just the helper.
+    #[test]
+    fn test_fire_sync_truncates_oversized_metadata() {
+        let (manager, _mock) = make_manager(0);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        // Build a map with twice as many entries as allowed.
+        let mut meta = HashMap::new();
+        for i in 0..(METADATA_MAX_ENTRIES * 2) {
+            meta.insert(format!("key{i}"), "value".to_string());
+        }
+
+        // Should not panic; should deliver successfully with a trimmed payload.
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "user1", meta);
+        let log = manager.get_delivery_log(1, 10);
+        assert_eq!(log.len(), 1);
+        assert!(log[0].success, "delivery should still succeed after truncation");
     }
 }

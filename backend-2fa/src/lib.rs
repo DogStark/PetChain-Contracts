@@ -61,6 +61,7 @@ pub use two_factor::{
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
 };
 pub use webhooks::{
-    DefaultHttpClient, DeliveryLogFilter, HttpClient, RetryPolicy, SecurityEventType,
-    WebhookDeliveryLog, WebhookManager, WebhookPayload, WebhookUrlError, validate_webhook_url,
+    sanitize_metadata, DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog,
+    WebhookManager, WebhookPayload, WebhookUrlError, validate_webhook_url,
+    METADATA_MAX_BYTES, METADATA_MAX_ENTRIES,
 };
