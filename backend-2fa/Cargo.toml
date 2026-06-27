@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 totp-rs = { version = "=5.7.1", features = ["qr", "otpauth", "gen_secret"] }
 rand = "=0.8.5"
+totp-rs = { version = "5.7.1", features = ["qr", "otpauth", "gen_secret"] }
+rand = "0.8"
+aes-gcm = { version = "0.10.3", features = ["aes"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
