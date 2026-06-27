@@ -372,12 +372,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("verify", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(ApiError::too_many_requests(
+            return Err(ApiError::rate_limited(
                 format!(
                     "Too many failed attempts. Retry after {} seconds.",
                     rate_result.retry_after_secs()
                 ),
-                None,
+                rate_result.retry_after_secs(),
             ));
         }
 
@@ -414,12 +414,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("login", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(ApiError::too_many_requests(
+            return Err(ApiError::rate_limited(
                 format!(
                     "Too many failed attempts. Retry after {} seconds.",
                     rate_result.retry_after_secs()
                 ),
-                None,
+                rate_result.retry_after_secs(),
             ));
         }
 
@@ -458,12 +458,12 @@ impl TwoFactorHandlers {
         let key = Self::rate_limit_key("disable", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
-            return Err(ApiError::too_many_requests(
+            return Err(ApiError::rate_limited(
                 format!(
                     "Too many failed attempts. Retry after {} seconds.",
                     rate_result.retry_after_secs()
                 ),
-                None,
+                rate_result.retry_after_secs(),
             ));
         }
 
@@ -1109,10 +1109,13 @@ impl MultiTenantHandlers {
             user_id,
         );
         if let RateLimitResult::Blocked { retry_after_secs, .. } = self.limiter.record_failure(key.as_str()) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
+            return Err(ApiError::rate_limited(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    retry_after_secs
+                ),
+                retry_after_secs,
+            ).to_string());
         }
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
@@ -1143,10 +1146,13 @@ impl MultiTenantHandlers {
             user_id,
         );
         if let RateLimitResult::Blocked { retry_after_secs, .. } = self.limiter.record_failure(key.as_str()) {
-            return Err(format!(
-                "Too many failed attempts. Retry after {} seconds.",
-                retry_after_secs
-            ));
+            return Err(ApiError::rate_limited(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    retry_after_secs
+                ),
+                retry_after_secs,
+            ).to_string());
         }
 
         let data = self.store.get(user_id)?;

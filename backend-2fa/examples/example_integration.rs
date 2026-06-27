@@ -42,6 +42,9 @@ use petchain_2fa::{ApiError, ErrorResponseMiddleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+// ── Issue #884: Maximum accepted request body size (256 KiB) ────────────────
+const MAX_JSON_PAYLOAD_SIZE: usize = 256 * 1024;
+
 // ---------------------------------------------------------------------------
 // Shared application state
 // ---------------------------------------------------------------------------
@@ -268,9 +271,20 @@ async fn main() -> std::io::Result<()> {
         // that preflight OPTIONS requests receive CORS headers even when the
         // logger or error middleware short-circuits the response.
         let cors = build_cors(&allowed_origin);
+        // ── Issue #884: explicit JSON body size limit ───────────────────────
+        let json_cfg = web::JsonConfig::default()
+            .limit(MAX_JSON_PAYLOAD_SIZE)
+            .error_handler(|err, _req| {
+                let resp = ApiError::bad_request(
+                    format!("Request body too large or invalid JSON: {}", err),
+                    None,
+                );
+                actix_web::Error::from(resp)
+            });
 
         App::new()
             .app_data(state.clone())
+            .app_data(json_cfg)
             .wrap(ErrorResponseMiddleware)
             .wrap(middleware::Logger::default())
             // Cors wraps outermost so every response – including preflight –

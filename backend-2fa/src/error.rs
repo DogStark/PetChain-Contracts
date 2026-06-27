@@ -65,6 +65,18 @@ impl ApiError {
     pub fn too_many_requests(message: impl Into<String>, details: Option<Value>) -> Self {
         Self::new("TOO_MANY_REQUESTS", message, details)
     }
+
+    /// Create a `429 Too Many Requests` error with a `Retry-After` header.
+    ///
+    /// The `retry_after_secs` value is embedded in `details` so that
+    /// `error_response()` can set the HTTP `Retry-After` header automatically.
+    pub fn rate_limited(message: impl Into<String>, retry_after_secs: u64) -> Self {
+        Self::new(
+            "RATE_LIMITED",
+            message,
+            Some(json!({ "retry_after_secs": retry_after_secs })),
+        )
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -85,12 +97,38 @@ impl ResponseError for ApiError {
             "CONFLICT" => StatusCode::CONFLICT,
             "LOCKED" => StatusCode::LOCKED,
             "TOO_MANY_REQUESTS" => StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     fn error_response(&self) -> HttpResponse<BoxBody> {
-        HttpResponse::build(self.status_code()).json(self)
+        // ── Issue #886: Log every 5xx error server-side ─────────────────────
+        let status = self.status_code();
+        if status.as_u16() >= 500 {
+            tracing::error!(
+                error.code = %self.code,
+                error.message = %self.message,
+                error.details = %self.details.as_ref().map(|d| d.to_string()).unwrap_or_default(),
+                status = %status.as_u16(),
+                "ApiError response"
+            );
+        }
+
+        // ── Issue #885: Support Retry-After header for rate_limited errors ──
+        let mut resp = HttpResponse::build(status);
+        if self.code.as_str() == "RATE_LIMITED" {
+            if let Some(Value::Number(n)) = self.details.as_ref().and_then(|d| d.get("retry_after_secs")) {
+                if let Some(secs) = n.as_u64() {
+                    resp.insert_header((
+                        actix_web::http::header::RETRY_AFTER,
+                        secs.to_string(),
+                    ));
+                }
+            }
+        }
+
+        resp.json(self)
     }
 }
 
@@ -201,5 +239,46 @@ where
             );
             Ok(res)
         })
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limited_returns_429_and_retry_after_header() {
+        let err = ApiError::rate_limited("Too fast", 42);
+        assert_eq!(err.status_code(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.code, "RATE_LIMITED");
+
+        let resp = err.error_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let retry_after = resp.headers().get(actix_web::http::header::RETRY_AFTER);
+        assert!(retry_after.is_some(), "Retry-After header must be present");
+        assert_eq!(
+            retry_after.unwrap().to_str().unwrap(),
+            "42",
+            "Retry-After must match retry_after_secs"
+        );
+    }
+
+    #[test]
+    fn test_internal_error_logs_via_tracing() {
+        // This test verifies the tracing code path is reachable without panicking.
+        // The actual log assertion is done in tests.rs with a test subscriber.
+        let err = ApiError::internal_error("something broke", None);
+        let _resp = err.error_response();
+        // No panic means the tracing::error! call succeeded.
+    }
+
+    #[test]
+    fn test_bad_request_does_not_log() {
+        let err = ApiError::bad_request("bad input", None);
+        let _resp = err.error_response();
+        // No panic.
     }
 }

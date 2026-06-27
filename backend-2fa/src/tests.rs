@@ -4507,5 +4507,179 @@ mod tenant_isolation_tests {
 
         assert_eq!(scoped_a.get(user_id).unwrap().secret, "RA");
         assert_eq!(scoped_b.get(user_id).unwrap().secret, "RB");
+    // -----------------------------------------------------------------------
+    // Issue #886: Log every 5xx ApiError response server-side
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_5xx_error_is_logged_via_tracing() {
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::EnvFilter;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Build a custom subscriber that counts events filtered at ERROR level.
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let event_count_clone = Arc::clone(&event_count);
+
+        let filter = EnvFilter::new("error");
+        let layer = tracing_subscriber::fmt::layer()
+            .with_test_writer()
+            .with_filter(filter);
+
+        // Wrap the subscriber so we can intercept events.
+        struct CountingSubscriber<S> {
+            inner: S,
+            count: Arc<AtomicUsize>,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for CountingSubscriber<S> {
+            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+                self.inner.enabled(metadata)
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(&self, span: &tracing::Id, values: &tracing::span::Record<'_>) {
+                self.inner.record(span, values);
+            }
+
+            fn record_follows_from(&self, span: &tracing::Id, follows: &tracing::Id) {
+                self.inner.record_follows_from(span, follows);
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Count every event matching our filter
+                if self.inner.enabled(event.metadata()) {
+                    self.count.fetch_add(1, Ordering::SeqCst);
+                }
+                self.inner.event(event);
+            }
+
+            fn enter(&self, span: &tracing::Id) {
+                self.inner.enter(span);
+            }
+
+            fn exit(&self, span: &tracing::Id) {
+                self.inner.exit(span);
+            }
+
+            fn clone_span(&self, id: &tracing::Id) -> tracing::Id {
+                self.inner.clone_span(id)
+            }
+
+            fn drop_span(&self, id: &tracing::Id) {
+                self.inner.drop_span(id);
+            }
+        }
+
+        let inner = tracing_subscriber::Registry::default().with(layer);
+        let subscriber = CountingSubscriber {
+            inner,
+            count: Arc::clone(&event_count_clone),
+        };
+
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Trigger a 500 error — should increment counter.
+        let err_500 = ApiError::internal_error("test 500", None);
+        let _resp = err_500.error_response();
+
+        let count_after_500 = event_count.load(Ordering::SeqCst);
+        assert!(
+            count_after_500 >= 1,
+            "expected at least 1 event for 5xx error, got {count_after_500}"
+        );
+
+        // Trigger a 400 error — should NOT increment counter further.
+        let err_400 = ApiError::bad_request("test 400", None);
+        let _resp = err_400.error_response();
+
+        let count_after_400 = event_count.load(Ordering::SeqCst);
+        assert_eq!(
+            count_after_400,
+            count_after_500,
+            "400-class error should not produce a log event"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #884: Request body size limit for JSON endpoints
+    // -----------------------------------------------------------------------
+
+    #[actix_web::test]
+    async fn test_oversized_json_body_is_rejected() {
+        use actix_web::{test, web, App, HttpResponse};
+
+        async fn dummy_handler(_body: web::Json<serde_json::Value>) -> HttpResponse {
+            HttpResponse::Ok().finish()
+        }
+
+        let json_cfg = web::JsonConfig::default()
+            .limit(1)
+            .error_handler(|err, _req| {
+                let resp = ApiError::bad_request(
+                    format!("Request body too large or invalid JSON: {}", err),
+                    None,
+                );
+                actix_web::Error::from(resp)
+            });
+
+        let app = test::init_service(
+            App::new()
+                .app_data(json_cfg)
+                .route("/test", web::post().to(dummy_handler)),
+        )
+        .await;
+
+        let req = test::TestRequest::post()
+            .uri("/test")
+            .set_json(serde_json::json!({"foo": "bar"}))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+
+        assert!(
+            resp.status().is_client_error(),
+            "Expected a client error status (413/400), got {}",
+            resp.status()
+        );
+    }
+
+    #[actix_web::test]
+    async fn test_normal_sized_json_body_is_accepted() {
+        use actix_web::{test, web, App, HttpResponse};
+
+        async fn dummy_handler(_body: web::Json<serde_json::Value>) -> HttpResponse {
+            HttpResponse::Ok().finish()
+        }
+
+        let json_cfg = web::JsonConfig::default()
+            .limit(256 * 1024)
+            .error_handler(|err, _req| {
+                let resp = ApiError::bad_request(
+                    format!("Request body too large or invalid JSON: {}", err),
+                    None,
+                );
+                actix_web::Error::from(resp)
+            });
+
+        let app = test::init_service(
+            App::new()
+                .app_data(json_cfg)
+                .route("/test", web::post().to(dummy_handler)),
+        )
+        .await;
+
+        let req = test::TestRequest::post()
+            .uri("/test")
+            .set_json(serde_json::json!({"foo": "bar"}))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
     }
 }
