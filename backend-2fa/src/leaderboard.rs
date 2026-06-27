@@ -1,5 +1,5 @@
 use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
-use actix_web::error::{ErrorBadRequest, ErrorTooManyRequests};
+use actix_web::error::{ErrorBadRequest, ErrorTooManyRequests, ErrorUnauthorized};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use serde::{Deserialize, Serialize};
@@ -485,11 +485,36 @@ pub fn broadcast_score_update(user_id: impl Into<String>, new_score: u64, rank: 
     });
 }
 
+/// Validate the `Authorization: Bearer <token>` header for the leaderboard
+/// WebSocket endpoint.
+///
+/// * If `LEADERBOARD_WS_AUTH_TOKEN` is set, the provided token must match it exactly.
+/// * If the env var is unset, any non-empty Bearer token is accepted (development mode).
+/// * A missing or empty token always returns `false`.
+pub(crate) fn validate_ws_auth_token(authorization_header: Option<&str>) -> bool {
+    let provided = match authorization_header.and_then(|v| v.strip_prefix("Bearer ")) {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+
+    let expected = std::env::var("LEADERBOARD_WS_AUTH_TOKEN").unwrap_or_default();
+    expected.is_empty() || provided == expected
+}
+
 /// Actix-web websocket endpoint for `GET /leaderboard/ws`.
 pub async fn leaderboard_ws_endpoint(
     req: HttpRequest,
     stream: Payload,
 ) -> Result<HttpResponse, Error> {
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok());
+
+    if !validate_ws_auth_token(auth_header) {
+        return Err(ErrorUnauthorized("Authentication required"));
+    }
+
     let peer_ip = req
         .peer_addr()
         .map(|addr| addr.ip())
@@ -1089,6 +1114,54 @@ mod tests {
             .collect();
         let result = get_leaderboard(&entries, 1, 4_000_000_000, 1000);
         assert!(result.is_err());
+    // Issue #867 – Authentication for leaderboard WebSocket endpoint
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auth_passes_with_correct_token() {
+        std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
+        assert!(validate_ws_auth_token(Some("Bearer supersecret")));
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+    }
+
+    #[test]
+    fn auth_fails_with_wrong_token() {
+        std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
+        assert!(!validate_ws_auth_token(Some("Bearer wrongtoken")));
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+    }
+
+    #[test]
+    fn auth_fails_with_missing_header() {
+        std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
+        assert!(!validate_ws_auth_token(None));
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+    }
+
+    #[test]
+    fn auth_fails_with_empty_bearer_value() {
+        std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
+        assert!(!validate_ws_auth_token(Some("Bearer ")));
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+    }
+
+    #[test]
+    fn auth_fails_with_non_bearer_scheme() {
+        std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
+        assert!(!validate_ws_auth_token(Some("Basic supersecret")));
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+    }
+
+    #[test]
+    fn auth_passes_any_non_empty_token_when_env_unset() {
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+        assert!(validate_ws_auth_token(Some("Bearer anytoken")));
+    }
+
+    #[test]
+    fn auth_fails_missing_header_even_when_env_unset() {
+        std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
+        assert!(!validate_ws_auth_token(None));
     }
 
     // -----------------------------------------------------------------------
