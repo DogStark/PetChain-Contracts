@@ -174,8 +174,21 @@ where
                 Ok(Ok(res)) => Ok(res.map_into_boxed_body()),
                 Ok(Err(err)) => Err(err),
                 Err(payload) => {
-                    let details = Some(json!({ "panic": format!("{:?}", payload) }));
-                    let error = ApiError::internal_error("Internal server error", details);
+                    // Log the full panic payload server-side for debugging.
+                    tracing::error!(
+                        panic.payload = %format!("{:?}", payload),
+                        "A request handler panicked"
+                    );
+                    let request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let error = ApiError::internal_error(
+                        "Internal server error",
+                        Some(json!({ "request_id": request_id })),
+                    );
                     let response = HttpResponse::InternalServerError()
                         .json(error)
                         .map_into_boxed_body();
@@ -280,5 +293,36 @@ mod tests {
         let err = ApiError::bad_request("bad input", None);
         let _resp = err.error_response();
         // No panic.
+    }
+
+    // ── Issue #883: Panic payload not leaked to client ─────────────────────
+
+    #[test]
+    fn test_internal_error_response_has_no_panic_or_payload_key() {
+        // This simulates the new error response shape from the panic-catch branch
+        // (Issue #883): the client response must NOT contain raw panic payload.
+        let error = ApiError::internal_error(
+            "Internal server error",
+            Some(json!({ "request_id": "test-123" })),
+        );
+
+        // Serialise the ApiError as JSON (this is what error_response() does internally)
+        let json_value = serde_json::to_value(&error).expect("ApiError must serialise to JSON");
+        let json_str = json_value.to_string();
+
+        // Must NOT contain panic details (the core of Issue #883)
+        assert!(
+            !json_str.contains("panic"),
+            "response must not contain 'panic' key: {json_str}"
+        );
+        assert!(
+            !json_str.contains("payload"),
+            "response must not contain 'payload' key: {json_str}"
+        );
+
+        // Should expose request_id for correlation support
+        assert_eq!(json_value["details"]["request_id"], "test-123");
+        assert_eq!(json_value["code"], "INTERNAL_SERVER_ERROR");
+        assert_eq!(json_value["message"], "Internal server error");
     }
 }
