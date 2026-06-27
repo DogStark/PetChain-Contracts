@@ -3429,6 +3429,131 @@ mod webhook_handler_tests {
 }
 
 // ============================================================================
+// AdminWebhookHandlers tests
+// ============================================================================
+
+#[cfg(test)]
+mod admin_webhook_handler_tests {
+    use crate::handlers::{
+        AdminWebhookHandlers, AuthenticatedAdmin, ConfigureWebhookRequest,
+    };
+    use crate::webhooks::{DefaultHttpClient, SecurityEventType, WebhookManager};
+    use std::sync::Arc;
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("admin-1")
+    }
+
+    fn make_handlers() -> AdminWebhookHandlers {
+        let manager = Arc::new(WebhookManager::new_with_http_allowed(Arc::new(
+            DefaultHttpClient,
+        )));
+        AdminWebhookHandlers::new(manager)
+    }
+
+    #[test]
+    fn configure_registers_url() {
+        let h = make_handlers();
+        let result = h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::FailedTwoFa,
+                url: "http://example.com/hook".to_string(),
+            },
+        );
+        assert!(result.is_ok());
+
+        let entries = h.list_configured_events(&admin());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_type, "failed_two_fa");
+        assert_eq!(entries[0].urls, vec!["http://example.com/hook"]);
+    }
+
+    #[test]
+    fn configure_multiple_urls_for_same_event() {
+        let h = make_handlers();
+        h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::AccountLockout,
+                url: "http://example.com/a".to_string(),
+            },
+        )
+        .unwrap();
+        h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::AccountLockout,
+                url: "http://example.com/b".to_string(),
+            },
+        )
+        .unwrap();
+
+        let entries = h.list_configured_events(&admin());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].urls.len(), 2);
+    }
+
+    #[test]
+    fn configure_rejects_invalid_url() {
+        let h = make_handlers();
+        let result = h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::FailedTwoFa,
+                url: "not-a-url".to_string(),
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remove_config_clears_event() {
+        let h = make_handlers();
+        h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::CanaryTriggered,
+                url: "http://example.com/hook".to_string(),
+            },
+        )
+        .unwrap();
+
+        h.remove_config(&admin(), &SecurityEventType::CanaryTriggered)
+            .unwrap();
+
+        assert!(h.list_configured_events(&admin()).is_empty());
+    }
+
+    #[test]
+    fn list_configured_events_sorted_by_event_type() {
+        let h = make_handlers();
+        h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::RecoveryCodeUsed,
+                url: "http://example.com/r".to_string(),
+            },
+        )
+        .unwrap();
+        h.configure(
+            &admin(),
+            ConfigureWebhookRequest {
+                event_type: SecurityEventType::AccountLockout,
+                url: "http://example.com/a".to_string(),
+            },
+        )
+        .unwrap();
+
+        let entries = h.list_configured_events(&admin());
+        assert_eq!(entries.len(), 2);
+        // Alphabetical order: "account_lockout" < "recovery_code_used"
+        assert_eq!(entries[0].event_type, "account_lockout");
+        assert_eq!(entries[1].event_type, "recovery_code_used");
+    }
+}
+
+// ============================================================================
 // DistributedRateLimiter tests
 // ============================================================================
 

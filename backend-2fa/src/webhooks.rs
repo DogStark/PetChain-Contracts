@@ -531,6 +531,11 @@ impl WebhookManager {
         self.config.lock().unwrap().remove(&event_type.to_string());
     }
 
+    /// Return a snapshot of all currently-configured event→URL mappings.
+    pub fn list_configs(&self) -> HashMap<String, Vec<String>> {
+        self.config.lock().unwrap().clone()
+    }
+
     /// Remove a single URL from the list registered for an event type.
     pub fn remove_config_url(&self, event_type: &SecurityEventType, url: &str) {
         let mut cfg = self.config.lock().unwrap();
