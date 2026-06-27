@@ -174,6 +174,38 @@ describe("PetChainRegistry", function () {
   });
 
   // ---------------------------------------------------------------------------
+  // Issue #914 — transferPet removes petId from previous owner's _ownerPets
+  // ---------------------------------------------------------------------------
+  describe("#914 — transferPet removes stale _ownerPets entry", function () {
+    it("pet no longer appears in previous owner's getPetsByOwner after transfer", async function () {
+      const petId = await registerPet();
+
+      await registry.connect(owner).transferPet(petId, other.address);
+
+      const fromPets = await registry.getPetsByOwner(owner.address);
+      expect(fromPets.map(id => id.toString())).to.not.include(petId.toString());
+
+      const toPets = await registry.getPetsByOwner(other.address);
+      expect(toPets.map(id => id.toString())).to.include(petId.toString());
+    });
+
+    it("multiple transfers leave no stale entries in intermediate owners", async function () {
+      const petId = await registerPet();
+
+      await registry.connect(owner).transferPet(petId, other.address);
+      await registry.connect(other).transferPet(petId, admin.address);
+
+      const ownerPets = await registry.getPetsByOwner(owner.address);
+      const otherPets = await registry.getPetsByOwner(other.address);
+      const adminPets = await registry.getPetsByOwner(admin.address);
+
+      expect(ownerPets.map(id => id.toString())).to.not.include(petId.toString());
+      expect(otherPets.map(id => id.toString())).to.not.include(petId.toString());
+      expect(adminPets.map(id => id.toString())).to.include(petId.toString());
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #919 — registerPet input length validation
   // ---------------------------------------------------------------------------
   describe("#919 — registerPet string validation", function () {

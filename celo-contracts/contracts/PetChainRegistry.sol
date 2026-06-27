@@ -151,6 +151,17 @@ contract PetChainRegistry {
         require(to != address(0), "PetChainRegistry: zero address");
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         address from = pets[petId].owner;
+
+        // Remove petId from the previous owner's array (swap-and-pop)
+        uint256[] storage fromPets = _ownerPets[from];
+        for (uint256 i = 0; i < fromPets.length; i++) {
+            if (fromPets[i] == petId) {
+                fromPets[i] = fromPets[fromPets.length - 1];
+                fromPets.pop();
+                break;
+            }
+        }
+
         pets[petId].owner = to;
         _ownerPets[to].push(petId);
         emit PetTransferred(petId, from, to);
