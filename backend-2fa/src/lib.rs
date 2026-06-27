@@ -1,6 +1,7 @@
 pub mod db;
 pub mod error;
 pub mod handlers;
+pub mod health;
 pub mod ip_access;
 pub mod leaderboard;
 pub mod metrics;
@@ -49,11 +50,15 @@ pub use rate_limiter::{
     RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter,
     TenantRateLimitKey,
 };
+pub use health::{
+    HealthAggregator, HealthCheck, HealthReport, PostgresHealthCheck, RedisHealthCheck,
+    SubsystemStatus, WebhookHealthCheck,
+};
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
-    AuditLogEntry, InMemoryStore, RecoveryResult, TenantConfig, TenantRegistry, TenantScopedStore,
-    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState, TwoFactorSetup,
-    TwoFactorStore, UserTwoFactorSummary,
+    AuditLogEntry, InMemoryStore, LockedUserSummary, RecoveryResult, TenantConfig, TenantRegistry,
+    TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState,
+    TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
 };
 pub use webhooks::{
     sanitize_metadata, DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog,

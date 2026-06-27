@@ -1,8 +1,8 @@
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
-    AuditLogEntry, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState, TwoFactorStore,
-    UserTwoFactorSummary,
+    AuditLogEntry, LockedUserSummary, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState,
+    TwoFactorStore, UserTwoFactorSummary,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::collections::HashMap;
@@ -593,11 +593,13 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             .unwrap_or_default())
     }
 
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String> {
         let user_id = user_id.to_string();
-        // with_retry covers the INSERT/UPDATE round-trip.  get_lockout_state is
-        // a separate retried read — the two with_retry calls are sequential, not
-        // nested, so there is no double-wrapping.
+        let threshold = lockout_threshold as i32;
         self.with_retry(|| {
             self.block_on_typed(
                 sqlx::query(
@@ -607,9 +609,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     failed_attempts = two_fa_lockouts.failed_attempts + 1,
-                    locked = (two_fa_lockouts.failed_attempts + 1) >= 10,
+                    locked = (two_fa_lockouts.failed_attempts + 1) >= $2,
                     locked_at = CASE
-                        WHEN (two_fa_lockouts.failed_attempts + 1) >= 10
+                        WHEN (two_fa_lockouts.failed_attempts + 1) >= $2
                              AND two_fa_lockouts.locked_at IS NULL
                         THEN CURRENT_TIMESTAMP
                         ELSE two_fa_lockouts.locked_at
@@ -618,6 +620,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 "#,
                 )
                 .bind(&user_id)
+                .bind(threshold)
                 .execute(&self.pool),
             )
             .map(|_| ())
@@ -641,6 +644,39 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+            failed_attempts: i32,
+            locked_at: Option<i64>,
+        }
+
+        let rows = self.with_retry(|| {
+            self.block_on_typed(
+                sqlx::query_as::<_, Row>(
+                    r#"
+                SELECT user_id, failed_attempts,
+                       EXTRACT(EPOCH FROM locked_at)::bigint AS locked_at
+                FROM two_fa_lockouts
+                WHERE locked = TRUE
+                ORDER BY user_id
+                "#,
+                )
+                .fetch_all(&self.pool),
+            )
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| LockedUserSummary {
+                user_id: r.user_id,
+                failed_attempts: r.failed_attempts.max(0) as u32,
+                locked_at: r.locked_at.map(|ts| ts as u64),
+            })
+            .collect())
     }
 
     fn try_pool_stats(&self) -> Option<PoolStats> {
@@ -942,6 +978,84 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(call_count, 3, "all three attempts should be exhausted");
         assert!(result.unwrap_err().contains("timeout"));
+    }
+
+    #[test]
+    fn is_connection_error_returns_false_for_non_connection_errors() {
+        let unique_violation = sqlx::Error::Database(Box::new(FakeDatabaseError {
+            message: "duplicate key value violates unique constraint".to_string(),
+        }));
+        assert!(
+            !is_connection_error(&unique_violation),
+            "unique-constraint violation must not be classified as a connection error"
+        );
+
+        let row_not_found = sqlx::Error::RowNotFound;
+        assert!(
+            !is_connection_error(&row_not_found),
+            "RowNotFound must not be classified as a connection error"
+        );
+
+        let decode = sqlx::Error::Protocol("unexpected message".to_string());
+        assert!(
+            !is_connection_error(&decode),
+            "Protocol error must not be classified as a connection error"
+        );
+    }
+
+    #[test]
+    fn is_connection_error_returns_true_for_connection_errors() {
+        let io_err = sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        assert!(is_connection_error(&io_err));
+
+        let pool_timeout = sqlx::Error::PoolTimedOut;
+        assert!(is_connection_error(&pool_timeout));
+
+        let pool_closed = sqlx::Error::PoolClosed;
+        assert!(is_connection_error(&pool_closed));
+    }
+
+    struct FakeDatabaseError {
+        message: String,
+    }
+
+    impl std::fmt::Debug for FakeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FakeDatabaseError({})", self.message)
+        }
+    }
+
+    impl std::fmt::Display for FakeDatabaseError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
+
+    impl std::error::Error for FakeDatabaseError {}
+
+    impl sqlx::error::DatabaseError for FakeDatabaseError {
+        fn message(&self) -> &str {
+            &self.message
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::UniqueViolation
+        }
     }
 
     /// String-based analogue of `is_connection_error` used by the test helper

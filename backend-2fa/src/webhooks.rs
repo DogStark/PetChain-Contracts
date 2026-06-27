@@ -112,6 +112,13 @@ pub struct WebhookDeliveryLog {
     pub last_error: Option<String>,
 }
 
+/// Filter criteria for querying the delivery log.
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryLogFilter {
+    pub event_type: Option<SecurityEventType>,
+    pub success: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Metadata sanitisation (Issue #backend-2)
 // ---------------------------------------------------------------------------
@@ -427,6 +434,22 @@ fn log_cap_from_env() -> usize {
         .unwrap_or(DEFAULT_MAX_LOG_ENTRIES)
 }
 
+/// Configurable retry policy for webhook delivery.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_backoff: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_backoff: Duration::from_secs(1),
+        }
+    }
+}
+
 /// Manages webhook configuration and delivery with retry logic.
 pub struct WebhookManager {
     /// event_type -> list of webhook URLs (multiple endpoints supported per event).
@@ -443,16 +466,21 @@ pub struct WebhookManager {
     /// HMAC-SHA256 signing secret used to compute `X-PetChain-Signature` headers.
     /// Empty string disables signing.
     signing_secret: String,
+    retry_policy: RetryPolicy,
 }
 
 impl Default for WebhookManager {
     fn default() -> Self {
-        Self::new(Arc::new(DefaultHttpClient), String::new())
+        Self::new(Arc::new(DefaultHttpClient), String::new(), None)
     }
 }
 
 impl WebhookManager {
-    pub fn new(http_client: Arc<dyn HttpClient>, signing_secret: String) -> Self {
+    pub fn new(
+        http_client: Arc<dyn HttpClient>,
+        signing_secret: String,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Self {
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
             delivery_log: Arc::new(Mutex::new(VecDeque::new())),
@@ -461,6 +489,7 @@ impl WebhookManager {
             http_client,
             allow_http: false,
             signing_secret,
+            retry_policy: retry_policy.unwrap_or_default(),
         }
     }
 
@@ -474,6 +503,7 @@ impl WebhookManager {
             http_client,
             allow_http: true,
             signing_secret: String::new(),
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -536,12 +566,13 @@ impl WebhookManager {
         delivery_log: &Mutex<VecDeque<WebhookDeliveryLog>>,
         next_log_id: &AtomicUsize,
         max_log_entries: usize,
+        retry_policy: &RetryPolicy,
     ) {
         let mut attempts = 0u32;
         let mut last_error: Option<String> = None;
         let mut success = false;
 
-        while attempts < 3 {
+        while attempts < retry_policy.max_attempts {
             match client.post(url, body, signature) {
                 Ok(()) => {
                     success = true;
@@ -550,9 +581,10 @@ impl WebhookManager {
                 Err(e) => {
                     last_error = Some(e);
                     attempts += 1;
-                    if attempts < 3 {
+                    if attempts < retry_policy.max_attempts {
                         record_webhook_retry();
-                        let wait = Duration::from_secs(1u64 << (attempts - 1));
+                        let multiplier = 1u64 << (attempts - 1);
+                        let wait = retry_policy.base_backoff * multiplier as u32;
                         std::thread::sleep(wait);
                     }
                 }
@@ -627,6 +659,7 @@ impl WebhookManager {
             let signature_clone = signature.clone();
             let event_str_clone = event_str.clone();
             let user_str_clone = user_str.clone();
+            let retry_policy = self.retry_policy.clone();
 
             // Spawn the retry loop on a dedicated thread so we never block
             // the caller's async executor (Issue #861).
@@ -642,6 +675,7 @@ impl WebhookManager {
                     &delivery_log,
                     &next_log_id,
                     max_log_entries,
+                    &retry_policy,
                 );
             });
         }
@@ -697,16 +731,42 @@ impl WebhookManager {
                 &self.delivery_log,
                 &self.next_log_id,
                 self.max_log_entries,
+                &self.retry_policy,
             );
         }
     }
 
     /// Admin: query the delivery log (paginated, page starts at 1, newest first).
     pub fn get_delivery_log(&self, page: u32, page_size: u32) -> Vec<WebhookDeliveryLog> {
+        self.get_delivery_log_filtered(page, page_size, None)
+    }
+
+    /// Admin: query the delivery log with optional filters.
+    pub fn get_delivery_log_filtered(
+        &self,
+        page: u32,
+        page_size: u32,
+        filter: Option<&DeliveryLogFilter>,
+    ) -> Vec<WebhookDeliveryLog> {
         let log = self.delivery_log.lock().unwrap();
         let offset = (page.saturating_sub(1) as usize) * (page_size as usize);
         log.iter()
             .rev()
+            .filter(|entry| {
+                if let Some(f) = filter {
+                    if let Some(ref et) = f.event_type {
+                        if entry.event_type != et.to_string() {
+                            return false;
+                        }
+                    }
+                    if let Some(success_only) = f.success {
+                        if entry.success != success_only {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .skip(offset)
             .take(page_size as usize)
             .cloned()
@@ -1178,6 +1238,70 @@ mod tests {
         assert_eq!(successes.len(), 2, "two URLs should succeed");
         assert_eq!(failures.len(), 1, "one URL should fail");
         assert_eq!(failures[0].url, "http://example.com/failing");
+    }
+
+    #[test]
+    fn test_concurrent_fire_logs_every_event_exactly_once() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let thread_count = 20;
+        let client = Arc::new(MockHttpClient::new(0));
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        manager.max_log_entries = thread_count * 2;
+        let manager = Arc::new(manager);
+
+        manager
+            .configure(
+                SecurityEventType::AccountLockout,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let mut handles = Vec::new();
+
+        for i in 0..thread_count {
+            let mgr = manager.clone();
+            let bar = barrier.clone();
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                let mut meta = HashMap::new();
+                meta.insert("index".to_string(), i.to_string());
+                mgr.fire_sync(
+                    SecurityEventType::AccountLockout,
+                    &format!("concurrent-user-{}", i),
+                    meta,
+                );
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        assert_eq!(manager.delivery_log_count(), thread_count);
+
+        let log = manager.get_delivery_log(1, thread_count as u32);
+        assert_eq!(log.len(), thread_count);
+
+        let mut user_ids: Vec<String> = log.iter().map(|e| e.user_id.clone()).collect();
+        user_ids.sort();
+        let mut expected: Vec<String> = (0..thread_count)
+            .map(|i| format!("concurrent-user-{}", i))
+            .collect();
+        expected.sort();
+        assert_eq!(user_ids, expected);
+
+        for entry in &log {
+            assert_eq!(entry.event_type, "account_lockout");
+            assert!(entry.success);
+        }
+
+        let mut ids: Vec<usize> = log.iter().map(|e| e.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), thread_count, "all log IDs must be unique");
     }
 
     #[test]

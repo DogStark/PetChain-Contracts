@@ -3080,7 +3080,7 @@ mod admin_dashboard_tests {
         clear_two_factor_store_for_tests, get_two_factor_store_for_tests, AdminDashboardHandlers,
         AuthenticatedAdmin, AuthenticatedUser,
     };
-    use crate::two_factor::TwoFactorData;
+    use crate::two_factor::{TwoFactorData, TwoFactorStore};
     use totp_rs::Algorithm;
 
     fn admin() -> AuthenticatedAdmin {
@@ -3173,6 +3173,46 @@ mod admin_dashboard_tests {
         let ids: Vec<&str> = users.iter().map(|u| u.user_id.as_str()).collect();
         assert!(ids.contains(&"normal-user"));
         assert!(!ids.contains(&"canary-user"));
+    }
+
+    #[test]
+    fn test_list_locked_users_returns_only_locked_accounts() {
+        clear_two_factor_store_for_tests();
+        setup_user("locked-user-a");
+        setup_user("locked-user-b");
+        setup_user("unlocked-user");
+
+        let store = get_two_factor_store_for_tests();
+        // Lock two accounts by recording 10 failed attempts each
+        for _ in 0..10 {
+            store.record_failed_two_fa_attempt("locked-user-a").unwrap();
+            store.record_failed_two_fa_attempt("locked-user-b").unwrap();
+        }
+        // Record a few failures for the unlocked user (not enough to lock)
+        for _ in 0..3 {
+            store.record_failed_two_fa_attempt("unlocked-user").unwrap();
+        }
+
+        let locked = AdminDashboardHandlers::list_locked_users(&admin()).unwrap();
+        let ids: Vec<&str> = locked.iter().map(|u| u.user_id.as_str()).collect();
+        assert_eq!(locked.len(), 2);
+        assert!(ids.contains(&"locked-user-a"));
+        assert!(ids.contains(&"locked-user-b"));
+        assert!(!ids.contains(&"unlocked-user"));
+
+        for entry in &locked {
+            assert!(entry.failed_attempts >= 10);
+            assert!(entry.locked_at.is_some());
+        }
+    }
+
+    #[test]
+    fn test_list_locked_users_empty_when_none_locked() {
+        clear_two_factor_store_for_tests();
+        setup_user("healthy-user");
+
+        let locked = AdminDashboardHandlers::list_locked_users(&admin()).unwrap();
+        assert!(locked.is_empty());
     }
 }
 
@@ -3535,12 +3575,12 @@ mod progressive_two_factor_lockout_tests {
     fn persistent_store_locks_after_ten_failures() {
         let store = InMemoryStore::default();
         for attempt in 1..=9 {
-            let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+            let state = store.record_failed_two_fa_attempt("user-lock", 10).unwrap();
             assert_eq!(state.failed_attempts, attempt);
             assert!(!state.locked);
         }
 
-        let state = store.record_failed_two_fa_attempt("user-lock").unwrap();
+        let state = store.record_failed_two_fa_attempt("user-lock", 10).unwrap();
         assert_eq!(state.failed_attempts, 10);
         assert!(state.locked);
         assert!(state.locked_at.is_some());
@@ -3551,7 +3591,7 @@ mod progressive_two_factor_lockout_tests {
         let store = InMemoryStore::default();
         for _ in 0..10 {
             store
-                .record_failed_two_fa_attempt("user-admin-unlock")
+                .record_failed_two_fa_attempt("user-admin-unlock", 10)
                 .unwrap();
         }
         assert!(store.get_lockout_state("user-admin-unlock").unwrap().locked);
@@ -3930,5 +3970,85 @@ mod tenant_provisioning_idempotency_tests {
 
         let existed_count = responses.iter().filter(|r| r.already_existed).count();
         assert_eq!(existed_count, 15);
+    }
+
+    #[test]
+    fn test_recovery_all_backup_codes_exhausted() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-exhausted-user";
+        let caller_user = caller(user_id);
+
+        // Enable and activate 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(setup.backup_codes.len(), 8);
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // Use all 8 backup codes one at a time; each recovery issues a fresh set.
+        let mut current_codes = setup.backup_codes.clone();
+        for i in 0..8 {
+            let resp = TwoFactorHandlers::recover_with_backup(
+                &caller_user,
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code: current_codes[0].clone(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("Recovery {} failed: {:?}", i, e));
+            current_codes = resp.new_backup_codes;
+            assert_eq!(current_codes.len(), 8);
+        }
+
+        // The original codes are entirely stale — none should work any more.
+        for old_code in &setup.backup_codes {
+            let result = TwoFactorHandlers::recover_with_backup(
+                &caller_user,
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code: old_code.clone(),
+                },
+            );
+            assert!(result.is_err(), "Old code should be invalid after exhaustion");
+            assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
+        }
+
+        // The newest code set works exactly once.
+        let fresh_code = current_codes[0].clone();
+        let first_use = TwoFactorHandlers::recover_with_backup(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: fresh_code.clone(),
+            },
+        );
+        assert!(first_use.is_ok(), "First use of fresh code should succeed");
+
+        let second_use = TwoFactorHandlers::recover_with_backup(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: fresh_code,
+            },
+        );
+        assert!(second_use.is_err(), "Second use of same code should be rejected");
+        assert!(second_use.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 }

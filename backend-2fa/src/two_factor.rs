@@ -291,6 +291,13 @@ pub struct TwoFactorLockoutState {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LockedUserSummary {
+    pub user_id: String,
+    pub failed_attempts: u32,
+    pub locked_at: Option<u64>,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -352,14 +359,21 @@ pub trait TwoFactorStore: Send + Sync {
     /// Persistent lockout state, used after Redis restarts.
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
 
-    /// Increment failed 2FA attempts and persist lockout after the tenth failure.
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
+    /// Increment failed 2FA attempts and persist lockout once the threshold is reached.
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String>;
 
     /// Reset failed attempts after a successful TOTP verification or recovery.
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String>;
 
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return all currently locked-out user accounts.
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String>;
 
     /// Return pool utilisation stats when the backing store supports it.
     /// Returns `None` for stores that have no connection pool (e.g. in-memory).
@@ -592,6 +606,7 @@ impl TwoFactorStore for MockTwoFactorStore {
     fn record_failed_two_fa_attempt(
         &self,
         _user_id: &str,
+        _lockout_threshold: u32,
     ) -> Result<TwoFactorLockoutState, String> {
         Ok(TwoFactorLockoutState::default())
     }
@@ -602,6 +617,10 @@ impl TwoFactorStore for MockTwoFactorStore {
 
     fn unlock_two_fa_account(&self, _user_id: &str, _actor: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        Ok(vec![])
     }
 }
 
@@ -797,7 +816,11 @@ impl TwoFactorStore for InMemoryStore {
             .unwrap_or_default())
     }
 
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String> {
         let mut lockouts = self.lockouts.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -806,7 +829,7 @@ impl TwoFactorStore for InMemoryStore {
         let state = lockouts.entry(user_id.to_string()).or_default();
         state.failed_attempts = state.failed_attempts.saturating_add(1);
         state.updated_at = now;
-        if state.failed_attempts >= 10 {
+        if state.failed_attempts >= lockout_threshold {
             state.locked = true;
             state.locked_at = Some(now);
         }
@@ -823,6 +846,21 @@ impl TwoFactorStore for InMemoryStore {
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
     }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        let lockouts = self.lockouts.lock().unwrap();
+        let mut result: Vec<LockedUserSummary> = lockouts
+            .iter()
+            .filter(|(_, state)| state.locked)
+            .map(|(uid, state)| LockedUserSummary {
+                user_id: uid.clone(),
+                failed_attempts: state.failed_attempts,
+                locked_at: state.locked_at,
+            })
+            .collect();
+        result.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+        Ok(result)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +873,7 @@ pub struct TenantConfig {
     pub tenant_id: String,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
+    pub lockout_threshold: u32,
 }
 
 impl TenantConfig {
@@ -843,6 +882,7 @@ impl TenantConfig {
             tenant_id: tenant_id.into(),
             totp_issuer: "PetChain".to_string(),
             rate_limit_max_failures: 5,
+            lockout_threshold: 10,
         }
     }
 }
@@ -933,7 +973,8 @@ impl TenantScopedStore {
         &self,
         user_id: &str,
     ) -> Result<TwoFactorLockoutState, String> {
-        self.inner.record_failed_two_fa_attempt(&self.key(user_id))
+        self.inner
+            .record_failed_two_fa_attempt(&self.key(user_id), self.config.lockout_threshold)
     }
 
     pub fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {

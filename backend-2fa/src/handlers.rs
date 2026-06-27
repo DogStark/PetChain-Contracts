@@ -6,8 +6,9 @@ use crate::rate_limiter::{
     InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore,
-    TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore, UserTwoFactorSummary,
+    AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
+    TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore,
+    UserTwoFactorSummary,
 };
 use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
@@ -187,6 +188,8 @@ pub struct TwoFactorHandlers {
 }
 
 impl TwoFactorHandlers {
+    const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
+
     pub fn new() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
@@ -260,11 +263,11 @@ impl TwoFactorHandlers {
     fn record_failed_verification(&self, user_id: &str) -> Result<(), ApiError> {
         let state = self
             .store
-            .record_failed_two_fa_attempt(user_id)
+            .record_failed_two_fa_attempt(user_id, Self::DEFAULT_LOCKOUT_THRESHOLD)
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
             return Err(ApiError::locked(
-                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
+                "2FA account locked due to too many failed attempts. Use admin unlock or a recovery code.",
                 None,
             ));
         }
@@ -809,6 +812,13 @@ impl AdminDashboardHandlers {
     /// POST /admin/users/{id}/unlock-2fa — clear persistent lockout state.
     pub fn unlock_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
         two_factor_store().unlock_two_fa_account(user_id, &admin.admin_id)
+    }
+
+    /// GET /admin/locked-users — list all accounts currently in a locked state.
+    pub fn list_locked_users(
+        _admin: &AuthenticatedAdmin,
+    ) -> Result<Vec<LockedUserSummary>, String> {
+        two_factor_store().list_locked_users()
     }
 
     /// GET /admin/users/{id}/audit-log — full 2FA event history (paginated).
