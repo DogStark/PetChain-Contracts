@@ -3931,4 +3931,84 @@ mod tenant_provisioning_idempotency_tests {
         let existed_count = responses.iter().filter(|r| r.already_existed).count();
         assert_eq!(existed_count, 15);
     }
+
+    #[test]
+    fn test_recovery_all_backup_codes_exhausted() {
+        clear_two_factor_store_for_tests();
+        let user_id = "recovery-exhausted-user";
+        let caller_user = caller(user_id);
+
+        // Enable and activate 2FA
+        let setup = TwoFactorHandlers::enable_two_factor(
+            &caller_user,
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "user@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(setup.backup_codes.len(), 8);
+
+        let token = generate_token(&setup.secret);
+        let handler = TwoFactorHandlers::new();
+        handler
+            .verify_and_activate(
+                &caller_user,
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // Use all 8 backup codes one at a time; each recovery issues a fresh set.
+        let mut current_codes = setup.backup_codes.clone();
+        for i in 0..8 {
+            let resp = TwoFactorHandlers::recover_with_backup(
+                &caller_user,
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code: current_codes[0].clone(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("Recovery {} failed: {:?}", i, e));
+            current_codes = resp.new_backup_codes;
+            assert_eq!(current_codes.len(), 8);
+        }
+
+        // The original codes are entirely stale — none should work any more.
+        for old_code in &setup.backup_codes {
+            let result = TwoFactorHandlers::recover_with_backup(
+                &caller_user,
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code: old_code.clone(),
+                },
+            );
+            assert!(result.is_err(), "Old code should be invalid after exhaustion");
+            assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
+        }
+
+        // The newest code set works exactly once.
+        let fresh_code = current_codes[0].clone();
+        let first_use = TwoFactorHandlers::recover_with_backup(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: fresh_code.clone(),
+            },
+        );
+        assert!(first_use.is_ok(), "First use of fresh code should succeed");
+
+        let second_use = TwoFactorHandlers::recover_with_backup(
+            &caller_user,
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: fresh_code,
+            },
+        );
+        assert!(second_use.is_err(), "Second use of same code should be rejected");
+        assert!(second_use.unwrap_err().message.contains("InvalidRecoveryCode"));
+    }
 }
