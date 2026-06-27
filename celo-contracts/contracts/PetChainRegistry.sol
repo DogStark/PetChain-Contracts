@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-contract PetChainRegistry {
+import "@openzeppelin/contracts/utils/Pausable.sol";
+
+contract PetChainRegistry is Pausable {
     // -------------------------------------------------------------------------
     // Constants — string length limits (issue #919)
     // -------------------------------------------------------------------------
@@ -123,12 +125,23 @@ contract PetChainRegistry {
         address previous = admin;
         admin = newAdmin;
         emit AdminTransferred(previous, newAdmin);
+    // Emergency stop (issue #928)
+    // -------------------------------------------------------------------------
+
+    /// @notice Halts all state-mutating operations. Only callable by admin.
+    function pause() external onlyAdmin {
+        _pause();
+    }
+
+    /// @notice Resumes state-mutating operations. Only callable by admin.
+    function unpause() external onlyAdmin {
+        _unpause();
     }
 
     // -------------------------------------------------------------------------
     // Vet management
     // -------------------------------------------------------------------------
-    function registerVet(string calldata licenseNumber, string calldata specialization) external {
+    function registerVet(string calldata licenseNumber, string calldata specialization) external whenNotPaused {
         require(bytes(licenseNumber).length > 0, "PetChainRegistry: empty licenseNumber");
 
         // issue #927 — uniqueness is enforced case-insensitively via a normalized key,
@@ -174,19 +187,19 @@ contract PetChainRegistry {
     }
 
     /// @notice Update the calling vet's own specialization. issue #921
-    function updateSpecialization(string calldata specialization) external {
+    function updateSpecialization(string calldata specialization) external whenNotPaused {
         require(vets[msg.sender].vetAddress == msg.sender, "PetChainRegistry: not a registered vet");
         vets[msg.sender].specialization = specialization;
         emit VetSpecializationUpdated(msg.sender, specialization);
     }
 
-    function verifyVet(address vet) external onlyAdmin {
+    function verifyVet(address vet) external onlyAdmin whenNotPaused {
         require(!vets[vet].isRevoked, "PetChainRegistry: vet is revoked");
         vets[vet].isVerified = true;
         emit VetVerified(vet);
     }
 
-    function revokeVet(address vet) external onlyAdmin {
+    function revokeVet(address vet) external onlyAdmin whenNotPaused {
         vets[vet].isVerified = false;
         vets[vet].isRevoked  = true;
         emit VetRevoked(vet);   // issue #916
@@ -203,7 +216,7 @@ contract PetChainRegistry {
         string calldata species,
         string calldata breed,
         string calldata birthday
-    ) external returns (uint256 petId) {
+    ) external whenNotPaused returns (uint256 petId) {
         require(bytes(name).length > 0 && bytes(name).length <= MAX_SHORT_LEN,
             "PetChainRegistry: invalid name length");
         require(bytes(species).length > 0 && bytes(species).length <= MAX_SHORT_LEN,
@@ -227,7 +240,7 @@ contract PetChainRegistry {
         emit PetRegistered(petId, msg.sender);
     }
 
-    function transferPet(uint256 petId, address to) external onlyPetOwner(petId) {
+    function transferPet(uint256 petId, address to) external onlyPetOwner(petId) whenNotPaused {
         require(to != address(0), "PetChainRegistry: zero address");
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         address from = pets[petId].owner;
@@ -247,14 +260,14 @@ contract PetChainRegistry {
         emit PetTransferred(petId, from, to);
     }
 
-    function deactivatePet(uint256 petId) external onlyPetOwner(petId) {
+    function deactivatePet(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
         require(pets[petId].active, "PetChainRegistry: already inactive");
         pets[petId].active = false;
         emit PetDeactivated(petId);   // issue #916
     }
 
     /// issue #917 — reactivate a previously deactivated pet.
-    function reactivatePet(uint256 petId) external onlyPetOwner(petId) {
+    function reactivatePet(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
         require(!pets[petId].active, "PetChainRegistry: already active");
         pets[petId].active = true;
         emit PetReactivated(petId);
@@ -272,7 +285,7 @@ contract PetChainRegistry {
         string calldata diagnosis,
         string calldata treatment,
         string calldata notes
-    ) external onlyVerifiedVet returns (uint256 recordId) {
+    ) external onlyVerifiedVet whenNotPaused returns (uint256 recordId) {
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "PetChainRegistry: invalid diagnosis length");
