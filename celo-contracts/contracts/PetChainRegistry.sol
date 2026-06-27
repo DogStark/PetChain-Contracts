@@ -43,6 +43,7 @@ contract PetChainRegistry {
 
     uint256 private _petCounter;
     uint256 private _recordCounter;
+    uint256 private _vetCount; // issue #929
 
     mapping(address => Vet)      public vets;
     mapping(uint256 => Pet)      public pets;
@@ -93,6 +94,9 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     function registerVet(string calldata licenseNumber, string calldata specialization) external {
         require(bytes(licenseNumber).length > 0, "PetChainRegistry: empty licenseNumber");
+        if (vets[msg.sender].vetAddress == address(0)) {
+            _vetCount++; // issue #929 — only count first-time registrations
+        }
         vets[msg.sender] = Vet({
             vetAddress:     msg.sender,
             licenseNumber:  licenseNumber,
@@ -228,6 +232,16 @@ contract PetChainRegistry {
     // -------------------------------------------------------------------------
     function getPetsByOwner(address owner) external view returns (uint256[] memory) {
         return _ownerPets[owner];
+    }
+
+    /// @notice Total number of vets ever registered. issue #929
+    function getTotalVets() external view returns (uint256) {
+        return _vetCount;
+    }
+
+    /// @notice Whether `petId` is currently active. issue #929
+    function isPetActive(uint256 petId) external view returns (bool) {
+        return pets[petId].active;
     }
 
     function getPetRecords(uint256 petId) external view returns (MedicalRecord[] memory) {
