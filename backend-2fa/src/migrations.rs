@@ -170,6 +170,12 @@ impl MigrationRunner {
         let pending = self.pending_migrations(executor)?;
         Ok(pending.is_empty())
     }
+
+    /// Returns the list of pending migrations (version + name) without executing any up_script.
+    pub fn dry_run(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
+        let pending = self.pending_migrations(executor)?;
+        Ok(pending.iter().map(|m| (m.version, m.name.clone())).collect())
+    }
 }
 
 #[cfg(test)]
@@ -325,6 +331,38 @@ mod tests {
                 m.version, m.name
             );
         }
+    fn test_dry_run_reports_pending_without_mutation() {
+        let executor = MockExecutor::new();
+        let migrations = vec![
+            Migration {
+                version: 1,
+                name: "create_users".to_string(),
+                up_script: "CREATE TABLE users (id INT);".to_string(),
+                down_script: "DROP TABLE IF EXISTS users;".to_string(),
+                checksum: "abc".to_string(),
+            },
+            Migration {
+                version: 2,
+                name: "add_email".to_string(),
+                up_script: "ALTER TABLE users ADD COLUMN email TEXT;".to_string(),
+                down_script: String::new(),
+                checksum: "def".to_string(),
+            },
+        ];
+        let runner = MigrationRunner::new(migrations);
+
+        // Both migrations should be reported as pending
+        let pending = runner.dry_run(&executor).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0], (1, "create_users".to_string()));
+        assert_eq!(pending[1], (2, "add_email".to_string()));
+
+        // State must be unchanged: is_up_to_date still false, apply still finds both
+        assert!(!runner.is_up_to_date(&executor).unwrap());
+        assert_eq!(runner.apply_pending(&executor).unwrap(), 2);
+
+        // After applying, dry_run reports nothing pending
+        assert!(runner.dry_run(&executor).unwrap().is_empty());
     }
 }
 
