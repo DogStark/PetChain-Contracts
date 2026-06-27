@@ -4,7 +4,9 @@ use crate::two_factor::{
     AuditLogEntry, LockedUserSummary, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState,
     TwoFactorStore, UserTwoFactorSummary,
 };
+use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use sqlx::{postgres::PgPoolOptions, PgPool};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,21 +33,35 @@ impl SecretProvider for EnvSecretProvider {
     }
 }
 
-/// AWS Secrets Manager provider for tests/usage. For testing we support
-/// an env var `AWS_SECRETS_JSON` containing a JSON map of key->value.
-/// In production this struct would call AWS SDK.
-pub struct AwsSecretsManagerProvider;
+/// AWS Secrets Manager provider — calls the real AWS Secrets Manager API.
+/// The region and credentials are resolved from the standard AWS environment
+/// (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, instance profile,
+/// etc.).  Set AWS_ENDPOINT_URL to redirect to LocalStack for local testing.
+pub struct AwsSecretsManagerProvider {
+    client: SecretsManagerClient,
+    runtime: Arc<Runtime>,
+}
+
+impl AwsSecretsManagerProvider {
+    pub fn new() -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        let config = runtime.block_on(
+            aws_config::defaults(aws_config::BehaviorVersion::latest()).load(),
+        );
+        let client = SecretsManagerClient::new(&config);
+        Ok(Self { client, runtime })
+    }
+}
+
 impl SecretProvider for AwsSecretsManagerProvider {
     fn get_secret(&self, key: &str) -> Result<String, String> {
-        if let Ok(json) = std::env::var("AWS_SECRETS_JSON") {
-            let map: Result<HashMap<String, String>, _> = serde_json::from_str(&json);
-            if let Ok(map) = map {
-                if let Some(v) = map.get(key) {
-                    return Ok(v.clone());
-                }
-            }
-        }
-        Err(format!("secret not found: {}", key))
+        let resp = self
+            .runtime
+            .block_on(self.client.get_secret_value().secret_id(key).send())
+            .map_err(|e| e.to_string())?;
+        resp.secret_string()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("secret '{}' has no string value", key))
     }
 }
 
@@ -55,7 +71,10 @@ pub fn select_secret_provider() -> Box<dyn SecretProvider> {
         .unwrap_or_else(|_| "env".to_string())
         .as_str()
     {
-        "aws" => Box::new(AwsSecretsManagerProvider {}),
+        "aws" => Box::new(
+            AwsSecretsManagerProvider::new()
+                .expect("failed to initialise AwsSecretsManagerProvider"),
+        ),
         _ => Box::new(EnvSecretProvider {}),
     }
 }
@@ -836,6 +855,27 @@ impl PostgresTwoFactorStore {
 }
 
 #[cfg(test)]
+/// Test double for AwsSecretsManagerProvider.  Reads secrets from the
+/// AWS_SECRETS_JSON env var (a JSON map of key→value) so unit tests can
+/// exercise secret-provider logic without real AWS credentials.
+pub struct MockAwsSecretsProvider;
+
+#[cfg(test)]
+impl SecretProvider for MockAwsSecretsProvider {
+    fn get_secret(&self, key: &str) -> Result<String, String> {
+        if let Ok(json) = std::env::var("AWS_SECRETS_JSON") {
+            let map: Result<HashMap<String, String>, _> = serde_json::from_str(&json);
+            if let Ok(map) = map {
+                if let Some(v) = map.get(key) {
+                    return Ok(v.clone());
+                }
+            }
+        }
+        Err(format!("secret not found: {}", key))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -882,10 +922,10 @@ mod tests {
     }
 
     #[test]
-    fn aws_provider_reads_json_map() {
+    fn mock_aws_provider_reads_json_map() {
         let map = serde_json::json!({"DB_KEY": "db://conn-string"}).to_string();
         std::env::set_var("AWS_SECRETS_JSON", map);
-        let prov = AwsSecretsManagerProvider {};
+        let prov = MockAwsSecretsProvider;
         let val = prov.get_secret("DB_KEY").unwrap();
         assert_eq!(val, "db://conn-string");
     }
@@ -899,13 +939,48 @@ mod tests {
     }
 
     #[test]
-    fn select_secret_provider_aws() {
+    fn select_secret_provider_aws_creates_provider() {
+        // Verify the "aws" branch constructs an AwsSecretsManagerProvider without
+        // panicking.  Fetching a secret requires real credentials; that path is
+        // exercised by the integration test below.
         std::env::set_var("SECRET_PROVIDER", "aws");
-        let map = serde_json::json!({"MYKEY": "VAL"}).to_string();
-        std::env::set_var("AWS_SECRETS_JSON", map);
         let prov = select_secret_provider();
-        let val = prov.get_secret("MYKEY").unwrap();
-        assert_eq!(val, "VAL");
+        // Without real credentials / localstack the fetch must fail, not panic.
+        assert!(prov.get_secret("NONEXISTENT_KEY_NO_CREDENTIALS").is_err());
+        std::env::remove_var("SECRET_PROVIDER");
+    }
+
+    /// Integration test — skipped unless AWS_SECRETS_INTEGRATION_TEST is set.
+    ///
+    /// To run against LocalStack:
+    ///   AWS_SECRETS_INTEGRATION_TEST=1 \
+    ///   AWS_ENDPOINT_URL=http://localhost:4566 \
+    ///   AWS_ACCESS_KEY_ID=test \
+    ///   AWS_SECRET_ACCESS_KEY=test \
+    ///   AWS_REGION=us-east-1 \
+    ///   AWS_TEST_SECRET_NAME=petchain-test-secret \
+    ///   cargo test aws_secrets_manager_integration -- --nocapture
+    #[test]
+    fn aws_secrets_manager_integration() {
+        if std::env::var("AWS_SECRETS_INTEGRATION_TEST").is_err() {
+            return;
+        }
+
+        let secret_name = std::env::var("AWS_TEST_SECRET_NAME")
+            .expect("AWS_TEST_SECRET_NAME must be set for the integration test");
+
+        let provider =
+            AwsSecretsManagerProvider::new().expect("failed to create AwsSecretsManagerProvider");
+
+        let result = provider.get_secret(&secret_name);
+        assert!(
+            result.is_ok(),
+            "failed to fetch secret '{}': {:?}",
+            secret_name,
+            result
+        );
+        // Basic sanity: the returned value is a non-empty string.
+        assert!(!result.unwrap().is_empty(), "fetched secret must not be empty");
     }
 
     // -----------------------------------------------------------------------
