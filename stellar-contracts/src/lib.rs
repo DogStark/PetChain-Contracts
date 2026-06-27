@@ -116,6 +116,9 @@ pub enum GroomingKey {
     RecurringScheduleCount,
     PetScheduleCount(u64),
     PetScheduleIndex((u64, u64)),
+    GroomerSlotIndex((Address, u64)),
+    GroomerSlotCount(Address),
+
 }
 
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -242,6 +245,8 @@ pub enum ContractError {
     VetNotFound = 31,
     VetNotVerified = 32,
     VeterinarianNotVerified = 33,
+    SlotAlreadyBooked = 34,
+
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -292,6 +297,18 @@ pub struct GroomingRecord {
     pub next_due: u64,
     pub cost: u64,
     pub notes: String,
+}
+
+
+/// A bookable grooming slot indexed by groomer for conflict detection.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroomingSlot {
+    pub slot_id: u64,
+    pub groomer_id: Address,
+    pub start_time: u64,
+    pub duration_mins: u64,
+    pub pet_id: u64,
 }
 
 #[contracttype]
@@ -8249,6 +8266,113 @@ impl PetChainContract {
     }
 
     // --- BREED METADATA ---
+    /// Book a grooming slot with conflict detection.
+    /// Checks for overlapping bookings for the same groomer within the
+    /// requested time window.  Returns the new slot_id on success, or
+    /// panics with `SlotAlreadyBooked` if a conflict is found.
+    ///
+    /// Conflict logic: existing.start_time < new.start_time + new.duration_mins
+    ///               && new.start_time < existing.start_time + existing.duration_mins
+    pub fn book_grooming_slot(
+        env: Env,
+        groomer_id: Address,
+        start_time: u64,
+        duration_mins: u64,
+        pet_id: u64,
+        owner: Address,
+    ) -> u64 {
+        owner.require_auth();
+
+        // Check the pet exists and caller is the owner
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        if pet.owner != owner {
+            panic_with_error!(env, ContractError::NotPetOwner);
+        }
+
+        // Verify groomer is registered
+        if !env.storage().instance().has(&GroomingKey::Groomer(groomer_id.clone())) {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+
+        // Load existing slots for this groomer and check for conflicts
+        let slot_count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomerSlotCount(groomer_id.clone()))
+            .unwrap_or(0);
+
+        for i in 1u64..=slot_count {
+            if let Some(slot) = env
+                .storage()
+                .instance()
+                .get::<GroomingKey, GroomingSlot>(&GroomingKey::GroomerSlotIndex(
+                    (groomer_id.clone(), i),
+                ))
+            {
+                // Conflict: existing.start_time < new.start_time + new.duration_mins
+                //         && new.start_time < existing.start_time + existing.duration_mins
+                if slot.start_time < start_time.saturating_add(duration_mins * 60)
+                    && start_time < slot.start_time.saturating_add(slot.duration_mins * 60)
+                {
+                    panic_with_error!(env, ContractError::SlotAlreadyBooked);
+                }
+            }
+        }
+
+        // No conflict — assign a new slot_id and persist the slot
+        let slot_id: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomingRecordCount)
+            .unwrap_or(0)
+            .saturating_add(1);
+
+        let new_slot = GroomingSlot {
+            slot_id,
+            groomer_id: groomer_id.clone(),
+            start_time,
+            duration_mins,
+            pet_id,
+        };
+
+        let new_count = slot_count.saturating_add(1);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomerSlotIndex((groomer_id.clone(), new_count)), &new_slot);
+        env.storage()
+            .instance()
+            .set(&GroomingKey::GroomerSlotCount(groomer_id), &new_count);
+
+        slot_id
+    }
+
+    /// Return all booked grooming slots for a given groomer (for testing / querying).
+    pub fn get_groomer_slots(env: Env, groomer_id: Address) -> Vec<GroomingSlot> {
+        let mut slots = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&GroomingKey::GroomerSlotCount(groomer_id.clone()))
+            .unwrap_or(0);
+        for i in 1u64..=count {
+            if let Some(slot) = env
+                .storage()
+                .instance()
+                .get::<GroomingKey, GroomingSlot>(&GroomingKey::GroomerSlotIndex(
+                    (groomer_id.clone(), i),
+                ))
+            {
+                slots.push_back(slot);
+            }
+        }
+        slots
+    }
+
+
 
     pub fn add_breed_metadata(
         env: Env,
