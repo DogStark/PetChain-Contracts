@@ -823,6 +823,16 @@ impl PostgresTwoFactorStore {
             _ => HmacAlgorithm::SHA1,
         }
     }
+
+    #[cfg(test)]
+    pub fn algorithm_to_db_pub(algorithm: HmacAlgorithm) -> String {
+        Self::algorithm_to_db(algorithm)
+    }
+
+    #[cfg(test)]
+    pub fn algorithm_from_db_pub(value: Option<&str>) -> HmacAlgorithm {
+        Self::algorithm_from_db(value)
+    }
 }
 
 #[cfg(test)]

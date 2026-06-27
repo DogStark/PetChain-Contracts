@@ -4052,3 +4052,279 @@ mod tenant_provisioning_idempotency_tests {
         assert!(second_use.unwrap_err().message.contains("InvalidRecoveryCode"));
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use crate::two_factor::{TotpConfig, TwoFactorAuth};
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    const ALGORITHMS: [Algorithm; 3] = [Algorithm::SHA1, Algorithm::SHA256, Algorithm::SHA512];
+    const WINDOWS: [u8; 4] = [0, 1, 2, 5];
+
+    #[test]
+    fn setup_then_verify_succeeds_for_all_algorithms_and_windows() {
+        for &algorithm in &ALGORITHMS {
+            for &window in &WINDOWS {
+                let config =
+                    TotpConfig::new(algorithm, 6, 30, window).expect("valid config");
+                let setup = TwoFactorAuth::setup_with_config(
+                    "prop@petchain.com",
+                    "PetChain",
+                    config.clone(),
+                )
+                .unwrap_or_else(|e| {
+                    panic!("setup failed for {:?} window={}: {}", algorithm, window, e)
+                });
+
+                let totp = TOTP::new(
+                    algorithm,
+                    6,
+                    window,
+                    30,
+                    Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+                    None,
+                    String::new(),
+                )
+                .unwrap();
+                let token = totp.generate_current().unwrap();
+
+                let verified =
+                    TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "verify failed for {:?} window={}: {}",
+                                algorithm, window, e
+                            )
+                        });
+                assert!(
+                    verified,
+                    "token generated at current time must verify for {:?} window={}",
+                    algorithm, window
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn algorithm_db_round_trip_preserves_identity() {
+        use crate::db::PostgresTwoFactorStore;
+        for &alg in &ALGORITHMS {
+            let db_val = PostgresTwoFactorStore::algorithm_to_db_pub(alg);
+            let round_tripped = PostgresTwoFactorStore::algorithm_from_db_pub(Some(&db_val));
+            assert_eq!(
+                alg, round_tripped,
+                "algorithm round-trip failed for {:?} (db value: {})",
+                alg, db_val
+            );
+        }
+    }
+
+    #[test]
+    fn eight_digit_tokens_verify_for_all_algorithms() {
+        for &algorithm in &ALGORITHMS {
+            let config = TotpConfig::new(algorithm, 8, 30, 1).unwrap();
+            let setup = TwoFactorAuth::setup_with_config("8dig@petchain.com", "PetChain", config.clone())
+                .unwrap();
+            let totp = TOTP::new(
+                algorithm, 8, 1, 30,
+                Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+                None, String::new(),
+            ).unwrap();
+            let token = totp.generate_current().unwrap();
+            assert_eq!(token.len(), 8);
+            let ok = TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config).unwrap();
+            assert!(ok, "8-digit token must verify for {:?}", algorithm);
+        }
+    }
+
+    #[test]
+    fn cross_algorithm_token_never_verifies() {
+        for &gen_alg in &ALGORITHMS {
+            for &ver_alg in &ALGORITHMS {
+                if gen_alg == ver_alg {
+                    continue;
+                }
+                let secret = TwoFactorAuth::generate_secret();
+                let gen_cfg = TotpConfig::new(gen_alg, 6, 30, 1).unwrap();
+                let ver_cfg = TotpConfig::new(ver_alg, 6, 30, 1).unwrap();
+
+                let totp = TOTP::new(
+                    gen_alg,
+                    6,
+                    1,
+                    30,
+                    Secret::Encoded(secret.clone()).to_bytes().unwrap(),
+                    None,
+                    String::new(),
+                )
+                .unwrap();
+                let token = totp.generate_current().unwrap();
+
+                let result =
+                    TwoFactorAuth::verify_token_with_config(&secret, &token, ver_cfg).unwrap();
+                assert!(
+                    !result,
+                    "token from {:?} must NOT verify under {:?}",
+                    gen_alg, ver_alg
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tenant_isolation_tests {
+    use crate::two_factor::{
+        InMemoryStore, TenantConfig, TenantRegistry, TenantScopedStore, TwoFactorData,
+        TwoFactorStore,
+    };
+    use std::sync::Arc;
+    use totp_rs::Algorithm;
+
+    fn make_data(secret: &str) -> TwoFactorData {
+        TwoFactorData {
+            secret: secret.to_string(),
+            backup_codes: vec!["0000-1111".to_string()],
+            enabled: true,
+            algorithm: Algorithm::SHA1,
+        }
+    }
+
+    #[test]
+    fn same_user_id_different_tenants_have_independent_secrets() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(
+            store.clone(),
+            TenantConfig::new("tenant-a"),
+        );
+        let tenant_b = TenantScopedStore::new(
+            store.clone(),
+            TenantConfig::new("tenant-b"),
+        );
+
+        let user_id = "shared-uid";
+        tenant_a.save(user_id, make_data("SECRET_A")).unwrap();
+        tenant_b.save(user_id, make_data("SECRET_B")).unwrap();
+
+        assert_eq!(tenant_a.get(user_id).unwrap().secret, "SECRET_A");
+        assert_eq!(tenant_b.get(user_id).unwrap().secret, "SECRET_B");
+    }
+
+    #[test]
+    fn deleting_in_one_tenant_does_not_affect_other() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("t1"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("t2"));
+
+        let user_id = "uid";
+        tenant_a.save(user_id, make_data("A")).unwrap();
+        tenant_b.save(user_id, make_data("B")).unwrap();
+
+        tenant_a.delete(user_id).unwrap();
+        assert!(tenant_a.get(user_id).is_err());
+        assert_eq!(tenant_b.get(user_id).unwrap().secret, "B");
+    }
+
+    #[test]
+    fn lockout_state_is_tenant_isolated() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("lock-a"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("lock-b"));
+
+        let user_id = "lockuser";
+
+        for _ in 0..10 {
+            tenant_a.record_failed_two_fa_attempt(user_id).unwrap();
+        }
+
+        let state_a = tenant_a.get_lockout_state(user_id).unwrap();
+        let state_b = tenant_b.get_lockout_state(user_id).unwrap();
+        assert!(state_a.locked, "tenant-a user must be locked out");
+        assert!(!state_b.locked, "tenant-b user must NOT be locked out");
+    }
+
+    #[test]
+    fn audit_log_is_tenant_isolated() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("audit-a"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("audit-b"));
+
+        let user_id = "audituser";
+        tenant_a.save(user_id, make_data("A")).unwrap();
+        tenant_b.save(user_id, make_data("B")).unwrap();
+
+        tenant_a
+            .append_audit_log(user_id, "setup", "system", None)
+            .unwrap();
+        tenant_a
+            .append_audit_log(user_id, "verify", "system", None)
+            .unwrap();
+        tenant_b
+            .append_audit_log(user_id, "disable", "admin", None)
+            .unwrap();
+
+        let log_a = tenant_a.get_audit_log(user_id, 1, 100).unwrap();
+        let log_b = tenant_b.get_audit_log(user_id, 1, 100).unwrap();
+        assert_eq!(log_a.len(), 2);
+        assert_eq!(log_b.len(), 1);
+        assert_eq!(log_b[0].event, "disable");
+    }
+
+    #[test]
+    fn canary_flag_is_tenant_isolated() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("canary-a"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("canary-b"));
+
+        let user_id = "canaryuser";
+        tenant_a.set_canary(user_id, true).unwrap();
+
+        assert!(tenant_a.is_canary(user_id));
+        assert!(!tenant_b.is_canary(user_id));
+    }
+
+    #[test]
+    fn enabled_state_is_tenant_isolated() {
+        let store = Arc::new(InMemoryStore::default());
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("en-a"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("en-b"));
+
+        let user_id = "enableuser";
+        tenant_a.save(user_id, make_data("A")).unwrap();
+        tenant_b.save(user_id, make_data("B")).unwrap();
+
+        tenant_a.update_enabled(user_id, false).unwrap();
+
+        assert!(!tenant_a.get(user_id).unwrap().enabled);
+        assert!(tenant_b.get(user_id).unwrap().enabled);
+    }
+
+    #[test]
+    fn registry_scoped_store_prevents_unknown_tenant() {
+        let registry = TenantRegistry::default();
+        let store: Arc<dyn TwoFactorStore> = Arc::new(InMemoryStore::default());
+
+        let result = registry.scoped_store("nonexistent", store);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown tenant"));
+    }
+
+    #[test]
+    fn registry_scoped_stores_are_isolated() {
+        let registry = TenantRegistry::default();
+        let store: Arc<dyn TwoFactorStore> = Arc::new(InMemoryStore::default());
+
+        registry.provision(TenantConfig::new("reg-a")).unwrap();
+        registry.provision(TenantConfig::new("reg-b")).unwrap();
+
+        let scoped_a = registry.scoped_store("reg-a", store.clone()).unwrap();
+        let scoped_b = registry.scoped_store("reg-b", store.clone()).unwrap();
+
+        let user_id = "reguser";
+        scoped_a.save(user_id, make_data("RA")).unwrap();
+        scoped_b.save(user_id, make_data("RB")).unwrap();
+
+        assert_eq!(scoped_a.get(user_id).unwrap().secret, "RA");
+        assert_eq!(scoped_b.get(user_id).unwrap().secret, "RB");
+    }
+}
