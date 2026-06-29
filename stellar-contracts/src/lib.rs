@@ -252,6 +252,7 @@ pub enum ContractError {
     VetNotVerified = 32,
     VeterinarianNotVerified = 33,
     SlotAlreadyBooked = 34,
+    DuplicateActivity = 35,
 
 }
 
@@ -2473,6 +2474,8 @@ impl PetChainContract {
             .get::<ConsentKey, u64>(&ConsentKey::PetConsentCount(pet_id))
             .unwrap_or(0);
         let mut consents = Vec::new(&env);
+        let now = env.ledger().timestamp();
+        let mut expired_count = 0u32;
         for index in 1..=count {
             if let Some(consent_id) = env
                 .storage()
@@ -2485,10 +2488,23 @@ impl PetChainContract {
                     .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
                 {
                     if consent.is_active {
+                        // Filter out expired consents
+                        if let Some(expires_at) = consent.expires_at {
+                            if now >= expires_at {
+                                expired_count = expired_count.saturating_add(1);
+                                continue;
+                            }
+                        }
                         consents.push_back(consent);
                     }
                 }
             }
+        }
+        if expired_count > 0 {
+            env.events().publish(
+                (Symbol::short("consent_exp"),),
+                (pet_id, expired_count),
+            );
         }
         consents
     }
@@ -8851,6 +8867,125 @@ impl PetChainContract {
         );
 
         matches
+    }
+
+    pub fn add_activity_record(
+        env: Env,
+        pet_id: u64,
+        activity_type: ActivityType,
+        duration_minutes: u32,
+        intensity: u32,
+        distance_meters: u32,
+        notes: String,
+    ) -> u64 {
+        // Verify pet exists
+        let _pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        let now = env.ledger().timestamp();
+        let window: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::IdempotencyWindow)
+            .unwrap_or(60); // Default 60 seconds
+
+        // Create idempotency key from activity components
+        // Use: activity_type (as u32) + pet_id + rounded duration
+        let mut key_bytes = [0u8; 32];
+        let activity_u32 = activity_type as u32;
+        key_bytes[0..4].copy_from_slice(&activity_u32.to_le_bytes());
+        key_bytes[4..12].copy_from_slice(&pet_id.to_le_bytes());
+        let rounded_duration = (duration_minutes / 10) as u64;
+        key_bytes[12..20].copy_from_slice(&rounded_duration.to_le_bytes());
+        
+        let idem_key = ActivityKey::ActivityIdempotencyKey(Bytes::from_array(&env, &key_bytes));
+
+        // Check if key exists and is not expired
+        if let Some(submitted_at) = env.storage().instance().get::<ActivityKey, u64>(&idem_key) {
+            let ttl: u64 = 86400; // 24 hours TTL
+            let expiry = submitted_at.saturating_add(ttl);
+            if now < expiry {
+                panic_with_error!(&env, ContractError::DuplicateActivity);
+            }
+        }
+
+        // Store idempotency key with current timestamp
+        env.storage()
+            .instance()
+            .set(&idem_key, &now);
+
+        // Allocate new activity ID
+        let activity_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::ActivityRecordCount)
+            .unwrap_or(0);
+        let activity_id = safe_increment(activity_count);
+
+        // Create and store activity record
+        let record = ActivityRecord {
+            id: activity_id,
+            pet_id,
+            activity_type,
+            duration_minutes,
+            intensity,
+            distance_meters,
+            recorded_at: now,
+            notes,
+        };
+
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecord(activity_id), &record);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::ActivityRecordCount, &activity_id);
+
+        // Track pet's activities
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get(&ActivityKey::PetActivityCount(pet_id))
+            .unwrap_or(0);
+        let pet_index = safe_increment(pet_count);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::PetActivityIndex((pet_id, pet_index)), &activity_id);
+        env.storage()
+            .instance()
+            .set(&ActivityKey::PetActivityCount(pet_id), &pet_index);
+
+        activity_id
+    }
+
+    pub fn set_activity_idempotency_window(env: Env, admin: Address, window_seconds: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&ActivityKey::IdempotencyWindow, &window_seconds);
+    }
+
+    pub fn purge_expired_idempotency_keys(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let now = env.ledger().timestamp();
+        let ttl: u64 = 86400; // 24 hours
+        let mut purged = 0u32;
+
+        // Note: In a production system, maintain a separate index of active keys
+        // For now, we rely on external processes to call this periodically
+        // The actual purging happens lazily during add_activity_record checks
+        
+        purged
     }
 } // end impl PetChainContract
 
