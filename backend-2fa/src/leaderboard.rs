@@ -1114,6 +1114,8 @@ mod tests {
             .collect();
         let result = get_leaderboard(&entries, 1, 4_000_000_000, 1000);
         assert!(result.is_err());
+    }
+
     // Issue #867 – Authentication for leaderboard WebSocket endpoint
     // -----------------------------------------------------------------------
 

@@ -19,28 +19,21 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
-match algorithm {
-HmacAlgorithm::SHA512 => TotpConfig::high_security(),
-HmacAlgorithm::SHA256 => TotpConfig::high_security(),
-_ => TotpConfig::legacy_sha1(),
-}
-}
-
-/// Verify a TOTP token with replay protection.
-fn verify_token_with_replay_protection(
-secret: &str,
-token: &str,
-config: TotpConfig,
-last_used_step: Option<u64>,
-) -> Result<bool, String> {
-TwoFactorAuth::verify_token_with_config(secret, token, config, last_used_step)
-}
-(algorithm: HmacAlgorithm) -> TotpConfig {
     match algorithm {
         HmacAlgorithm::SHA512 => TotpConfig::high_security(),
         HmacAlgorithm::SHA256 => TotpConfig::high_security(),
         _ => TotpConfig::legacy_sha1(),
     }
+}
+
+/// Verify a TOTP token with replay protection.
+fn verify_token_with_replay_protection(
+    secret: &str,
+    token: &str,
+    config: TotpConfig,
+    last_used_step: Option<u64>,
+) -> Result<bool, String> {
+    TwoFactorAuth::verify_token_with_config(secret, token, config, last_used_step)
 }
 
 #[cfg(test)]
@@ -305,6 +298,19 @@ impl TwoFactorHandlers {
     ) -> Result<EnableTwoFactorResponse, ApiError> {
         caller.authorize(&req.user_id)?;
 
+        self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("enroll", &req.user_id);
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(ApiError::rate_limited(
+                format!(
+                    "Too many enrollment attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                rate_result.retry_after_secs(),
+            ));
+        }
+
         if let Some(key) = req.idempotency_key.as_deref() {
             let lookup = idempotency_key(&req.user_id, key);
             let store = idempotency_store();
@@ -358,6 +364,7 @@ impl TwoFactorHandlers {
             );
         }
 
+        self.limiter.record_success(&Self::rate_limit_key("enroll", &req.user_id));
         Ok(response)
     }
 
