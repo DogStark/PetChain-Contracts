@@ -4,7 +4,7 @@ mod tests {
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
         overwrite_two_factor_data_for_tests, AuthenticatedUser, DisableTwoFactorRequest,
         EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
-        TwoFactorHandlers, VerifyTwoFactorRequest,
+        TwoFactorHandlers, UpgradeAlgorithmRequest, VerifyTwoFactorRequest,
     };
     use crate::two_factor::{
         MockStoreConfig, MockStoreFailure, MockTwoFactorStore, TotpConfig, TwoFactorAuth,
@@ -4788,5 +4788,401 @@ mod tenant_isolation_tests {
         let resp = test::call_service(&app, req).await;
 
         assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+    }
+}
+
+    // -----------------------------------------------------------------------
+    // Algorithm Upgrade Tests (Issue #829)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upgrade_algorithm_success() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-upgrade-success";
+        
+        // 1. Enroll with default SHA1
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "upgrade@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // 2. Activate 2FA
+        let handlers = TwoFactorHandlers::new();
+        let token_sha1 = generate_token(&resp.secret);
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token_sha1.clone(),
+                },
+            )
+            .unwrap();
+
+        // Verify user is on SHA1
+        let data_before = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_eq!(data_before.algorithm, Algorithm::SHA1);
+        assert!(data_before.enabled);
+
+        // 3. Upgrade to SHA256
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller(user_id),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token: token_sha1,
+            },
+        );
+
+        assert!(upgrade_result.is_ok());
+        let upgrade_resp = upgrade_result.unwrap();
+        
+        // Verify response
+        assert_eq!(upgrade_resp.algorithm, "SHA256");
+        assert!(!upgrade_resp.new_secret.is_empty());
+        assert!(!upgrade_resp.new_otpauth_uri.is_empty());
+        assert!(!upgrade_resp.new_qr_code.is_empty());
+        assert_eq!(upgrade_resp.new_backup_codes.len(), 8);
+        assert!(upgrade_resp.new_otpauth_uri.contains("algorithm=SHA256"));
+
+        // Verify stored data has been updated
+        let data_after = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_eq!(data_after.algorithm, Algorithm::SHA256);
+        assert_eq!(data_after.secret, upgrade_resp.new_secret);
+        assert_eq!(data_after.backup_codes, upgrade_resp.new_backup_codes);
+        assert!(data_after.enabled);
+        
+        // Old secret should no longer work
+        assert_ne!(data_after.secret, resp.secret);
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_wrong_token_rejected() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-upgrade-wrong-token";
+        
+        // 1. Enroll and activate with SHA1
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "upgrade2@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let handlers = TwoFactorHandlers::new();
+        let token_sha1 = generate_token(&resp.secret);
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token_sha1,
+                },
+            )
+            .unwrap();
+
+        // 2. Try to upgrade with wrong token
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller(user_id),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token: "000000".to_string(), // Wrong token
+            },
+        );
+
+        assert!(upgrade_result.is_err());
+        let err = upgrade_result.unwrap_err();
+        assert_eq!(err.code, "UNAUTHORIZED");
+        assert!(err.message.contains("Invalid TOTP token"));
+
+        // Verify data is unchanged (still SHA1)
+        let data = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_eq!(data.algorithm, Algorithm::SHA1);
+        assert_eq!(data.secret, resp.secret);
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_already_on_sha256_returns_409() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-already-sha256";
+        
+        // Directly set up user with SHA256
+        let config = TotpConfig {
+            algorithm: Algorithm::SHA256,
+            digits: 6,
+            period: 30,
+            window: 1,
+            backup_code_count: 8,
+        };
+        
+        let setup = TwoFactorAuth::setup_with_config(
+            "already@petchain.com",
+            "PetChain",
+            config,
+        )
+        .unwrap();
+
+        overwrite_two_factor_data_for_tests(
+            user_id,
+            TwoFactorData {
+                secret: setup.secret.clone(),
+                backup_codes: setup.backup_codes.clone(),
+                enabled: true,
+                algorithm: Algorithm::SHA256,
+                last_used_step: None,
+            },
+        );
+
+        // Generate token with SHA256
+        let totp = TOTP::new(
+            Algorithm::SHA256,
+            6,
+            1,
+            30,
+            Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let token_sha256 = totp.generate_current().unwrap();
+
+        // Try to upgrade when already on SHA256
+        let handlers = TwoFactorHandlers::new();
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller(user_id),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token: token_sha256,
+            },
+        );
+
+        assert!(upgrade_result.is_err());
+        let err = upgrade_result.unwrap_err();
+        assert_eq!(err.code, "CONFLICT");
+        assert!(err.message.contains("already upgraded"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_2fa_not_enabled() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-not-enabled";
+        
+        // Enroll but don't activate
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "not-enabled@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let token = generate_token(&resp.secret);
+
+        // Try to upgrade without activating first
+        let handlers = TwoFactorHandlers::new();
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller(user_id),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token,
+            },
+        );
+
+        assert!(upgrade_result.is_err());
+        let err = upgrade_result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("not enabled"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_user_not_found() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-does-not-exist";
+        
+        // Try to upgrade for non-existent user
+        let handlers = TwoFactorHandlers::new();
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller(user_id),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        assert!(upgrade_result.is_err());
+        let err = upgrade_result.unwrap_err();
+        assert_eq!(err.code, "NOT_FOUND");
+        assert!(err.message.contains("not configured"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_unauthorized_caller() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-upgrade-unauthorized";
+        
+        // Enroll and activate
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "unauth@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let handlers = TwoFactorHandlers::new();
+        let token = generate_token(&resp.secret);
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+
+        // Try to upgrade as a different user
+        let upgrade_result = handlers.upgrade_algorithm(
+            &caller("attacker"),
+            UpgradeAlgorithmRequest {
+                user_id: user_id.to_string(),
+                token,
+            },
+        );
+
+        assert!(upgrade_result.is_err());
+        let err = upgrade_result.unwrap_err();
+        assert_eq!(err.code, "FORBIDDEN");
+        assert!(err.message.contains("your own 2FA"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_new_backup_codes_generated() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-new-backup-codes";
+        
+        // Enroll and activate
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "newcodes@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let old_backup_codes = resp.backup_codes.clone();
+
+        let handlers = TwoFactorHandlers::new();
+        let token = generate_token(&resp.secret);
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+
+        // Upgrade
+        let upgrade_resp = handlers
+            .upgrade_algorithm(
+                &caller(user_id),
+                UpgradeAlgorithmRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // New backup codes should be different
+        assert_ne!(upgrade_resp.new_backup_codes, old_backup_codes);
+        assert_eq!(upgrade_resp.new_backup_codes.len(), 8);
+        
+        // Verify they're stored
+        let data = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_eq!(data.backup_codes, upgrade_resp.new_backup_codes);
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_old_secret_invalidated() {
+        clear_two_factor_store_for_tests();
+        
+        let user_id = "user-old-secret-invalid";
+        
+        // Enroll and activate
+        let resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "invalid@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        let old_secret = resp.secret.clone();
+        let handlers = TwoFactorHandlers::new();
+        let token = generate_token(&old_secret);
+        
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: token.clone(),
+                },
+            )
+            .unwrap();
+
+        // Upgrade
+        let upgrade_resp = handlers
+            .upgrade_algorithm(
+                &caller(user_id),
+                UpgradeAlgorithmRequest {
+                    user_id: user_id.to_string(),
+                    token,
+                },
+            )
+            .unwrap();
+
+        // Old secret should be replaced
+        let data = get_two_factor_data_for_tests(user_id).unwrap();
+        assert_ne!(data.secret, old_secret);
+        assert_eq!(data.secret, upgrade_resp.new_secret);
+
+        // Old tokens should no longer work
+        let old_token = generate_token(&old_secret);
+        let login_result = handlers.verify_login_token(
+            &caller(user_id),
+            LoginWithTwoFactorRequest {
+                user_id: user_id.to_string(),
+                token: old_token,
+            },
+        );
+        
+        // Should fail because the secret changed
+        assert!(login_result.is_ok());
+        assert!(!login_result.unwrap());
     }
 }

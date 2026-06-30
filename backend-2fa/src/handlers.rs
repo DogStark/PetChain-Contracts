@@ -19,23 +19,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
-match algorithm {
-HmacAlgorithm::SHA512 => TotpConfig::high_security(),
-HmacAlgorithm::SHA256 => TotpConfig::high_security(),
-_ => TotpConfig::legacy_sha1(),
-}
-}
-
-/// Verify a TOTP token with replay protection.
-fn verify_token_with_replay_protection(
-secret: &str,
-token: &str,
-config: TotpConfig,
-last_used_step: Option<u64>,
-) -> Result<bool, String> {
-TwoFactorAuth::verify_token_with_config(secret, token, config, last_used_step)
-}
-(algorithm: HmacAlgorithm) -> TotpConfig {
     match algorithm {
         HmacAlgorithm::SHA512 => TotpConfig::high_security(),
         HmacAlgorithm::SHA256 => TotpConfig::high_security(),
@@ -181,12 +164,27 @@ pub struct RecoverWithBackupRequest {
     pub backup_code: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpgradeAlgorithmRequest {
+    pub user_id: String,
+    pub token: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RecoverWithBackupResponse {
     pub new_secret: String,
     pub new_otpauth_uri: String,
     pub new_backup_codes: Vec<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpgradeAlgorithmResponse {
+    pub new_secret: String,
+    pub new_otpauth_uri: String,
+    pub new_qr_code: String,
+    pub new_backup_codes: Vec<String>,
+    pub algorithm: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -569,6 +567,109 @@ impl TwoFactorHandlers {
             new_otpauth_uri: setup.otpauth_uri,
             new_backup_codes: setup.backup_codes,
             enabled: true,
+        })
+    }
+
+    /// Upgrade TOTP algorithm from SHA1 to SHA256
+    /// Requires valid current TOTP token to prove possession
+    /// Returns new secret with SHA256 algorithm and new backup codes
+    pub fn upgrade_algorithm(
+        &self,
+        caller: &AuthenticatedUser,
+        req: UpgradeAlgorithmRequest,
+    ) -> Result<UpgradeAlgorithmResponse, ApiError> {
+        caller.authorize(&req.user_id)?;
+
+        // Get current 2FA data
+        let data = self.store_get(&req.user_id)?;
+
+        if !data.enabled {
+            return Err(ApiError::bad_request("2FA not enabled for user", None));
+        }
+
+        // Check if already on SHA256
+        if data.algorithm == HmacAlgorithm::SHA256 {
+            return Err(ApiError::conflict(
+                "Algorithm already upgraded to SHA256",
+                None,
+            ));
+        }
+
+        // Verify current TOTP token with existing algorithm
+        self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("upgrade", &req.user_id);
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(ApiError::rate_limited(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                rate_result.retry_after_secs(),
+            ));
+        }
+
+        let is_valid = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            verification_config(data.algorithm),
+        )
+        .map_err(|e| ApiError::internal_error(e, None))?;
+
+        if !is_valid {
+            self.record_failed_verification(&req.user_id)?;
+            return Err(ApiError::unauthorized(
+                "Invalid TOTP token",
+                None,
+            ));
+        }
+
+        // Token is valid, proceed with upgrade
+        self.limiter.record_success(&key);
+        self.store
+            .reset_two_fa_failures(&req.user_id)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Generate new secret with SHA256
+        let config = TotpConfig {
+            algorithm: HmacAlgorithm::SHA256,
+            digits: 6,
+            period: 30,
+            window: 1,
+            backup_code_count: 8,
+        };
+
+        // Get user email from existing data or use placeholder
+        let user_email = format!("user-{}", req.user_id);
+        
+        let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Save new secret and backup codes, immediately invalidate old secret
+        self.store
+            .save(
+                &req.user_id,
+                TwoFactorData {
+                    secret: setup.secret.clone(),
+                    backup_codes: setup.backup_codes.clone(),
+                    enabled: true,
+                    algorithm: HmacAlgorithm::SHA256,
+                    last_used_step: None,
+                },
+            )
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Log the upgrade in audit log
+        self.store
+            .append_audit_log(&req.user_id, "algorithm_upgraded", &req.user_id, Some("SHA1->SHA256"))
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        Ok(UpgradeAlgorithmResponse {
+            new_secret: setup.secret,
+            new_otpauth_uri: setup.otpauth_uri,
+            new_qr_code: setup.qr_code_base64,
+            new_backup_codes: setup.backup_codes,
+            algorithm: "SHA256".to_string(),
         })
     }
 }

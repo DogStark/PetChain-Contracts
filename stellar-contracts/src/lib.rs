@@ -806,6 +806,15 @@ pub struct Vet {
     pub clinic_info: Option<String>, // Simplified to String to avoid nested Option issues
 }
 
+/// Result of a batch verification operation
+/// Allows partial success - some vets may succeed while others fail
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchResult {
+    pub succeeded: Vec<Address>,
+    pub failed: Vec<(Address, ContractError)>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaccineType {
@@ -1104,6 +1113,25 @@ pub enum SystemKey {
     CustodyChain(u64), // pet_id -> Vec<CustodyEntry>
     // #699: governance-controlled parameters
     HealthScoreCacheTtl, // TTL (seconds) for health-score cache entries
+    // #828: Statistics snapshots for governance reporting
+    StatisticsSnapshot(u64), // snapshot_id -> StatisticsSnapshot
+    SnapshotCount,           // Total number of snapshots
+    SnapshotIndex(u64),      // index (0-99) -> snapshot_id (for purging oldest)
+}
+
+/// Statistics snapshot for governance reporting (Issue #828)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatisticsSnapshot {
+    pub snapshot_id: u64,
+    pub timestamp: u64,
+    pub total_pets: u64,
+    pub active_pets: u64,
+    pub species_distribution: Map<String, u64>,
+    pub total_vets: u64,
+    pub total_medical_records: u64,
+    pub total_vaccinations: u64,
+    pub total_insurance_claims: u64,
 }
 
 #[contracttype]
@@ -2785,6 +2813,202 @@ impl PetChainContract {
             }
         }
         overdue_pets
+    }
+
+    // --- STATISTICS SNAPSHOT FOR GOVERNANCE REPORTING (Issue #828) ---
+
+    /// Captures a point-in-time snapshot of all key statistics for governance reporting.
+    /// Requires multisig admin authorization.
+    /// 
+    /// The snapshot includes:
+    /// - Total pets (all registered)
+    /// - Active pets (currently activated)
+    /// - Species distribution (counts per species)
+    /// - Total vets (all registered)
+    /// - Total medical records
+    /// - Total vaccinations
+    /// - Total insurance claims
+    /// - Ledger timestamp
+    /// 
+    /// Maximum 100 snapshots are stored. When the 101st snapshot is taken,
+    /// the oldest snapshot is purged automatically.
+    /// 
+    /// Returns: The snapshot ID for later retrieval.
+    pub fn take_statistics_snapshot(env: Env, admin: Address) -> u64 {
+        Self::require_admin_auth(&env, &admin);
+
+        // Generate snapshot ID
+        let snapshot_count = env
+            .storage()
+            .instance()
+            .get::<SystemKey, u64>(&SystemKey::SnapshotCount)
+            .unwrap_or(0);
+        
+        let snapshot_id = safe_increment(snapshot_count);
+
+        // Gather total pets
+        let total_pets = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::PetCount)
+            .unwrap_or(0);
+
+        // Gather active pets count
+        let active_pets = env
+            .storage()
+            .instance()
+            .get::<StatsKey, u64>(&StatsKey::ActivePetsCount)
+            .unwrap_or(0);
+
+        // Build species distribution map
+        let mut species_distribution = Map::new(&env);
+        let species_list = vec![
+            String::from_str(&env, "Dog"),
+            String::from_str(&env, "Cat"),
+            String::from_str(&env, "Bird"),
+            String::from_str(&env, "Rabbit"),
+            String::from_str(&env, "Other"),
+        ];
+
+        for species in species_list.iter() {
+            let count = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::SpeciesPetCount(species.clone()))
+                .unwrap_or(0);
+            species_distribution.set(species, count);
+        }
+
+        // Gather total vets count
+        let total_vets = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::VetCount)
+            .unwrap_or(0);
+
+        // Gather total medical records
+        let total_medical_records = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::MedicalRecordCount)
+            .unwrap_or(0);
+
+        // Gather total vaccinations
+        let total_vaccinations = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::VaccinationCount)
+            .unwrap_or(0);
+
+        // Gather total insurance claims
+        let total_insurance_claims = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::ClaimCount)
+            .unwrap_or(0);
+
+        // Get ledger timestamp
+        let timestamp = env.ledger().timestamp();
+
+        // Create the snapshot
+        let snapshot = StatisticsSnapshot {
+            snapshot_id,
+            timestamp,
+            total_pets,
+            active_pets,
+            species_distribution,
+            total_vets,
+            total_medical_records,
+            total_vaccinations,
+            total_insurance_claims,
+        };
+
+        // Store the snapshot
+        env.storage()
+            .instance()
+            .set(&SystemKey::StatisticsSnapshot(snapshot_id), &snapshot);
+
+        // Update snapshot count
+        env.storage()
+            .instance()
+            .set(&SystemKey::SnapshotCount, &snapshot_id);
+
+        // Manage the snapshot index (max 100 snapshots)
+        // Calculate the index position (0-99)
+        let index_position = (snapshot_id - 1) % 100;
+
+        // Store the snapshot ID at the index position
+        env.storage()
+            .instance()
+            .set(&SystemKey::SnapshotIndex(index_position), &snapshot_id);
+
+        // If we've exceeded 100 snapshots, purge the oldest
+        if snapshot_id > 100 {
+            // The snapshot to purge is at the same index position (it's now the oldest)
+            let snapshot_to_purge = snapshot_id - 100;
+            
+            // Remove the old snapshot from storage
+            env.storage()
+                .instance()
+                .remove(&SystemKey::StatisticsSnapshot(snapshot_to_purge));
+        }
+
+        snapshot_id
+    }
+
+    /// Retrieves a statistics snapshot by its ID.
+    /// This is a public function - no authorization required.
+    /// 
+    /// Returns: The snapshot if it exists, None otherwise.
+    pub fn get_snapshot(env: Env, snapshot_id: u64) -> Option<StatisticsSnapshot> {
+        env.storage()
+            .instance()
+            .get::<SystemKey, StatisticsSnapshot>(&SystemKey::StatisticsSnapshot(snapshot_id))
+    }
+
+    /// Returns the total number of snapshots taken (including purged ones).
+    /// This count never decreases - it represents the total snapshot ID counter.
+    pub fn get_snapshot_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get::<SystemKey, u64>(&SystemKey::SnapshotCount)
+            .unwrap_or(0)
+    }
+
+    /// Returns a list of all currently stored snapshot IDs (max 100).
+    /// Useful for discovering which snapshots are available.
+    pub fn get_available_snapshot_ids(env: Env) -> Vec<u64> {
+        let snapshot_count = env
+            .storage()
+            .instance()
+            .get::<SystemKey, u64>(&SystemKey::SnapshotCount)
+            .unwrap_or(0);
+
+        let mut snapshot_ids = Vec::new(&env);
+        
+        if snapshot_count == 0 {
+            return snapshot_ids;
+        }
+
+        // Determine the range of snapshots that should exist
+        let start_id = if snapshot_count > 100 {
+            snapshot_count - 99 // Last 100 snapshots
+        } else {
+            1 // All snapshots from the beginning
+        };
+
+        // Collect all valid snapshot IDs
+        for id in start_id..=snapshot_count {
+            if env
+                .storage()
+                .instance()
+                .has(&SystemKey::StatisticsSnapshot(id))
+            {
+                snapshot_ids.push_back(id);
+            }
+        }
+
+        snapshot_ids
     }
 
     // --- ACCESS LOG EXPORT ---
@@ -5291,6 +5515,47 @@ impl PetChainContract {
     pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
         PetChainContract::require_admin_auth(&env, &admin);
         PetChainContract::_verify_vet_internal(&env, vet_address)
+    }
+
+    /// Batch verify multiple vets in a single call
+    /// Maximum batch size: 20 vets
+    /// Returns BatchResult with succeeded and failed addresses
+    /// Does not abort on individual failures - continues processing all vets
+    pub fn batch_verify_vets(env: Env, admin: Address, vet_addresses: Vec<Address>) -> BatchResult {
+        // Require admin authorization
+        PetChainContract::require_admin_auth(&env, &admin);
+
+        // Validate batch size
+        let batch_size = vet_addresses.len();
+        if batch_size > 20 {
+            panic_with_error!(&env, ContractError::BatchTooLarge);
+        }
+
+        // Initialize result vectors
+        let mut succeeded = Vec::new(&env);
+        let mut failed = Vec::new(&env);
+
+        // Process each vet address
+        for vet_address in vet_addresses.iter() {
+            // Check if vet exists
+            if let Some(mut vet) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
+            {
+                // Vet exists, verify it
+                vet.verified = true;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Vet(vet.address.clone()), &vet);
+                succeeded.push_back(vet_address.clone());
+            } else {
+                // Vet not found, record failure
+                failed.push_back((vet_address.clone(), ContractError::VetNotFound));
+            }
+        }
+
+        BatchResult { succeeded, failed }
     }
 
     pub fn register_vet_specializations(
