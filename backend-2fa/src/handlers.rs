@@ -223,6 +223,13 @@ impl TwoFactorHandlers {
         }
     }
 
+    #[derive(Debug, Deserialize, Clone)]
+pub struct RevokeSessionRequest {
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub revoke_all: bool,
+}
+
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
         Self {
             limiter,
@@ -237,6 +244,34 @@ impl TwoFactorHandlers {
             store,
             issuer: "PetChain".to_string(),
         }
+    }
+
+    /// POST /2fa/revoke-session
+    /// Revokes a specific session by `session_id` (JTI), or all sessions
+    /// for the user if `revoke_all: true` is passed. Subsequent requests
+    /// bearing a revoked JTI must be rejected with 401 UNAUTHORIZED by the
+    /// auth middleware via `is_session_revoked`.
+    pub fn revoke_session(
+        &self,
+        caller: &AuthenticatedUser,
+        req: RevokeSessionRequest,
+    ) -> Result<(), ApiError> {
+        if req.revoke_all {
+            self.store
+                .revoke_all_sessions(&caller.user_id)
+                .map_err(|e| ApiError::internal_error(e, None))?;
+            return Ok(());
+        }
+
+        let session_id = req
+            .session_id
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("session_id or revoke_all is required", None))?;
+
+        self.store
+            .revoke_session(&caller.user_id, session_id)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+        Ok(())
     }
 
     pub fn with_store_and_limiter(
@@ -1426,6 +1461,85 @@ mod pool_metrics_tests {
         assert_eq!(stats.idle, 0);
         assert_eq!(stats.max, 0);
     }
+
+
+    mod revoke_session_tests {
+    use super::*;
+    use crate::two_factor::InMemoryStore;
+    use std::sync::Arc;
+
+    fn handlers() -> TwoFactorHandlers {
+        TwoFactorHandlers::with_store(Arc::new(InMemoryStore::default()))
+    }
+
+    #[test]
+    fn test_revoke_specific_session() {
+        let h = handlers();
+        let caller = AuthenticatedUser::new("user-1");
+
+        let result = h.revoke_session(
+            &caller,
+            RevokeSessionRequest {
+                session_id: Some("jti-abc".to_string()),
+                revoke_all: false,
+            },
+        );
+        assert!(result.is_ok());
+
+        assert!(h.store.is_session_revoked("user-1", "jti-abc", 0));
+        // A different session_id for the same user is untouched.
+        assert!(!h.store.is_session_revoked("user-1", "jti-other", 0));
+    }
+
+    #[test]
+    fn test_revoke_all_sessions() {
+        let h = handlers();
+        let caller = AuthenticatedUser::new("user-2");
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let result = h.revoke_session(
+            &caller,
+            RevokeSessionRequest {
+                session_id: None,
+                revoke_all: true,
+            },
+        );
+        assert!(result.is_ok());
+
+        // Any session issued at/before the revoke_all call is now invalid,
+        // even though its specific JTI was never explicitly revoked.
+        assert!(h.store.is_session_revoked("user-2", "jti-never-seen", before));
+
+        // A session issued after revoke_all is fine.
+        let after = before + 100;
+        assert!(!h.store.is_session_revoked("user-2", "jti-fresh", after));
+    }
+
+    #[test]
+    fn test_revoked_token_rejected_on_use() {
+        let h = handlers();
+        let caller = AuthenticatedUser::new("user-3");
+
+        h.revoke_session(
+            &caller,
+            RevokeSessionRequest {
+                session_id: Some("jti-xyz".to_string()),
+                revoke_all: false,
+            },
+        )
+        .unwrap();
+
+        // Simulates what auth middleware should do on every request:
+        // check is_session_revoked before trusting the bearer token.
+        let issued_at = 0;
+        let is_valid = !h.store.is_session_revoked("user-3", "jti-xyz", issued_at);
+        assert!(!is_valid, "revoked token must be rejected");
+    }
+}
 
     #[test]
     fn test_pool_stats_requires_authentication() {

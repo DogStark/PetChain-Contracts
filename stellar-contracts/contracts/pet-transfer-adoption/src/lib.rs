@@ -62,6 +62,24 @@ pub struct EscrowedTransfer {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingTransfer {
+    pub pet_id: u64,
+    pub from: Address,
+    pub to: Address,
+    pub initiated_at: u64,
+    pub timeout_secs: u64,
+}
+
+/// Default per-transfer cancellation timeout when none is specified to
+/// `initiate_transfer`: 7 days. Distinct from [`TRANSFER_EXPIRY_SECONDS`],
+/// which backs the older owner-only [`PetOwnershipContract::reclaim_transfer`].
+pub const DEFAULT_TRANSFER_TIMEOUT_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
+
+
+
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipRecord {
     pub owner: Address,
     pub acquired_at: u64,
@@ -141,6 +159,30 @@ pub struct CustodyEntry {
     pub transfer_type: TransferType,
 }
 
+TransferNotExpired = 8,
+    StaleCancellation = 9,
+    EmptyBatch = 10,
+    BatchOwnerMismatch = 11,
+    NoEscrowedTransfer = 12,
+    DisputeWindowNotElapsed = 13,
+    TransferAlreadyDisputed = 14,
+    AlreadyInitialized = 15,
+    InvalidThreshold = 16,
+    NotMultisigAdmin = 17,
+    ThresholdNotMet = 18,
+    UntrustedContract = 19,
+    NoPendingAdoption = 20,
+    WaitingPeriodNotElapsed = 21,
+    AdoptionAlreadyCompleted = 22,
+    AdoptionNotConfigurable = 23,
+    InvalidWaitingPeriod = 24,
+    AdoptionConfigNotFound = 25,
+    BatchTooLarge = 26,
+    InvalidBatch = 27,
+    OrganizationApprovalRequired = 28,
+    AdoptionRejected = 29,
+    InvalidApprover = 30,
+    InvalidTimeoutDays = 31,
 /// ======================================================
 /// STORAGE KEYS
 /// ======================================================
@@ -271,6 +313,16 @@ fn append_custody_entry(
         .persistent()
         .set(&DataKey::CustodyChain(pet_id), &chain);
 }
+
+
+const EVT_TRANSFER_INITIATED: Symbol = symbol_short!("xfer_init");
+const EVT_TRANSFER_CANCELLED: Symbol = symbol_short!("xfer_cncl");
+const EVT_TRANSFER_ESCROWED: Symbol = symbol_short!("xfer_escr");
+const EVT_TRANSFER_FINALIZED: Symbol = symbol_short!("xfer_fin");
+const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
+const EVT_TRUSTED_UPDATED: Symbol = symbol_short!("trust_upd");
+const EVT_TRANSFER_EXPIRED: Symbol = symbol_short!("xfer_exp");
+
 
 fn get_owner_pet_ids(env: &Env, owner: &Address) -> Vec<u64> {
     env.storage()
@@ -468,6 +520,109 @@ impl PetOwnershipContract {
         env.storage().persistent().set(&DataKey::AdoptionRecord(pet_id), &record);
     }
 
+
+
+
+    pub fn initiate_transfer(env: Env, pet_id: u64, to: Address) {
+        Self::initiate_transfer_with_timeout(env, pet_id, to, DEFAULT_TRANSFER_TIMEOUT_SECONDS / 86400);
+    }
+
+    /// Same as [`initiate_transfer`] but allows the caller to specify a
+    /// custom cancellation timeout in days. If the transfer is not accepted
+    /// within this window, [`cancel_expired_transfer`] becomes callable by
+    /// the original owner or any third party.
+    pub fn initiate_transfer_with_timeout(env: Env, pet_id: u64, to: Address, transfer_timeout_days: u32) {
+        if transfer_timeout_days == 0 {
+            panic_with_error!(env, ContractError::InvalidTimeoutDays);
+        }
+
+        let pet = get_pet(&env, pet_id);
+        pet.current_owner.require_auth();
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PendingTransfer(pet_id))
+        {
+            panic_with_error!(env, ContractError::TransferAlreadyPending);
+        }
+
+        let timeout_secs = (transfer_timeout_days as u64).saturating_mul(86400);
+
+        let transfer = PendingTransfer {
+            pet_id,
+            from: pet.current_owner.clone(),
+            to: to.clone(),
+            initiated_at: env.ledger().timestamp(),
+            timeout_secs,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingTransfer(pet_id), &transfer);
+
+        env.events()
+            .publish((EVT_TRANSFER_INITIATED, pet_id), (pet.current_owner, to));
+    }
+
+    /// Cancels a pending transfer once its `timeout_secs` window has
+    /// elapsed. Unlike [`reclaim_transfer`] (owner-only, fixed
+    /// `TRANSFER_EXPIRY_SECONDS`), this is callable by **any address** —
+    /// the original owner or a third party — once the per-transfer timeout
+    /// configured at `initiate_transfer` time has passed. This lets anyone
+    /// clean up stale pending transfers without requiring the original
+    /// owner's continued participation.
+    ///
+    /// # Errors
+    /// - [`ContractError::NoPendingTransfer`] — no transfer exists for this pet.
+    /// - [`ContractError::TransferNotExpired`] — the timeout window has not elapsed.
+    pub fn cancel_expired_transfer(env: Env, pet_id: u64) {
+        let transfer: PendingTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingTransfer(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingTransfer));
+
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(transfer.initiated_at) < transfer.timeout_secs {
+            panic_with_error!(env, ContractError::TransferNotExpired);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingTransfer(pet_id));
+
+        env.events().publish(
+            (EVT_TRANSFER_EXPIRED, pet_id),
+            (transfer.from, transfer.to),
+        );
+    }
+
+    pub fn reclaim_transfer(env: Env, pet_id: u64) {
+        let transfer: PendingTransfer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingTransfer(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingTransfer));
+
+        transfer.from.require_auth();
+
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(transfer.initiated_at) < TRANSFER_EXPIRY_SECONDS {
+            panic_with_error!(env, ContractError::TransferNotExpired);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingTransfer(pet_id));
+
+        env.events().publish(
+            (EVT_TRANSFER_CANCELLED, pet_id),
+            (transfer.from, transfer.to),
+        );
+    }
+
+    
     /// Reject a pending adoption. Any participant may cancel the adoption.
     pub fn reject_adoption(env: Env, pet_id: u64, rejector: Address, reason: String) {
         rejector.require_auth();

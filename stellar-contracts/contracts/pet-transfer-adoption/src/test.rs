@@ -17,6 +17,105 @@ fn setup() -> (Env, Address, Address, u64) {
     (env, owner, new_owner, pet_id)
 }
 
+// ======================================================
+// cancel_expired_transfer tests (Issue #797)
+// ======================================================
+
+#[test]
+fn cancel_expired_transfer_before_timeout_is_rejected() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer_with_timeout(&pet_id, &new_owner, &7u32);
+
+    // Within the window — must fail
+    let result = client.try_cancel_expired_transfer(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::TransferNotExpired as u32,
+        )))
+    );
+    assert!(client.has_pending_transfer(&pet_id));
+}
+
+#[test]
+fn cancel_expired_transfer_after_timeout_by_owner_succeeds() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer_with_timeout(&pet_id, &new_owner, &7u32);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += 7 * 24 * 60 * 60 + 1;
+    });
+
+    // Owner calls cancel_expired_transfer (no auth requirement, but owner can still call it)
+    client.cancel_expired_transfer(&pet_id);
+
+    assert!(!client.has_pending_transfer(&pet_id));
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+#[test]
+fn cancel_expired_transfer_after_timeout_by_third_party_succeeds() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let stranger = Address::generate(&env);
+    let _ = stranger; // cancel_expired_transfer takes no caller param; anyone can invoke
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer_with_timeout(&pet_id, &new_owner, &3u32);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += 3 * 24 * 60 * 60 + 1;
+    });
+
+    // No auth is required by this function — simulating a third party calling it
+    // is the same call as the owner calling it, since there's no require_auth gate.
+    client.cancel_expired_transfer(&pet_id);
+
+    assert!(!client.has_pending_transfer(&pet_id));
+}
+
+#[test]
+fn accept_transfer_before_custom_timeout_still_works() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer_with_timeout(&pet_id, &new_owner, &2u32);
+
+    // Accept well within the 2-day window
+    client.accept_transfer(&pet_id);
+
+    assert!(!client.has_pending_transfer(&pet_id));
+    let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
+    assert_eq!(escrowed.from, owner);
+    assert_eq!(escrowed.to, new_owner);
+}
+
+#[test]
+fn default_initiate_transfer_uses_seven_day_timeout() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+
+    assert_eq!(
+        client.get_transfer_timeout_secs(&pet_id),
+        Some(7 * 24 * 60 * 60)
+    );
+}
+
 fn create_pending_transfer(
     client: &PetOwnershipContractClient,
     pet_id: u64,
