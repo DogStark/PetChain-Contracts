@@ -1352,7 +1352,8 @@ pub struct PoolMetricsHandlers;
 impl PoolMetricsHandlers {
     /// Return current pool utilisation. Only available when backed by Postgres
     /// and `POOL_STATS_ENABLED=1` is set in the environment.
-    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+    /// Requires admin authentication.
+    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
         if std::env::var("POOL_STATS_ENABLED").as_deref() != Ok("1") {
             return Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string());
         }
@@ -1369,7 +1370,7 @@ impl PoolMetricsHandlers {
 
 #[cfg(test)]
 impl PoolMetricsHandlers {
-    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
         // In tests there is no real pool; return a fixed sentinel so the
         // endpoint handler can be exercised without a database.
         Ok(PoolStatsResponse {
@@ -1385,4 +1386,43 @@ impl PoolMetricsHandlers {
 /// Mount this at `GET /leaderboard/ws`.
 pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
     leaderboard_ws_endpoint(req, stream).await
+}
+
+#[cfg(test)]
+mod pool_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_stats_admin_access_succeeds() {
+        let admin = AuthenticatedAdmin::new("admin-user");
+        let result = PoolMetricsHandlers::pool_stats(&admin);
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.max, 0);
+    }
+
+    #[test]
+    fn test_pool_stats_requires_authentication() {
+        // This test verifies that calling pool_stats requires an admin parameter.
+        // If we tried to call pool_stats() without a parameter, it would not compile.
+        // The admin parameter is required, so only authenticated admins can call it.
+        let admin = AuthenticatedAdmin::new("admin-user");
+        let result = PoolMetricsHandlers::pool_stats(&admin);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_pool_stats_different_admin_still_succeeds() {
+        // Multiple admins can all access the metrics
+        let admin1 = AuthenticatedAdmin::new("admin-1");
+        let admin2 = AuthenticatedAdmin::new("admin-2");
+        
+        let result1 = PoolMetricsHandlers::pool_stats(&admin1);
+        let result2 = PoolMetricsHandlers::pool_stats(&admin2);
+        
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+    }
 }
