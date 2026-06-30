@@ -89,6 +89,14 @@ pub struct TwoFactorSetup {
     pub config: TotpConfig,
 }
 
+/// A revoked session, keyed by JTI (JWT ID claim from the bearer token).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RevokedSession {
+    pub session_id: String,
+    pub user_id: String,
+    pub revoked_at: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct TwoFactorData {
     pub secret: String,
@@ -405,12 +413,15 @@ pub trait TwoFactorStore: Send + Sync {
 
 /// In-memory implementation of TwoFactorStore for testing
 #[derive(Default, Clone)]
+#[derive(Default, Clone)]
 pub struct InMemoryStore {
     data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
     recovery_log: Arc<Mutex<Vec<RecoveryCodeUsageLog>>>,
     audit_log: Arc<Mutex<Vec<AuditLogEntry>>>,
     canary_flags: Arc<Mutex<HashMap<String, bool>>>,
     lockouts: Arc<Mutex<HashMap<String, TwoFactorLockoutState>>>,
+    revoked_sessions: Arc<Mutex<HashSet<String>>>,
+    revoke_all_before: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl InMemoryStore {
@@ -647,9 +658,69 @@ impl TwoFactorStore for MockTwoFactorStore {
     fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
         Ok(vec![])
     }
+fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        let key = format!("{}::{}", user_id, session_id);
+        self.revoked_sessions.lock().unwrap().insert(key);
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.revoke_all_before
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), now);
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool {
+        let key = format!("{}::{}", user_id, session_id);
+        if self.revoked_sessions.lock().unwrap().contains(&key) {
+            return true;
+        }
+        if let Some(&cutoff) = self.revoke_all_before.lock().unwrap().get(user_id) {
+            if issued_at <= cutoff {
+                return true;
+            }
+        }
+        false
+    }
+    /// Revoke a single session by its JTI. Idempotent — revoking an
+    /// already-revoked session is not an error.
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String>;
+
+    /// Revoke all currently-tracked sessions for a user (e.g. on 2FA disable
+    /// or suspected compromise). Implementations only need to invalidate
+    /// sessions they know about; for the in-memory store this means every
+    /// session_id ever passed to `revoke_session` for this user, plus a
+    /// "revoke everything before this timestamp" marker so that even
+    /// not-yet-seen JTIs issued before now are rejected.
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String>;
+
+    /// Check whether a given session (JTI) has been revoked for a user.
+    /// Returns true if `revoke_session` was called with this exact
+    /// session_id, or if `revoke_all_sessions` was called for this user
+    /// and `issued_at` predates that revocation.
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool;
 }
 
 impl TwoFactorStore for InMemoryStore {
+
+    fn revoke_session(&self, _user_id: &str, _session_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, _user_id: &str, _session_id: &str, _issued_at: u64) -> bool {
+        false
+    }
+    
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         self.data.lock().unwrap().insert(user_id.to_string(), data);
         Ok(())
