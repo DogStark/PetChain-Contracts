@@ -74,6 +74,57 @@ jobs:
         run: cargo test -- --test-threads=1
         working-directory: backend-2fa
 
+  # #844 — Validate schema.sql matches the concatenated migrations so the
+  # file never drifts from the actual applied schema. If this check fails,
+  # run `bash backend-2fa/scripts/generate-schema.sh` to regenerate.
+  validate-schema:
+    name: Validate schema.sql matches migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check schema.sql is in sync with migrations
+        run: |
+          set -euo pipefail
+          # Build a temporary concatenated schema from migrations
+          TEMP_SCHEMA=$(mktemp)
+          trap "rm -f $TEMP_SCHEMA" EXIT
+
+          # Take the header from schema.sql (up to the auto-gen marker comment)
+          awk '/Do not edit by hand/{exit} {print}' backend-2fa/schema.sql > "$TEMP_SCHEMA"
+          echo "" >> "$TEMP_SCHEMA"
+
+          # Concatenate up-migration SQL
+          for f in $(ls backend-2fa/migrations/*.sql | sort); do
+            basename=$(basename "$f")
+            case "$basename" in
+              *.down.sql) continue ;;
+              *.sql) cat "$f" >> "$TEMP_SCHEMA"; echo "" >> "$TEMP_SCHEMA" ;;
+            esac
+          done
+
+          # Append two_fa_lockouts if not present
+          echo "CREATE TABLE IF NOT EXISTS two_fa_lockouts (" >> "$TEMP_SCHEMA"
+          echo "    user_id VARCHAR(255) PRIMARY KEY," >> "$TEMP_SCHEMA"
+          echo "    failed_attempts INT NOT NULL DEFAULT 0," >> "$TEMP_SCHEMA"
+          echo "    locked BOOLEAN NOT NULL DEFAULT FALSE," >> "$TEMP_SCHEMA"
+          echo "    locked_at TIMESTAMP NULL," >> "$TEMP_SCHEMA"
+          echo "    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP" >> "$TEMP_SCHEMA"
+          echo ");" >> "$TEMP_SCHEMA"
+
+          # Compare normalized content (ignore whitespace-only differences)
+          if ! diff -u \
+            <(grep -v '^--' "$TEMP_SCHEMA" | sed '/^$/d') \
+            <(grep -v '^--' backend-2fa/schema.sql | sed '/^$/d'); then
+            echo ""
+            echo "ERROR: schema.sql is out of sync with migrations!"
+            echo "Run 'bash backend-2fa/scripts/generate-schema.sh' to regenerate."
+            exit 1
+          fi
+          echo "schema.sql is in sync with migrations."
+      - name: Notify if drift detected
+        if: failure()
+        run: echo "::warning::schema.sql has drifted from migrations. Run 'bash backend-2fa/scripts/generate-schema.sh' to fix."
+
   # #691 — Validate the OpenAPI spec on every PR so docs never drift from the
   # implementation. Uses Spectral (the de-facto OAS linter) with the built-in
   # oas ruleset which enforces OpenAPI 3.0 structural correctness.

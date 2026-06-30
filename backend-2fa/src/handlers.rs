@@ -174,12 +174,27 @@ pub struct RecoverWithBackupRequest {
     pub backup_code: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpgradeAlgorithmRequest {
+    pub user_id: String,
+    pub token: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RecoverWithBackupResponse {
     pub new_secret: String,
     pub new_otpauth_uri: String,
     pub new_backup_codes: Vec<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpgradeAlgorithmResponse {
+    pub new_secret: String,
+    pub new_otpauth_uri: String,
+    pub new_qr_code: String,
+    pub new_backup_codes: Vec<String>,
+    pub algorithm: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -578,6 +593,109 @@ impl TwoFactorHandlers {
             enabled: true,
         })
     }
+
+    /// Upgrade TOTP algorithm from SHA1 to SHA256
+    /// Requires valid current TOTP token to prove possession
+    /// Returns new secret with SHA256 algorithm and new backup codes
+    pub fn upgrade_algorithm(
+        &self,
+        caller: &AuthenticatedUser,
+        req: UpgradeAlgorithmRequest,
+    ) -> Result<UpgradeAlgorithmResponse, ApiError> {
+        caller.authorize(&req.user_id)?;
+
+        // Get current 2FA data
+        let data = self.store_get(&req.user_id)?;
+
+        if !data.enabled {
+            return Err(ApiError::bad_request("2FA not enabled for user", None));
+        }
+
+        // Check if already on SHA256
+        if data.algorithm == HmacAlgorithm::SHA256 {
+            return Err(ApiError::conflict(
+                "Algorithm already upgraded to SHA256",
+                None,
+            ));
+        }
+
+        // Verify current TOTP token with existing algorithm
+        self.ensure_not_locked(&req.user_id)?;
+        let key = Self::rate_limit_key("upgrade", &req.user_id);
+        let rate_result = self.limiter.record_failure(&key);
+        if rate_result.is_blocked() {
+            return Err(ApiError::rate_limited(
+                format!(
+                    "Too many failed attempts. Retry after {} seconds.",
+                    rate_result.retry_after_secs()
+                ),
+                rate_result.retry_after_secs(),
+            ));
+        }
+
+        let is_valid = TwoFactorAuth::verify_token_with_config(
+            &data.secret,
+            &req.token,
+            verification_config(data.algorithm),
+        )
+        .map_err(|e| ApiError::internal_error(e, None))?;
+
+        if !is_valid {
+            self.record_failed_verification(&req.user_id)?;
+            return Err(ApiError::unauthorized(
+                "Invalid TOTP token",
+                None,
+            ));
+        }
+
+        // Token is valid, proceed with upgrade
+        self.limiter.record_success(&key);
+        self.store
+            .reset_two_fa_failures(&req.user_id)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Generate new secret with SHA256
+        let config = TotpConfig {
+            algorithm: HmacAlgorithm::SHA256,
+            digits: 6,
+            period: 30,
+            window: 1,
+            backup_code_count: 8,
+        };
+
+        // Get user email from existing data or use placeholder
+        let user_email = format!("user-{}", req.user_id);
+        
+        let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Save new secret and backup codes, immediately invalidate old secret
+        self.store
+            .save(
+                &req.user_id,
+                TwoFactorData {
+                    secret: setup.secret.clone(),
+                    backup_codes: setup.backup_codes.clone(),
+                    enabled: true,
+                    algorithm: HmacAlgorithm::SHA256,
+                    last_used_step: None,
+                },
+            )
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Log the upgrade in audit log
+        self.store
+            .append_audit_log(&req.user_id, "algorithm_upgraded", &req.user_id, Some("SHA1->SHA256"))
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        Ok(UpgradeAlgorithmResponse {
+            new_secret: setup.secret,
+            new_otpauth_uri: setup.otpauth_uri,
+            new_qr_code: setup.qr_code_base64,
+            new_backup_codes: setup.backup_codes,
+            algorithm: "SHA256".to_string(),
+        })
+    }
 }
 
 impl Default for TwoFactorHandlers {
@@ -916,6 +1034,29 @@ impl AdminDashboardHandlers {
     ) -> Result<Vec<AuditLogEntry>, String> {
         two_factor_store().get_audit_log(user_id, page, page_size)
     }
+
+    /// GET /admin/users/{user_id}/2fa-summary — returns UserTwoFactorSummary.
+    pub fn get_user_two_factor_summary(
+        _admin: &AuthenticatedAdmin,
+        user_id: &str,
+    ) -> Result<UserTwoFactorSummary, String> {
+        // Validate user_id
+        if user_id.is_empty() {
+            return Err("user_id must not be empty".to_string());
+        }
+        if user_id.len() > 64 {
+            return Err("user_id must not exceed 64 characters".to_string());
+        }
+
+        let store = two_factor_store();
+        let data = store.get(user_id)?;
+        let is_canary = store.is_canary(user_id);
+        Ok(UserTwoFactorSummary {
+            user_id: user_id.to_string(),
+            enabled: data.enabled,
+            is_canary,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1235,7 +1376,8 @@ pub struct PoolMetricsHandlers;
 impl PoolMetricsHandlers {
     /// Return current pool utilisation. Only available when backed by Postgres
     /// and `POOL_STATS_ENABLED=1` is set in the environment.
-    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+    /// Requires admin authentication.
+    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
         if std::env::var("POOL_STATS_ENABLED").as_deref() != Ok("1") {
             return Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string());
         }
@@ -1252,7 +1394,7 @@ impl PoolMetricsHandlers {
 
 #[cfg(test)]
 impl PoolMetricsHandlers {
-    pub fn pool_stats() -> Result<PoolStatsResponse, String> {
+    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
         // In tests there is no real pool; return a fixed sentinel so the
         // endpoint handler can be exercised without a database.
         Ok(PoolStatsResponse {
@@ -1268,4 +1410,43 @@ impl PoolMetricsHandlers {
 /// Mount this at `GET /leaderboard/ws`.
 pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
     leaderboard_ws_endpoint(req, stream).await
+}
+
+#[cfg(test)]
+mod pool_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_stats_admin_access_succeeds() {
+        let admin = AuthenticatedAdmin::new("admin-user");
+        let result = PoolMetricsHandlers::pool_stats(&admin);
+        assert!(result.is_ok());
+        let stats = result.unwrap();
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.max, 0);
+    }
+
+    #[test]
+    fn test_pool_stats_requires_authentication() {
+        // This test verifies that calling pool_stats requires an admin parameter.
+        // If we tried to call pool_stats() without a parameter, it would not compile.
+        // The admin parameter is required, so only authenticated admins can call it.
+        let admin = AuthenticatedAdmin::new("admin-user");
+        let result = PoolMetricsHandlers::pool_stats(&admin);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_pool_stats_different_admin_still_succeeds() {
+        // Multiple admins can all access the metrics
+        let admin1 = AuthenticatedAdmin::new("admin-1");
+        let admin2 = AuthenticatedAdmin::new("admin-2");
+        
+        let result1 = PoolMetricsHandlers::pool_stats(&admin1);
+        let result2 = PoolMetricsHandlers::pool_stats(&admin2);
+        
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+    }
 }

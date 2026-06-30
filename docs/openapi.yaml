@@ -388,6 +388,40 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /admin/users/{user_id}/2fa-summary:
+    get:
+      tags: [Admin]
+      summary: Get 2FA summary for a user
+      description: |
+        Returns the UserTwoFactorSummary for the specified user. Admin-only.
+        Returns 404 if the user has no 2FA record.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: The user ID to query
+      responses:
+        '200':
+          description: 2FA summary for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserTwoFactorSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # ─── Tenant ──────────────────────────────────────────────────────────────────
 
   /tenant/provision:
@@ -754,6 +788,20 @@ components:
         reason:
           type: string
           description: Why this submission was flagged
+
+    UserTwoFactorSummary:
+      type: object
+      required: [user_id, enabled, is_canary]
+      properties:
+        user_id:
+          type: string
+          description: The user ID
+        enabled:
+          type: boolean
+          description: Whether 2FA is currently enabled for this user
+        is_canary:
+          type: boolean
+          description: Whether this account is a canary token
 
     # ── Tenant ─────────────────────────────────────────────────────────────────
 

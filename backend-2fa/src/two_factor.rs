@@ -20,6 +20,8 @@ pub struct TotpConfig {
     pub digits: usize,
     pub period: u64,
     pub window: u8,
+    /// Number of backup codes to generate during setup (default: 8).
+    pub backup_code_count: usize,
 }
 
 impl Default for TotpConfig {
@@ -29,6 +31,7 @@ impl Default for TotpConfig {
             digits: 6,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 }
@@ -52,6 +55,7 @@ impl TotpConfig {
             digits,
             period,
             window,
+            backup_code_count: 8,
         })
     }
 
@@ -61,6 +65,7 @@ impl TotpConfig {
             digits: 6,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 
@@ -70,6 +75,7 @@ impl TotpConfig {
             digits: 8,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 }
@@ -132,6 +138,13 @@ impl TwoFactorAuth {
         encoded
     }
 
+    /// Replace colons with spaces so the issuer is consistent across QR and otpauth URI.
+    /// Colons in the issuer label conflict with the `otpauth://` URI format where the
+    /// delimiter between issuer and account is also a colon.
+    pub fn sanitize_issuer(issuer: &str) -> String {
+        issuer.replace(':', " ")
+    }
+
     pub fn generate_otpauth_uri(
         issuer: &str,
         account: &str,
@@ -173,7 +186,7 @@ impl TwoFactorAuth {
         config: TotpConfig,
     ) -> Result<TwoFactorSetup, String> {
         let secret = Self::generate_secret();
-        let qr_issuer = issuer.replace(':', " ");
+        let sanitized_issuer = Self::sanitize_issuer(issuer);
         let totp = TOTP::new(
             config.algorithm,
             config.digits,
@@ -182,7 +195,7 @@ impl TwoFactorAuth {
             Secret::Encoded(secret.clone())
                 .to_bytes()
                 .map_err(|e| e.to_string())?,
-            Some(qr_issuer),
+            Some(sanitized_issuer.clone()),
             user_email.to_string(),
         )
         .map_err(|e| e.to_string())?;
@@ -191,8 +204,8 @@ impl TwoFactorAuth {
             "data:image/png;base64,{}",
             totp.get_qr_base64().map_err(|e| e.to_string())?
         );
-        let backup_codes = Self::generate_backup_codes(8);
-        let otpauth_uri = Self::generate_otpauth_uri(issuer, user_email, &secret, &config);
+        let backup_codes = Self::generate_backup_codes(config.backup_code_count);
+        let otpauth_uri = Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
 
         Ok(TwoFactorSetup {
             secret,

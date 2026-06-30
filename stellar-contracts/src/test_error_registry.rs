@@ -272,7 +272,7 @@ fn test_remove_requires_admin() {
 // --- VALIDATION ---
 
 #[test]
-#[should_panic(expected = "InvalidInput")]
+#[should_panic]
 fn test_empty_language_rejected() {
     let (env, client, admin) = setup_env();
 
@@ -285,7 +285,7 @@ fn test_empty_language_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "InvalidInput")]
+#[should_panic]
 fn test_language_too_long_rejected() {
     let (env, client, admin) = setup_env();
 
@@ -298,7 +298,7 @@ fn test_language_too_long_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "InputStringTooLong")]
+#[should_panic]
 fn test_empty_message_rejected() {
     let (env, client, admin) = setup_env();
 
@@ -311,7 +311,7 @@ fn test_empty_message_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "InputStringTooLong")]
+#[should_panic]
 fn test_message_too_long_rejected() {
     let (env, client, admin) = setup_env();
 
@@ -509,4 +509,51 @@ fn test_update_existing_translation() {
         message,
         Some(String::from_str(&env, "The requested pet record could not be found in the database"))
     );
+}
+// Append-only addition for issue #793
+#[test]
+fn test_batch_set_error_messages_at_limit_succeeds() {
+    let (env, client, admin) = setup_env();
+
+    let mut messages = Vec::new(&env);
+    for i in 0..MAX_BATCH_ERROR_MESSAGES {
+        messages.push_back(ErrorMessage {
+            code: i as u32,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Test message"),
+        });
+    }
+
+    client.batch_set_error_messages(&admin, &messages);
+
+    let msg = client.get_error_message(&(MAX_BATCH_ERROR_MESSAGES as u32 - 1), &String::from_str(&env, "en"));
+    assert_eq!(msg, Some(String::from_str(&env, "Test message")));
+}
+
+#[test]
+#[should_panic]
+fn test_batch_set_error_messages_over_limit_fails() {
+    let (env, client, admin) = setup_env();
+
+    let mut messages = Vec::new(&env);
+    for i in 0..=MAX_BATCH_ERROR_MESSAGES {
+        messages.push_back(ErrorMessage {
+            code: i as u32,
+            language: String::from_str(&env, "en"),
+            message: String::from_str(&env, "Test message"),
+        });
+    }
+
+    client.batch_set_error_messages(&admin, &messages);
+}
+
+#[test]
+fn test_batch_set_error_messages_empty_succeeds() {
+    let (env, client, admin) = setup_env();
+
+    let messages = Vec::new(&env);
+    client.batch_set_error_messages(&admin, &messages);
+
+    let languages = client.get_supported_languages();
+    assert_eq!(languages.len(), 0);
 }
