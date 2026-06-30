@@ -526,7 +526,91 @@ mod tests {
         assert_ne!(resp1.secret, resp2.secret);
     }
 
+    #[test]
+    fn test_enroll_rate_limited_when_exceeding_limit() {
+        use crate::rate_limiter::InMemoryRateLimiter;
+        clear_two_factor_store_for_tests();
 
+        let limiter = std::sync::Arc::new(InMemoryRateLimiter::new(
+            2, // max 2 failures
+            60, // window 60s
+            300, // lockout 300s
+        ));
+
+        let handlers = TwoFactorHandlers::with_limiter(limiter);
+        let user_id = "rate-limited-user";
+
+        // First attempt should succeed
+        let result1 = handlers.enroll(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user1@petchain.com".to_string(),
+                idempotency_key: None,
+            },
+        );
+        assert!(result1.is_ok(), "First enrollment should succeed");
+
+        // Second attempt should succeed
+        let result2 = handlers.enroll(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user2@petchain.com".to_string(),
+                idempotency_key: None,
+            },
+        );
+        assert!(result2.is_ok(), "Second enrollment should succeed");
+
+        // Third attempt should be rate-limited
+        let result3 = handlers.enroll(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                user_id: user_id.to_string(),
+                email: "user3@petchain.com".to_string(),
+                idempotency_key: None,
+            },
+        );
+        assert!(result3.is_err(), "Third enrollment should be rate-limited");
+        let err = result3.unwrap_err();
+        assert_eq!(err.code, "RATE_LIMITED");
+        assert!(
+            err.message.contains("Too many enrollment attempts"),
+            "Error message should mention too many enrollment attempts"
+        );
+    }
+
+    #[test]
+    fn test_enroll_allowed_under_limit() {
+        use crate::rate_limiter::InMemoryRateLimiter;
+        clear_two_factor_store_for_tests();
+
+        let limiter = std::sync::Arc::new(InMemoryRateLimiter::new(
+            5, // max 5 failures
+            60, // window 60s
+            300, // lockout 300s
+        ));
+
+        let handlers = TwoFactorHandlers::with_limiter(limiter);
+        let user_id = "within-limit-user";
+
+        // Should succeed for each attempt within the limit
+        for i in 1..=3 {
+            let result = handlers.enroll(
+                &caller(user_id),
+                EnableTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    email: &format!("user{}@petchain.com", i),
+                    idempotency_key: None,
+                },
+            );
+            assert!(
+                result.is_ok(),
+                "Enrollment attempt {} should succeed",
+                i
+            );
+        }
+    }
 
 
     /// Failure path: wrong caller is rejected before any persistence occurs.
