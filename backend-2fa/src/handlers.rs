@@ -27,13 +27,14 @@ fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
 }
 
 /// Verify a TOTP token with replay protection.
+#[allow(dead_code)]
 fn verify_token_with_replay_protection(
     secret: &str,
     token: &str,
     config: TotpConfig,
-    last_used_step: Option<u64>,
+    _last_used_step: Option<u64>,
 ) -> Result<bool, String> {
-    TwoFactorAuth::verify_token_with_config(secret, token, config, last_used_step)
+    TwoFactorAuth::verify_token_with_config(secret, token, config)
 }
 
 #[cfg(test)]
@@ -206,6 +207,13 @@ pub struct RecoveryUsageLogEntry {
     pub ip_address: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct RevokeSessionRequest {
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub revoke_all: bool,
+}
+
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     store: Arc<dyn TwoFactorStore>,
@@ -222,13 +230,6 @@ impl TwoFactorHandlers {
             issuer: "PetChain".to_string(),
         }
     }
-
-    #[derive(Debug, Deserialize, Clone)]
-pub struct RevokeSessionRequest {
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub revoke_all: bool,
-}
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
         Self {
@@ -392,6 +393,7 @@ pub struct RevokeSessionRequest {
                     backup_codes: setup.backup_codes.clone(),
                     enabled: false,
                     algorithm: setup.config.algorithm,
+                    last_used_step: None,
                 },
             )
             .map_err(|e| ApiError::internal_error(e, None))?;
@@ -614,6 +616,7 @@ pub struct RevokeSessionRequest {
                     backup_codes: setup.backup_codes.clone(),
                     enabled: true,
                     algorithm: setup.config.algorithm,
+                    last_used_step: None,
                 },
             )
             .map_err(|e| ApiError::internal_error(e, None))?;
@@ -1135,6 +1138,7 @@ impl CanaryHandlers {
                 backup_codes: setup.backup_codes.clone(),
                 enabled: true,
                 algorithm: setup.config.algorithm,
+                last_used_step: None,
             },
         )?;
 
@@ -1266,6 +1270,7 @@ impl MultiTenantHandlers {
                 backup_codes: setup.backup_codes.clone(),
                 enabled: false,
                 algorithm: setup.config.algorithm,
+                last_used_step: None,
             },
         )?;
 
@@ -1381,6 +1386,7 @@ impl TenantProvisioningHandlers {
             tenant_id: req.tenant_id.clone(),
             totp_issuer: req.totp_issuer.clone(),
             rate_limit_max_failures: req.rate_limit_max_failures,
+            lockout_threshold: 10,
         };
         let (existing_or_new, already_existed) = self.registry.provision(config)?;
         Ok(ProvisionTenantResponse {

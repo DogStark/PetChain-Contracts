@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -548,6 +548,7 @@ impl WebhookManager {
     }
 
     /// Append an entry to the delivery log, evicting the oldest entry if the cap is reached.
+    #[allow(dead_code)]
     fn append_log(&self, log: &mut VecDeque<WebhookDeliveryLog>, entry: WebhookDeliveryLog) {
         if self.max_log_entries > 0 && log.len() >= self.max_log_entries {
             log.pop_front();
