@@ -92,7 +92,7 @@ impl MigrationRunner {
                 applied_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 checksum    TEXT NOT NULL
             )",
-        ).map_err(|e| MigrationError::Sql(e))
+        ).map_err(MigrationError::Sql)
     }
 
     fn get_applied_migrations(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
@@ -103,7 +103,7 @@ impl MigrationRunner {
             let count = executor.query_scalar_with_params(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
                 &[version_str.as_str()]
-            ).map_err(|e| MigrationError::Sql(e))?.unwrap_or(0);
+            ).map_err(MigrationError::Sql)?.unwrap_or(0);
             if count > 0 {
                 applied.push((migration.version, migration.name.clone()));
             }
@@ -138,7 +138,7 @@ impl MigrationRunner {
 
     pub fn rollback_last(&self, executor: &dyn SqlExecutor) -> Result<u32, MigrationError> {
         let max_version = executor.query_scalar("SELECT MAX(version) FROM schema_migrations")
-            .map_err(|e| MigrationError::Sql(e))?.unwrap_or(0) as u32;
+            .map_err(MigrationError::Sql)?.unwrap_or(0) as u32;
         if max_version == 0 {
             return Err(MigrationError::NoMigrationsToRollback);
         }
@@ -154,7 +154,7 @@ impl MigrationRunner {
         executor.execute_with_params(
             "DELETE FROM schema_migrations WHERE version = $1",
             &[version_str.as_str()]
-        ).map_err(|e| MigrationError::Sql(e))?;
+        ).map_err(MigrationError::Sql)?;
         Ok(migration.version)
     }
 

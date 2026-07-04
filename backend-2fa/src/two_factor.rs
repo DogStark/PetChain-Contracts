@@ -39,7 +39,7 @@ impl Default for TotpConfig {
 impl TotpConfig {
     pub fn new(algorithm: Algorithm, digits: usize, period: u64, window: u8) -> Result<Self, String> {
         // Validate digits: RFC 6238 recommends 6-8 digits
-        if digits < 6 || digits > 8 {
+        if !(6..=8).contains(&digits) {
             return Err(format!("digits must be between 6 and 8, got {}", digits));
         }
         // Validate period: must be > 0

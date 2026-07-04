@@ -146,11 +146,7 @@ pub fn validate_score_submission(
     config: &ScoreValidationConfig,
 ) -> Result<(), ScoreSubmissionError> {
     if let Some(last_score) = last_known_score {
-        let delta = if submission.score > last_score {
-            submission.score - last_score
-        } else {
-            last_score - submission.score
-        };
+        let delta = submission.score.abs_diff(last_score);
 
         if delta > config.max_score_delta {
             return Err(ScoreSubmissionError::SuspiciousScore {
@@ -187,7 +183,7 @@ pub fn rank_organizers(
     }
 
     let mut ranked: Vec<(String, u64)> = totals.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|k| std::cmp::Reverse(k.1));
 
     ranked
         .into_iter()
@@ -523,7 +519,7 @@ pub async fn leaderboard_ws_endpoint(
     let hub = LeaderboardWsHub::global();
     let connection = hub
         .connect(peer_ip)
-        .map_err(|err| ErrorTooManyRequests(err))?;
+        .map_err(ErrorTooManyRequests)?;
     ws::start(LeaderboardWsSession::new(hub, connection), &req, stream)
 }
 

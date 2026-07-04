@@ -167,7 +167,7 @@ where
                 .headers()
                 .get(TRACEPARENT_HEADER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| TraceContext::parse(s)),
+                .and_then(TraceContext::parse),
         );
 
         if let Some(tc) = &trace_context {

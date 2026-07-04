@@ -233,12 +233,10 @@ where
 }
 
 pub(crate) fn is_connection_error(err: &sqlx::Error) -> bool {
-    match err {
-        sqlx::Error::Io(_) => true,
-        sqlx::Error::PoolTimedOut => true,
-        sqlx::Error::PoolClosed => true,
-        _ => false,
-    }
+    matches!(
+        err,
+        sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed
+    )
 }
 
 impl TwoFactorStore for PostgresTwoFactorStore {
