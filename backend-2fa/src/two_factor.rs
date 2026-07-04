@@ -409,10 +409,27 @@ pub trait TwoFactorStore: Send + Sync {
     fn try_pool_stats(&self) -> Option<crate::db::PoolStats> {
         None
     }
+
+    /// Revoke a single session by its JTI. Idempotent — revoking an
+    /// already-revoked session is not an error.
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String>;
+
+    /// Revoke all currently-tracked sessions for a user (e.g. on 2FA disable
+    /// or suspected compromise). Implementations only need to invalidate
+    /// sessions they know about; for the in-memory store this means every
+    /// session_id ever passed to `revoke_session` for this user, plus a
+    /// "revoke everything before this timestamp" marker so that even
+    /// not-yet-seen JTIs issued before now are rejected.
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String>;
+
+    /// Check whether a given session (JTI) has been revoked for a user.
+    /// Returns true if `revoke_session` was called with this exact
+    /// session_id, or if `revoke_all_sessions` was called for this user
+    /// and `issued_at` predates that revocation.
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool;
 }
 
 /// In-memory implementation of TwoFactorStore for testing
-#[derive(Default, Clone)]
 #[derive(Default, Clone)]
 pub struct InMemoryStore {
     data: Arc<Mutex<HashMap<String, TwoFactorData>>>,
@@ -658,7 +675,23 @@ impl TwoFactorStore for MockTwoFactorStore {
     fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
         Ok(vec![])
     }
-fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+
+    fn revoke_session(&self, _user_id: &str, _session_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, _user_id: &str, _session_id: &str, _issued_at: u64) -> bool {
+        false
+    }
+}
+
+impl TwoFactorStore for InMemoryStore {
+
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         let key = format!("{}::{}", user_id, session_id);
         self.revoked_sessions.lock().unwrap().insert(key);
         Ok(())
@@ -686,38 +719,6 @@ fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> 
                 return true;
             }
         }
-        false
-    }
-    /// Revoke a single session by its JTI. Idempotent — revoking an
-    /// already-revoked session is not an error.
-    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String>;
-
-    /// Revoke all currently-tracked sessions for a user (e.g. on 2FA disable
-    /// or suspected compromise). Implementations only need to invalidate
-    /// sessions they know about; for the in-memory store this means every
-    /// session_id ever passed to `revoke_session` for this user, plus a
-    /// "revoke everything before this timestamp" marker so that even
-    /// not-yet-seen JTIs issued before now are rejected.
-    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String>;
-
-    /// Check whether a given session (JTI) has been revoked for a user.
-    /// Returns true if `revoke_session` was called with this exact
-    /// session_id, or if `revoke_all_sessions` was called for this user
-    /// and `issued_at` predates that revocation.
-    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool;
-}
-
-impl TwoFactorStore for InMemoryStore {
-
-    fn revoke_session(&self, _user_id: &str, _session_id: &str) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn revoke_all_sessions(&self, _user_id: &str) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn is_session_revoked(&self, _user_id: &str, _session_id: &str, _issued_at: u64) -> bool {
         false
     }
     
@@ -998,6 +999,14 @@ impl TenantConfig {
 pub struct TenantScopedStore {
     inner: Arc<dyn TwoFactorStore>,
     pub config: TenantConfig,
+}
+
+impl std::fmt::Debug for TenantScopedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantScopedStore")
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 impl TenantScopedStore {
