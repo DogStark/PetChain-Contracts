@@ -410,6 +410,16 @@ pub trait TwoFactorStore: Send + Sync {
         None
     }
 
+    /// Clear all recovery code usage log entries for a user.
+    /// Called after successful backup-code recovery so that rotated codes are
+    /// not blocked by log entries from the previous code set.
+    /// Default implementation is a no-op (safe for stores that enforce
+    /// replay protection differently, e.g. Postgres relies on the secret
+    /// being rotated).
+    fn reset_recovery_log(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Revoke a single session by its JTI. Idempotent — revoking an
     /// already-revoked session is not an error.
     fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String>;
@@ -439,6 +449,9 @@ pub struct InMemoryStore {
     lockouts: Arc<Mutex<HashMap<String, TwoFactorLockoutState>>>,
     revoked_sessions: Arc<Mutex<HashSet<String>>>,
     revoke_all_before: Arc<Mutex<HashMap<String, u64>>>,
+    /// Per-user Unix timestamp: log entries recorded before this time are
+    /// ignored for replay-protection purposes (but still returned in audit queries).
+    recovery_log_reset_at: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl InMemoryStore {
@@ -727,6 +740,18 @@ impl TwoFactorStore for InMemoryStore {
         Ok(())
     }
 
+    fn reset_recovery_log(&self, user_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.recovery_log_reset_at
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), now);
+        Ok(())
+    }
+
     fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
         self.data
             .lock()
@@ -767,13 +792,29 @@ impl TwoFactorStore for InMemoryStore {
         code_index: i32,
         ip_address: Option<&str>,
     ) -> Result<(), String> {
+        let reset_cutoff = self
+            .recovery_log_reset_at
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .copied();
+
         let mut log = self.recovery_log.lock().unwrap();
 
-        // Check if already used
-        if log
-            .iter()
-            .any(|e| e.user_id == user_id && e.code_index == code_index)
-        {
+        // Check if already used — ignore entries that predate a log reset
+        // (i.e., entries from a previous backup-code generation).
+        if log.iter().any(|e| {
+            if e.user_id != user_id || e.code_index != code_index {
+                return false;
+            }
+            if let Some(cutoff) = reset_cutoff {
+                // Parse stored timestamp; entries at-or-before the cutoff are stale.
+                let entry_ts: u64 = e.used_at.parse().unwrap_or(0);
+                entry_ts > cutoff
+            } else {
+                true
+            }
+        }) {
             return Err("InvalidRecoveryCode".to_string());
         }
 
