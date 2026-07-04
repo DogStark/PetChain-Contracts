@@ -331,6 +331,9 @@ mod tests {
                 m.version, m.name
             );
         }
+    }
+
+    #[test]
     fn test_dry_run_reports_pending_without_mutation() {
         let executor = MockExecutor::new();
         let migrations = vec![
