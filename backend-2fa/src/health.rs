@@ -97,6 +97,12 @@ pub struct HealthAggregator<'a> {
     checks: Vec<Box<dyn HealthCheck + 'a>>,
 }
 
+impl<'a> Default for HealthAggregator<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> HealthAggregator<'a> {
     pub fn new() -> Self {
         Self { checks: Vec::new() }

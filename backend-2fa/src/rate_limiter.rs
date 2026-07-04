@@ -271,7 +271,7 @@ impl RedisBackend for LiveRedisBackend {
                 return 0;
             }
         };
-        let result: redis::RedisResult<(u64,)> = (|| {
+        let result: redis::RedisResult<(u64,)> = {
             let mut pipe = redis::pipe();
             pipe.cmd("ZREMRANGEBYSCORE")
                 .arg(key)
@@ -290,7 +290,7 @@ impl RedisBackend for LiveRedisBackend {
                 .arg(ttl_secs)
                 .ignore();
             pipe.query(&mut con)
-        })();
+        };
         match result {
             Ok((card,)) => card,
             Err(e) => {
@@ -414,7 +414,7 @@ impl RedisBackend for MockRedisBackend {
                     if now_ms >= exp_ms {
                         -2
                     } else {
-                        ((exp_ms - now_ms + 999) / 1_000) as i64
+                        (exp_ms - now_ms).div_ceil(1_000) as i64
                     } // ceiling division → secs
                 }
             },

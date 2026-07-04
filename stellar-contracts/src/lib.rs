@@ -813,7 +813,8 @@ pub struct Vet {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchResult {
     pub succeeded: Vec<Address>,
-    pub failed: Vec<(Address, ContractError)>,
+    /// Failed entries store the error code as u32 (ContractError discriminant)
+    pub failed: Vec<(Address, u32)>,
 }
 
 #[contracttype]
@@ -2571,7 +2572,7 @@ impl PetChainContract {
         }
         if expired_count > 0 {
             env.events().publish(
-                (Symbol::short("consent_exp"),),
+                (soroban_sdk::symbol_short!("cnsnt_exp"),),
                 (pet_id, expired_count),
             );
         }
@@ -2878,13 +2879,12 @@ impl PetChainContract {
 
         // Build species distribution map
         let mut species_distribution = Map::new(&env);
-        let species_list = vec![
-            String::from_str(&env, "Dog"),
-            String::from_str(&env, "Cat"),
-            String::from_str(&env, "Bird"),
-            String::from_str(&env, "Rabbit"),
-            String::from_str(&env, "Other"),
-        ];
+        let mut species_list = Vec::new(&env);
+        species_list.push_back(String::from_str(&env, "Dog"));
+        species_list.push_back(String::from_str(&env, "Cat"));
+        species_list.push_back(String::from_str(&env, "Bird"));
+        species_list.push_back(String::from_str(&env, "Rabbit"));
+        species_list.push_back(String::from_str(&env, "Other"));
 
         for species in species_list.iter() {
             let count = env
@@ -5567,7 +5567,7 @@ impl PetChainContract {
                 succeeded.push_back(vet_address.clone());
             } else {
                 // Vet not found, record failure
-                failed.push_back((vet_address.clone(), ContractError::VetNotFound));
+                failed.push_back((vet_address.clone(), ContractError::VetNotFound as u32));
             }
         }
 
@@ -9438,7 +9438,7 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
 
         let now = env.ledger().timestamp();
-        let window: u64 = env
+        let _window: u64 = env
             .storage()
             .instance()
             .get(&ActivityKey::IdempotencyWindow)
@@ -9447,7 +9447,7 @@ impl PetChainContract {
         // Create idempotency key from activity components
         // Use: activity_type (as u32) + pet_id + rounded duration
         let mut key_bytes = [0u8; 32];
-        let activity_u32 = activity_type as u32;
+        let activity_u32 = activity_type.clone() as u32;
         key_bytes[0..4].copy_from_slice(&activity_u32.to_le_bytes());
         key_bytes[4..12].copy_from_slice(&pet_id.to_le_bytes());
         let rounded_duration = (duration_minutes / 10) as u64;
@@ -9529,9 +9529,9 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::NotAnAdmin);
         }
 
-        let now = env.ledger().timestamp();
-        let ttl: u64 = 86400; // 24 hours
-        let mut purged = 0u32;
+        let _now = env.ledger().timestamp();
+        let _ttl: u64 = 86400; // 24 hours
+        let purged = 0u32;
 
         // Note: In a production system, maintain a separate index of active keys
         // For now, we rely on external processes to call this periodically
