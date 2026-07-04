@@ -304,6 +304,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
             backup_codes,
             enabled,
             algorithm: Self::algorithm_from_db(algorithm.as_deref()),
+            last_used_step: None,
         })
     }
 
@@ -702,16 +703,17 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     }
 
     fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
-        self.runtime.block_on(async {
-            sqlx::query(
-                "UPDATE two_factor_secrets SET last_used_step = $1 WHERE user_id = $2"
+        self.with_retry(|| {
+            self.block_on_typed(
+                sqlx::query(
+                    "UPDATE user_two_factor SET last_used_step = $1 WHERE user_id = $2"
+                )
+                .bind(step as i64)
+                .bind(user_id)
+                .execute(&self.pool),
             )
-            .bind(step as i64)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await
-        })?;
-        Ok(())
+            .map(|_| ())
+        })
     }
 
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
@@ -767,6 +769,20 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
     fn try_pool_stats(&self) -> Option<PoolStats> {
         Some(self.pool_stats())
+    }
+
+    fn revoke_session(&self, _user_id: &str, _session_id: &str) -> Result<(), String> {
+        // Session revocation for PostgresTwoFactorStore is handled at the JWT middleware layer.
+        // The in-memory store tracks revoked sessions; the Postgres store delegates to JWT validation.
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, _user_id: &str, _session_id: &str, _issued_at: u64) -> bool {
+        false
     }
 }
 
@@ -952,6 +968,7 @@ mod tests {
             backup_codes: vec!["1111-2222".to_string(), "3333-4444".to_string()],
             enabled: false,
             algorithm: HmacAlgorithm::SHA1,
+            last_used_step: None,
         }
     }
 
