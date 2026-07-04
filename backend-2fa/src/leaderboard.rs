@@ -225,6 +225,7 @@ enum LeaderboardSubscriptionCommand {
 pub struct LeaderboardWsHub {
     broadcaster: broadcast::Sender<LeaderboardScoreUpdate>,
     connections_by_ip: Mutex<HashMap<IpAddr, usize>>,
+    max_conn_per_ip: usize,
 }
 
 fn get_max_conn_per_ip() -> usize {
@@ -250,6 +251,7 @@ impl LeaderboardWsHub {
             Arc::new(Self {
                 broadcaster,
                 connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
             })
         })
         .clone()
@@ -266,7 +268,7 @@ impl LeaderboardWsHub {
         // or any other unlock between the read and the write; doing so would
         // reintroduce a TOCTOU race where two concurrent callers could both
         // pass the limit check before either increments the counter.
-        let max_conn = get_max_conn_per_ip();
+        let max_conn = self.max_conn_per_ip;
         let count = connections.entry(ip).or_insert(0);
         if *count >= max_conn {
             return Err(format!("Connection limit exceeded for IP {}", ip));
@@ -1173,9 +1175,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                broadcaster,
-                connections_by_ip: Mutex::new(HashMap::new()),
-            })
+                            broadcaster,
+                            connections_by_ip: Mutex::new(HashMap::new()),
+                            max_conn_per_ip: get_max_conn_per_ip(),
+                        })
         };
 
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -1200,14 +1203,14 @@ mod tests {
 
     #[test]
     fn custom_max_conn_per_ip_from_env_is_respected() {
-        // Isolate from other tests by using a unique IP.
-        std::env::set_var("LEADERBOARD_MAX_CONN_PER_IP", "2");
-
+        // Construct a hub with a custom limit directly to avoid env-var races
+        // between parallel test threads.
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             Arc::new(LeaderboardWsHub {
                 broadcaster,
                 connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: 2,
             })
         };
         let ip: IpAddr = "172.16.0.1".parse().unwrap();
@@ -1222,7 +1225,6 @@ mod tests {
 
         drop(g1);
         drop(g2);
-        std::env::remove_var("LEADERBOARD_MAX_CONN_PER_IP");
     }
 
     #[test]
@@ -1257,9 +1259,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                broadcaster,
-                connections_by_ip: Mutex::new(HashMap::new()),
-            })
+                            broadcaster,
+                            connections_by_ip: Mutex::new(HashMap::new()),
+                            max_conn_per_ip: get_max_conn_per_ip(),
+                        })
         };
 
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
@@ -1285,9 +1288,10 @@ mod tests {
         let mut session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                broadcaster,
-                connections_by_ip: Mutex::new(HashMap::new()),
-            });
+                            broadcaster,
+                            connections_by_ip: Mutex::new(HashMap::new()),
+                            max_conn_per_ip: get_max_conn_per_ip(),
+                        });
             let ip: IpAddr = "192.168.0.1".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 5)
@@ -1308,9 +1312,10 @@ mod tests {
         let session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                broadcaster,
-                connections_by_ip: Mutex::new(HashMap::new()),
-            });
+                            broadcaster,
+                            connections_by_ip: Mutex::new(HashMap::new()),
+                            max_conn_per_ip: get_max_conn_per_ip(),
+                        });
             let ip: IpAddr = "192.168.0.2".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 3)
@@ -1331,9 +1336,10 @@ mod tests {
     fn make_session() -> LeaderboardWsSession {
         let (broadcaster, _) = broadcast::channel(16);
         let hub = Arc::new(LeaderboardWsHub {
-            broadcaster,
-            connections_by_ip: Mutex::new(HashMap::new()),
-        });
+                        broadcaster,
+                        connections_by_ip: Mutex::new(HashMap::new()),
+                        max_conn_per_ip: get_max_conn_per_ip(),
+                    });
         let ip: IpAddr = "10.1.0.1".parse().unwrap();
         let guard = hub.connect(ip).expect("connect");
         LeaderboardWsSession::new(hub, guard)

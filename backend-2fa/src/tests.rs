@@ -860,10 +860,10 @@ mod tests {
 
         assert!(enrollment
             .otpauth_uri
-            .starts_with("otpauth://totp/Pet%20Chain%3A%20Ops:mock%2Buser%40example.com?"));
+            .starts_with("otpauth://totp/Pet%20Chain%20%20Ops:mock%2Buser%40example.com?"));
         assert!(enrollment
             .otpauth_uri
-            .contains("&issuer=Pet%20Chain%3A%20Ops"));
+            .contains("&issuer=Pet%20Chain%20%20Ops"));
 
         let activated = handlers
             .verify_and_activate(

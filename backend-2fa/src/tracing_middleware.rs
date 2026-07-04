@@ -329,7 +329,9 @@ mod tests {
 
     #[test]
     fn parse_rejects_multibyte_unicode_that_reports_misleading_len() {
-        let multibyte_32 = "é".repeat(16);
+        // Use a 3-byte UTF-8 character (U+2665 ♥) so 16 repetitions give
+        // 16 chars but 48 bytes — clearly greater than 32.
+        let multibyte_32 = "♥".repeat(16);
         assert_eq!(multibyte_32.chars().count(), 16);
         assert!(multibyte_32.len() > 32);
         let header = format!("00-{}-0000000000000000-01", multibyte_32);
