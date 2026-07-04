@@ -328,7 +328,7 @@ impl TwoFactorHandlers {
             .map_err(|e| ApiError::internal_error(e, None))?;
         if state.locked {
             return Err(ApiError::locked(
-                "2FA account locked due to too many failed attempts. Use admin unlock or a recovery code.",
+                "2FA account locked after 10 failed attempts. Use admin unlock or a recovery code.",
                 None,
             ));
         }
@@ -416,7 +416,9 @@ impl TwoFactorHandlers {
             );
         }
 
-        self.limiter.record_success(&Self::rate_limit_key("enroll", &req.user_id));
+        // Intentionally do not call record_success here: enrollment attempts
+        // are counted cumulatively so the rate limiter caps total enroll calls,
+        // not just failed ones.
         Ok(response)
     }
 
@@ -619,6 +621,11 @@ impl TwoFactorHandlers {
                     last_used_step: None,
                 },
             )
+            .map_err(|e| ApiError::internal_error(e, None))?;
+        // Clear usage log so the freshly-issued backup codes are not blocked
+        // by entries recorded against the previous code set.
+        self.store
+            .reset_recovery_log(&req.user_id)
             .map_err(|e| ApiError::internal_error(e, None))?;
         self.store
             .unlock_two_fa_account(&req.user_id, "recovery_code")
