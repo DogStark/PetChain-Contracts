@@ -151,6 +151,8 @@ mod test_error_registry;
 mod test_behavior_records;
 #[cfg(test)]
 mod test_nutrition_plan;
+#[cfg(test)]
+mod test_insurance_eligibility;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -748,6 +750,11 @@ pub struct PetHealthSummary {
     pub latest_vaccination_id: Option<u64>,
     pub latest_lab_result_id: Option<u64>,
     pub active_insurance_policy_id: Option<u64>,
+    /// Derived (not stored): true iff the pet currently has an active,
+    /// non-expired insurance policy AND a non-expired latest vaccination at the
+    /// current ledger timestamp. Lets the insurance eligibility flow decide in a
+    /// single call instead of comparing two timestamps client-side. (Issue #769)
+    pub insurance_eligible: bool,
 }
 
 #[contracttype]
@@ -4658,6 +4665,7 @@ impl PetChainContract {
 
         let mut latest_vaccination_id: Option<u64> = None;
         let mut latest_vax_timestamp: u64 = 0;
+        let mut latest_vax_expires_at: u64 = 0;
 
         for i in 1..=vax_count {
             if let Some(vax_id) = env
@@ -4668,6 +4676,7 @@ impl PetChainContract {
                 if let Some(vax) = PetChainContract::get_vaccinations(env.clone(), vax_id) {
                     if vax.administered_at > latest_vax_timestamp {
                         latest_vax_timestamp = vax.administered_at;
+                        latest_vax_expires_at = vax.expires_at;
                         latest_vaccination_id = Some(vax_id);
                     }
                 }
@@ -4707,6 +4716,7 @@ impl PetChainContract {
             .unwrap_or(0);
 
         let mut active_insurance_policy_id: Option<u64> = None;
+        let mut active_policy_expiry: u64 = 0;
 
         // Get the most recent policy (highest index)
         if policy_count > 0 {
@@ -4720,15 +4730,29 @@ impl PetChainContract {
             {
                 if policy.active {
                     active_insurance_policy_id = Some(policy_count);
+                    active_policy_expiry = policy.expiry_date;
                 }
             }
         }
+
+        // Derive insurance eligibility: the pet must have an active, non-expired
+        // insurance policy AND a non-expired latest vaccination at the current
+        // ledger timestamp. A vaccination/policy is "not expired" while its
+        // expiry timestamp is at or after now (matching the contract's existing
+        // `expired = expiry < now` convention). Purely derived — no storage writes.
+        let now = env.ledger().timestamp();
+        let insurance_not_expired =
+            active_insurance_policy_id.is_some() && active_policy_expiry >= now;
+        let vaccination_not_expired =
+            latest_vaccination_id.is_some() && latest_vax_expires_at >= now;
+        let insurance_eligible = insurance_not_expired && vaccination_not_expired;
 
         Some(PetHealthSummary {
             pet_id,
             latest_vaccination_id,
             latest_lab_result_id,
             active_insurance_policy_id,
+            insurance_eligible,
         })
     }
 
