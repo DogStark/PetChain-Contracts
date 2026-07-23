@@ -68,12 +68,15 @@ pub struct ScoreSubmission {
 pub struct ScoreValidationConfig {
     /// Maximum allowed score delta per submission
     pub max_score_delta: u64,
+    /// Maximum z-score threshold for anomaly detection (default 3.0)
+    pub max_z_score: f32,
 }
 
 impl Default for ScoreValidationConfig {
     fn default() -> Self {
         Self {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         }
     }
 }
@@ -138,12 +141,36 @@ impl Default for FlaggedScoreStore {
     }
 }
 
-/// Validate a score submission against the maximum allowed delta.
+/// Compute the z-score of a value given a history of scores.
+/// Returns the z-score as an f64.
+pub fn compute_z_score(history: &[f64], value: f64) -> f64 {
+    if history.len() < 2 {
+        return 0.0;
+    }
+
+    let mean = history.iter().sum::<f64>() / history.len() as f64;
+    let variance = history
+        .iter()
+        .map(|x| (x - mean).powi(2))
+        .sum::<f64>()
+        / history.len() as f64;
+
+    let std_dev = variance.sqrt();
+
+    if std_dev == 0.0 {
+        return 0.0;
+    }
+
+    (value - mean) / std_dev
+}
+
+/// Validate a score submission against the maximum allowed delta and statistical anomalies.
 /// Returns an error if the submission is suspicious.
 pub fn validate_score_submission(
     submission: &ScoreSubmission,
     last_known_score: Option<u64>,
     config: &ScoreValidationConfig,
+    historical_scores: Option<&[u64]>,
 ) -> Result<(), ScoreSubmissionError> {
     if let Some(last_score) = last_known_score {
         let delta = submission.score.abs_diff(last_score);
@@ -157,6 +184,24 @@ pub fn validate_score_submission(
                     delta, config.max_score_delta
                 ),
             });
+        }
+    }
+
+    if let Some(history) = historical_scores {
+        if history.len() >= 5 {
+            let history_f64: Vec<f64> = history.iter().map(|s| *s as f64).collect();
+            let z_score = compute_z_score(&history_f64, submission.score as f64);
+
+            if z_score.abs() > config.max_z_score as f64 {
+                return Err(ScoreSubmissionError::SuspiciousScore {
+                    user_id: submission.user_id.clone(),
+                    attempted_score: submission.score,
+                    reason: format!(
+                        "Score anomaly detected: z-score {:.2} exceeds threshold {:.2}",
+                        z_score, config.max_z_score
+                    ),
+                });
+            }
         }
     }
 
@@ -1392,5 +1437,72 @@ mod tests {
             session.subscriptions.contains("existing_user"),
             "existing subscriptions must survive a rejected Replace"
         );
+    }
+
+    #[test]
+    fn test_normal_score_passes_validation() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 100,
+            timestamp: 1000,
+        };
+        let history = vec![95.0, 98.0, 101.0, 99.0, 102.0];
+
+        let result = validate_score_submission(&submission, Some(99), &config, Some(&[95, 98, 101, 99, 102]));
+        assert!(result.is_ok(), "Normal score within 1 std dev should pass");
+    }
+
+    #[test]
+    fn test_borderline_score_at_threshold() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 200,
+            timestamp: 1000,
+        };
+
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&[100, 105, 98, 102, 101]));
+        assert!(result.is_ok(), "Score near threshold (z-score ~3.0) should pass");
+    }
+
+    #[test]
+    fn test_anomalous_score_rejected() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 1000,
+            timestamp: 1000,
+        };
+
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&[100, 105, 98, 102, 101]));
+        assert!(result.is_err(), "Score with extreme z-score should be rejected");
+
+        if let Err(ScoreSubmissionError::SuspiciousScore { reason, .. }) = result {
+            assert!(reason.contains("anomaly"), "Error should mention anomaly detection");
+        }
+    }
+
+    #[test]
+    fn test_z_score_computation() {
+        let history = vec![100.0, 105.0, 98.0, 102.0, 101.0];
+        let mean = 101.2;
+        let z = compute_z_score(&history, 150.0);
+
+        assert!(z > 3.0, "Score 150 should have z-score > 3.0 for this history");
+    }
+
+    #[test]
+    fn test_insufficient_history_skips_z_score() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 1000,
+            timestamp: 1000,
+        };
+
+        let history = vec![100, 105];
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&history));
+        assert!(result.is_ok(), "Anomaly check should be skipped with < 5 historical scores");
     }
 }
