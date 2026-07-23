@@ -684,6 +684,32 @@ impl<B: RedisBackend> SlidingWindowRateLimiter<B> {
         self
     }
 
+    /// Create a new limiter with a full set of per-endpoint overrides supplied
+    /// up-front via a [`HashMap`].  Keys are matched as prefixes of the
+    /// rate-limit key (e.g. `"login"` matches `"login:user:42"`).  Any key
+    /// that has no matching entry falls back to `default`.
+    ///
+    /// This is a convenience alternative to chaining multiple
+    /// [`with_endpoint`](Self::with_endpoint) calls when the overrides are
+    /// already collected in a map (e.g. loaded from config).
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::collections::HashMap;
+    /// let endpoints = HashMap::from([
+    ///     ("login".to_string(),   EndpointConfig::new(60,  3, 300)),
+    ///     ("recover".to_string(), EndpointConfig::new(300, 2, 900)),
+    /// ]);
+    /// let limiter = SlidingWindowRateLimiter::with_endpoints(backend, default_cfg, endpoints);
+    /// ```
+    pub fn with_endpoints(
+        backend: B,
+        default: EndpointConfig,
+        endpoints: HashMap<String, EndpointConfig>,
+    ) -> Self {
+        Self { backend, default, endpoints }
+    }
+
     fn config_for(&self, key: &str) -> &EndpointConfig {
         self.endpoints
             .iter()
@@ -1367,5 +1393,94 @@ mod structured_logging_tests {
         assert!(log.contains("tenant_a"), "Log should contain tenant information");
         assert!(log.contains("verify"), "Log should contain action/endpoint");
         assert!(log.contains("user42"), "Log should contain user_id");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-endpoint sliding window dispatch tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod per_endpoint_tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Helper: build a SlidingWindowRateLimiter<MockRedisBackend> with a
+    // strict config for "login" / "recover" and a lenient default.
+    // ------------------------------------------------------------------
+    fn make_limiter() -> SlidingWindowRateLimiter<MockRedisBackend> {
+        let default_cfg = EndpointConfig::new(60, 10, 300); // 10 failures allowed
+        let mut endpoints = HashMap::new();
+        endpoints.insert("login".to_string(),   EndpointConfig::new(60, 2, 300));  // strict: 2
+        endpoints.insert("recover".to_string(), EndpointConfig::new(300, 2, 900)); // strict: 2
+        SlidingWindowRateLimiter::with_endpoints(MockRedisBackend::new(), default_cfg, endpoints)
+    }
+
+    /// A strict-config endpoint ("login") is blocked after exactly N failures
+    /// while a different endpoint using the default config stays Allowed for
+    /// the same number of attempts.
+    #[test]
+    fn test_strict_endpoint_blocked_after_n_requests() {
+        let limiter = make_limiter();
+
+        // --- login endpoint: max_failures = 2 ---
+        // First two calls are within the limit.
+        assert!(
+            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Allowed { .. }),
+            "first login failure should be Allowed"
+        );
+        assert!(
+            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Allowed { .. }),
+            "second login failure should be Allowed"
+        );
+        // Third call exceeds the strict limit and must be Blocked.
+        assert!(
+            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Blocked { .. }),
+            "third login failure should be Blocked (strict limit = 2)"
+        );
+
+        // --- recover endpoint: max_failures = 2 ---
+        assert!(
+            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Allowed { .. }),
+            "first recover failure should be Allowed"
+        );
+        assert!(
+            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Allowed { .. }),
+            "second recover failure should be Allowed"
+        );
+        assert!(
+            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Blocked { .. }),
+            "third recover failure should be Blocked (strict limit = 2)"
+        );
+
+        // --- verify endpoint: uses default (10 failures) ---
+        // Five failures on an unrelated endpoint must still be Allowed.
+        for i in 0..5 {
+            assert!(
+                matches!(limiter.record_failure("verify:user:1"), RateLimitResult::Allowed { .. }),
+                "verify failure #{i} should be Allowed (default limit = 10)"
+            );
+        }
+    }
+
+    /// An endpoint path that has no registered override falls back to the
+    /// default config and is not blocked until the default threshold is reached.
+    #[test]
+    fn test_fallback_path_uses_default_config() {
+        let limiter = make_limiter(); // default = 10 failures
+
+        // "health" has no entry in the endpoints map → should use default (10).
+        // Fire 10 requests; every single one must be Allowed.
+        for i in 0..10 {
+            assert!(
+                matches!(limiter.record_failure("health:svc"), RateLimitResult::Allowed { .. }),
+                "health failure #{i} should be Allowed (fallback to default limit = 10)"
+            );
+        }
+        // The 11th exceeds the default and must be Blocked.
+        assert!(
+            matches!(limiter.record_failure("health:svc"), RateLimitResult::Blocked { .. }),
+            "health failure #11 should be Blocked (exceeded default limit = 10)"
+        );
     }
 }
