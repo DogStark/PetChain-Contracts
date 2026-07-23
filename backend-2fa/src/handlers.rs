@@ -472,6 +472,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("login", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
@@ -516,6 +528,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("disable", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
