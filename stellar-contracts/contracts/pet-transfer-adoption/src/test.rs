@@ -1,6 +1,6 @@
 use super::{
-    ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord, PetOwnershipContract,
-    PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
+    AdoptionState, ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord,
+    PetOwnershipContract, PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -907,4 +907,101 @@ fn custody_chain_is_append_only_no_delete_path() {
 
     let chain = client.get_custody_chain(&pet_id);
     assert_eq!(chain.len(), 2);
+}
+
+// ======================================================
+// update_adoption_config tests (Issue #1007)
+// ======================================================
+
+#[test]
+fn set_adoption_config_stores_waiting_period_and_admin() {
+    let (env, owner, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.set_adoption_config(&7u32, &owner);
+
+    let config = client.get_adoption_config();
+    assert_eq!(config.waiting_period_days, 7);
+}
+
+#[test]
+fn set_adoption_config_is_one_shot_second_call_is_rejected() {
+    let (env, owner, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.set_adoption_config(&7u32, &owner);
+
+    // Second call must be rejected
+    let result = client.try_set_adoption_config(&14u32, &owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::AdoptionNotConfigurable as u32,
+        )))
+    );
+    // Value must remain unchanged
+    assert_eq!(client.get_adoption_config().waiting_period_days, 7);
+}
+
+#[test]
+fn update_adoption_config_changes_waiting_period() {
+    let (env, owner, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.set_adoption_config(&7u32, &owner);
+    client.update_adoption_config(&14u32);
+
+    assert_eq!(client.get_adoption_config().waiting_period_days, 14);
+}
+
+#[test]
+fn update_adoption_config_emits_event_with_old_and_new_values() {
+    let (env, owner, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.set_adoption_config(&7u32, &owner);
+    let events_before = env.events().all().len();
+
+    client.update_adoption_config(&14u32);
+
+    // At least one new event must have been emitted
+    assert!(env.events().all().len() > events_before);
+}
+
+#[test]
+fn update_adoption_config_new_adoption_uses_new_period() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    // Set initial period to 7 days and then update to 0 (instant)
+    client.set_adoption_config(&7u32, &owner);
+    client.update_adoption_config(&0u32);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    // With 0-day waiting period, complete_adoption should succeed immediately
+    client.complete_adoption(&pet_id);
+    assert_eq!(client.get_current_owner(&pet_id), adopter);
+}
+
+#[test]
+fn update_adoption_config_fails_without_prior_set() {
+    let (env, _, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    // No set_adoption_config called — update must fail
+    let result = client.try_update_adoption_config(&14u32);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::AdoptionConfigNotFound as u32,
+        )))
+    );
 }
