@@ -75,14 +75,17 @@ impl TraceContext {
     }
 }
 
-/// List of sensitive fields that should be redacted in logs
+/// List of sensitive fields that should be redacted in logs, regardless of
+/// nesting depth. Add new field names here to extend redaction coverage.
 const SENSITIVE_FIELDS: &[&str] = &[
     "totp_code",
+    "totp_token",
     "secret",
     "recovery_code",
     "password",
     "token",
     "backup_code",
+    "backup_codes",
 ];
 
 /// Sanitize JSON by redacting sensitive fields

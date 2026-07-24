@@ -4955,6 +4955,10 @@ impl PetChainContract {
             if let Err(err) = PetChainContract::validate_ipfs_hash(&env, &photo_hash) {
                 env.panic_with_error(err);
             }
+
+            // Check storage quota (Issue #782)
+            Self::increment_pet_storage(&env, pet_id);
+
             pet.photo_hashes.push_back(photo_hash);
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
