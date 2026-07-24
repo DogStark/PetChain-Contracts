@@ -469,6 +469,8 @@ pub enum AccessAction {
     Write,
     Grant,
     Revoke,
+    EmergencyGrant,
+    EmergencyRevoke,
 }
 
 #[contracttype]
@@ -3132,6 +3134,30 @@ impl PetChainContract {
 
         logs.push_back(log);
         env.storage().persistent().set(&key, &logs);
+    }
+
+    /// Read access log entries for a pet. Visible to the pet owner or any admin.
+    /// Includes emergency-grant and emergency-revoke entries written by
+    /// `add_emergency_responder` / `remove_emergency_responder`.
+    pub fn get_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<AccessLog> {
+        caller.require_auth();
+
+        let pet: crate::Pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, crate::Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Visible to pet owner or any admin.
+        if caller != pet.owner && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let key = (Symbol::new(&env, "access_logs"), pet_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env))
     }
 
     fn require_admin(env: &Env) {
@@ -7771,6 +7797,13 @@ impl PetChainContract {
             responders.push_back(responder);
             env.storage().instance().set(&key, &responders);
         }
+        Self::log_access(
+            &env,
+            pet_id,
+            pet.owner.clone(),
+            AccessAction::EmergencyGrant,
+            String::from_str(&env, "Emergency responder granted"),
+        );
     }
 
     /// Revoke a responder's access. Only the pet owner can call this.
@@ -7791,6 +7824,13 @@ impl PetChainContract {
             }
         }
         env.storage().instance().set(&key, &updated);
+        Self::log_access(
+            &env,
+            pet_id,
+            pet.owner.clone(),
+            AccessAction::EmergencyRevoke,
+            String::from_str(&env, "Emergency responder revoked"),
+        );
     }
 
     /// Returns true if caller is the pet owner or an approved emergency responder.
