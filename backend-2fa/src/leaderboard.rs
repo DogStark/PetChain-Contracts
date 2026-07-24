@@ -483,34 +483,118 @@ pub fn broadcast_score_update(user_id: impl Into<String>, new_score: u64, rank: 
     });
 }
 
-/// Validate the `Authorization: Bearer <token>` header for the leaderboard
-/// WebSocket endpoint.
+/// Environment variable holding the HMAC-SHA256 secret used to verify
+/// leaderboard WebSocket JWTs.
+const LEADERBOARD_WS_JWT_SECRET_ENV: &str = "LEADERBOARD_WS_JWT_SECRET";
+
+/// Result of validating the leaderboard WebSocket bearer token.
+enum WsAuth {
+    /// A legacy opaque shared-secret token was accepted. No per-user
+    /// identity is available for this form.
+    LegacyToken,
+    /// A JWT was verified; carries the authenticated caller derived from
+    /// the `sub` claim.
+    Jwt(crate::handlers::AuthenticatedUser),
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Validate the raw bearer token used to authenticate the leaderboard
+/// WebSocket upgrade handshake (already stripped of any `Bearer ` prefix).
 ///
-/// * If `LEADERBOARD_WS_AUTH_TOKEN` is set, the provided token must match it exactly.
-/// * If the env var is unset, any non-empty Bearer token is accepted (development mode).
-/// * A missing or empty token always returns `false`.
+/// Accepts two forms:
+/// * A three-segment JWT (`header.payload.signature`) — verified via
+///   HMAC-SHA256 against `LEADERBOARD_WS_JWT_SECRET` and rejected if the
+///   signature is invalid or the `exp` claim has passed.
+/// * A legacy opaque token — compared against `LEADERBOARD_WS_AUTH_TOKEN`,
+///   or accepted as-is when that variable is unset (development mode).
+///
+/// A missing or empty token always returns `None`.
+fn authenticate_ws_token(token: &str) -> Option<WsAuth> {
+    if token.is_empty() {
+        return None;
+    }
+
+    if token.matches('.').count() == 2 {
+        let secret = std::env::var(LEADERBOARD_WS_JWT_SECRET_ENV).unwrap_or_default();
+        if secret.is_empty() {
+            return None;
+        }
+        let claims =
+            crate::two_factor::verify_jwt(token, secret.as_bytes(), current_unix_secs()).ok()?;
+        return Some(WsAuth::Jwt(crate::handlers::AuthenticatedUser::new(
+            claims.sub,
+        )));
+    }
+
+    let expected = std::env::var("LEADERBOARD_WS_AUTH_TOKEN").unwrap_or_default();
+    if expected.is_empty() || token == expected {
+        Some(WsAuth::LegacyToken)
+    } else {
+        None
+    }
+}
+
+/// Validate the `Authorization: Bearer <token>` header for the leaderboard
+/// WebSocket endpoint. Kept for backward compatibility with existing
+/// callers/tests; new code should use [`authenticate_ws_token`] directly.
 pub(crate) fn validate_ws_auth_token(authorization_header: Option<&str>) -> bool {
     let provided = match authorization_header.and_then(|v| v.strip_prefix("Bearer ")) {
         Some(t) if !t.is_empty() => t,
         _ => return false,
     };
+    authenticate_ws_token(provided).is_some()
+}
 
-    let expected = std::env::var("LEADERBOARD_WS_AUTH_TOKEN").unwrap_or_default();
-    expected.is_empty() || provided == expected
+/// Extract the bearer token for the leaderboard WS handshake from either the
+/// `Authorization: Bearer <token>` header or a `token` query parameter.
+/// Browser `WebSocket` clients cannot set custom headers during the
+/// handshake, so the query parameter is accepted as a fallback.
+fn extract_ws_token(req: &HttpRequest) -> Option<String> {
+    if let Some(token) = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty())
+    {
+        return Some(token.to_string());
+    }
+
+    req.query_string().split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        if key == "token" && !value.is_empty() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Actix-web websocket endpoint for `GET /leaderboard/ws`.
+///
+/// The upgrade handshake requires a valid Bearer JWT (or, for browser
+/// clients that cannot set headers on a WebSocket handshake, a `token`
+/// query parameter). Missing, malformed, unsigned, or expired tokens are
+/// rejected with `401 Unauthorized` before the WebSocket handshake
+/// completes.
 pub async fn leaderboard_ws_endpoint(
     req: HttpRequest,
     stream: Payload,
 ) -> Result<HttpResponse, Error> {
-    let auth_header = req
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok());
+    let token = extract_ws_token(&req);
+    let auth = token
+        .as_deref()
+        .and_then(authenticate_ws_token)
+        .ok_or_else(|| ErrorUnauthorized("Authentication required"))?;
 
-    if !validate_ws_auth_token(auth_header) {
-        return Err(ErrorUnauthorized("Authentication required"));
+    if let WsAuth::Jwt(caller) = &auth {
+        tracing::debug!(user_id = %caller.user_id, "Leaderboard WebSocket authenticated");
     }
 
     let peer_ip = req

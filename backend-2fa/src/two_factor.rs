@@ -1,7 +1,9 @@
+use hmac::{Hmac, Mac};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -1197,4 +1199,90 @@ impl TenantRegistry {
     pub fn get_config(&self, tenant_id: &str) -> Option<TenantConfig> {
         self.tenants.lock().unwrap().get(tenant_id).cloned()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
+// ---------------------------------------------------------------------------
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Claims extracted from a verified leaderboard-WS JWT.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtClaims {
+    /// Subject — the authenticated user's ID.
+    pub sub: String,
+    /// Expiry, in unix seconds. The token is rejected once `now >= exp`.
+    pub exp: u64,
+}
+
+/// Decode a base64url (no padding) string into bytes, per RFC 4648 §5.
+fn base64url_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4 + 3);
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+
+    for &byte in input.as_bytes() {
+        let v = value(byte).ok_or_else(|| "invalid base64url character".to_string())?;
+        buffer = (buffer << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+
+    Ok(out)
+}
+
+/// Verify an HS256-signed JWT and return its claims.
+///
+/// Returns `Err` if the token is malformed, uses an unsupported algorithm,
+/// has an invalid signature, or is expired (`exp <= now_unix_secs`).
+/// `now_unix_secs` is passed in explicitly so callers can test expiry
+/// without depending on wall-clock time.
+pub fn verify_jwt(token: &str, secret: &[u8], now_unix_secs: u64) -> Result<JwtClaims, String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("malformed token".to_string());
+    }
+    let header_b64 = parts[0];
+    let payload_b64 = parts[1];
+    let sig_b64 = parts[2];
+
+    let header_bytes = base64url_decode(header_b64)?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&header_bytes).map_err(|_| "invalid header".to_string())?;
+    if header.get("alg").and_then(|v| v.as_str()) != Some("HS256") {
+        return Err("unsupported algorithm".to_string());
+    }
+
+    let signature = base64url_decode(sig_b64)?;
+    let signing_input = format!("{header_b64}.{payload_b64}");
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| "invalid secret".to_string())?;
+    mac.update(signing_input.as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| "invalid signature".to_string())?;
+
+    let payload_bytes = base64url_decode(payload_b64)?;
+    let claims: JwtClaims =
+        serde_json::from_slice(&payload_bytes).map_err(|_| "invalid claims".to_string())?;
+
+    if claims.exp <= now_unix_secs {
+        return Err("token expired".to_string());
+    }
+
+    Ok(claims)
 }
