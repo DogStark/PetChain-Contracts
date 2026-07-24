@@ -1896,6 +1896,123 @@ mod integration_tests {
     }
 
     // -----------------------------------------------------------------------
+    // Flow 2b: recovery code rotation atomicity
+    // -----------------------------------------------------------------------
+
+    /// After a successful recovery-code login, ALL old backup codes (both
+    /// the consumed one and the unused ones) must be invalidated atomically,
+    /// and a fresh set of recovery codes must be returned.
+    #[test]
+    fn test_recovery_code_rotation_atomicity() {
+        let user_id = "integration-rotation-atomicity-user";
+        let handlers = TwoFactorHandlers::new();
+
+        // Enable 2FA
+        let enable_resp = TwoFactorHandlers::enable_two_factor(
+            &caller(user_id),
+            EnableTwoFactorRequest {
+                idempotency_key: None,
+                user_id: user_id.to_string(),
+                email: "rotation@petchain.com".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Activate
+        handlers
+            .verify_and_activate(
+                &caller(user_id),
+                VerifyTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&enable_resp.secret),
+                },
+            )
+            .unwrap();
+
+        let old_backup_codes = enable_resp.backup_codes.clone();
+        assert_eq!(old_backup_codes.len(), 8);
+
+        // Recover using the first backup code
+        let recovery_resp = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: old_backup_codes[0].clone(),
+            },
+        )
+        .expect("recovery should succeed");
+
+        // New recovery codes are returned in the response
+        assert_eq!(recovery_resp.new_recovery_codes.len(), 8);
+        assert_eq!(
+            recovery_resp.new_backup_codes,
+            recovery_resp.new_recovery_codes,
+            "new_backup_codes and new_recovery_codes must match"
+        );
+        assert_ne!(
+            recovery_resp.new_recovery_codes, old_backup_codes,
+            "new recovery codes must differ from old ones"
+        );
+
+        // The consumed old code must be invalid
+        let reuse_consumed = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: old_backup_codes[0].clone(),
+            },
+        );
+        assert!(
+            reuse_consumed.is_err(),
+            "consumed backup code must not be reusable after rotation"
+        );
+
+        // UNUSED old codes must also be invalid (this is the atomicity check)
+        for i in 1..old_backup_codes.len() {
+            let reuse_unused = TwoFactorHandlers::recover_with_backup(
+                &caller(user_id),
+                RecoverWithBackupRequest {
+                    user_id: user_id.to_string(),
+                    backup_code: old_backup_codes[i].clone(),
+                },
+            );
+            assert!(
+                reuse_unused.is_err(),
+                "unused old backup code [{}] must also be invalidated after rotation",
+                i
+            );
+        }
+
+        // Login with the new secret must succeed
+        let logged_in = handlers
+            .verify_login_token(
+                &caller(user_id),
+                LoginWithTwoFactorRequest {
+                    user_id: user_id.to_string(),
+                    token: generate_token(&recovery_resp.new_secret),
+                },
+            )
+            .expect("login with new secret after rotation should not error");
+        assert!(
+            logged_in,
+            "login must succeed with the new secret after rotation"
+        );
+
+        // A new recovery code from the rotated set must be usable
+        let second_recovery = TwoFactorHandlers::recover_with_backup(
+            &caller(user_id),
+            RecoverWithBackupRequest {
+                user_id: user_id.to_string(),
+                backup_code: recovery_resp.new_recovery_codes[0].clone(),
+            },
+        );
+        assert!(
+            second_recovery.is_ok(),
+            "a fresh recovery code from the rotated set must be valid"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Flow 3: rate limit exhaustion on login
     // -----------------------------------------------------------------------
 
