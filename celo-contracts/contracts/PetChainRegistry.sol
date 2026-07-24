@@ -47,6 +47,8 @@ contract PetChainRegistry {
     mapping(uint256 => Pet)      public pets;
     mapping(uint256 => MedicalRecord[]) private _petRecords;
     mapping(address => uint256[]) private _ownerPets;
+    mapping(uint256 => uint256) private _recordPet;   // recordId => petId
+    mapping(uint256 => uint256) private _recordIndex; // recordId => index in _petRecords[petId]
 
     // -------------------------------------------------------------------------
     // Events
@@ -59,6 +61,16 @@ contract PetChainRegistry {
     event PetDeactivated(uint256 indexed petId);     // issue #916
     event PetReactivated(uint256 indexed petId);     // issue #917
     event MedicalRecordAdded(uint256 indexed petId, uint256 indexed recordId, address indexed vet);
+    event MedicalRecordCorrected(
+        uint256 indexed recordId,
+        address indexed correctedBy,
+        string  oldDiagnosis,
+        string  oldTreatment,
+        string  oldNotes,
+        string  newDiagnosis,
+        string  newTreatment,
+        string  newNotes
+    );
 
     // -------------------------------------------------------------------------
     // Modifiers
@@ -190,6 +202,8 @@ contract PetChainRegistry {
             "PetChainRegistry: notes too long");
 
         recordId = ++_recordCounter;
+        _recordPet[recordId]   = petId;
+        _recordIndex[recordId] = _petRecords[petId].length;
         _petRecords[petId].push(MedicalRecord({
             recordId:  recordId,
             petId:     petId,
@@ -200,6 +214,38 @@ contract PetChainRegistry {
             timestamp: block.timestamp
         }));
         emit MedicalRecordAdded(petId, recordId, msg.sender);
+    }
+
+    /// @notice Correct a previously added medical record.
+    /// Only the original recording vet or admin may call this.
+    function correctMedicalRecord(
+        uint256 recordId,
+        string calldata diagnosis,
+        string calldata treatment,
+        string calldata notes
+    ) external {
+        uint256 petId = _recordPet[recordId];
+        MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
+        require(rec.recordId == recordId, "PetChainRegistry: record not found");
+        require(
+            msg.sender == rec.vet || msg.sender == admin,
+            "PetChainRegistry: not authorized"
+        );
+        require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid diagnosis length");
+        require(bytes(treatment).length > 0 && bytes(treatment).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid treatment length");
+        require(bytes(notes).length <= MAX_LONG_LEN,
+            "PetChainRegistry: notes too long");
+
+        emit MedicalRecordCorrected(
+            recordId, msg.sender,
+            rec.diagnosis, rec.treatment, rec.notes,
+            diagnosis, treatment, notes
+        );
+        rec.diagnosis = diagnosis;
+        rec.treatment = treatment;
+        rec.notes     = notes;
     }
 
     // -------------------------------------------------------------------------
