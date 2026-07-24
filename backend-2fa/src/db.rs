@@ -1,15 +1,15 @@
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use rand::RngCore;
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
     AuditLogEntry, LockedUserSummary, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState,
     TwoFactorStore, UserTwoFactorSummary,
 };
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
+use rand::RngCore;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 #[cfg(test)]
 use std::collections::HashMap;
@@ -50,9 +50,8 @@ pub struct AwsSecretsManagerProvider {
 impl AwsSecretsManagerProvider {
     pub fn new() -> Result<Self, String> {
         let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
-        let config = runtime.block_on(
-            aws_config::defaults(aws_config::BehaviorVersion::latest()).load(),
-        );
+        let config =
+            runtime.block_on(aws_config::defaults(aws_config::BehaviorVersion::latest()).load());
         let client = SecretsManagerClient::new(&config);
         Ok(Self { client, runtime })
     }
@@ -95,7 +94,11 @@ pub fn encrypt_secret(plaintext: &str, key_bytes: &[u8; 32]) -> Result<String, S
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| format!("encrypt error: {e}"))?;
-    Ok(format!("{}:{}", hex::encode(nonce_bytes), hex::encode(ciphertext)))
+    Ok(format!(
+        "{}:{}",
+        hex::encode(nonce_bytes),
+        hex::encode(ciphertext)
+    ))
 }
 
 /// Decrypt a value produced by `encrypt_secret`.
@@ -156,7 +159,11 @@ impl PostgresTwoFactorStore {
             )
             .map_err(|e| e.to_string())?;
 
-        Ok(Self { pool, runtime, enc_key: None })
+        Ok(Self {
+            pool,
+            runtime,
+            enc_key: None,
+        })
     }
 
     /// Connect using a SecretProvider to fetch the `secret_key` value.
@@ -175,7 +182,11 @@ impl PostgresTwoFactorStore {
 
     pub fn from_pool(pool: PgPool) -> Result<Self, String> {
         let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
-        Ok(Self { pool, runtime, enc_key: None })
+        Ok(Self {
+            pool,
+            runtime,
+            enc_key: None,
+        })
     }
 
     fn block_on<F, T>(&self, future: F) -> Result<T, String>
@@ -187,31 +198,31 @@ impl PostgresTwoFactorStore {
 
     fn block_on_typed<F, T>(&self, future: F) -> Result<T, sqlx::Error>
     where
-    F: std::future::Future<Output = Result<T, sqlx::Error>>,
-{
-    self.runtime.block_on(future)
-}
-/// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
-/// The closure must return `sqlx::Error` so retry eligibility is checked on the
-/// typed variant before the error is stringified.
-   fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
-where
-    F: FnMut() -> Result<T, sqlx::Error>,
-{
-    const MAX_ATTEMPTS: u32 = 3;
-    let mut delay_ms = 100u64;
-    for attempt in 1..=MAX_ATTEMPTS {
-        match op() {
-            Ok(v) => return Ok(v),
-            Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
-                std::thread::sleep(Duration::from_millis(delay_ms));
-                delay_ms *= 2;
-            }
-            Err(e) => return Err(e.to_string()),
-        }
+        F: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        self.runtime.block_on(future)
     }
-    unreachable!()
-}
+    /// Execute `op` with up to 3 attempts and exponential backoff (100 ms, 200 ms, 400 ms).
+    /// The closure must return `sqlx::Error` so retry eligibility is checked on the
+    /// typed variant before the error is stringified.
+    fn with_retry<F, T>(&self, mut op: F) -> Result<T, String>
+    where
+        F: FnMut() -> Result<T, sqlx::Error>,
+    {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut delay_ms = 100u64;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match op() {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                    delay_ms *= 2;
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        unreachable!()
+    }
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
     pub fn health_check(&self) -> Result<(), String> {
@@ -703,12 +714,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
         self.with_retry(|| {
             self.block_on_typed(
-                sqlx::query(
-                    "UPDATE user_two_factor SET last_used_step = $1 WHERE user_id = $2"
-                )
-                .bind(step as i64)
-                .bind(user_id)
-                .execute(&self.pool),
+                sqlx::query("UPDATE user_two_factor SET last_used_step = $1 WHERE user_id = $2")
+                    .bind(step as i64)
+                    .bind(user_id)
+                    .execute(&self.pool),
             )
             .map(|_| ())
         })
@@ -805,7 +814,11 @@ impl PostgresIpAccessStore {
     pub fn connect(database_url: &str) -> Result<Self, String> {
         let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
         let pool = runtime
-            .block_on(PgPoolOptions::new().max_connections(10).connect(database_url))
+            .block_on(
+                PgPoolOptions::new()
+                    .max_connections(10)
+                    .connect(database_url),
+            )
             .map_err(|e| e.to_string())?;
         Ok(Self { pool, runtime })
     }
@@ -1062,7 +1075,10 @@ mod tests {
             result
         );
         // Basic sanity: the returned value is a non-empty string.
-        assert!(!result.unwrap().is_empty(), "fetched secret must not be empty");
+        assert!(
+            !result.unwrap().is_empty(),
+            "fetched secret must not be empty"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1081,14 +1097,10 @@ mod tests {
         // pure-logic path below uses an independent helper that mirrors the
         // same implementation so the unit test never needs a live connection.
         let mut call_count = 0u32;
-        let result = retry_helper(
-            3,
-            100,
-            || {
-                call_count += 1;
-                Ok::<i32, String>(42)
-            },
-        );
+        let result = retry_helper(3, 100, || {
+            call_count += 1;
+            Ok::<i32, String>(42)
+        });
         assert_eq!(result, Ok(42));
         assert_eq!(call_count, 1, "should succeed on the first attempt");
     }
@@ -1110,7 +1122,11 @@ mod tests {
                 }
             },
         );
-        assert!(result.is_ok(), "should succeed after retry, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "should succeed after retry, got: {:?}",
+            result
+        );
         assert_eq!(call_count, 2, "should have taken exactly two attempts");
     }
 
@@ -1118,14 +1134,10 @@ mod tests {
     #[test]
     fn with_retry_does_not_retry_non_connection_errors() {
         let mut call_count = 0u32;
-        let result = retry_helper::<(), _>(
-            3,
-            1,
-            || {
-                call_count += 1;
-                Err("unique constraint violation".to_string())
-            },
-        );
+        let result = retry_helper::<(), _>(3, 1, || {
+            call_count += 1;
+            Err("unique constraint violation".to_string())
+        });
         assert!(result.is_err());
         assert_eq!(call_count, 1, "non-connection errors must not be retried");
     }
@@ -1134,14 +1146,10 @@ mod tests {
     #[test]
     fn with_retry_exhausts_attempts_and_returns_last_error() {
         let mut call_count = 0u32;
-        let result = retry_helper::<(), _>(
-            3,
-            1,
-            || {
-                call_count += 1;
-                Err("connection timeout".to_string())
-            },
-        );
+        let result = retry_helper::<(), _>(3, 1, || {
+            call_count += 1;
+            Err("connection timeout".to_string())
+        });
         assert!(result.is_err());
         assert_eq!(call_count, 3, "all three attempts should be exhausted");
         assert!(result.unwrap_err().contains("timeout"));

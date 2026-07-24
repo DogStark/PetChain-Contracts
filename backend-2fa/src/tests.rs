@@ -94,17 +94,23 @@ mod tests {
         // Digits too small
         let result = TotpConfig::new(Algorithm::SHA1, 5, 30, 1);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("digits must be between 6 and 8"));
+        assert!(result
+            .unwrap_err()
+            .contains("digits must be between 6 and 8"));
 
         // Digits too large
         let result = TotpConfig::new(Algorithm::SHA1, 9, 30, 1);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("digits must be between 6 and 8"));
+        assert!(result
+            .unwrap_err()
+            .contains("digits must be between 6 and 8"));
 
         // Digits zero
         let result = TotpConfig::new(Algorithm::SHA1, 0, 30, 1);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("digits must be between 6 and 8"));
+        assert!(result
+            .unwrap_err()
+            .contains("digits must be between 6 and 8"));
     }
 
     #[test]
@@ -112,7 +118,9 @@ mod tests {
         // Period zero
         let result = TotpConfig::new(Algorithm::SHA1, 6, 0, 1);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("period must be greater than 0"));
+        assert!(result
+            .unwrap_err()
+            .contains("period must be greater than 0"));
     }
 
     #[test]
@@ -171,12 +179,17 @@ mod tests {
 
         // URI label should use sanitized issuer as well
         assert!(
-            setup.otpauth_uri.starts_with("otpauth://totp/MyApp%20Prod:user%40test.com?"),
+            setup
+                .otpauth_uri
+                .starts_with("otpauth://totp/MyApp%20Prod:user%40test.com?"),
             "otpauth_uri label does not match sanitized issuer"
         );
 
         // QR code must have been generated successfully
-        assert!(!setup.qr_code_base64.is_empty(), "QR code must be generated");
+        assert!(
+            !setup.qr_code_base64.is_empty(),
+            "QR code must be generated"
+        );
     }
 
     #[test]
@@ -421,7 +434,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "persist@petchain.com".to_string(),
             },
@@ -449,7 +462,7 @@ mod tests {
         let resp1 = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "overwrite@petchain.com".to_string(),
             },
@@ -459,7 +472,7 @@ mod tests {
         let resp2 = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "overwrite@petchain.com".to_string(),
             },
@@ -472,7 +485,7 @@ mod tests {
         // The first secret is gone
         assert_ne!(stored.secret, resp1.secret);
     }
-    
+
     #[test]
     fn test_enroll_same_idempotency_key_returns_identical_secret() {
         clear_two_factor_store_for_tests();
@@ -533,8 +546,8 @@ mod tests {
         clear_two_factor_store_for_tests();
 
         let limiter = std::sync::Arc::new(InMemoryRateLimiter::new(
-            2, // max 2 failures
-            60, // window 60s
+            2,   // max 2 failures
+            60,  // window 60s
             300, // lockout 300s
         ));
 
@@ -587,8 +600,8 @@ mod tests {
         clear_two_factor_store_for_tests();
 
         let limiter = std::sync::Arc::new(InMemoryRateLimiter::new(
-            5, // max 5 failures
-            60, // window 60s
+            5,   // max 5 failures
+            60,  // window 60s
             300, // lockout 300s
         ));
 
@@ -605,14 +618,9 @@ mod tests {
                     idempotency_key: None,
                 },
             );
-            assert!(
-                result.is_ok(),
-                "Enrollment attempt {} should succeed",
-                i
-            );
+            assert!(result.is_ok(), "Enrollment attempt {} should succeed", i);
         }
     }
-
 
     /// Failure path: wrong caller is rejected before any persistence occurs.
     #[test]
@@ -622,7 +630,7 @@ mod tests {
         let result = TwoFactorHandlers::enable_two_factor(
             &caller("attacker"),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: "victim".to_string(),
                 email: "victim@petchain.com".to_string(),
             },
@@ -664,7 +672,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "activate@petchain.com".to_string(),
             },
@@ -698,7 +706,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "no-partial@petchain.com".to_string(),
             },
@@ -769,7 +777,7 @@ mod tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "enabled@petchain.com".to_string(),
             },
@@ -851,7 +859,7 @@ mod tests {
             .enroll(
                 &caller(user_id),
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: user_id.to_string(),
                     email: "mock+user@example.com".to_string(),
                 },
@@ -918,7 +926,7 @@ mod tests {
             .enroll(
                 &caller("mock-fail"),
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: "mock-fail".to_string(),
                     email: "mock-fail@example.com".to_string(),
                 },
@@ -947,60 +955,69 @@ mod tests {
     // Rate limiter unit tests
     // -----------------------------------------------------------------------
 
-// -----------------------------------------------------------------------
-// TOTP Replay Prevention Tests (Issue #840)
-// -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TOTP Replay Prevention Tests (Issue #840)
+    // -----------------------------------------------------------------------
 
-#[cfg(test)]
-mod replay_tests {
-    use crate::two_factor::{TotpConfig, TwoFactorAuth};
-    use totp_rs::Algorithm;
+    #[cfg(test)]
+    mod replay_tests {
+        use crate::two_factor::{TotpConfig, TwoFactorAuth};
+        use totp_rs::Algorithm;
 
-    fn generate_token(secret: &str) -> String {
-        use totp_rs::{Secret, TOTP};
-        TOTP::new(Algorithm::SHA1, 6, 1, 30,
-            Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
-            None, String::new())
-            .unwrap().generate_current().unwrap()
+        fn generate_token(secret: &str) -> String {
+            use totp_rs::{Secret, TOTP};
+            TOTP::new(
+                Algorithm::SHA1,
+                6,
+                1,
+                30,
+                Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+                None,
+                String::new(),
+            )
+            .unwrap()
+            .generate_current()
+            .unwrap()
+        }
+
+        fn current_step(period: u64) -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() / period)
+                .unwrap_or(0)
+        }
+
+        #[test]
+        fn test_totp_replay_single_acceptance() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let token = generate_token(&secret);
+            let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config).unwrap();
+            assert!(result, "First use of token should be valid");
+        }
+
+        #[test]
+        fn test_totp_replay_same_token_still_valid_in_window() {
+            // verify_token_with_config has no replay protection built in —
+            // that lives at the store/handler layer (set_last_used_step).
+            // Here we just confirm the token verifies twice (no internal state).
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let token = generate_token(&secret);
+            let r1 =
+                TwoFactorAuth::verify_token_with_config(&secret, &token, config.clone()).unwrap();
+            let r2 = TwoFactorAuth::verify_token_with_config(&secret, &token, config).unwrap();
+            assert!(r1);
+            assert!(r2);
+        }
+
+        #[test]
+        fn test_totp_current_step_increases_over_time() {
+            let step1 = current_step(30);
+            // Just verify the helper returns a reasonable value (> 0)
+            assert!(step1 > 0, "time step should be positive");
+        }
     }
-
-    fn current_step(period: u64) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() / period)
-            .unwrap_or(0)
-    }
-
-    #[test]
-    fn test_totp_replay_single_acceptance() {
-        let secret = TwoFactorAuth::generate_secret();
-        let config = TotpConfig::default();
-        let token = generate_token(&secret);
-        let result = TwoFactorAuth::verify_token_with_config(&secret, &token, config).unwrap();
-        assert!(result, "First use of token should be valid");
-    }
-
-    #[test]
-    fn test_totp_replay_same_token_still_valid_in_window() {
-        // verify_token_with_config has no replay protection built in —
-        // that lives at the store/handler layer (set_last_used_step).
-        // Here we just confirm the token verifies twice (no internal state).
-        let secret = TwoFactorAuth::generate_secret();
-        let config = TotpConfig::default();
-        let token = generate_token(&secret);
-        let r1 = TwoFactorAuth::verify_token_with_config(&secret, &token, config.clone()).unwrap();
-        let r2 = TwoFactorAuth::verify_token_with_config(&secret, &token, config).unwrap();
-        assert!(r1);
-        assert!(r2);
-    }
-
-    #[test]
-    fn test_totp_current_step_increases_over_time() {
-        let step1 = current_step(30);
-        // Just verify the helper returns a reasonable value (> 0)
-        assert!(step1 > 0, "time step should be positive");
-    }
-}
 
     mod rate_limiter_tests {
         use crate::handlers::{
@@ -1034,7 +1051,11 @@ mod replay_tests {
         struct AlwaysAllowedLimiter;
         impl RateLimiter for AlwaysAllowedLimiter {
             fn record_failure(&self, _key: &str) -> RateLimitResult {
-                RateLimitResult::Allowed { limit: 5, remaining: 99, reset_at: 0 }
+                RateLimitResult::Allowed {
+                    limit: 5,
+                    remaining: 99,
+                    reset_at: 0,
+                }
             }
             fn record_success(&self, _key: &str) {}
         }
@@ -1057,7 +1078,9 @@ mod replay_tests {
                 limiter.record_failure("user:lockout");
             }
             match limiter.record_failure("user:lockout") {
-                RateLimitResult::Blocked { retry_after_secs, .. } => assert!(
+                RateLimitResult::Blocked {
+                    retry_after_secs, ..
+                } => assert!(
                     retry_after_secs >= 299 && retry_after_secs <= 300,
                     "retry_after_secs was {}",
                     retry_after_secs
@@ -1237,55 +1260,61 @@ mod replay_tests {
 
         #[test]
         fn test_sliding_window_limiter_records_metrics_on_block() {
-            use crate::rate_limiter::{EndpointConfig, MockRedisBackend, SlidingWindowRateLimiter};
             use crate::metrics;
-            
+            use crate::rate_limiter::{EndpointConfig, MockRedisBackend, SlidingWindowRateLimiter};
+
             let backend = MockRedisBackend::new();
             let cfg = EndpointConfig::new(60, 2, 300);
             let limiter = SlidingWindowRateLimiter::new(backend, cfg);
-            
+
             // Reset metrics counter
             let _ = metrics::render_metrics();
-            
+
             // First failure - allowed
             limiter.record_failure("user:test");
-            
+
             // Second failure - allowed
             limiter.record_failure("user:test");
-            
+
             // Third failure - should block and record metric
             let result = limiter.record_failure("user:test");
             assert!(matches!(result, RateLimitResult::Blocked { .. }));
-            
+
             // Verify metric was recorded
             let output = metrics::render_metrics().expect("render metrics");
-            assert!(output.contains("rate_limit_hits_total"), "metric should be present");
+            assert!(
+                output.contains("rate_limit_hits_total"),
+                "metric should be present"
+            );
         }
 
         #[test]
         fn test_distributed_limiter_records_metrics_on_block() {
-            use crate::rate_limiter::DistributedRateLimiter;
             use crate::metrics;
-            
+            use crate::rate_limiter::DistributedRateLimiter;
+
             // Use None for redis_url to force in-memory fallback
             let limiter = DistributedRateLimiter::new(None, 2, 60, "test:");
-            
+
             // Reset metrics counter
             let _ = metrics::render_metrics();
-            
+
             // First failure - allowed
             limiter.record_failure("user:test");
-            
+
             // Second failure - allowed
             limiter.record_failure("user:test");
-            
+
             // Third failure - should block and record metric
             let result = limiter.record_failure("user:test");
             assert!(matches!(result, RateLimitResult::Blocked { .. }));
-            
+
             // Verify metric was recorded
             let output = metrics::render_metrics().expect("render metrics");
-            assert!(output.contains("rate_limit_hits_total"), "metric should be present");
+            assert!(
+                output.contains("rate_limit_hits_total"),
+                "metric should be present"
+            );
         }
 
         #[test]
@@ -1295,13 +1324,13 @@ mod replay_tests {
             // Actual lock poisoning requires holding the lock while panicking, which
             // is difficult to test cleanly without exposing internals.
             let limiter = InMemoryRateLimiter::new(3, 60, 300);
-            
+
             // Normal operations should work
             let result = limiter.record_failure("user:test");
             assert!(matches!(result, RateLimitResult::Allowed { .. }));
-            
+
             limiter.record_success("user:test");
-            
+
             // Verify it still works
             let result = limiter.record_failure("user:test");
             assert!(matches!(result, RateLimitResult::Allowed { .. }));
@@ -1314,11 +1343,14 @@ mod replay_tests {
             // but we can verify the structure supports it by checking the implementation.
             // The fix adds a Mutex<Option<Connection>> to cache the connection.
             use crate::rate_limiter::LiveRedisBackend;
-            
+
             // Attempt to create a LiveRedisBackend (will fail without Redis, but that's OK)
             let result = LiveRedisBackend::new("redis://localhost:6379");
             // We expect this to fail without a running Redis server
-            assert!(result.is_err() || result.is_ok(), "constructor should return a Result");
+            assert!(
+                result.is_err() || result.is_ok(),
+                "constructor should return a Result"
+            );
         }
     }
 
@@ -1342,7 +1374,7 @@ mod replay_tests {
             let result = TwoFactorHandlers::enable_two_factor(
                 &caller("user-1"),
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: "user-1".to_string(),
                     email: "user1@petchain.com".to_string(),
                 },
@@ -1358,7 +1390,7 @@ mod replay_tests {
             let result = TwoFactorHandlers::enable_two_factor(
                 &caller("user-1"),
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: "user-2".to_string(),
                     email: "user2@petchain.com".to_string(),
                 },
@@ -1501,7 +1533,7 @@ mod replay_tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u1@petchain.com".to_string(),
             },
@@ -1537,7 +1569,7 @@ mod replay_tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u2@petchain.com".to_string(),
             },
@@ -1565,7 +1597,7 @@ mod replay_tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u3@petchain.com".to_string(),
             },
@@ -1592,7 +1624,7 @@ mod replay_tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u6@petchain.com".to_string(),
             },
@@ -1618,7 +1650,7 @@ mod replay_tests {
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u8@petchain.com".to_string(),
             },
@@ -1653,7 +1685,7 @@ mod replay_tests {
         TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "u9@petchain.com".to_string(),
             },
@@ -1723,7 +1755,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user1@petchain.com".to_string(),
             },
@@ -1807,7 +1839,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "recover@petchain.com".to_string(),
             },
@@ -1914,7 +1946,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "rate-limit-login@petchain.com".to_string(),
             },
@@ -1971,7 +2003,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user4@petchain.com".to_string(),
             },
@@ -2021,7 +2053,7 @@ mod integration_tests {
         let enable_resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "reset-rate@petchain.com".to_string(),
             },
@@ -2177,7 +2209,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2220,7 +2252,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2276,7 +2308,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2332,7 +2364,7 @@ mod integration_tests {
             let setup = TwoFactorHandlers::enable_two_factor(
                 &c,
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: user_id.clone(),
                     email: format!("{}@petchain.com", user_id),
                 },
@@ -2386,7 +2418,7 @@ mod integration_tests {
         let setup = TwoFactorHandlers::enable_two_factor(
             &caller_user,
             EnableTwoFactorRequest {
-            idempotency_key: None,
+                idempotency_key: None,
                 user_id: user_id.to_string(),
                 email: "user@petchain.com".to_string(),
             },
@@ -2700,7 +2732,9 @@ mod redis_rate_limiter_tests {
             mock_record_failure(&state, "user:h", now_ms + i, 3, 60, 120);
         }
         match mock_record_failure(&state, "user:h", now_ms + 3, 3, 60, 120) {
-            RateLimitResult::Blocked { retry_after_secs, .. } => {
+            RateLimitResult::Blocked {
+                retry_after_secs, ..
+            } => {
                 assert_eq!(retry_after_secs, 120, "retry_after must equal lockout_secs");
             }
             RateLimitResult::Allowed { .. } => panic!("should be blocked"),
@@ -3380,12 +3414,18 @@ mod admin_dashboard_tests {
         let store = get_two_factor_store_for_tests();
         // Lock two accounts by recording 10 failed attempts each
         for _ in 0..10 {
-            store.record_failed_two_fa_attempt("locked-user-a", 10).unwrap();
-            store.record_failed_two_fa_attempt("locked-user-b", 10).unwrap();
+            store
+                .record_failed_two_fa_attempt("locked-user-a", 10)
+                .unwrap();
+            store
+                .record_failed_two_fa_attempt("locked-user-b", 10)
+                .unwrap();
         }
         // Record a few failures for the unlocked user (not enough to lock)
         for _ in 0..3 {
-            store.record_failed_two_fa_attempt("unlocked-user", 10).unwrap();
+            store
+                .record_failed_two_fa_attempt("unlocked-user", 10)
+                .unwrap();
         }
 
         let locked = AdminDashboardHandlers::list_locked_users(&admin()).unwrap();
@@ -3451,8 +3491,7 @@ mod admin_dashboard_tests {
         clear_two_factor_store_for_tests();
 
         let long_user_id = "a".repeat(65);
-        let result =
-            AdminDashboardHandlers::get_user_two_factor_summary(&admin(), &long_user_id);
+        let result = AdminDashboardHandlers::get_user_two_factor_summary(&admin(), &long_user_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must not exceed 64"));
     }
@@ -3662,14 +3701,14 @@ mod webhook_handler_tests {
 
     #[test]
     fn test_webhook_manager_configure_and_query_log() {
-        let manager = WebhookManager::new_with_http_allowed(
-            Arc::new(crate::webhooks::DefaultHttpClient),
-        );
-        manager.configure(
-            SecurityEventType::FailedTwoFa,
-            "http://example.com/hook".to_string(),
-        )
-        .unwrap();
+        let manager =
+            WebhookManager::new_with_http_allowed(Arc::new(crate::webhooks::DefaultHttpClient));
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
         // Use fire_sync to avoid needing to wait for a spawned thread
         manager.fire_sync(
             SecurityEventType::FailedTwoFa,
@@ -3688,9 +3727,7 @@ mod webhook_handler_tests {
 
 #[cfg(test)]
 mod admin_webhook_handler_tests {
-    use crate::handlers::{
-        AdminWebhookHandlers, AuthenticatedAdmin, ConfigureWebhookRequest,
-    };
+    use crate::handlers::{AdminWebhookHandlers, AuthenticatedAdmin, ConfigureWebhookRequest};
     use crate::webhooks::{DefaultHttpClient, SecurityEventType, WebhookManager};
     use std::sync::Arc;
 
@@ -3997,7 +4034,7 @@ mod progressive_two_factor_lockout_tests {
             .enroll(
                 &caller,
                 EnableTwoFactorRequest {
-            idempotency_key: None,
+                    idempotency_key: None,
                     user_id: user_id.to_string(),
                     email: "lockout@example.com".to_string(),
                 },
@@ -4133,7 +4170,12 @@ mod progressive_two_factor_lockout_tests {
                 .add_entry("10.0.0.0/8", IpListType::Block, None, "admin-1")
                 .unwrap();
             store
-                .add_entry("10.1.2.3/32", IpListType::Allow, Some("trusted ops host"), "admin-1")
+                .add_entry(
+                    "10.1.2.3/32",
+                    IpListType::Allow,
+                    Some("trusted ops host"),
+                    "admin-1",
+                )
                 .unwrap();
             assert_eq!(store.check(ip("10.1.2.3")), IpAccessDecision::Allowed);
             assert_eq!(store.check(ip("10.1.2.4")), IpAccessDecision::Blocked);
@@ -4189,7 +4231,10 @@ mod progressive_two_factor_lockout_tests {
             let allow_entry = handlers
                 .allow_ip(
                     &admin(),
-                    AddIpRuleRequest { cidr: "203.0.113.5/32".to_string(), note: None },
+                    AddIpRuleRequest {
+                        cidr: "203.0.113.5/32".to_string(),
+                        note: None,
+                    },
                 )
                 .unwrap();
             assert_eq!(allow_entry.created_by, "admin-1");
@@ -4218,7 +4263,10 @@ mod progressive_two_factor_lockout_tests {
 
             let result = handlers.block_ip(
                 &admin(),
-                AddIpRuleRequest { cidr: "not-a-cidr".to_string(), note: None },
+                AddIpRuleRequest {
+                    cidr: "not-a-cidr".to_string(),
+                    note: None,
+                },
             );
             assert!(result.is_err());
         }
@@ -4260,9 +4308,9 @@ mod pool_stats_tests {
 #[cfg(test)]
 mod tenant_provisioning_idempotency_tests {
     use crate::handlers::{
-        AuthenticatedAdmin, ProvisionTenantRequest, TenantProvisioningHandlers,
-        TwoFactorHandlers, EnableTwoFactorRequest, VerifyTwoFactorRequest, RecoverWithBackupRequest,
-        AuthenticatedUser, clear_two_factor_store_for_tests,
+        clear_two_factor_store_for_tests, AuthenticatedAdmin, AuthenticatedUser,
+        EnableTwoFactorRequest, ProvisionTenantRequest, RecoverWithBackupRequest,
+        TenantProvisioningHandlers, TwoFactorHandlers, VerifyTwoFactorRequest,
     };
     use crate::two_factor::TenantRegistry;
     use std::sync::Arc;
@@ -4429,7 +4477,10 @@ mod tenant_provisioning_idempotency_tests {
                     backup_code: old_code.clone(),
                 },
             );
-            assert!(result.is_err(), "Old code should be invalid after exhaustion");
+            assert!(
+                result.is_err(),
+                "Old code should be invalid after exhaustion"
+            );
             assert!(result.unwrap_err().message.contains("InvalidRecoveryCode"));
         }
 
@@ -4451,8 +4502,14 @@ mod tenant_provisioning_idempotency_tests {
                 backup_code: fresh_code,
             },
         );
-        assert!(second_use.is_err(), "Second use of same code should be rejected");
-        assert!(second_use.unwrap_err().message.contains("InvalidRecoveryCode"));
+        assert!(
+            second_use.is_err(),
+            "Second use of same code should be rejected"
+        );
+        assert!(second_use
+            .unwrap_err()
+            .message
+            .contains("InvalidRecoveryCode"));
     }
 }
 
@@ -4468,8 +4525,7 @@ mod property_tests {
     fn setup_then_verify_succeeds_for_all_algorithms_and_windows() {
         for &algorithm in &ALGORITHMS {
             for &window in &WINDOWS {
-                let config =
-                    TotpConfig::new(algorithm, 6, 30, window).expect("valid config");
+                let config = TotpConfig::new(algorithm, 6, 30, window).expect("valid config");
                 let setup = TwoFactorAuth::setup_with_config(
                     "prop@petchain.com",
                     "PetChain",
@@ -4494,10 +4550,7 @@ mod property_tests {
                 let verified =
                     TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config)
                         .unwrap_or_else(|e| {
-                            panic!(
-                                "verify failed for {:?} window={}: {}",
-                                algorithm, window, e
-                            )
+                            panic!("verify failed for {:?} window={}: {}", algorithm, window, e)
                         });
                 assert!(
                     verified,
@@ -4526,16 +4579,23 @@ mod property_tests {
     fn eight_digit_tokens_verify_for_all_algorithms() {
         for &algorithm in &ALGORITHMS {
             let config = TotpConfig::new(algorithm, 8, 30, 1).unwrap();
-            let setup = TwoFactorAuth::setup_with_config("8dig@petchain.com", "PetChain", config.clone())
-                .unwrap();
+            let setup =
+                TwoFactorAuth::setup_with_config("8dig@petchain.com", "PetChain", config.clone())
+                    .unwrap();
             let totp = TOTP::new(
-                algorithm, 8, 1, 30,
+                algorithm,
+                8,
+                1,
+                30,
                 Secret::Encoded(setup.secret.clone()).to_bytes().unwrap(),
-                None, String::new(),
-            ).unwrap();
+                None,
+                String::new(),
+            )
+            .unwrap();
             let token = totp.generate_current().unwrap();
             assert_eq!(token.len(), 8);
-            let ok = TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config).unwrap();
+            let ok =
+                TwoFactorAuth::verify_token_with_config(&setup.secret, &token, config).unwrap();
             assert!(ok, "8-digit token must verify for {:?}", algorithm);
         }
     }
@@ -4597,14 +4657,8 @@ mod tenant_isolation_tests {
     #[test]
     fn same_user_id_different_tenants_have_independent_secrets() {
         let store = Arc::new(InMemoryStore::default());
-        let tenant_a = TenantScopedStore::new(
-            store.clone(),
-            TenantConfig::new("tenant-a"),
-        );
-        let tenant_b = TenantScopedStore::new(
-            store.clone(),
-            TenantConfig::new("tenant-b"),
-        );
+        let tenant_a = TenantScopedStore::new(store.clone(), TenantConfig::new("tenant-a"));
+        let tenant_b = TenantScopedStore::new(store.clone(), TenantConfig::new("tenant-b"));
 
         let user_id = "shared-uid";
         tenant_a.save(user_id, make_data("SECRET_A")).unwrap();
@@ -4743,10 +4797,10 @@ mod api_error_logging_tests {
 
     #[test]
     fn test_5xx_error_is_logged_via_tracing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use tracing_subscriber::prelude::*;
         use tracing_subscriber::EnvFilter;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         // Build a custom subscriber that counts events filtered at ERROR level.
         let event_count = Arc::new(AtomicUsize::new(0));
@@ -4829,8 +4883,7 @@ mod api_error_logging_tests {
 
         let count_after_400 = event_count.load(Ordering::SeqCst);
         assert_eq!(
-            count_after_400,
-            count_after_500,
+            count_after_400, count_after_500,
             "400-class error should not produce a log event"
         );
     }
@@ -4920,10 +4973,10 @@ mod api_error_logging_tests {
 #[cfg(test)]
 mod algorithm_upgrade_tests {
     use crate::handlers::{
-        AuthenticatedUser, EnableTwoFactorRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
-        VerifyTwoFactorRequest, LoginWithTwoFactorRequest,
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests,
+        overwrite_two_factor_data_for_tests, AuthenticatedUser, EnableTwoFactorRequest,
+        LoginWithTwoFactorRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
+        VerifyTwoFactorRequest,
     };
     use crate::two_factor::{TotpConfig, TwoFactorAuth, TwoFactorData};
     use totp_rs::{Algorithm, Secret, TOTP};
@@ -4954,9 +5007,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_success() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-upgrade-success";
-        
+
         // 1. Enroll with default SHA1
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -4997,7 +5050,7 @@ mod algorithm_upgrade_tests {
 
         assert!(upgrade_result.is_ok());
         let upgrade_resp = upgrade_result.unwrap();
-        
+
         // Verify response
         assert_eq!(upgrade_resp.algorithm, "SHA256");
         assert!(!upgrade_resp.new_secret.is_empty());
@@ -5012,7 +5065,7 @@ mod algorithm_upgrade_tests {
         assert_eq!(data_after.secret, upgrade_resp.new_secret);
         assert_eq!(data_after.backup_codes, upgrade_resp.new_backup_codes);
         assert!(data_after.enabled);
-        
+
         // Old secret should no longer work
         assert_ne!(data_after.secret, resp.secret);
     }
@@ -5020,9 +5073,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_wrong_token_rejected() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-upgrade-wrong-token";
-        
+
         // 1. Enroll and activate with SHA1
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -5069,9 +5122,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_already_on_sha256_returns_409() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-already-sha256";
-        
+
         // Directly set up user with SHA256
         let config = TotpConfig {
             algorithm: Algorithm::SHA256,
@@ -5080,13 +5133,9 @@ mod algorithm_upgrade_tests {
             window: 1,
             backup_code_count: 8,
         };
-        
-        let setup = TwoFactorAuth::setup_with_config(
-            "already@petchain.com",
-            "PetChain",
-            config,
-        )
-        .unwrap();
+
+        let setup =
+            TwoFactorAuth::setup_with_config("already@petchain.com", "PetChain", config).unwrap();
 
         overwrite_two_factor_data_for_tests(
             user_id,
@@ -5131,9 +5180,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_2fa_not_enabled() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-not-enabled";
-        
+
         // Enroll but don't activate
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -5166,9 +5215,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_user_not_found() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-does-not-exist";
-        
+
         // Try to upgrade for non-existent user
         let handlers = TwoFactorHandlers::new();
         let upgrade_result = handlers.upgrade_algorithm(
@@ -5188,9 +5237,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_unauthorized_caller() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-upgrade-unauthorized";
-        
+
         // Enroll and activate
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -5232,9 +5281,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_new_backup_codes_generated() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-new-backup-codes";
-        
+
         // Enroll and activate
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -5274,7 +5323,7 @@ mod algorithm_upgrade_tests {
         // New backup codes should be different
         assert_ne!(upgrade_resp.new_backup_codes, old_backup_codes);
         assert_eq!(upgrade_resp.new_backup_codes.len(), 8);
-        
+
         // Verify they're stored
         let data = get_two_factor_data_for_tests(user_id).unwrap();
         assert_eq!(data.backup_codes, upgrade_resp.new_backup_codes);
@@ -5283,9 +5332,9 @@ mod algorithm_upgrade_tests {
     #[test]
     fn test_upgrade_algorithm_old_secret_invalidated() {
         clear_two_factor_store_for_tests();
-        
+
         let user_id = "user-old-secret-invalid";
-        
+
         // Enroll and activate
         let resp = TwoFactorHandlers::enable_two_factor(
             &caller(user_id),
@@ -5300,7 +5349,7 @@ mod algorithm_upgrade_tests {
         let old_secret = resp.secret.clone();
         let handlers = TwoFactorHandlers::new();
         let token = generate_token(&old_secret);
-        
+
         handlers
             .verify_and_activate(
                 &caller(user_id),
@@ -5336,7 +5385,7 @@ mod algorithm_upgrade_tests {
                 token: old_token,
             },
         );
-        
+
         // Should fail because the secret changed
         assert!(login_result.is_ok());
         assert!(!login_result.unwrap());

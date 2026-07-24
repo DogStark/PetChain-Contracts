@@ -85,25 +85,33 @@ impl MigrationRunner {
     }
 
     fn ensure_tracking_table(&self, executor: &dyn SqlExecutor) -> Result<(), MigrationError> {
-        executor.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
+        executor
+            .execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (
                 version     INTEGER PRIMARY KEY,
                 name        TEXT NOT NULL,
                 applied_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 checksum    TEXT NOT NULL
             )",
-        ).map_err(MigrationError::Sql)
+            )
+            .map_err(MigrationError::Sql)
     }
 
-    fn get_applied_migrations(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
+    fn get_applied_migrations(
+        &self,
+        executor: &dyn SqlExecutor,
+    ) -> Result<Vec<(u32, String)>, MigrationError> {
         self.ensure_tracking_table(executor)?;
         let mut applied = Vec::new();
         for migration in &self.migrations {
             let version_str = migration.version.to_string();
-            let count = executor.query_scalar_with_params(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
-                &[version_str.as_str()]
-            ).map_err(MigrationError::Sql)?.unwrap_or(0);
+            let count = executor
+                .query_scalar_with_params(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
+                    &[version_str.as_str()],
+                )
+                .map_err(MigrationError::Sql)?
+                .unwrap_or(0);
             if count > 0 {
                 applied.push((migration.version, migration.name.clone()));
             }
@@ -111,11 +119,18 @@ impl MigrationRunner {
         Ok(applied)
     }
 
-    fn pending_migrations(&self, executor: &dyn SqlExecutor) -> Result<Vec<&Migration>, MigrationError> {
+    fn pending_migrations(
+        &self,
+        executor: &dyn SqlExecutor,
+    ) -> Result<Vec<&Migration>, MigrationError> {
         let applied = self.get_applied_migrations(executor)?;
         let applied_versions: std::collections::HashSet<u32> =
             applied.into_iter().map(|(v, _)| v).collect();
-        Ok(self.migrations.iter().filter(|m| !applied_versions.contains(&m.version)).collect())
+        Ok(self
+            .migrations
+            .iter()
+            .filter(|m| !applied_versions.contains(&m.version))
+            .collect())
     }
 
     pub fn apply_pending(&self, executor: &dyn SqlExecutor) -> Result<usize, MigrationError> {
@@ -124,41 +139,60 @@ impl MigrationRunner {
             return Ok(0);
         }
         for migration in &pending {
-            executor.execute(&migration.up_script)
-                .map_err(|e| MigrationError::Sql(format!("migration {} up: {}", migration.version, e)))?;
-            
+            executor.execute(&migration.up_script).map_err(|e| {
+                MigrationError::Sql(format!("migration {} up: {}", migration.version, e))
+            })?;
+
             let version_str = migration.version.to_string();
-            executor.execute_with_params(
-                "INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
-                &[version_str.as_str(), migration.name.as_str(), migration.checksum.as_str()]
-            ).map_err(|e| MigrationError::Sql(format!("recording migration {}: {}", migration.version, e)))?;
+            executor
+                .execute_with_params(
+                    "INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
+                    &[
+                        version_str.as_str(),
+                        migration.name.as_str(),
+                        migration.checksum.as_str(),
+                    ],
+                )
+                .map_err(|e| {
+                    MigrationError::Sql(format!("recording migration {}: {}", migration.version, e))
+                })?;
         }
         Ok(pending.len())
     }
 
     pub fn rollback_last(&self, executor: &dyn SqlExecutor) -> Result<u32, MigrationError> {
-        let max_version = executor.query_scalar("SELECT MAX(version) FROM schema_migrations")
-            .map_err(MigrationError::Sql)?.unwrap_or(0) as u32;
+        let max_version = executor
+            .query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .map_err(MigrationError::Sql)?
+            .unwrap_or(0) as u32;
         if max_version == 0 {
             return Err(MigrationError::NoMigrationsToRollback);
         }
-        let migration = self.migrations.iter()
+        let migration = self
+            .migrations
+            .iter()
             .find(|m| m.version == max_version)
             .ok_or(MigrationError::MigrationNotFound(max_version))?;
         if !migration.down_script.is_empty() {
-            executor.execute(&migration.down_script)
-                .map_err(|e| MigrationError::Sql(format!("migration {} down: {}", migration.version, e)))?;
+            executor.execute(&migration.down_script).map_err(|e| {
+                MigrationError::Sql(format!("migration {} down: {}", migration.version, e))
+            })?;
         }
-        
+
         let version_str = migration.version.to_string();
-        executor.execute_with_params(
-            "DELETE FROM schema_migrations WHERE version = $1",
-            &[version_str.as_str()]
-        ).map_err(MigrationError::Sql)?;
+        executor
+            .execute_with_params(
+                "DELETE FROM schema_migrations WHERE version = $1",
+                &[version_str.as_str()],
+            )
+            .map_err(MigrationError::Sql)?;
         Ok(migration.version)
     }
 
-    pub fn current_version(&self, executor: &dyn SqlExecutor) -> Result<Option<u32>, MigrationError> {
+    pub fn current_version(
+        &self,
+        executor: &dyn SqlExecutor,
+    ) -> Result<Option<u32>, MigrationError> {
         match executor.query_scalar("SELECT MAX(version) FROM schema_migrations") {
             Ok(Some(v)) => Ok(Some(v as u32)),
             Ok(None) => Ok(None),
@@ -172,17 +206,23 @@ impl MigrationRunner {
     }
 
     /// Returns the list of pending migrations (version + name) without executing any up_script.
-    pub fn dry_run(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
+    pub fn dry_run(
+        &self,
+        executor: &dyn SqlExecutor,
+    ) -> Result<Vec<(u32, String)>, MigrationError> {
         let pending = self.pending_migrations(executor)?;
-        Ok(pending.iter().map(|m| (m.version, m.name.clone())).collect())
+        Ok(pending
+            .iter()
+            .map(|m| (m.version, m.name.clone()))
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::cell::RefCell;
+    use std::collections::HashMap;
 
     struct MockExecutor {
         tables: RefCell<HashMap<String, Vec<HashMap<String, String>>>>,
@@ -192,7 +232,9 @@ mod tests {
         fn new() -> Self {
             let mut tables = HashMap::new();
             tables.insert("schema_migrations".to_string(), Vec::new());
-            Self { tables: RefCell::new(tables) }
+            Self {
+                tables: RefCell::new(tables),
+            }
         }
     }
 
@@ -204,26 +246,48 @@ mod tests {
             if sql.starts_with("INSERT INTO schema_migrations") {
                 let mut map = HashMap::new();
                 map.insert("version".to_string(), params[0].to_string());
-                self.tables.borrow_mut().get_mut("schema_migrations").unwrap().push(map);
+                self.tables
+                    .borrow_mut()
+                    .get_mut("schema_migrations")
+                    .unwrap()
+                    .push(map);
             } else if sql.starts_with("DELETE FROM schema_migrations") {
                 let version = params[0].to_string();
-                self.tables.borrow_mut().get_mut("schema_migrations").unwrap().retain(|row| row.get("version") != Some(&version));
+                self.tables
+                    .borrow_mut()
+                    .get_mut("schema_migrations")
+                    .unwrap()
+                    .retain(|row| row.get("version") != Some(&version));
             }
             Ok(())
         }
         fn query_scalar(&self, sql: &str) -> Result<Option<i64>, String> {
             if sql.starts_with("SELECT MAX(version)") {
-                let max = self.tables.borrow().get("schema_migrations").unwrap().iter()
+                let max = self
+                    .tables
+                    .borrow()
+                    .get("schema_migrations")
+                    .unwrap()
+                    .iter()
                     .filter_map(|row| row.get("version").and_then(|v| v.parse::<i64>().ok()))
                     .max();
                 return Ok(Some(max.unwrap_or(0)));
             }
             Ok(Some(0))
         }
-        fn query_scalar_with_params(&self, sql: &str, params: &[&str]) -> Result<Option<i64>, String> {
+        fn query_scalar_with_params(
+            &self,
+            sql: &str,
+            params: &[&str],
+        ) -> Result<Option<i64>, String> {
             if sql.starts_with("SELECT COUNT(*)") {
                 let version = params[0].to_string();
-                let count = self.tables.borrow().get("schema_migrations").unwrap().iter()
+                let count = self
+                    .tables
+                    .borrow()
+                    .get("schema_migrations")
+                    .unwrap()
+                    .iter()
                     .filter(|row| row.get("version") == Some(&version))
                     .count();
                 return Ok(Some(count as i64));
@@ -236,7 +300,8 @@ mod tests {
     fn test_apply_pending_is_idempotent() {
         let executor = MockExecutor::new();
         let migrations = vec![Migration {
-            version: 1, name: "test".to_string(),
+            version: 1,
+            name: "test".to_string(),
             up_script: "CREATE TABLE t (id INT);".to_string(),
             down_script: "DROP TABLE IF EXISTS t;".to_string(),
             checksum: "abc".to_string(),
@@ -254,7 +319,10 @@ mod tests {
         let executor = MockExecutor::new();
         let runner = MigrationRunner::new(vec![]);
         let result = runner.rollback_last(&executor);
-        assert!(matches!(result, Err(MigrationError::NoMigrationsToRollback)));
+        assert!(matches!(
+            result,
+            Err(MigrationError::NoMigrationsToRollback)
+        ));
     }
 
     #[test]
@@ -278,7 +346,8 @@ mod tests {
             assert!(
                 !m.up_script.trim().is_empty(),
                 "migration {} ({}) has empty up script",
-                m.version, m.name
+                m.version,
+                m.name
             );
             assert!(
                 !m.checksum.is_empty(),
@@ -302,7 +371,11 @@ mod tests {
     fn migration_sql_contains_expected_tables() {
         let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
         let migrations = discover_migrations(&migrations_dir).unwrap();
-        let all_sql: String = migrations.iter().map(|m| m.up_script.as_str()).collect::<Vec<_>>().join("\n");
+        let all_sql: String = migrations
+            .iter()
+            .map(|m| m.up_script.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let required_tables = [
             "schema_migrations",
@@ -328,7 +401,8 @@ mod tests {
             assert!(
                 !m.down_script.is_empty(),
                 "migration {} ({}) is missing a .down.sql file",
-                m.version, m.name
+                m.version,
+                m.name
             );
         }
     }
@@ -383,7 +457,8 @@ pub fn discover_migrations(migrations_dir: &Path) -> Result<Vec<Migration>, Migr
         if path.extension().and_then(|s| s.to_str()) != Some("sql") {
             continue;
         }
-        let filename = path.file_stem()
+        let filename = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
@@ -411,11 +486,13 @@ pub fn discover_migrations(migrations_dir: &Path) -> Result<Vec<Migration>, Migr
             .map_err(|e| MigrationError::Io(format!("reading {}: {}", up_path.display(), e)))?;
         let checksum = hex::encode(Sha256::digest(up_script.as_bytes()));
 
-        let down_script = down_files.iter()
+        let down_script = down_files
+            .iter()
             .find(|(v, _)| v == version)
             .map(|(_, down_path)| {
-                fs::read_to_string(down_path)
-                    .map_err(|e| MigrationError::Io(format!("reading {}: {}", down_path.display(), e)))
+                fs::read_to_string(down_path).map_err(|e| {
+                    MigrationError::Io(format!("reading {}: {}", down_path.display(), e))
+                })
             })
             .transpose()?
             .unwrap_or_default();

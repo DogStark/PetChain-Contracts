@@ -1,5 +1,8 @@
 use crate::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env, String, Vec,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,14 +191,15 @@ fn test_unauthorised_delete_rejected() {
 #[should_panic(expected = "Error(Contract, #162)")]
 fn test_purge_before_retention_rejected() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     let rid = add_record(&client, &env, &vet, pet_id, "Sprain");
 
     client.delete_medical_record(&pet_id, &rid, &owner);
 
     // Advance only 1 day — default retention is 30 days
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 86_400);
+    env.ledger()
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 86_400);
     client.purge_expired_records(&pet_id, &owner); // should panic
 }
 
@@ -206,19 +210,17 @@ fn test_purge_before_retention_rejected() {
 #[test]
 fn test_owner_purge_after_retention_succeeds() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     let rid = add_record(&client, &env, &vet, pet_id, "Fracture");
 
     client.delete_medical_record(&pet_id, &rid, &owner);
 
-    // Advance past default 30-day retention
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 
-    // Record is gone from storage entirely
     assert!(client.get_medical_record(&rid).is_none());
 }
 
@@ -229,14 +231,14 @@ fn test_owner_purge_after_retention_succeeds() {
 #[test]
 fn test_admin_purge_after_retention_succeeds() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     let rid = add_record(&client, &env, &vet, pet_id, "Infection");
 
     client.delete_medical_record(&pet_id, &rid, &owner);
 
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
 
     // Use the admin address (init_admin was called in setup with a generated admin)
     // Re-derive admin by re-running setup logic — easier to use owner here since
@@ -268,7 +270,7 @@ fn test_admin_purge_after_retention_succeeds() {
         &None,
         &PrivacyLevel::Public,
     );
-    env2.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env2.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let rid2 = client2.add_medical_record(
         &pet2,
         &vet2,
@@ -279,7 +281,7 @@ fn test_admin_purge_after_retention_succeeds() {
     );
     client2.delete_medical_record(&pet2, &rid2, &owner2);
     env2.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
 
     let purged = client2.purge_expired_records(&pet2, &admin2);
     assert_eq!(purged, 1);
@@ -293,7 +295,7 @@ fn test_admin_purge_after_retention_succeeds() {
 #[test]
 fn test_custom_retention_period_respected() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
 
     let contract_id = env.register_contract(None, PetChainContract);
     env.mock_all_auths();
@@ -339,7 +341,7 @@ fn test_custom_retention_period_respected() {
 
     // Advance 2 days — past the 1-day custom retention
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 2 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 2 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 }
@@ -351,7 +353,7 @@ fn test_custom_retention_period_respected() {
 #[test]
 fn test_purge_leaves_active_records_intact() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
 
     let r_active = add_record(&client, &env, &vet, pet_id, "Active");
@@ -360,7 +362,7 @@ fn test_purge_leaves_active_records_intact() {
     client.delete_medical_record(&pet_id, &r_deleted, &owner);
 
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 
@@ -378,12 +380,12 @@ fn test_purge_leaves_active_records_intact() {
 #[test]
 fn test_purge_no_deleted_records_returns_zero() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     add_record(&client, &env, &vet, pet_id, "Healthy");
 
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 0);
 }
@@ -396,13 +398,13 @@ fn test_purge_no_deleted_records_returns_zero() {
 #[should_panic]
 fn test_unauthorised_purge_rejected() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     let rid = add_record(&client, &env, &vet, pet_id, "Flu");
     client.delete_medical_record(&pet_id, &rid, &owner);
 
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 31 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
     let stranger = Address::generate(&env);
     client.purge_expired_records(&pet_id, &stranger);
 }
@@ -414,7 +416,7 @@ fn test_unauthorised_purge_rejected() {
 #[test]
 fn test_purge_at_exact_retention_boundary_succeeds() {
     let env = Env::default();
-    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
     let (client, vet, owner, pet_id) = setup(&env);
     let rid = add_record(&client, &env, &vet, pet_id, "Boundary");
 
@@ -422,7 +424,7 @@ fn test_purge_at_exact_retention_boundary_succeeds() {
 
     // Advance exactly 30 days (default retention)
     env.ledger()
-        .with_mut(|l| l.timestamp = 1_000_000 + 30 * 86_400);
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 30 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 }
