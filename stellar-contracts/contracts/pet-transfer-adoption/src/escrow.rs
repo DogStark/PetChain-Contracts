@@ -43,6 +43,7 @@ pub enum EscrowDataKey {
     Entry(u64),
     FeeBps,
     FeeRecipient,
+    Admin,
 }
 
 // ─── Fee helpers ──────────────────────────────────────────────────────────────
@@ -61,6 +62,10 @@ pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address) {
     assert!(fee_bps <= 10_000, "fee_bps must be <= 10000");
     env.storage().instance().set(&EscrowDataKey::FeeBps, &fee_bps);
     env.storage().instance().set(&EscrowDataKey::FeeRecipient, &fee_recipient);
+    // Store the initial caller as Admin (first call sets the admin)
+    if !env.storage().instance().has(&EscrowDataKey::Admin) {
+        env.storage().instance().set(&EscrowDataKey::Admin, &fee_recipient);
+    }
 }
 
 pub fn get_platform_fee_bps(env: &Env) -> u32 {
@@ -68,6 +73,50 @@ pub fn get_platform_fee_bps(env: &Env) -> u32 {
         .instance()
         .get::<EscrowDataKey, u32>(&EscrowDataKey::FeeBps)
         .unwrap_or(0)
+}
+
+/// Returns the stored fee_bps (or 0 if unset). View-only, no auth required.
+/// Closes issue #1004.
+pub fn get_fee_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get::<EscrowDataKey, u32>(&EscrowDataKey::FeeBps)
+        .unwrap_or(0)
+}
+
+/// Returns the stored fee recipient address, or None if unset. View-only, no auth required.
+/// Closes issue #1004.
+pub fn get_fee_recipient(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get::<EscrowDataKey, Address>(&EscrowDataKey::FeeRecipient)
+}
+
+/// Updates the platform fee configuration. Only callable by the stored Admin.
+/// Validates new_fee_bps <= 10_000 and emits a CONFIG_UPDATED event with old and new values.
+/// Existing in-flight escrows are NOT retroactively updated (they capture fee_bps at deposit time).
+/// Closes issue #1005.
+pub fn update_fee_config(env: &Env, new_fee_bps: u32, new_fee_recipient: Address) {
+    assert!(new_fee_bps <= 10_000, "fee_bps must be <= 10000");
+
+    // Require admin auth
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&EscrowDataKey::Admin)
+        .expect("escrow config not initialised");
+    admin.require_auth();
+
+    let old_fee_bps: u32 = get_platform_fee_bps(env);
+    let old_fee_recipient: Option<Address> = get_fee_recipient(env);
+
+    env.storage().instance().set(&EscrowDataKey::FeeBps, &new_fee_bps);
+    env.storage().instance().set(&EscrowDataKey::FeeRecipient, &new_fee_recipient);
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("CFG_UPD"),),
+        (old_fee_bps, new_fee_bps, old_fee_recipient, new_fee_recipient),
+    );
 }
 
 // ─── Operations ───────────────────────────────────────────────────────────────
@@ -236,5 +285,123 @@ mod tests {
     fn zero_fee_bps_full_amount_to_seller() {
         assert_eq!(compute_platform_fee(10_000_000, 0), 0);
         assert_eq!(compute_seller_amount(10_000_000, 0), 10_000_000);
+    }
+
+    // ── Issue #1006: missing-entry error-path tests ───────────────────────────
+
+    /// finalize_transfer panics with "escrow not found" when no entry exists.
+    #[test]
+    #[should_panic(expected = "escrow not found")]
+    fn finalize_transfer_panics_on_missing_entry() {
+        let (env, _buyer, _seller, platform) = setup();
+        init_escrow_config(&env, 250, platform);
+        // transfer_id 999 was never deposited
+        finalize_transfer(&env, 999);
+    }
+
+    /// refund_fee panics with "escrow not found" when no entry exists.
+    #[test]
+    #[should_panic(expected = "escrow not found")]
+    fn refund_fee_panics_on_missing_entry() {
+        let (env, _buyer, _seller, platform) = setup();
+        init_escrow_config(&env, 250, platform);
+        // transfer_id 999 was never deposited
+        refund_fee(&env, 999);
+    }
+
+    /// dispute_transfer panics with "escrow not found" when no entry exists.
+    #[test]
+    #[should_panic(expected = "escrow not found")]
+    fn dispute_transfer_panics_on_missing_entry() {
+        let (env, buyer, _seller, platform) = setup();
+        init_escrow_config(&env, 250, platform);
+        // transfer_id 999 was never deposited
+        dispute_transfer(&env, 999, buyer);
+    }
+
+    // ── Issue #1004: get_fee_bps and get_fee_recipient view functions ─────────
+
+    #[test]
+    fn get_fee_bps_returns_configured_value() {
+        let (env, _buyer, _seller, platform) = setup();
+        init_escrow_config(&env, 300, platform);
+        assert_eq!(get_fee_bps(&env), 300);
+    }
+
+    #[test]
+    fn get_fee_bps_returns_zero_when_not_configured() {
+        let env = Env::default();
+        assert_eq!(get_fee_bps(&env), 0);
+    }
+
+    #[test]
+    fn get_fee_recipient_returns_configured_address() {
+        let (env, _buyer, _seller, platform) = setup();
+        init_escrow_config(&env, 150, platform.clone());
+        assert_eq!(get_fee_recipient(&env), Some(platform));
+    }
+
+    #[test]
+    fn get_fee_recipient_returns_none_when_not_configured() {
+        let env = Env::default();
+        assert_eq!(get_fee_recipient(&env), None);
+    }
+
+    // ── Issue #1005: update_fee_config admin-only update ─────────────────────
+
+    #[test]
+    fn update_fee_config_changes_fee_bps_and_recipient() {
+        let (env, _buyer, _seller, platform) = setup();
+        env.mock_all_auths();
+        let new_recipient = Address::generate(&env);
+        init_escrow_config(&env, 250, platform.clone());
+
+        update_fee_config(&env, 100, new_recipient.clone());
+
+        assert_eq!(get_fee_bps(&env), 100);
+        assert_eq!(get_fee_recipient(&env), Some(new_recipient));
+    }
+
+    #[test]
+    fn new_escrow_uses_updated_fee_rate() {
+        let (env, buyer, seller, platform) = setup();
+        env.mock_all_auths();
+        let new_recipient = Address::generate(&env);
+        init_escrow_config(&env, 250, platform.clone());
+
+        // Update fee to 500 bps (5%)
+        update_fee_config(&env, 500, new_recipient.clone());
+
+        // New deposit captures the updated rate
+        deposit_fee(&env, 10, buyer.clone(), seller.clone(), 10_000_000);
+        let entry = get_escrow(&env, 10).unwrap();
+        assert_eq!(entry.platform_fee_bps, 500);
+    }
+
+    #[test]
+    fn existing_escrow_keeps_original_fee_rate_after_update() {
+        let (env, buyer, seller, platform) = setup();
+        env.mock_all_auths();
+        let new_recipient = Address::generate(&env);
+        init_escrow_config(&env, 250, platform.clone());
+
+        // Deposit before update — captures 250 bps
+        deposit_fee(&env, 20, buyer.clone(), seller.clone(), 10_000_000);
+
+        // Update fee to 500 bps
+        update_fee_config(&env, 500, new_recipient.clone());
+
+        // Existing escrow is unchanged
+        let entry = get_escrow(&env, 20).unwrap();
+        assert_eq!(entry.platform_fee_bps, 250);
+    }
+
+    #[test]
+    #[should_panic]
+    fn update_fee_config_rejects_fee_bps_over_10000() {
+        let (env, _buyer, _seller, platform) = setup();
+        env.mock_all_auths();
+        init_escrow_config(&env, 250, platform.clone());
+        update_fee_config(&env, 10_001, platform);
     }
 }
