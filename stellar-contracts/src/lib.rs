@@ -151,6 +151,8 @@ mod test_error_registry;
 mod test_behavior_records;
 #[cfg(test)]
 mod test_nutrition_plan;
+#[cfg(test)]
+mod test_medical_record_soft_delete;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -270,7 +272,8 @@ pub enum ContractError {
     VeterinarianNotVerified = 33,
     SlotAlreadyBooked = 34,
     DuplicateActivity = 35,
-
+    AlreadyDeleted = 160,
+    RetentionPeriodNotMet = 162,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -1041,6 +1044,8 @@ pub enum MedicalKey {
     CertificateAnchor((u64, u64)), // (pet_id, vaccination_id) -> CertificateAnchor
     // Scanner registry
     ScannerRegistry,
+    // Retention period for soft-deleted record purging
+    RetentionPeriod,
 }
 
 #[contracttype]
@@ -2138,6 +2143,13 @@ pub struct MedicalRecordPurgedEvent {
     pub timestamp: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PurgeResult {
+    pub deleted: Vec<u64>,
+    pub dry_run: bool,
+}
+
 // --- VET LICENSE VERIFICATION EVENTS ---
 
 /// Emitted when a multisig admin verifies a vet's license on-chain.
@@ -2579,10 +2591,17 @@ impl PetChainContract {
         consents
     }
 
-    fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
-        env.storage()
+    pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
+        if let Some(record) = env
+            .storage()
             .instance()
             .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
+            if record.deleted_at.is_none() {
+                return Some(record);
+            }
+        }
+        None
     }
 
     fn get_lab_result(env: Env, lab_id: u64) -> Option<LabResult> {
@@ -9538,6 +9557,346 @@ impl PetChainContract {
         // The actual purging happens lazily during add_activity_record checks
         
         purged
+    }
+
+    pub fn set_retention_period(env: Env, admin: Address, period_seconds: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&MedicalKey::RetentionPeriod, &period_seconds);
+    }
+
+    pub fn get_retention_period(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::RetentionPeriod)
+            .unwrap_or(30 * 86_400)
+    }
+
+    pub fn delete_medical_record(env: Env, pet_id: u64, record_id: u64, caller: Address) -> bool {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        if record.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        if caller != pet.owner && caller != record.vet_address && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        if record.deleted_at.is_some() {
+            panic_with_error!(&env, ContractError::AlreadyDeleted);
+        }
+
+        let now = env.ledger().timestamp();
+        record.deleted_at = Some(now);
+        record.updated_at = now;
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordDeleted"), pet_id),
+            MedicalRecordDeletedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                pet_id,
+                deleted_by: caller,
+                timestamp: now,
+            },
+        );
+
+        true
+    }
+
+    pub fn purge_deleted_records(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        dry_run: bool,
+    ) -> PurgeResult {
+        caller.require_auth();
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if caller != pet.owner && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let retention_period = Self::get_retention_period(env.clone());
+        let now = env.ledger().timestamp();
+        let mut deleted = Vec::new(&env);
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut has_unretained_deleted = false;
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+                {
+                    if let Some(deleted_at) = record.deleted_at {
+                        if now >= deleted_at.saturating_add(retention_period) {
+                            deleted.push_back(record_id);
+                            if !dry_run {
+                                env.storage()
+                                    .instance()
+                                    .remove(&MedicalKey::MedicalRecord(record_id));
+                            }
+                        } else {
+                            has_unretained_deleted = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if deleted.is_empty() && has_unretained_deleted {
+            panic_with_error!(&env, ContractError::RetentionPeriodNotMet);
+        }
+
+        if !dry_run && !deleted.is_empty() {
+            env.events().publish(
+                (String::from_str(&env, "MedicalRecordPurged"), pet_id),
+                MedicalRecordPurgedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    purged_count: deleted.len() as u32,
+                    purged_by: caller,
+                    timestamp: now,
+                },
+            );
+        }
+
+        PurgeResult { deleted, dry_run }
+    }
+
+    pub fn purge_expired_records(env: Env, pet_id: u64, caller: Address) -> u32 {
+        let res = Self::purge_deleted_records(env, pet_id, caller, false);
+        res.deleted.len() as u32
+    }
+
+    pub fn add_medical_record(
+        env: Env,
+        pet_id: u64,
+        vet_address: Address,
+        diagnosis: String,
+        treatment: String,
+        medications: Vec<Medication>,
+        notes: String,
+    ) -> u64 {
+        vet_address.require_auth();
+        if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+            panic!("Veterinarian not verified");
+        }
+
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        Self::increment_pet_storage(&env, pet_id);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecordCount)
+            .unwrap_or(0);
+        let record_id = safe_increment(count);
+        let now = env.ledger().timestamp();
+
+        let record = MedicalRecord {
+            id: record_id,
+            pet_id,
+            vet_address: vet_address.clone(),
+            diagnosis,
+            treatment,
+            medications,
+            date: now,
+            updated_at: now,
+            notes,
+            attachment_hashes: Vec::new(&env),
+            deleted_at: None,
+        };
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecordCount, &record_id);
+
+        let pet_rec_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_rec_count = safe_increment(pet_rec_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::PetMedicalRecordCount(pet_id), &new_pet_rec_count);
+        env.storage().instance().set(
+            &MedicalKey::PetMedicalRecordIndex((pet_id, new_pet_rec_count)),
+            &record_id,
+        );
+
+        let vet_tx_count = env
+            .storage()
+            .instance()
+            .get::<VetKey, u64>(&VetKey::VetTreatmentCount(vet_address.clone()))
+            .unwrap_or(0);
+        let new_vet_tx_count = safe_increment(vet_tx_count);
+        env.storage().instance().set(
+            &VetKey::VetTreatmentCount(vet_address.clone()),
+            &new_vet_tx_count,
+        );
+        env.storage().instance().set(
+            &VetKey::VetTreatmentIndex((vet_address.clone(), new_vet_tx_count)),
+            &record_id,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "MedicalRecordAdded"), pet_id),
+            MedicalRecordAddedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                updated_by: vet_address,
+                timestamp: now,
+                subscription_ids: Self::matching_subscription_ids(
+                    &env,
+                    EventType::MedicalRecordAdded,
+                    pet_id,
+                ),
+            },
+        );
+
+        record_id
+    }
+
+    pub fn get_pet_medical_records(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut results = Vec::new(&env);
+        if count == 0 || limit == 0 || offset >= count {
+            return results;
+        }
+        let start_index = offset.saturating_add(1);
+        let end_index = (offset.saturating_add(limit as u64)).min(count);
+        for i in start_index..=end_index {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    results.push_back(record);
+                }
+            }
+        }
+        results
+    }
+
+    pub fn search_medical_records(
+        env: Env,
+        pet_id: u64,
+        filter: MedicalRecordFilter,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut matching = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    if Self::medical_record_matches_filter(&env, &record, &filter) {
+                        matching.push_back(record);
+                    }
+                }
+            }
+        }
+        let total_matches = matching.len() as u64;
+        let mut results = Vec::new(&env);
+        if total_matches == 0 || limit == 0 || offset >= total_matches {
+            return results;
+        }
+        let end_index = (offset.saturating_add(limit as u64)).min(total_matches);
+        for i in offset..end_index {
+            results.push_back(matching.get(i as u32).unwrap());
+        }
+        results
+    }
+
+    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let mut results = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    if Self::string_contains(&env, &record.diagnosis, &keyword)
+                        || Self::string_contains(&env, &record.notes, &keyword)
+                    {
+                        results.push_back(record);
+                    }
+                }
+            }
+        }
+        results
     }
 } // end impl PetChainContract
 
