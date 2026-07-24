@@ -217,6 +217,7 @@ pub enum ContractError {
     AdoptionRejected = 29,
     InvalidApprover = 30,
     InvalidTimeoutDays = 31,
+    AdopterApprovalRequired = 32,
 }
 
 /// ======================================================
@@ -656,6 +657,9 @@ impl PetOwnershipContract {
         }
         if record.state != AdoptionState::Signed {
             panic_with_error!(&env, ContractError::AdoptionAlreadyCompleted);
+        }
+        if !record.adopter_approved {
+            panic_with_error!(&env, ContractError::AdopterApprovalRequired);
         }
         if pending.organization.is_some() && !record.organization_approved {
             panic_with_error!(&env, ContractError::OrganizationApprovalRequired);
