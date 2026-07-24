@@ -30,12 +30,12 @@ pub enum EscrowStatus {
 #[contracttype]
 #[derive(Debug, Clone)]
 pub struct EscrowEntry {
-    pub transfer_id:      u64,
-    pub buyer:            Address,
-    pub seller:           Address,
-    pub amount:           i128,
+    pub transfer_id: u64,
+    pub buyer: Address,
+    pub seller: Address,
+    pub amount: i128,
     pub platform_fee_bps: u32,
-    pub status:           EscrowStatus,
+    pub status: EscrowStatus,
 }
 
 #[contracttype]
@@ -60,11 +60,17 @@ pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
 
 pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address) {
     assert!(fee_bps <= 10_000, "fee_bps must be <= 10000");
-    env.storage().instance().set(&EscrowDataKey::FeeBps, &fee_bps);
-    env.storage().instance().set(&EscrowDataKey::FeeRecipient, &fee_recipient);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::FeeBps, &fee_bps);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::FeeRecipient, &fee_recipient);
     // Store the initial caller as Admin (first call sets the admin)
     if !env.storage().instance().has(&EscrowDataKey::Admin) {
-        env.storage().instance().set(&EscrowDataKey::Admin, &fee_recipient);
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::Admin, &fee_recipient);
     }
 }
 
@@ -110,12 +116,21 @@ pub fn update_fee_config(env: &Env, new_fee_bps: u32, new_fee_recipient: Address
     let old_fee_bps: u32 = get_platform_fee_bps(env);
     let old_fee_recipient: Option<Address> = get_fee_recipient(env);
 
-    env.storage().instance().set(&EscrowDataKey::FeeBps, &new_fee_bps);
-    env.storage().instance().set(&EscrowDataKey::FeeRecipient, &new_fee_recipient);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::FeeBps, &new_fee_bps);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::FeeRecipient, &new_fee_recipient);
 
     env.events().publish(
         (soroban_sdk::symbol_short!("CFG_UPD"),),
-        (old_fee_bps, new_fee_bps, old_fee_recipient, new_fee_recipient),
+        (
+            old_fee_bps,
+            new_fee_bps,
+            old_fee_recipient,
+            new_fee_recipient,
+        ),
     );
 }
 
@@ -126,14 +141,17 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
     buyer.require_auth();
     assert!(amount > 0, "amount must be positive");
     let key = EscrowDataKey::Entry(transfer_id);
-    assert!(!env.storage().persistent().has(&key), "escrow already exists");
+    assert!(
+        !env.storage().persistent().has(&key),
+        "escrow already exists"
+    );
     let entry = EscrowEntry {
         transfer_id,
-        buyer:            buyer.clone(),
-        seller:           seller.clone(),
+        buyer: buyer.clone(),
+        seller: seller.clone(),
         amount,
         platform_fee_bps: get_platform_fee_bps(env),
-        status:           EscrowStatus::Held,
+        status: EscrowStatus::Held,
     };
     env.storage().persistent().set(&key, &entry);
     env.events().publish(
@@ -145,9 +163,16 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
 /// Releases escrowed fee to seller minus platform fee.
 pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env.storage().persistent().get(&key).expect("escrow not found");
-    assert!(entry.status == EscrowStatus::Held, "cannot finalize: not in Held state");
-    let platform_fee  = compute_platform_fee(entry.amount, entry.platform_fee_bps);
+    let mut entry: EscrowEntry = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .expect("escrow not found");
+    assert!(
+        entry.status == EscrowStatus::Held,
+        "cannot finalize: not in Held state"
+    );
+    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
     let seller_amount = entry.amount - platform_fee;
     // Wire-up: token_client.transfer(&contract, &entry.seller, &seller_amount);
     //          token_client.transfer(&contract, &fee_recipient, &platform_fee);
@@ -162,7 +187,11 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
 /// Refunds the full fee to the buyer (from Held or Disputed state).
 pub fn refund_fee(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env.storage().persistent().get(&key).expect("escrow not found");
+    let mut entry: EscrowEntry = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .expect("escrow not found");
     assert!(
         entry.status == EscrowStatus::Held || entry.status == EscrowStatus::Disputed,
         "cannot refund: invalid state"
@@ -180,15 +209,27 @@ pub fn refund_fee(env: &Env, transfer_id: u64) {
 pub fn dispute_transfer(env: &Env, transfer_id: u64, initiator: Address) {
     initiator.require_auth();
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env.storage().persistent().get(&key).expect("escrow not found");
-    assert!(entry.status == EscrowStatus::Held, "cannot dispute: not in Held state");
-    assert!(initiator == entry.buyer || initiator == entry.seller, "only buyer or seller may dispute");
+    let mut entry: EscrowEntry = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .expect("escrow not found");
+    assert!(
+        entry.status == EscrowStatus::Held,
+        "cannot dispute: not in Held state"
+    );
+    assert!(
+        initiator == entry.buyer || initiator == entry.seller,
+        "only buyer or seller may dispute"
+    );
     entry.status = EscrowStatus::Disputed;
     env.storage().persistent().set(&key, &entry);
 }
 
 pub fn get_escrow(env: &Env, transfer_id: u64) -> Option<EscrowEntry> {
-    env.storage().persistent().get(&EscrowDataKey::Entry(transfer_id))
+    env.storage()
+        .persistent()
+        .get(&EscrowDataKey::Entry(transfer_id))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -199,10 +240,10 @@ mod tests {
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
     fn setup() -> (Env, Address, Address, Address) {
-        let env      = Env::default();
+        let env = Env::default();
         env.mock_all_auths();
-        let buyer    = Address::generate(&env);
-        let seller   = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
         let platform = Address::generate(&env);
         (env, buyer, seller, platform)
     }
@@ -215,7 +256,7 @@ mod tests {
         let e = get_escrow(&env, 1).unwrap();
         assert_eq!(e.status, EscrowStatus::Held);
         assert_eq!(e.amount, 10_000_000);
-        assert_eq!(e.buyer,  buyer);
+        assert_eq!(e.buyer, buyer);
     }
 
     #[test]

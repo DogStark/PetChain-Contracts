@@ -1,6 +1,7 @@
 use super::{
     AdoptionState, ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord,
     PetOwnershipContract, PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
+    MAX_REJECTION_REASON_LEN,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -598,12 +599,36 @@ fn adoption_rejection_cancels_pending_flow() {
 
     client.create_pet(&pet_id, &owner);
     client.sign_adoption(&pet_id, &adopter, &Some(organization.clone()));
-    client.reject_adoption(&pet_id, &organization, &String::from_str(&env, "Rescue declined"));
+    client.reject_adoption(
+        &pet_id,
+        &organization,
+        &String::from_str(&env, "Rescue declined"),
+    );
 
     assert!(client.get_pending_adoption(&pet_id).is_none());
     let record = client.get_adoption_record(&pet_id).unwrap();
     assert_eq!(record.state, AdoptionState::Rejected);
     assert_eq!(record.rejected_by, Some(organization));
+}
+
+#[test]
+fn reject_adoption_rejects_oversized_reason() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    let long_reason = String::from_str(&env, &"x".repeat(MAX_REJECTION_REASON_LEN as usize + 1));
+    let result = client.try_reject_adoption(&pet_id, &owner, &long_reason);
+
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::InputStringTooLong as u32,
+        )))
+    );
 }
 
 // ======================================================
@@ -943,6 +968,20 @@ fn set_adoption_config_is_one_shot_second_call_is_rejected() {
     );
     // Value must remain unchanged
     assert_eq!(client.get_adoption_config().waiting_period_days, 7);
+}
+
+#[test]
+fn set_species_adoption_config_requires_admin_auth() {
+    let (env, owner, _, _) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.set_adoption_config(&7u32, &owner);
+    env.mock_auths(&[]);
+
+    let result = client.try_set_species_adoption_config(&String::from_str(&env, "dog"), &14u32);
+
+    assert!(result.is_err());
 }
 
 #[test]
