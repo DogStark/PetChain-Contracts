@@ -87,6 +87,8 @@ contract PetChainRegistry is Pausable {
     mapping(uint256 => Pet)      public pets;
     mapping(uint256 => MedicalRecord[]) private _petRecords;
     mapping(address => uint256[]) private _ownerPets;
+    mapping(uint256 => uint256) private _recordPet;   // recordId => petId
+    mapping(uint256 => uint256) private _recordIndex; // recordId => index in _petRecords[petId]
     mapping(bytes32 => address)  private _licenseToVet;
 
     // recordId → petId, so correctMedicalRecord can locate the record
@@ -143,6 +145,16 @@ contract PetChainRegistry is Pausable {
     /// @param recordId ID assigned to the new record.
     /// @param vet      Address of the vet who added the record.
     event MedicalRecordAdded(uint256 indexed petId, uint256 indexed recordId, address indexed vet);
+    event MedicalRecordCorrected(
+        uint256 indexed recordId,
+        address indexed correctedBy,
+        string  oldDiagnosis,
+        string  oldTreatment,
+        string  oldNotes,
+        string  newDiagnosis,
+        string  newTreatment,
+        string  newNotes
+    );
 
     /// @notice Emitted when a medical record is corrected.
     /// @dev    The original field values are preserved in the event log for full auditability.
@@ -412,6 +424,8 @@ contract PetChainRegistry is Pausable {
             "PetChainRegistry: notes too long");
 
         recordId = ++_recordCounter;
+        _recordPet[recordId]   = petId;
+        _recordIndex[recordId] = _petRecords[petId].length;
         _petRecords[petId].push(MedicalRecord({
             recordId:   recordId,
             petId:      petId,
@@ -427,6 +441,8 @@ contract PetChainRegistry is Pausable {
         emit MedicalRecordAdded(petId, recordId, msg.sender);
     }
 
+    /// @notice Correct a previously added medical record.
+    /// Only the original recording vet or admin may call this.
     /// @notice Return all medical records for a pet matching a given record type.
     /// @param petId      ID of the pet.
     /// @param recordType Category to filter by.
@@ -467,6 +483,13 @@ contract PetChainRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external {
+        uint256 petId = _recordPet[recordId];
+        MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
+        require(rec.recordId == recordId, "PetChainRegistry: record not found");
+        require(
+            msg.sender == rec.vet || msg.sender == admin,
+            "PetChainRegistry: not authorized"
+        );
         uint256 petId = _recordPetId[recordId];
         require(petId != 0, "PetChainRegistry: record does not exist");
 
@@ -483,6 +506,14 @@ contract PetChainRegistry is Pausable {
         require(bytes(notes).length <= MAX_LONG_LEN,
             "PetChainRegistry: notes too long");
 
+        emit MedicalRecordCorrected(
+            recordId, msg.sender,
+            rec.diagnosis, rec.treatment, rec.notes,
+            diagnosis, treatment, notes
+        );
+        rec.diagnosis = diagnosis;
+        rec.treatment = treatment;
+        rec.notes     = notes;
         string memory origDiagnosis = rec.diagnosis;
         string memory origTreatment = rec.treatment;
         string memory origNotes     = rec.notes;
