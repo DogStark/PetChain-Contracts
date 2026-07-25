@@ -161,6 +161,7 @@ mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_nutrition_plan;
 #[cfg(test)]
+mod test_search_medical_records;
 mod test_insurance_eligibility;
 mod test_breeding;
 #[cfg(test)]
@@ -7622,6 +7623,79 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
             .unwrap_or(0)
+    }
+
+    /// Search a pet's medical records with optional filters and offset/limit pagination.
+    ///
+    /// # Arguments
+    /// * `pet_id`  – The pet whose records are searched.
+    /// * `filter`  – Optional filters: `vet_address`, inclusive date window
+    ///               (`from_date` / `to_date`), and `diagnosis_keyword`.
+    /// * `offset`  – Number of matching records to skip (0-based page offset).
+    /// * `limit`   – Maximum number of records to return; 0 returns an empty vec.
+    ///
+    /// # Errors
+    /// * `ContractError::InvalidInput` – when `from_date` and `to_date` are both
+    ///   `Some` but `from_date > to_date`.
+    pub fn search_medical_records(
+        env: Env,
+        pet_id: u64,
+        filter: &MedicalRecordFilter,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        // Validate date range: from must not be after to.
+        if let (Some(from), Some(to)) = (filter.from_date, filter.to_date) {
+            if from > to {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
+
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut results: Vec<MedicalRecord> = Vec::new(&env);
+        // `matched` counts records that pass the filter (used for offset skipping).
+        let mut matched: u64 = 0;
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+                {
+                    // Exclude soft-deleted records.
+                    if record.deleted_at.is_some() {
+                        continue;
+                    }
+
+                    if PetChainContract::medical_record_matches_filter(&env, &record, filter) {
+                        // Apply offset: skip the first `offset` matching records.
+                        if matched >= offset {
+                            results.push_back(record);
+                            if results.len() as u32 >= limit {
+                                break;
+                            }
+                        }
+                        matched += 1;
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     #[allow(dead_code)]
