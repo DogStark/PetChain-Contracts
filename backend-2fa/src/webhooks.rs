@@ -99,7 +99,35 @@ pub struct WebhookPayload {
     pub metadata: HashMap<String, String>,
 }
 
-/// A single webhook delivery attempt log entry.
+/// Final outcome of a webhook delivery after all attempts are exhausted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryStatus {
+    /// Delivered successfully (on the first attempt or a later retry).
+    Success,
+    /// Every attempt (initial + all retries) failed; the event is lost.
+    PermanentFailure,
+}
+
+/// Record of a single delivery attempt within a webhook delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryAttempt {
+    /// 1-based attempt number (1 = initial attempt, 2 = first retry, …).
+    pub attempt: u32,
+    /// Whether this attempt succeeded.
+    pub success: bool,
+    /// Error message when the attempt failed; `None` on success.
+    pub error: Option<String>,
+    /// Backoff delay, in milliseconds, waited before this attempt was made
+    /// (`0` for the initial attempt).
+    pub backoff_ms: u64,
+}
+
+/// A single webhook delivery log entry (one per URL per `fire`).
+///
+/// The `attempt_history` records every individual attempt — with its 1-based
+/// attempt number and outcome — so retries are fully auditable, while the
+/// top-level fields summarise the delivery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookDeliveryLog {
     pub id: usize,
@@ -110,6 +138,10 @@ pub struct WebhookDeliveryLog {
     pub attempts: u32,
     pub success: bool,
     pub last_error: Option<String>,
+    /// Final delivery outcome (`PermanentFailure` when all attempts fail).
+    pub status: DeliveryStatus,
+    /// Per-attempt history, in order, one entry per attempt made.
+    pub attempt_history: Vec<DeliveryAttempt>,
 }
 
 /// Filter criteria for querying the delivery log.
@@ -434,17 +466,74 @@ fn log_cap_from_env() -> usize {
         .unwrap_or(DEFAULT_MAX_LOG_ENTRIES)
 }
 
+/// Strategy for computing the backoff delay between retry attempts.
+///
+/// Injectable so tests can eliminate real sleeping (see [`NoBackoff`]) while
+/// production uses exponential backoff. Kept synchronous because webhook
+/// delivery runs on dedicated threads (see [`WebhookManager::fire`]) rather
+/// than on an async runtime; the returned `Duration` is applied with
+/// `std::thread::sleep`.
+pub trait BackoffStrategy: Send + Sync + std::fmt::Debug {
+    /// Delay to wait before the retry that follows `failed_attempts` failures.
+    ///
+    /// `failed_attempts` is 1-based: `1` is the wait before the first retry
+    /// (i.e. after the initial attempt failed), `2` before the second, etc.
+    fn backoff(&self, failed_attempts: u32) -> Duration;
+}
+
+/// Exponential backoff: `base * 2^(failed_attempts - 1)`.
+///
+/// With the default 1-second base this yields `1s, 2s, 4s, …` for successive
+/// retries.
+#[derive(Debug, Clone)]
+pub struct ExponentialBackoff {
+    pub base: Duration,
+}
+
+impl Default for ExponentialBackoff {
+    fn default() -> Self {
+        Self {
+            base: Duration::from_secs(1),
+        }
+    }
+}
+
+impl BackoffStrategy for ExponentialBackoff {
+    fn backoff(&self, failed_attempts: u32) -> Duration {
+        let shift = failed_attempts.saturating_sub(1).min(32);
+        let multiplier = 1u32.checked_shl(shift).unwrap_or(u32::MAX);
+        self.base
+            .checked_mul(multiplier)
+            .unwrap_or(Duration::from_secs(u64::MAX / 2))
+    }
+}
+
+/// Zero-delay backoff — retries happen immediately. Intended for tests so they
+/// exercise the retry logic without waiting real seconds.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoBackoff;
+
+impl BackoffStrategy for NoBackoff {
+    fn backoff(&self, _failed_attempts: u32) -> Duration {
+        Duration::ZERO
+    }
+}
+
 /// Configurable retry policy for webhook delivery.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
+    /// Maximum number of attempts, counting the initial attempt. The default of
+    /// 4 means the initial attempt plus up to 3 retries.
     pub max_attempts: u32,
+    /// Base backoff used to seed the default [`ExponentialBackoff`] strategy.
     pub base_backoff: Duration,
 }
 
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: 3,
+            // Initial attempt + 3 retries, with 1s/2s/4s exponential backoff.
+            max_attempts: 4,
             base_backoff: Duration::from_secs(1),
         }
     }
@@ -467,6 +556,8 @@ pub struct WebhookManager {
     /// Empty string disables signing.
     signing_secret: String,
     retry_policy: RetryPolicy,
+    /// Strategy used to compute the delay between retries. Injectable for tests.
+    backoff: Arc<dyn BackoffStrategy>,
 }
 
 impl Default for WebhookManager {
@@ -481,6 +572,10 @@ impl WebhookManager {
         signing_secret: String,
         retry_policy: Option<RetryPolicy>,
     ) -> Self {
+        let retry_policy = retry_policy.unwrap_or_default();
+        let backoff: Arc<dyn BackoffStrategy> = Arc::new(ExponentialBackoff {
+            base: retry_policy.base_backoff,
+        });
         Self {
             config: Arc::new(Mutex::new(HashMap::new())),
             delivery_log: Arc::new(Mutex::new(VecDeque::new())),
@@ -489,8 +584,15 @@ impl WebhookManager {
             http_client,
             allow_http: false,
             signing_secret,
-            retry_policy: retry_policy.unwrap_or_default(),
+            retry_policy,
+            backoff,
         }
+    }
+
+    /// Override the backoff strategy (e.g. inject [`NoBackoff`] in tests).
+    pub fn with_backoff(mut self, backoff: Arc<dyn BackoffStrategy>) -> Self {
+        self.backoff = backoff;
+        self
     }
 
     /// Create a manager that allows `http://` URLs (for testing only).
@@ -504,6 +606,7 @@ impl WebhookManager {
             allow_http: true,
             signing_secret: String::new(),
             retry_policy: RetryPolicy::default(),
+            backoff: Arc::new(ExponentialBackoff::default()),
         }
     }
 
@@ -561,6 +664,7 @@ impl WebhookManager {
     /// Used by both `fire` (in a spawned thread) and `fire_sync` (on the
     /// calling thread). Each URL is handled independently — one failure does
     /// not prevent delivery to the remaining URLs.
+    #[allow(clippy::too_many_arguments)]
     fn deliver_one(
         client: &dyn HttpClient,
         url: &str,
@@ -573,31 +677,64 @@ impl WebhookManager {
         next_log_id: &AtomicUsize,
         max_log_entries: usize,
         retry_policy: &RetryPolicy,
+        backoff: &dyn BackoffStrategy,
     ) {
-        let mut attempts = 0u32;
+        let max_attempts = retry_policy.max_attempts.max(1);
         let mut last_error: Option<String> = None;
         let mut success = false;
+        // One record per attempt (initial + each retry), with attempt number
+        // and outcome, so retries are fully auditable.
+        let mut attempt_history: Vec<DeliveryAttempt> = Vec::new();
+        // `attempt` counts attempts already made (0-based loop cursor).
+        let mut attempt = 0u32;
 
-        while attempts < retry_policy.max_attempts {
+        while attempt < max_attempts {
+            // Wait with exponential backoff before every retry (not the first
+            // attempt). `attempt` here equals the number of prior failures.
+            let backoff_delay = if attempt == 0 {
+                Duration::ZERO
+            } else {
+                record_webhook_retry();
+                let delay = backoff.backoff(attempt);
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                delay
+            };
+
+            let attempt_number = attempt + 1;
             match client.post(url, body, signature) {
                 Ok(()) => {
+                    attempt_history.push(DeliveryAttempt {
+                        attempt: attempt_number,
+                        success: true,
+                        error: None,
+                        backoff_ms: backoff_delay.as_millis() as u64,
+                    });
                     success = true;
+                    attempt = attempt_number;
                     break;
                 }
                 Err(e) => {
+                    attempt_history.push(DeliveryAttempt {
+                        attempt: attempt_number,
+                        success: false,
+                        error: Some(e.clone()),
+                        backoff_ms: backoff_delay.as_millis() as u64,
+                    });
                     last_error = Some(e);
-                    attempts += 1;
-                    if attempts < retry_policy.max_attempts {
-                        record_webhook_retry();
-                        let multiplier = 1u64 << (attempts - 1);
-                        let wait = retry_policy.base_backoff * multiplier as u32;
-                        std::thread::sleep(wait);
-                    }
+                    attempt = attempt_number;
                 }
             }
         }
 
         record_webhook_delivery(success);
+
+        let status = if success {
+            DeliveryStatus::Success
+        } else {
+            DeliveryStatus::PermanentFailure
+        };
 
         let id = next_log_id.fetch_add(1, Ordering::Relaxed);
         let entry = WebhookDeliveryLog {
@@ -606,9 +743,11 @@ impl WebhookManager {
             user_id: user_str.to_string(),
             timestamp,
             url: url.to_string(),
-            attempts: attempts + if success { 1 } else { 0 },
+            attempts: attempt,
             success,
             last_error,
+            status,
+            attempt_history,
         };
         let mut log = delivery_log.lock().unwrap();
         if max_log_entries > 0 && log.len() >= max_log_entries {
@@ -668,6 +807,7 @@ impl WebhookManager {
             let event_str_clone = event_str.clone();
             let user_str_clone = user_str.clone();
             let retry_policy = self.retry_policy.clone();
+            let backoff = self.backoff.clone();
 
             // Spawn the retry loop on a dedicated thread so we never block
             // the caller's async executor (Issue #861).
@@ -684,6 +824,7 @@ impl WebhookManager {
                     &next_log_id,
                     max_log_entries,
                     &retry_policy,
+                    backoff.as_ref(),
                 );
             });
         }
@@ -742,6 +883,7 @@ impl WebhookManager {
                 &self.next_log_id,
                 self.max_log_entries,
                 &self.retry_policy,
+                self.backoff.as_ref(),
             );
         }
     }
@@ -823,13 +965,16 @@ mod tests {
 
     fn make_manager(fail_times: u32) -> (WebhookManager, Arc<MockHttpClient>) {
         let client = Arc::new(MockHttpClient::new(fail_times));
-        let manager = WebhookManager::new_with_http_allowed(client.clone());
+        // Inject zero-delay backoff so retry tests don't sleep real seconds.
+        let manager = WebhookManager::new_with_http_allowed(client.clone())
+            .with_backoff(Arc::new(NoBackoff));
         (manager, client)
     }
 
     fn make_manager_with_cap(fail_times: u32, cap: usize) -> (WebhookManager, Arc<MockHttpClient>) {
         let client = Arc::new(MockHttpClient::new(fail_times));
-        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone())
+            .with_backoff(Arc::new(NoBackoff));
         manager.max_log_entries = cap;
         (manager, client)
     }
@@ -875,7 +1020,8 @@ mod tests {
 
     #[test]
     fn test_retry_exhausted_marks_failure() {
-        let (manager, mock) = make_manager(3);
+        // Default policy makes 4 attempts (initial + 3 retries); fail them all.
+        let (manager, mock) = make_manager(4);
         manager
             .configure(
                 SecurityEventType::FailedTwoFa,
@@ -883,10 +1029,98 @@ mod tests {
             )
             .unwrap();
         manager.fire_sync(SecurityEventType::FailedTwoFa, "user3", HashMap::new());
-        assert_eq!(mock.call_count.load(Ordering::SeqCst), 3);
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 4);
         let log = manager.get_delivery_log(1, 10);
         assert!(!log[0].success);
         assert!(log[0].last_error.is_some());
+        assert_eq!(log[0].status, DeliveryStatus::PermanentFailure);
+        assert_eq!(log[0].attempt_history.len(), 4);
+    }
+
+    // --- Retry with exponential backoff (Issue #770) ---
+
+    /// The default exponential backoff produces the 1s / 2s / 4s sequence.
+    #[test]
+    fn test_exponential_backoff_sequence() {
+        let backoff = ExponentialBackoff::default();
+        assert_eq!(backoff.backoff(1), Duration::from_secs(1));
+        assert_eq!(backoff.backoff(2), Duration::from_secs(2));
+        assert_eq!(backoff.backoff(3), Duration::from_secs(4));
+    }
+
+    /// Integration test — a transient failure that clears on the second
+    /// attempt: the delivery ultimately succeeds and every attempt is logged
+    /// with its attempt number and outcome.
+    #[test]
+    fn test_transient_failure_succeeds_on_second_attempt() {
+        let (manager, mock) = make_manager(1); // fail once, then succeed
+        manager
+            .configure(
+                SecurityEventType::RecoveryCodeUsed,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(
+            SecurityEventType::RecoveryCodeUsed,
+            "transient-user",
+            HashMap::new(),
+        );
+
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 2);
+
+        let log = manager.get_delivery_log(1, 10);
+        assert_eq!(log.len(), 1);
+        let entry = &log[0];
+        assert!(entry.success);
+        assert_eq!(entry.status, DeliveryStatus::Success);
+        assert_eq!(entry.attempts, 2);
+
+        // Two attempts recorded: attempt 1 failed, attempt 2 succeeded.
+        assert_eq!(entry.attempt_history.len(), 2);
+        assert_eq!(entry.attempt_history[0].attempt, 1);
+        assert!(!entry.attempt_history[0].success);
+        assert!(entry.attempt_history[0].error.is_some());
+        assert_eq!(entry.attempt_history[1].attempt, 2);
+        assert!(entry.attempt_history[1].success);
+        assert!(entry.attempt_history[1].error.is_none());
+    }
+
+    /// Integration test — a permanent failure where every attempt fails: the
+    /// delivery is marked `PermanentFailure` after exhausting all retries, and
+    /// each of the 4 attempts (initial + 3 retries) is logged.
+    #[test]
+    fn test_permanent_failure_when_all_attempts_fail() {
+        // Fail more times than the policy will ever attempt.
+        let (manager, mock) = make_manager(100);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(
+            SecurityEventType::FailedTwoFa,
+            "permanent-user",
+            HashMap::new(),
+        );
+
+        // Initial attempt + 3 retries = 4 attempts, then it gives up.
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 4);
+
+        let log = manager.get_delivery_log(1, 10);
+        assert_eq!(log.len(), 1);
+        let entry = &log[0];
+        assert!(!entry.success);
+        assert_eq!(entry.status, DeliveryStatus::PermanentFailure);
+        assert!(entry.last_error.is_some());
+        assert_eq!(entry.attempts, 4);
+        assert_eq!(entry.attempt_history.len(), 4);
+        assert!(entry.attempt_history.iter().all(|a| !a.success));
+        // Attempt numbers are 1..=4 in order.
+        let numbers: Vec<u32> = entry.attempt_history.iter().map(|a| a.attempt).collect();
+        assert_eq!(numbers, vec![1, 2, 3, 4]);
     }
 
     #[test]
@@ -1213,7 +1447,8 @@ mod tests {
     #[test]
     fn test_partial_failure_does_not_block_other_urls() {
         let client = Arc::new(UrlSelectiveFailClient::new("http://example.com/failing"));
-        let mut manager = WebhookManager::new_with_http_allowed(client.clone());
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone())
+            .with_backoff(Arc::new(NoBackoff));
         manager.max_log_entries = 100;
 
         manager
@@ -1237,9 +1472,9 @@ mod tests {
 
         manager.fire_sync(SecurityEventType::AccountLockout, "u1", HashMap::new());
 
-        // All 3 URLs were attempted (failing one retries 3 times).
-        // call_count = 3 retries on failing + 1 on ok1 + 1 on ok2 = 5
-        assert_eq!(client.call_count.load(Ordering::SeqCst), 5);
+        // All 3 URLs were attempted (failing one exhausts 4 attempts).
+        // call_count = 4 attempts on failing + 1 on ok1 + 1 on ok2 = 6
+        assert_eq!(client.call_count.load(Ordering::SeqCst), 6);
         assert_eq!(manager.delivery_log_count(), 3);
 
         let log = manager.get_delivery_log(1, 10);
