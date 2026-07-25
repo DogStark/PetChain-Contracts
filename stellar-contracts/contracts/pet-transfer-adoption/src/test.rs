@@ -611,6 +611,7 @@ fn adoption_without_organization_keeps_two_party_flow() {
 
     client.create_pet(&pet_id, &owner);
     client.sign_adoption(&pet_id, &adopter, &None);
+    client.approve_adoption(&pet_id, &adopter);
     client.complete_adoption(&pet_id);
 
     assert_eq!(client.get_current_owner(&pet_id), adopter);
@@ -629,6 +630,17 @@ fn adoption_with_organization_requires_org_approval() {
     client.create_pet(&pet_id, &owner);
     client.sign_adoption(&pet_id, &adopter, &Some(organization.clone()));
 
+    // Without adopter approval, complete_adoption must fail
+    let blocked = client.try_complete_adoption(&pet_id);
+    assert_eq!(
+        blocked,
+        Err(Ok(Error::from_contract_error(
+            ContractError::AdopterApprovalRequired as u32,
+        )))
+    );
+
+    // Adopter approves but org hasn't — still blocked
+    client.approve_adoption(&pet_id, &adopter);
     let blocked = client.try_complete_adoption(&pet_id);
     assert_eq!(
         blocked,
@@ -637,6 +649,7 @@ fn adoption_with_organization_requires_org_approval() {
         )))
     );
 
+    // Org approves — now completion succeeds
     client.approve_adoption(&pet_id, &organization);
     client.complete_adoption(&pet_id);
 
@@ -1079,6 +1092,7 @@ fn update_adoption_config_new_adoption_uses_new_period() {
 
     client.create_pet(&pet_id, &owner);
     client.sign_adoption(&pet_id, &adopter, &None);
+    client.approve_adoption(&pet_id, &adopter);
 
     // With 0-day waiting period, complete_adoption should succeed immediately
     client.complete_adoption(&pet_id);
@@ -1102,6 +1116,11 @@ fn update_adoption_config_fails_without_prior_set() {
 }
 
 // ======================================================
+// adopter_approved guard tests (Issue #1008)
+// ======================================================
+
+#[test]
+fn complete_adoption_without_adopter_approval_is_rejected() {
 // cancel_expired_adoption tests (Issue #1009)
 // ======================================================
 
@@ -1112,6 +1131,20 @@ fn cancel_expired_adoption_before_expiry_is_rejected() {
     let client = PetOwnershipContractClient::new(&env, &contract_id);
 
     client.create_pet(&pet_id, &owner);
+    // Owner signs adoption — adopter_approved is false
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    // Adopter calls complete_adoption without first calling approve_adoption
+    let result = client.try_complete_adoption(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::AdopterApprovalRequired as u32,
+        )))
+    );
+
+    // Pet ownership must not have changed
+    assert_eq!(client.get_current_owner(&pet_id), owner);
     client.sign_adoption(&pet_id, &adopter, &None);
 
     // Well within the 30-day window — must fail
