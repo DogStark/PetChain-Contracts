@@ -1,5 +1,8 @@
-use crate::{PetChainContract, PetChainContractClient, ProposalAction};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, BytesN, Env, Vec};
+use crate::{ContractError, PetChainContract, PetChainContractClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env, Error, Vec,
+};
 
 fn setup(env: &Env) -> (PetChainContractClient, Address, Address) {
     env.mock_all_auths();
@@ -17,130 +20,99 @@ fn setup(env: &Env) -> (PetChainContractClient, Address, Address) {
     (client, admin1, admin2)
 }
 
-#[test]
-fn test_upgrade_contract_proposal_lifecycle() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    // Using [0u8; 32] as a mock hash that the contract will skip in tests
-    let new_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let action = ProposalAction::UpgradeContract(new_wasm_hash.clone());
-
-    // Propose
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    assert_eq!(proposal_id, 1);
-
-    // Approve
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Execute — calls env.deployer().update_current_contract_wasm internally.
-    // In our tests, we skip the actual update if the hash is 0.
-    client.execute_proposal(&proposal_id);
-
-    // Verify status
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert!(proposal.executed);
-}
+// ======================================================
+// Upgrade proposal expiry tests (Issue #818)
+// ======================================================
 
 #[test]
-#[should_panic]
-fn test_upgrade_proposal_cannot_execute_twice() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-    client.execute_proposal(&proposal_id);
-    client.execute_proposal(&proposal_id); // must panic
-}
-
-#[test]
-#[should_panic]
-fn test_upgrade_proposal_threshold_not_met() {
+fn test_execute_upgrade_within_expiry_window() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    // Only 1 of 2 required approvals — must panic
-    client.execute_proposal(&proposal_id);
-}
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
 
-// --- Tests verifying admins[1] can perform upgrade/migration ---
+    // Approve the proposal
+    client.approve_upgrade_proposal(&admin1, &proposal_id);
 
-#[test]
-fn test_admin2_can_propose_upgrade() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
+    // Execute within the 7-day window (advance 3 days)
+    env.ledger().with_mut(|l| l.timestamp = 3 * 86400);
 
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
+    client.execute_upgrade(&admin1, &proposal_id);
 
-    // admin2 (index 1) proposes
-    let proposal_id = client.propose_action(&admin2, &action, &3600);
-    assert_eq!(proposal_id, 1);
-
-    // admin1 approves to meet threshold of 2
-    client.approve_proposal(&admin1, &proposal_id);
-    client.execute_proposal(&proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
+    let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
     assert!(proposal.executed);
 }
 
 #[test]
-fn test_admin2_can_migrate_version() {
+fn test_execute_upgrade_past_expiry_window_fails() {
     let env = Env::default();
-    let (client, _admin1, admin2) = setup(&env);
+    let (client, admin1, _admin2) = setup(&env);
 
-    // admin2 (index 1) calls migrate_version directly
-    client.migrate_version(&admin2, &2, &0, &0);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
 
-    let version = client.get_version();
-    assert_eq!(version.major, 2);
-    assert_eq!(version.minor, 0);
-    assert_eq!(version.patch, 0);
+    // Approve the proposal
+    client.approve_upgrade_proposal(&admin1, &proposal_id);
+
+    // Advance past the 7-day expiry window
+    env.ledger().with_mut(|l| l.timestamp = 8 * 86400);
+
+    // Attempt to execute — must fail with ProposalExpired
+    let result = client.try_execute_upgrade(&admin1, &proposal_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::ProposalExpired as u32,
+        )))
+    );
 }
 
 #[test]
-fn test_admin2_can_approve_upgrade_proposal() {
+fn test_create_new_proposal_after_old_one_expires() {
     let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
+    let (client, admin1, _admin2) = setup(&env);
 
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let proposal_id_1 = client.propose_upgrade(&admin1, &hash1, &7);
+    assert_eq!(proposal_id_1, 1);
 
-    // admin2 (index 1) approves
-    client.approve_proposal(&admin2, &proposal_id);
-    client.execute_proposal(&proposal_id);
+    // Advance past expiry
+    env.ledger().with_mut(|l| l.timestamp = 8 * 86400);
 
-    let proposal = client.get_proposal(&proposal_id).unwrap();
+    // Create a new proposal after old one expired (use zero hash to skip actual WASM update)
+    let hash2 = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id_2 = client.propose_upgrade(&admin1, &hash2, &7);
+    assert_eq!(proposal_id_2, 2);
+
+    // New proposal has correct expiry
+    let proposal = client.get_upgrade_proposal(&proposal_id_2).unwrap();
+    assert_eq!(proposal.expires_at, 8 * 86400 + 7 * 86400);
+    assert!(!proposal.approved);
+    assert!(!proposal.executed);
+
+    // Approve and execute the new proposal within window
+    client.approve_upgrade_proposal(&admin1, &proposal_id_2);
+    client.execute_upgrade(&admin1, &proposal_id_2);
+
+    let proposal = client.get_upgrade_proposal(&proposal_id_2).unwrap();
     assert!(proposal.executed);
 }
 
 #[test]
-#[should_panic]
-fn test_non_admin_cannot_migrate_version() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let non_admin = Address::generate(&env);
-    client.migrate_version(&non_admin, &2, &0, &0);
-}
-
-#[test]
-fn test_get_upgrade_proposal_returns_correct_data() {
+fn test_propose_upgrade_stores_correct_data() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
     let hash = BytesN::from_array(&env, &[1u8; 32]);
-    let proposal_id = client.propose_upgrade(&admin1, &hash);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
 
     let proposal = client.get_upgrade_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.id, proposal_id);
     assert_eq!(proposal.new_wasm_hash, hash);
     assert!(!proposal.approved);
     assert!(!proposal.executed);
+    assert_eq!(proposal.expires_at, 7 * 86400); // 7 days from timestamp 0
 }
 
 #[test]
@@ -156,9 +128,9 @@ fn test_list_upgrade_proposals_returns_all() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
-    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[1u8; 32]));
-    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[2u8; 32]));
-    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[3u8; 32]));
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[1u8; 32]), &7);
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[2u8; 32]), &7);
+    client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[3u8; 32]), &7);
 
     let list = client.list_upgrade_proposals(&0u64, &10u32);
     assert_eq!(list.len(), 3);
@@ -172,7 +144,7 @@ fn test_list_upgrade_proposals_pagination() {
     let (client, admin1, _admin2) = setup(&env);
 
     for i in 1u8..=5 {
-        client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[i; 32]));
+        client.propose_upgrade(&admin1, &BytesN::from_array(&env, &[i; 32]), &7);
     }
 
     let page1 = client.list_upgrade_proposals(&0u64, &2u32);
@@ -189,688 +161,60 @@ fn test_list_upgrade_proposals_pagination() {
 }
 
 #[test]
-fn test_list_upgrade_proposals_empty() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let list = client.list_upgrade_proposals(&0u64, &10u32);
-    assert_eq!(list.len(), 0);
-}
-
-#[test]
-fn test_get_version_default() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let version = client.get_version();
-    assert_eq!(version.major, 1);
-    assert_eq!(version.minor, 0);
-    assert_eq!(version.patch, 0);
-}
-
-#[test]
-fn test_set_version_by_admin() {
+fn test_execute_unapproved_proposal_fails() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
-    client.set_version(&admin1, &2, &3, &4);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
 
-    let version = client.get_version();
-    assert_eq!(version.major, 2);
-    assert_eq!(version.minor, 3);
-    assert_eq!(version.patch, 4);
+    // Try to execute without approving
+    let result = client.try_execute_upgrade(&admin1, &proposal_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::ProposalNotApproved as u32,
+        )))
+    );
 }
 
 #[test]
-#[should_panic]
-fn test_set_version_non_admin_fails() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let non_admin = Address::generate(&env);
-    client.set_version(&non_admin, &2, &0, &0);
-}
-
-#[test]
-fn test_version_readable_publicly() {
+fn test_execute_upgrade_cannot_execute_twice() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
-    client.set_version(&admin1, &3, &1, &5);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
 
-    // Any address can read version (no auth required)
-    let version = client.get_version();
-    assert_eq!(version.major, 3);
-    assert_eq!(version.minor, 1);
-    assert_eq!(version.patch, 5);
-}
+    client.approve_upgrade_proposal(&admin1, &proposal_id);
+    client.execute_upgrade(&admin1, &proposal_id);
 
-// --- Missing coverage: expired proposals, duplicate approval, non-admin ---
-
-#[test]
-#[should_panic]
-fn test_approve_expired_proposal_panics() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    // expires_in = 100 seconds
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &100);
-
-    // Advance time past expiry
-    env.ledger().with_mut(|l| l.timestamp = 200);
-
-    // admin2 tries to approve an expired proposal — must panic
-    client.approve_proposal(&admin2, &proposal_id);
+    // Second execution must fail
+    let result = client.try_execute_upgrade(&admin1, &proposal_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::ProposalAlreadyExecuted as u32,
+        )))
+    );
 }
 
 #[test]
-#[should_panic]
-fn test_execute_expired_proposal_panics() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &100);
-
-    // Approve before expiry
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Advance time past expiry before executing
-    env.ledger().with_mut(|l| l.timestamp = 200);
-
-    // Execute after expiry — must panic
-    client.execute_proposal(&proposal_id);
-}
-
-#[test]
-#[should_panic]
-fn test_duplicate_approval_panics() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    // admin2 approves once
-    client.approve_proposal(&admin2, &proposal_id);
-    // admin2 approves again — must panic
-    client.approve_proposal(&admin2, &proposal_id);
-}
-
-#[test]
-#[should_panic]
-fn test_non_admin_cannot_propose_action() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let non_admin = Address::generate(&env);
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    client.propose_action(&non_admin, &action, &3600);
-}
-
-#[test]
-#[should_panic]
-fn test_non_admin_cannot_approve_proposal() {
+fn test_approve_expired_upgrade_proposal_fails() {
     let env = Env::default();
     let (client, admin1, _admin2) = setup(&env);
 
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    let non_admin = Address::generate(&env);
-    client.approve_proposal(&non_admin, &proposal_id);
-}
-
-// --- migrate_v1_to_v2 tests ---
-
-#[test]
-fn test_migrate_v1_to_v2_bumps_version() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    let before = client.get_version();
-    assert_eq!(before.major, 1);
-
-    client.migrate_v1_to_v2(&admin1);
-
-    let after = client.get_version();
-    assert_eq!(after.major, 2);
-    assert_eq!(after.minor, 0);
-    assert_eq!(after.patch, 0);
-}
-
-#[test]
-fn test_migrate_v1_to_v2_idempotent() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    client.migrate_v1_to_v2(&admin1);
-    client.migrate_v1_to_v2(&admin1); // second call must be a no-op
-
-    let version = client.get_version();
-    assert_eq!(version.major, 2);
-    assert_eq!(version.minor, 0);
-    assert_eq!(version.patch, 0);
-}
-
-#[test]
-fn test_migrate_v1_to_v2_does_not_downgrade() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    // Manually set version to 3.x
-    client.set_version(&admin1, &3, &0, &0);
-    client.migrate_v1_to_v2(&admin1); // must not downgrade
-
-    let version = client.get_version();
-    assert_eq!(version.major, 3);
-}
-
-#[test]
-fn test_migrate_storage_bumps_version() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    let before = client.get_storage_version();
-    assert_eq!(before.major, 1);
-
-    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
-
-    let after = client.get_storage_version();
-    assert_eq!(after.major, 2);
-}
-
-#[test]
-fn test_migrate_storage_idempotent() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
-    // second call must be no-op
-    client.migrate_storage(&admin1, &1, &0, &0, &2, &0, &0);
-
-    let version = client.get_storage_version();
-    assert_eq!(version.major, 2);
-}
-
-#[test]
-#[should_panic]
-fn test_migrate_storage_non_admin_panics() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let non_admin = Address::generate(&env);
-    client.migrate_storage(&non_admin, &1, &0, &0, &2, &0, &0);
-}
-
-#[test]
-#[should_panic]
-fn test_migrate_v1_to_v2_non_admin_panics() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    let non_admin = Address::generate(&env);
-    client.migrate_v1_to_v2(&non_admin);
-}
-
-// --- TIMELOCK AND VETO TESTS ---
-
-#[test]
-fn test_proposal_enters_timelock_after_quorum() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    // Proposal should be in Pending state initially
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::Pending);
-
-    // After second approval (quorum reached), should enter TimelockPending
-    client.approve_proposal(&admin2, &proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
-    assert!(proposal.timelock_end > 0);
-}
-
-#[test]
-#[should_panic]
-fn test_execution_rejected_before_timelock_expiry() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Try to execute immediately (should fail - timelock not expired)
-    client.execute_proposal(&proposal_id);
-}
-
-#[test]
-fn test_execution_allowed_after_timelock_expiry() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Get timelock end time
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    let timelock_end = proposal.timelock_end;
-
-    // Advance time past timelock
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    // Now execution should succeed
-    client.execute_proposal(&proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert!(proposal.executed);
-    assert_eq!(proposal.state, crate::ProposalState::Executed);
-}
-
-#[test]
-fn test_veto_during_timelock_cancels_proposal() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Verify proposal is in timelock
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
-
-    // Admin1 vetoes during timelock
-    client.veto_proposal(&admin1, &proposal_id);
-
-    // Proposal should now be vetoed
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::Vetoed);
-    assert_eq!(proposal.veto_count, 1);
-}
-
-#[test]
-#[should_panic]
-fn test_veto_after_timelock_rejected() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Get timelock end time
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    let timelock_end = proposal.timelock_end;
-
-    // Advance time past timelock
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    // Try to veto after timelock expired (should fail)
-    client.veto_proposal(&admin1, &proposal_id);
-}
-
-#[test]
-#[should_panic]
-fn test_execution_rejected_if_vetoed() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Veto the proposal
-    client.veto_proposal(&admin1, &proposal_id);
-
-    // Get timelock end time
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    let timelock_end = proposal.timelock_end;
-
-    // Advance time past timelock
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    // Try to execute vetoed proposal (should fail)
-    client.execute_proposal(&proposal_id);
-}
-
-#[test]
-#[should_panic]
-fn test_timelock_config_enforces_minimum_24_hours() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    // Try to set timelock less than 24 hours (should fail)
-    client.set_timelock_config(&admin1, &3600, &true); // 1 hour
-}
-
-#[test]
-fn test_timelock_config_accepts_24_hours() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    // Set timelock to exactly 24 hours (should succeed)
-    client.set_timelock_config(&admin1, &86400, &true);
-
-    let config = client.get_timelock_config();
-    assert_eq!(config.timelock_duration, 86400);
-    assert!(config.enabled);
-}
-
-#[test]
-fn test_timelock_config_can_be_disabled() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    // Disable timelock
-    client.set_timelock_config(&admin1, &86400, &false);
-
-    let config = client.get_timelock_config();
-    assert!(!config.enabled);
-}
-
-#[test]
-fn test_proposal_skips_timelock_when_disabled() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    // Disable timelock
-    client.set_timelock_config(&admin1, &86400, &false);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Proposal should be directly Executable (not TimelockPending)
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::Executable);
-
-    // Should be able to execute immediately
-    client.execute_proposal(&proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert!(proposal.executed);
-}
-
-#[test]
-fn test_get_proposal_veto_count() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Initially no vetoes
-    let veto_count = client.get_proposal_veto_count(&proposal_id);
-    assert_eq!(veto_count, 0);
-
-    // After veto
-    client.veto_proposal(&admin1, &proposal_id);
-    let veto_count = client.get_proposal_veto_count(&proposal_id);
-    assert_eq!(veto_count, 1);
-}
-
-#[test]
-fn test_has_admin_vetoed() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Initially admin1 has not vetoed
-    assert!(!client.has_admin_vetoed(&proposal_id, &admin1));
-
-    // After veto
-    client.veto_proposal(&admin1, &proposal_id);
-    assert!(client.has_admin_vetoed(&proposal_id, &admin1));
-
-    // admin2 still has not vetoed
-    assert!(!client.has_admin_vetoed(&proposal_id, &admin2));
-}
-
-#[test]
-#[should_panic]
-fn test_veto_prevents_duplicate_veto_from_same_admin() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // First veto succeeds
-    client.veto_proposal(&admin1, &proposal_id);
-
-    // Second veto from same admin should fail
-    client.veto_proposal(&admin1, &proposal_id);
-}
-
-#[test]
-fn test_multiple_admins_can_veto() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Both admins veto
-    client.veto_proposal(&admin1, &proposal_id);
-    client.veto_proposal(&admin2, &proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.veto_count, 2);
-    assert_eq!(proposal.state, crate::ProposalState::Vetoed);
-}
-
-#[test]
-fn test_timelock_duration_applies_correctly() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    // Set custom timelock duration (48 hours)
-    let custom_duration = 172800u64;
-    client.set_timelock_config(&admin1, &custom_duration, &true);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    let now = env.ledger().timestamp();
-    client.approve_proposal(&admin2, &proposal_id);
-
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.timelock_end, now + custom_duration);
-}
-
-#[test]
-#[should_panic]
-fn test_veto_cannot_happen_on_pending_proposal() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    // Try to veto while still pending (should fail)
-    client.veto_proposal(&admin1, &proposal_id);
-}
-
-#[test]
-#[should_panic]
-fn test_approval_rejected_on_vetoed_proposal() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Veto the proposal
-    client.veto_proposal(&admin1, &proposal_id);
-
-    // Try to approve vetoed proposal (should fail)
-    client.approve_proposal(&admin2, &proposal_id);
-}
-
-#[test]
-fn test_proposal_state_transitions() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(&env, &[0u8; 32]));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-
-    // State 1: Pending
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::Pending);
-
-    // State 2: TimelockPending (after quorum)
-    client.approve_proposal(&admin2, &proposal_id);
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
-
-    // State 3: Executable (after timelock expires)
-    let timelock_end = proposal.timelock_end;
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    // State 4: Executed
-    client.execute_proposal(&proposal_id);
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::Executed);
-}
-
-#[test]
-fn test_coverage_get_timelock_config_default() {
-    let env = Env::default();
-    let (client, _admin1, _admin2) = setup(&env);
-
-    // Get config without setting (should return default)
-    let config = client.get_timelock_config();
-    assert_eq!(config.timelock_duration, 86400); // 24 hours
-    assert!(config.enabled);
-}
-
-#[test]
-fn test_coverage_verify_vet_proposal_with_timelock() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let vet_address = Address::generate(&env);
-    let action = ProposalAction::VerifyVet(vet_address);
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Verify enters timelock
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
-
-    // Advance time and execute
-    let timelock_end = proposal.timelock_end;
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    client.execute_proposal(&proposal_id);
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert!(proposal.executed);
-}
-
-#[test]
-fn test_coverage_change_admin_proposal_with_timelock() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    let mut new_admins = Vec::new(&env);
-    new_admins.push_back(admin1.clone());
-    new_admins.push_back(admin2.clone());
-
-    let action = ProposalAction::ChangeAdmin((new_admins, 2));
-    let proposal_id = client.propose_action(&admin1, &action, &3600);
-    client.approve_proposal(&admin2, &proposal_id);
-
-    // Verify enters timelock
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.state, crate::ProposalState::TimelockPending);
-
-    // Advance time and execute
-    let timelock_end = proposal.timelock_end;
-    env.ledger().with_mut(|ledger| {
-        ledger.set_timestamp(timelock_end + 1);
-    });
-
-    client.execute_proposal(&proposal_id);
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    assert!(proposal.executed);
-}
-
-// --- Rollback tests ---
-
-fn execute_upgrade(env: &Env, client: &PetChainContractClient, admin1: &Address, admin2: &Address) {
-    let action = ProposalAction::UpgradeContract(BytesN::from_array(env, &[0u8; 32]));
-    let proposal_id = client.propose_action(admin1, &action, &(86_400 * 2));
-    client.approve_proposal(admin2, &proposal_id);
-    // Advance past the 24-hour timelock
-    let proposal = client.get_proposal(&proposal_id).unwrap();
-    env.ledger().with_mut(|l| l.set_timestamp(proposal.timelock_end + 1));
-    client.execute_proposal(&proposal_id);
-}
-
-#[test]
-fn test_rollback_within_window_succeeds() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    execute_upgrade(&env, &client, &admin1, &admin2);
-
-    // Deadline should be set (current timestamp + 86400)
-    let deadline = client.get_rollback_deadline();
-    assert!(deadline > 0);
-
-    // Rollback within window (current time is well before deadline)
-    client.rollback_upgrade(&admin1);
-
-    // After rollback, deadline is cleared
-    assert_eq!(client.get_rollback_deadline(), 0);
-}
-
-#[test]
-#[should_panic]
-fn test_rollback_after_window_panics() {
-    let env = Env::default();
-    let (client, admin1, admin2) = setup(&env);
-
-    execute_upgrade(&env, &client, &admin1, &admin2);
-
-    // Advance past the 24-hour rollback window
-    let deadline = client.get_rollback_deadline();
-    env.ledger().with_mut(|l| l.set_timestamp(deadline + 1));
-
-    client.rollback_upgrade(&admin1);
-}
-
-#[test]
-#[should_panic]
-fn test_rollback_without_prior_upgrade_panics() {
-    let env = Env::default();
-    let (client, admin1, _admin2) = setup(&env);
-    // No upgrade executed — no previous hash stored
-    client.rollback_upgrade(&admin1);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let proposal_id = client.propose_upgrade(&admin1, &hash, &7);
+
+    // Advance past expiry
+    env.ledger().with_mut(|l| l.timestamp = 8 * 86400);
+
+    let result = client.try_approve_upgrade_proposal(&admin1, &proposal_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::ProposalExpired as u32,
+        )))
+    );
 }

@@ -12,6 +12,16 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
+/// Default lifetime of a `PendingAdoption` before anyone may cancel it: 30 days.
+pub const ADOPTION_EXPIRY_SECONDS: u64 = 30 * 24 * 60 * 60; // 2 592 000 s
+/// Maximum number of `CustodyEntry` items retained per pet.
+///
+/// The custody chain is stored as a single persistent entry, so an unbounded
+/// `Vec` would eventually exceed the XDR serialisation limit and make every
+/// further transfer panic. Once the cap is reached the oldest entries are
+/// dropped so transfers keep working.
+pub const MAX_CUSTODY_CHAIN_LENGTH: u32 = 256;
+
 /// Dispute window: after both parties sign, either party has 48 hours to raise
 /// a dispute before [`finalize_transfer`] may be called.
 pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
@@ -92,6 +102,9 @@ pub enum TransferType {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdoptionConfig {
     pub waiting_period_days: u32,
+    /// Seconds after `signed_at` at which a pending adoption may be cancelled
+    /// by anyone. `0` means the default [`ADOPTION_EXPIRY_SECONDS`] applies.
+    pub expiry_seconds: u64,
 }
 
 /// An adoption that has been signed but is still in the waiting period.
@@ -229,6 +242,7 @@ pub enum ContractError {
     InvalidApprover = 30,
     InvalidTimeoutDays = 31,
     InputStringTooLong = 32,
+    AdoptionNotExpired = 32,
 }
 
 /// ======================================================
@@ -321,6 +335,10 @@ fn append_custody_entry(
         timestamp: env.ledger().timestamp(),
         transfer_type,
     });
+    // Keep only the most recent MAX_CUSTODY_CHAIN_LENGTH entries.
+    if chain.len() > MAX_CUSTODY_CHAIN_LENGTH {
+        chain = chain.slice(chain.len() - MAX_CUSTODY_CHAIN_LENGTH..);
+    }
     env.storage()
         .persistent()
         .set(&DataKey::CustodyChain(pet_id), &chain);
@@ -337,6 +355,7 @@ const EVT_TRANSFER_FINALIZED: Symbol = symbol_short!("xfer_fin");
 const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
 const EVT_TRUSTED_UPDATED: Symbol = symbol_short!("trust_upd");
 const EVT_TRANSFER_EXPIRED: Symbol = symbol_short!("xfer_exp");
+const EVT_ADOPTION_EXPIRED: Symbol = symbol_short!("adopt_exp");
 
 fn get_owner_pet_ids(env: &Env, owner: &Address) -> Vec<u64> {
     env.storage()
@@ -451,6 +470,8 @@ impl PetOwnershipContract {
         env.storage()
             .persistent()
             .set(&DataKey::AdoptionConfig, &config);
+        let config = AdoptionConfig { waiting_period_days, expiry_seconds: ADOPTION_EXPIRY_SECONDS };
+        env.storage().persistent().set(&DataKey::AdoptionConfig, &config);
         env.storage().persistent().set(&DataKey::Admin, &admin);
     }
 
@@ -476,6 +497,13 @@ impl PetOwnershipContract {
         env.storage()
             .persistent()
             .set(&DataKey::AdoptionConfig, &new_config);
+            .unwrap_or(AdoptionConfig { waiting_period_days: 0, expiry_seconds: ADOPTION_EXPIRY_SECONDS });
+
+        let new_config = AdoptionConfig {
+            waiting_period_days,
+            expiry_seconds: old_config.expiry_seconds,
+        };
+        env.storage().persistent().set(&DataKey::AdoptionConfig, &new_config);
 
         env.events().publish(
             (Symbol::new(&env, "cfg_adoption"),),
@@ -491,6 +519,8 @@ impl PetOwnershipContract {
             .unwrap_or(AdoptionConfig {
                 waiting_period_days: 0,
             })
+        env.storage().persistent().get(&DataKey::AdoptionConfig)
+            .unwrap_or(AdoptionConfig { waiting_period_days: 0, expiry_seconds: ADOPTION_EXPIRY_SECONDS })
     }
 
     /// Set a per-species adoption waiting period override.
@@ -1167,6 +1197,45 @@ impl PetOwnershipContract {
         env.events().publish(
             (EVT_TRANSFER_CANCELLED, pet_id),
             (transfer.from, transfer.to),
+        );
+    }
+
+    /// Cancels a pending adoption whose expiry window has elapsed.
+    ///
+    /// Callable by anyone once `now > signed_at + expiry_seconds`, so an
+    /// abandoned adoption can never block the owner from re-listing the pet.
+    /// Mirrors [`Self::reclaim_transfer`] for direct transfers.
+    pub fn cancel_expired_adoption(env: Env, pet_id: u64) {
+        let adoption: PendingAdoption = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdoption(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoPendingAdoption));
+
+        let config: AdoptionConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AdoptionConfig)
+            .unwrap_or(AdoptionConfig { waiting_period_days: 0, expiry_seconds: ADOPTION_EXPIRY_SECONDS });
+
+        let expiry_seconds = if config.expiry_seconds == 0 {
+            ADOPTION_EXPIRY_SECONDS
+        } else {
+            config.expiry_seconds
+        };
+
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(adoption.signed_at) <= expiry_seconds {
+            panic_with_error!(env, ContractError::AdoptionNotExpired);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingAdoption(pet_id));
+
+        env.events().publish(
+            (EVT_ADOPTION_EXPIRED, pet_id),
+            (adoption.from, adoption.to),
         );
     }
 
