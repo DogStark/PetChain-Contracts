@@ -38,7 +38,7 @@ use petchain_2fa::handlers::{
     AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
     RecoverWithBackupRequest, TwoFactorHandlers, VerifyTwoFactorRequest,
 };
-use petchain_2fa::{ApiError, ErrorResponseMiddleware};
+use petchain_2fa::{ApiError, ContentTypeGuard, ErrorResponseMiddleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -291,10 +291,19 @@ async fn main() -> std::io::Result<()> {
             // gets the Access-Control-* headers.
             .wrap(cors)
             .route("/api/auth/login", web::post().to(login))
-            .route("/api/2fa/enable", web::post().to(enable_2fa))
-            .route("/api/2fa/verify", web::post().to(verify_2fa))
-            .route("/api/2fa/disable", web::post().to(disable_2fa))
-            .route("/api/2fa/recover", web::post().to(recover_2fa))
+            // Scope the 2FA endpoints under ContentTypeGuard so every POST to
+            // these routes is rejected with 415 Unsupported Media Type if the
+            // caller does not send Content-Type: application/json.
+            // The guard passes GET/HEAD/OPTIONS through unmolested, so CORS
+            // preflight requests are unaffected. (Closes #1047)
+            .service(
+                web::scope("/api")
+                    .wrap(ContentTypeGuard)
+                    .route("/2fa/enable",  web::post().to(enable_2fa))
+                    .route("/2fa/verify",  web::post().to(verify_2fa))
+                    .route("/2fa/disable", web::post().to(disable_2fa))
+                    .route("/2fa/recover", web::post().to(recover_2fa)),
+            )
     })
     .bind("127.0.0.1:8080")?
     .run()

@@ -166,8 +166,7 @@ where
         // Parse traceparent header for W3C Trace Context propagation.
         // Use synthesize_trace_context which respects TRACE_CONTEXT_AUTOGENERATE.
         let trace_context = synthesize_trace_context(
-            req
-                .headers()
+            req.headers()
                 .get(TRACEPARENT_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .and_then(TraceContext::parse),
@@ -300,34 +299,38 @@ mod tests {
 
     #[test]
     fn parse_rejects_non_hex_characters() {
-        assert!(TraceContext::parse(
-            "zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-ghijklmnopqrstuv-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-xx"
-        ).is_none());
+        assert!(
+            TraceContext::parse("zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                .is_none()
+        );
+        assert!(
+            TraceContext::parse("00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01")
+                .is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-ghijklmnopqrstuv-01")
+                .is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-xx")
+                .is_none()
+        );
     }
 
     #[test]
     fn parse_rejects_wrong_length_segments() {
-        assert!(TraceContext::parse(
-            "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b-01"
-        ).is_none());
-        assert!(TraceContext::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0"
-        ).is_none());
+        assert!(
+            TraceContext::parse("0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01").is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b-01").is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0").is_none()
+        );
     }
 
     #[test]
@@ -353,8 +356,14 @@ mod tests {
     #[test]
     fn parse_rejects_leading_trailing_dashes_and_only_dashes() {
         assert!(TraceContext::parse("---").is_none());
-        assert!(TraceContext::parse("-00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").is_none());
-        assert!(TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-").is_none());
+        assert!(
+            TraceContext::parse("-00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                .is_none()
+        );
+        assert!(
+            TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-")
+                .is_none()
+        );
     }
 
     #[test]
@@ -446,10 +455,7 @@ mod tests {
         assert!(!sanitized.contains("abc123"), "raw token abc123 leaked");
         assert!(!sanitized.contains("def456"), "raw token def456 leaked");
         assert!(!sanitized.contains("987654"), "raw totp_code 987654 leaked");
-        assert!(
-            !sanitized.contains("JBSWY3DPEHPK3PXP"),
-            "raw secret leaked"
-        );
+        assert!(!sanitized.contains("JBSWY3DPEHPK3PXP"), "raw secret leaked");
     }
 
     #[test]
@@ -484,7 +490,10 @@ mod tests {
         std::env::set_var("TRACE_CONTEXT_AUTOGENERATE", "0");
 
         let result = synthesize_trace_context(None);
-        assert!(result.is_none(), "expected None when autogenerate is disabled and no header present");
+        assert!(
+            result.is_none(),
+            "expected None when autogenerate is disabled and no header present"
+        );
 
         std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
     }
@@ -495,7 +504,10 @@ mod tests {
         std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
 
         let result = synthesize_trace_context(None);
-        assert!(result.is_some(), "expected Some trace context when autogenerate is enabled");
+        assert!(
+            result.is_some(),
+            "expected Some trace context when autogenerate is enabled"
+        );
         if let Some(tc) = result {
             assert_eq!(tc.trace_id.len(), 32);
             assert_eq!(tc.parent_span_id, "0000000000000000");
@@ -512,7 +524,10 @@ mod tests {
         assert!(ctx.is_some(), "incoming header should still be parsed");
 
         let result = synthesize_trace_context(ctx);
-        assert!(result.is_some(), "should return the parsed trace context even when autogenerate is disabled");
+        assert!(
+            result.is_some(),
+            "should return the parsed trace context even when autogenerate is disabled"
+        );
 
         std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
     }

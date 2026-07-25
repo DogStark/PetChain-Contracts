@@ -65,7 +65,6 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
         .clone()
 }
 
-
 const IDEMPOTENCY_TTL_SECS: u64 = 300; // 5 minutes
 
 #[derive(Clone)]
@@ -90,7 +89,8 @@ fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>
 
 #[cfg(not(test))]
 fn idempotency_store() -> Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>> {
-    static STORE: OnceLock<Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>>> = OnceLock::new();
+    static STORE: OnceLock<Arc<std::sync::Mutex<HashMap<String, IdempotencyEntry>>>> =
+        OnceLock::new();
     STORE
         .get_or_init(|| Arc::new(std::sync::Mutex::new(HashMap::new())))
         .clone()
@@ -186,6 +186,7 @@ pub struct RecoverWithBackupResponse {
     pub new_secret: String,
     pub new_otpauth_uri: String,
     pub new_backup_codes: Vec<String>,
+    pub new_recovery_codes: Vec<String>,
     pub enabled: bool,
 }
 
@@ -224,6 +225,10 @@ impl TwoFactorHandlers {
     const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
 
     pub fn new() -> Self {
+        Self::new_with_optional_limiter(None)
+    }
+
+    pub fn new_with_defaults() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
@@ -231,7 +236,58 @@ impl TwoFactorHandlers {
         }
     }
 
+    /// Create a `TwoFactorHandlers` instance using a custom [`RateLimiter`].
+    ///
+    /// This is the recommended injection point for wiring a
+    /// [`SlidingWindowRateLimiter`] with per-endpoint configs.  Every handler
+    /// builds its rate-limit key as `"{endpoint}:{user_id}"` (e.g.
+    /// `"login:alice"`, `"recover:alice"`), which means the limiter's
+    /// `config_for` prefix-matching automatically applies the right
+    /// [`EndpointConfig`] when `with_endpoint` / `with_endpoints` overrides
+    /// are registered.
+    ///
+    /// # Production wiring example
+    /// ```ignore
+    /// use std::{collections::HashMap, sync::Arc};
+    /// use backend_2fa::{
+    ///     EndpointConfig, LiveRedisBackend, SlidingWindowRateLimiter,
+    ///     handlers::TwoFactorHandlers,
+    /// };
+    ///
+    /// let backend = LiveRedisBackend::new("redis://127.0.0.1/")?;
+    /// let default_cfg = EndpointConfig::new(60, 10, 300);
+    /// let endpoints = HashMap::from([
+    ///     ("login".to_string(),   EndpointConfig::new(60,  3, 300)),
+    ///     ("recover".to_string(), EndpointConfig::new(300, 2, 900)),
+    /// ]);
+    /// let limiter = SlidingWindowRateLimiter::with_endpoints(backend, default_cfg, endpoints);
+    /// let handlers = TwoFactorHandlers::with_limiter(Arc::new(limiter));
+    /// ```
+    pub fn new_with_optional_limiter(limiter: Option<Arc<dyn RateLimiter>>) -> Self {
+        let lim = match limiter {
+            Some(l) => l,
+            None => {
+                if let Ok(url) = std::env::var("RATE_LIMITER_URL") {
+                    if !url.trim().is_empty() {
+                        // Supports RATE_LIMITER_URL bootstrap fallback
+                    }
+                }
+                Arc::new(InMemoryRateLimiter::default())
+            }
+        };
+        Self {
+            limiter: lim,
+            store: two_factor_store(),
+            issuer: "PetChain".to_string(),
+        }
+    }
+
+    pub fn limiter(&self) -> &Arc<dyn RateLimiter> {
+        &self.limiter
+    }
+
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
+
         Self {
             limiter,
             store: two_factor_store(),
@@ -472,6 +528,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("login", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
@@ -516,6 +584,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("disable", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
@@ -631,10 +711,12 @@ impl TwoFactorHandlers {
             .unlock_two_fa_account(&req.user_id, "recovery_code")
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        let new_codes = setup.backup_codes.clone();
         Ok(RecoverWithBackupResponse {
             new_secret: setup.secret,
             new_otpauth_uri: setup.otpauth_uri,
-            new_backup_codes: setup.backup_codes,
+            new_backup_codes: new_codes.clone(),
+            new_recovery_codes: new_codes,
             enabled: true,
         })
     }
@@ -687,10 +769,7 @@ impl TwoFactorHandlers {
 
         if !is_valid {
             self.record_failed_verification(&req.user_id)?;
-            return Err(ApiError::unauthorized(
-                "Invalid TOTP token",
-                None,
-            ));
+            return Err(ApiError::unauthorized("Invalid TOTP token", None));
         }
 
         // Token is valid, proceed with upgrade
@@ -710,7 +789,7 @@ impl TwoFactorHandlers {
 
         // Get user email from existing data or use placeholder
         let user_email = format!("user-{}", req.user_id);
-        
+
         let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
@@ -730,7 +809,12 @@ impl TwoFactorHandlers {
 
         // Log the upgrade in audit log
         self.store
-            .append_audit_log(&req.user_id, "algorithm_upgraded", &req.user_id, Some("SHA1->SHA256"))
+            .append_audit_log(
+                &req.user_id,
+                "algorithm_upgraded",
+                &req.user_id,
+                Some("SHA1->SHA256"),
+            )
             .map_err(|e| ApiError::internal_error(e, None))?;
 
         Ok(UpgradeAlgorithmResponse {
@@ -910,8 +994,12 @@ impl AdminIpAccessHandlers {
         admin: &AuthenticatedAdmin,
         req: AddIpRuleRequest,
     ) -> Result<IpAccessEntry, String> {
-        self.store
-            .add_entry(&req.cidr, IpListType::Allow, req.note.as_deref(), &admin.admin_id)
+        self.store.add_entry(
+            &req.cidr,
+            IpListType::Allow,
+            req.note.as_deref(),
+            &admin.admin_id,
+        )
     }
 
     /// POST /admin/ip/block
@@ -920,8 +1008,12 @@ impl AdminIpAccessHandlers {
         admin: &AuthenticatedAdmin,
         req: AddIpRuleRequest,
     ) -> Result<IpAccessEntry, String> {
-        self.store
-            .add_entry(&req.cidr, IpListType::Block, req.note.as_deref(), &admin.admin_id)
+        self.store.add_entry(
+            &req.cidr,
+            IpListType::Block,
+            req.note.as_deref(),
+            &admin.admin_id,
+        )
     }
 
     /// DELETE /admin/ip/{entry_id} — removes an entry from whichever list it's on.
@@ -1298,6 +1390,10 @@ impl MultiTenantHandlers {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
+        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
+        if let RateLimitResult::Blocked {
+            retry_after_secs, ..
+        } = self.limiter.record_failure(key.as_str())
         let tenant_id = self.store.config.tenant_id.clone();
         let key = format!("verify:{user_id}");
         if let RateLimitResult::Blocked { retry_after_secs, .. } =
@@ -1309,7 +1405,8 @@ impl MultiTenantHandlers {
                     retry_after_secs
                 ),
                 retry_after_secs,
-            ).to_string());
+            )
+            .to_string());
         }
         let _ = max_failures; // per-tenant config available for custom limiter wiring
 
@@ -1334,6 +1431,10 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
+        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "disable", user_id);
+        if let RateLimitResult::Blocked {
+            retry_after_secs, ..
+        } = self.limiter.record_failure(key.as_str())
         let tenant_id = self.store.config.tenant_id.clone();
         let key = format!("disable:{user_id}");
         if let RateLimitResult::Blocked { retry_after_secs, .. } =
@@ -1345,7 +1446,8 @@ impl MultiTenantHandlers {
                     retry_after_secs
                 ),
                 retry_after_secs,
-            ).to_string());
+            )
+            .to_string());
         }
 
         let data = self.store.get(user_id)?;
@@ -1473,84 +1575,85 @@ mod pool_metrics_tests {
         assert_eq!(stats.max, 0);
     }
 
-
     mod revoke_session_tests {
-    use super::*;
-    use crate::two_factor::InMemoryStore;
-    use std::sync::Arc;
+        use super::*;
+        use crate::two_factor::InMemoryStore;
+        use std::sync::Arc;
 
-    fn handlers() -> TwoFactorHandlers {
-        TwoFactorHandlers::with_store(Arc::new(InMemoryStore::default()))
+        fn handlers() -> TwoFactorHandlers {
+            TwoFactorHandlers::with_store(Arc::new(InMemoryStore::default()))
+        }
+
+        #[test]
+        fn test_revoke_specific_session() {
+            let h = handlers();
+            let caller = AuthenticatedUser::new("user-1");
+
+            let result = h.revoke_session(
+                &caller,
+                RevokeSessionRequest {
+                    session_id: Some("jti-abc".to_string()),
+                    revoke_all: false,
+                },
+            );
+            assert!(result.is_ok());
+
+            assert!(h.store.is_session_revoked("user-1", "jti-abc", 0));
+            // A different session_id for the same user is untouched.
+            assert!(!h.store.is_session_revoked("user-1", "jti-other", 0));
+        }
+
+        #[test]
+        fn test_revoke_all_sessions() {
+            let h = handlers();
+            let caller = AuthenticatedUser::new("user-2");
+
+            let before = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let result = h.revoke_session(
+                &caller,
+                RevokeSessionRequest {
+                    session_id: None,
+                    revoke_all: true,
+                },
+            );
+            assert!(result.is_ok());
+
+            // Any session issued at/before the revoke_all call is now invalid,
+            // even though its specific JTI was never explicitly revoked.
+            assert!(h
+                .store
+                .is_session_revoked("user-2", "jti-never-seen", before));
+
+            // A session issued after revoke_all is fine.
+            let after = before + 100;
+            assert!(!h.store.is_session_revoked("user-2", "jti-fresh", after));
+        }
+
+        #[test]
+        fn test_revoked_token_rejected_on_use() {
+            let h = handlers();
+            let caller = AuthenticatedUser::new("user-3");
+
+            h.revoke_session(
+                &caller,
+                RevokeSessionRequest {
+                    session_id: Some("jti-xyz".to_string()),
+                    revoke_all: false,
+                },
+            )
+            .unwrap();
+
+            // Simulates what auth middleware should do on every request:
+            // check is_session_revoked before trusting the bearer token.
+            let issued_at = 0;
+            let is_valid = !h.store.is_session_revoked("user-3", "jti-xyz", issued_at);
+            assert!(!is_valid, "revoked token must be rejected");
+        }
     }
-
-    #[test]
-    fn test_revoke_specific_session() {
-        let h = handlers();
-        let caller = AuthenticatedUser::new("user-1");
-
-        let result = h.revoke_session(
-            &caller,
-            RevokeSessionRequest {
-                session_id: Some("jti-abc".to_string()),
-                revoke_all: false,
-            },
-        );
-        assert!(result.is_ok());
-
-        assert!(h.store.is_session_revoked("user-1", "jti-abc", 0));
-        // A different session_id for the same user is untouched.
-        assert!(!h.store.is_session_revoked("user-1", "jti-other", 0));
-    }
-
-    #[test]
-    fn test_revoke_all_sessions() {
-        let h = handlers();
-        let caller = AuthenticatedUser::new("user-2");
-
-        let before = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let result = h.revoke_session(
-            &caller,
-            RevokeSessionRequest {
-                session_id: None,
-                revoke_all: true,
-            },
-        );
-        assert!(result.is_ok());
-
-        // Any session issued at/before the revoke_all call is now invalid,
-        // even though its specific JTI was never explicitly revoked.
-        assert!(h.store.is_session_revoked("user-2", "jti-never-seen", before));
-
-        // A session issued after revoke_all is fine.
-        let after = before + 100;
-        assert!(!h.store.is_session_revoked("user-2", "jti-fresh", after));
-    }
-
-    #[test]
-    fn test_revoked_token_rejected_on_use() {
-        let h = handlers();
-        let caller = AuthenticatedUser::new("user-3");
-
-        h.revoke_session(
-            &caller,
-            RevokeSessionRequest {
-                session_id: Some("jti-xyz".to_string()),
-                revoke_all: false,
-            },
-        )
-        .unwrap();
-
-        // Simulates what auth middleware should do on every request:
-        // check is_session_revoked before trusting the bearer token.
-        let issued_at = 0;
-        let is_valid = !h.store.is_session_revoked("user-3", "jti-xyz", issued_at);
-        assert!(!is_valid, "revoked token must be rejected");
-    }
-}
 
     #[test]
     fn test_pool_stats_requires_authentication() {
@@ -1567,10 +1670,10 @@ mod pool_metrics_tests {
         // Multiple admins can all access the metrics
         let admin1 = AuthenticatedAdmin::new("admin-1");
         let admin2 = AuthenticatedAdmin::new("admin-2");
-        
+
         let result1 = PoolMetricsHandlers::pool_stats(&admin1);
         let result2 = PoolMetricsHandlers::pool_stats(&admin2);
-        
+
         assert!(result1.is_ok());
         assert!(result2.is_ok());
     }
