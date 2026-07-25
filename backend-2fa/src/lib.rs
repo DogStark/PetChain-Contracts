@@ -11,6 +11,8 @@ pub mod tracing_middleware;
 pub mod two_factor;
 pub mod webhooks;
 pub mod migrations;
+#[cfg(feature = "redis-store")]
+pub mod redis_store;
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +62,8 @@ pub use two_factor::{
     TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState,
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
 };
+#[cfg(feature = "redis-store")]
+pub use redis_store::{MockRedisTwoFactorStore, RedisTwoFactorStore};
 pub use webhooks::{
     sanitize_metadata, DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog,
     WebhookManager, WebhookPayload, WebhookUrlError, validate_webhook_url,
