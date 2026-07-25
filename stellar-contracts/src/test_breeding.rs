@@ -38,7 +38,7 @@ fn setup() -> (
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")]
+#[should_panic(expected = "Error(Contract, #12)")]
 fn test_self_reference_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -58,7 +58,7 @@ fn test_self_reference_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #21)")]
+#[should_panic(expected = "Error(Contract, #16)")]
 fn test_cycle_insertion_rejected() {
     let (env, client, _owner, sire, dam, offspring, _grandchild) = setup();
     let record_id = client.add_breeding_record(

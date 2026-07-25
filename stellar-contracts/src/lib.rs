@@ -161,6 +161,9 @@ mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_nutrition_plan;
 #[cfg(test)]
+mod test_breeding;
+#[cfg(test)]
+mod test_breeding_genetics;
 mod test_medical_record_soft_delete;
 mod test_pet_birthday_validation;
 #[cfg(test)]
@@ -182,7 +185,6 @@ const MAX_SEARCH_KEYWORD_LEN: u32 = 32;
 const MAX_SEARCH_TOKENS_PER_RECORD: u32 = 16;
 #[allow(dead_code)]
 const MAX_SEARCH_NOTES_LEN: u32 = 512;
-#[allow(dead_code)]
 const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
 const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
@@ -292,6 +294,9 @@ pub enum ContractError {
     VeterinarianNotVerified = 33,
     SlotAlreadyBooked = 34,
     DuplicateActivity = 35,
+    InbreedingThresholdExceeded = 36,
+    SelfBreeding = 37,
+
     AlreadyDeleted = 160,
     RetentionPeriodNotMet = 162,
     RecordAlreadyDeleted = 160,
@@ -9854,6 +9859,311 @@ impl PetChainContract {
         0u32
     }
 
+    // ── BREEDING RECORD MANAGEMENT ──────────────────────────────────
+
+    pub fn add_breeding_record(
+        env: Env,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+        notes: String,
+    ) -> u64 {
+        let count = env
+            .storage()
+            .persistent()
+            .get(&BreedingKey::BreedingRecordCount)
+            .unwrap_or(0u64);
+        let id = safe_increment(count);
+
+        let record = BreedingRecord {
+            id,
+            sire_id,
+            dam_id,
+            breeding_date,
+            offspring_ids: Vec::new(&env),
+            breeder: env.current_contract_address(),
+            notes,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::BreedingRecord(id), &record);
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::BreedingRecordCount, &id);
+
+        Self::inc_pet_breeding_count(&env, sire_id);
+        Self::inc_pet_breeding_count(&env, dam_id);
+
+        id
+    }
+
+    fn inc_pet_breeding_count(env: &Env, pet_id: u64) {
+        let count = env
+            .storage()
+            .persistent()
+            .get(&BreedingKey::PetBreedingCount(pet_id))
+            .unwrap_or(0u64);
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::PetBreedingCount(pet_id), &(count + 1));
+    }
+
+    pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
+        let mut record: BreedingRecord = env
+            .storage()
+            .persistent()
+            .get(&BreedingKey::BreedingRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Self-lineage check
+        if offspring_id == record.sire_id || offspring_id == record.dam_id {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        // Circular lineage check – ensure offspring is not already an ancestor of either parent
+        let lineage = Self::collect_lineage_vec(&env, offspring_id, MAX_LINEAGE_DEPTH);
+        for ancestor in lineage.iter() {
+            if ancestor == record.sire_id || ancestor == record.dam_id {
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
+        }
+
+        // Store parent pair for pedigree queries (COI, lineage)
+        env.storage().persistent().set(
+            &BreedingKey::ParentPair(offspring_id),
+            &(record.sire_id, record.dam_id),
+        );
+
+        record.offspring_ids.push_back(offspring_id);
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::BreedingRecord(record_id), &record);
+
+        let count = env
+            .storage()
+            .persistent()
+            .get(&BreedingKey::PetOffspringCount(offspring_id))
+            .unwrap_or(0u64);
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::PetOffspringCount(offspring_id), &(count + 1));
+
+        true
+    }
+
+    /// Internal lineage collector used by `add_offspring` and `get_lineage`.
+    fn collect_lineage_vec(env: &Env, pet_id: u64, max_depth: u32) -> Vec<u64> {
+        let mut result = Vec::new(env);
+        let mut frontier = Vec::new(env);
+        frontier.push_back(pet_id);
+
+        for _ in 0..max_depth {
+            let mut next = Vec::new(env);
+            for node in frontier.iter() {
+                if let Some((s, d)) = env
+                    .storage()
+                    .persistent()
+                    .get::<BreedingKey, (u64, u64)>(&BreedingKey::ParentPair(node))
+                {
+                    result.push_back(s);
+                    result.push_back(d);
+                    next.push_back(s);
+                    next.push_back(d);
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        result
+    }
+
+    pub fn get_lineage(env: Env, pet_id: u64, max_depth: u32) -> Vec<u64> {
+        Self::collect_lineage_vec(&env, pet_id, max_depth)
+    }
+
+    pub fn get_breeding_record(env: Env, record_id: u64) -> Option<BreedingRecord> {
+        env.storage()
+            .persistent()
+            .get(&BreedingKey::BreedingRecord(record_id))
+    }
+
+    pub fn get_breeding_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&BreedingKey::PetBreedingCount(pet_id))
+            .unwrap_or(0u64)
+    }
+
+    // ── MENDELIAN GENETICS ──────────────────────────────────────────
+
+    pub fn set_pet_traits(env: Env, pet_id: u64, traits: Map<String, Allele>) {
+        env.storage()
+            .persistent()
+            .set(&GeneticsKey::PetTraits(pet_id), &traits);
+    }
+
+    pub fn get_pet_traits(env: Env, pet_id: u64) -> Map<String, Allele> {
+        env.storage()
+            .persistent()
+            .get(&GeneticsKey::PetTraits(pet_id))
+            .unwrap_or_else(|| Map::new(&env))
+    }
+
+    pub fn compute_offspring_traits(env: Env, record_id: u64) -> Map<String, u32> {
+        let record: BreedingRecord = env
+            .storage()
+            .persistent()
+            .get(&BreedingKey::BreedingRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        let sire_traits: Map<String, Allele> = env
+            .storage()
+            .persistent()
+            .get(&GeneticsKey::PetTraits(record.sire_id))
+            .unwrap_or_else(|| Map::new(&env));
+        let dam_traits: Map<String, Allele> = env
+            .storage()
+            .persistent()
+            .get(&GeneticsKey::PetTraits(record.dam_id))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut result: Map<String, u32> = Map::new(&env);
+        let mut seen: Map<String, bool> = Map::new(&env);
+
+        for (name, _) in sire_traits.iter() {
+            seen.set(name.clone(), true);
+        }
+        for (name, _) in dam_traits.iter() {
+            seen.set(name.clone(), true);
+        }
+
+        for (name, _) in seen.iter() {
+            let sa = sire_traits.get(name.clone()).unwrap_or(Allele::Recessive);
+            let da = dam_traits.get(name.clone()).unwrap_or(Allele::Recessive);
+            let prob = match (&sa, &da) {
+                (Allele::Dominant, Allele::Dominant) => 10000u32,
+                (Allele::Dominant, Allele::Recessive) => 7500u32,
+                (Allele::Recessive, Allele::Dominant) => 7500u32,
+                (Allele::Recessive, Allele::Recessive) => 0u32,
+            };
+            result.set(name, prob);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&GeneticsKey::PredictedTraits(record_id), &result);
+        result
+    }
+
+    pub fn get_trait_probability(
+        env: Env,
+        record_id: u64,
+        trait_name: String,
+    ) -> Option<u32> {
+        let predicted: Map<String, u32> = env
+            .storage()
+            .persistent()
+            .get(&GeneticsKey::PredictedTraits(record_id))
+            .unwrap_or_else(|| Map::new(&env));
+        predicted.get(trait_name)
+    }
+
+    // ── COEFFICIENT OF INBREEDING (Issue #778) ─────────────────────
+
+    /// Returns the Coefficient of Inbreeding in basis points (0–10000).
+    ///
+    /// Uses a 3-generation pedigree traversal.  Integer math only — no
+    /// floating point.  The formula follows Sewall Wright's path method:
+    ///
+    ///   COI = Σ  10000 / 2^(n1 + n2 + 1)
+    ///
+    /// where n1 is the number of generations from pet_a up to a common
+    /// ancestor, and n2 is the number from pet_b up to that same ancestor.
+    pub fn calculate_coi(env: Env, pet_id_a: u64, pet_id_b: u64) -> u32 {
+        Self::calc_coi(&env, pet_id_a, pet_id_b)
+    }
+
+    /// Internal helper shared by `calculate_coi` (view) and
+    /// `register_breeding_pair` (write) to avoid code duplication.
+    fn calc_coi(env: &Env, pet_a: u64, pet_b: u64) -> u32 {
+        let a = Self::build_pedigree_map(env, pet_a, 3);
+        let b = Self::build_pedigree_map(env, pet_b, 3);
+        let mut coi: u32 = 0;
+        for (ancestor, da) in a.iter() {
+            if let Some(db) = b.get(ancestor.clone()) {
+                let exp = da + db + 1;
+                if exp <= 13 {
+                    coi += 10000u32 / (1u32 << exp);
+                }
+            }
+        }
+        coi
+    }
+
+    /// Build a Map of ancestor_id → shortest depth (generations up).
+    fn build_pedigree_map(env: &Env, root: u64, max_depth: u32) -> Map<u64, u32> {
+        let mut out = Map::new(env);
+        let mut frontier = Vec::new(env);
+        frontier.push_back(root);
+
+        for gen in 1u32..=max_depth {
+            let mut next = Vec::new(env);
+            for pet in frontier.iter() {
+                if let Some((s, d)) = env
+                    .storage()
+                    .persistent()
+                    .get::<BreedingKey, (u64, u64)>(&BreedingKey::ParentPair(pet))
+                {
+                    if !out.contains_key(s) {
+                        out.set(s, gen);
+                        next.push_back(s);
+                    }
+                    if !out.contains_key(d) {
+                        out.set(d, gen);
+                        next.push_back(d);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        out
+    }
+
+    // ── BREEDING PAIR REGISTRATION WITH COI GUARD ───────────────────
+
+    /// Register a breeding pair after validating the Coefficient of
+    /// Inbreeding does not exceed `max_coi_bp` (basis points, 0–10000).
+    ///
+    /// # Errors
+    /// - `SelfBreeding` — sire_id and dam_id are the same.
+    /// - `InbreedingThresholdExceeded` — calculated COI ≥ max_coi_bp.
+    pub fn register_breeding_pair(
+        env: Env,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+        notes: String,
+        max_coi_bp: u32,
+    ) -> u64 {
+        if sire_id == dam_id {
+            panic_with_error!(&env, ContractError::SelfBreeding);
+        }
+
+        let coi = Self::calc_coi(&env, sire_id, dam_id);
+        if coi >= max_coi_bp {
+            panic_with_error!(&env, ContractError::InbreedingThresholdExceeded);
+        }
+
+        Self::add_breeding_record(env, sire_id, dam_id, breeding_date, notes)
+    }
+} // end impl PetChainContract
+
     // ── #764: remove_admin with threshold guard ───────────────────────────────
 
     pub fn remove_admin(env: Env, proposer: Address, admin_to_remove: Address) -> u64 {
@@ -11177,3 +11487,6 @@ mod test_lab_result_anomaly {
         assert_eq!(anomaly.version, EVENT_SCHEMA_VERSION);
     }
 }
+
+#[cfg(test)]
+mod test_breeding_coi;
