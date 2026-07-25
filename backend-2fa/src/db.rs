@@ -145,6 +145,15 @@ impl PostgresTwoFactorStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
+        // Issue #1042: cap the initial TCP connection handshake so that a
+        // misconfigured DATABASE_URL (unreachable host, firewall drop, slow
+        // container startup) produces a descriptive Err within a bounded time
+        // rather than hanging the OnceLock initialisation forever.
+        // Configurable via DB_CONNECT_TIMEOUT_SECS; defaults to 10 seconds.
+        let connect_timeout_secs: u64 = std::env::var("DB_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
 
         let pool = runtime
             .block_on(
@@ -152,9 +161,18 @@ impl PostgresTwoFactorStore {
                     .min_connections(min_conns)
                     .max_connections(max_conns)
                     .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
+                    // connect_timeout governs each individual TCP connection
+                    // attempt, distinct from acquire_timeout which governs
+                    // waiting for a free slot in an already-built pool.
+                    .connect_timeout(Duration::from_secs(connect_timeout_secs))
                     .connect(database_url),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!(
+                "Failed to connect to database within {}s: {}. \
+                 Check DATABASE_URL and network reachability. \
+                 Falling back to in-memory store.",
+                connect_timeout_secs, e
+            ))?;
 
         Ok(Self { pool, runtime, enc_key: None })
     }
@@ -1295,4 +1313,49 @@ mod tests {
         // Must round-trip correctly
         assert_eq!(decrypt_secret(&encrypted, &key).unwrap(), secret);
     }
+
+    /// Issue #1042 — `connect()` must time out quickly on an unreachable host
+    /// rather than hanging the process indefinitely.
+    ///
+    /// We use a non-routable IP address (RFC 5737 TEST-NET-1: 192.0.2.1) and
+    /// a 1-second timeout so the test completes well within the default test
+    /// runner timeout.  A successful `Err` return with a descriptive message
+    /// proves the timeout fired.
+    #[test]
+    fn connect_returns_err_when_host_unreachable_within_timeout() {
+        // Point at a non-routable address: this will never respond.
+        // RFC 5737 documentation addresses are guaranteed to be unreachable.
+        let unreachable_url = "postgres://user:pass@192.0.2.1:5432/db";
+
+        // Override the connect timeout to 1 second so the test is fast.
+        std::env::set_var("DB_CONNECT_TIMEOUT_SECS", "1");
+
+        let start = std::time::Instant::now();
+        let result = PostgresTwoFactorStore::connect(unreachable_url);
+        let elapsed = start.elapsed();
+
+        // Restore env variable.
+        std::env::remove_var("DB_CONNECT_TIMEOUT_SECS");
+
+        // Must return Err — not hang.
+        assert!(
+            result.is_err(),
+            "connect() must return Err on an unreachable host, got Ok"
+        );
+
+        // The error message must be descriptive (includes timeout and original error).
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("Failed to connect to database within 1s"),
+            "error message must mention the timeout: {err_msg}"
+        );
+
+        // Must not have taken more than 10 seconds (generous headroom above 1s timeout).
+        assert!(
+            elapsed.as_secs() < 10,
+            "connect() took {}s — timeout was not applied",
+            elapsed.as_secs()
+        );
+    }
 }
+

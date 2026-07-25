@@ -1165,9 +1165,18 @@ impl TenantRegistry {
     /// returned. If it already exists, the existing config is returned
     /// unchanged along with `(existing_config, true)` — the caller can use
     /// the `bool` to signal `already_existed` without treating this as an
-    /// error. The check-and-insert happens under a single lock acquisition
-    /// (via `Entry`), so concurrent calls for the same `tenant_id` cannot
-    /// race past each other and create duplicates.
+    /// error.
+    ///
+    /// # Concurrency guarantee (closes issue #1054)
+    ///
+    /// The check-and-insert is performed atomically under a **single**
+    /// `Mutex` lock acquisition using [`HashMap::entry`].  There is no
+    /// TOCTOU window between "check if tenant exists" and "insert new
+    /// tenant": both operations happen while the lock is held.  Parallel
+    /// first-requests for the same `tenant_id` therefore cannot each see
+    /// "tenant not found" and both proceed to create a new store instance.
+    /// Exactly one caller will win the `Vacant` arm; all racing callers
+    /// will receive the same `TenantConfig` that the winner inserted.
     pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
         match map.entry(config.tenant_id.clone()) {
@@ -1285,4 +1294,109 @@ pub fn verify_jwt(token: &str, secret: &[u8], now_unix_secs: u64) -> Result<JwtC
     }
 
     Ok(claims)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1054 — TenantRegistry::provision concurrent-initialisation tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tenant_registry_concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    fn make_config(tenant_id: &str) -> TenantConfig {
+        TenantConfig {
+            tenant_id: tenant_id.to_string(),
+            totp_issuer: format!("{}-issuer", tenant_id),
+            lockout_threshold: 5,
+            rate_limit_max_failures: 5,
+        }
+    }
+
+    /// Two threads calling `provision` for the same brand-new tenant
+    /// simultaneously must both get back the *same* `TenantConfig` and
+    /// exactly one must observe `already_existed = false`.
+    ///
+    /// This verifies that the `HashMap::entry` check-and-insert is atomic
+    /// under the `Mutex` and that no TOCTOU race can create duplicate
+    /// store instances. (Closes issue #1054.)
+    #[test]
+    fn test_concurrent_provision_same_tenant_returns_identical_config() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let reg = Arc::clone(&registry);
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config("race-tenant")).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All returned configs must be identical — only one winner inserts.
+        let first_config = &results[0].0;
+        for (cfg, _) in &results {
+            assert_eq!(
+                cfg.tenant_id, first_config.tenant_id,
+                "All threads must observe the same tenant_id"
+            );
+            assert_eq!(
+                cfg.totp_issuer, first_config.totp_issuer,
+                "All threads must observe the same totp_issuer — no duplicate was created"
+            );
+        }
+
+        // Exactly one thread saw `already_existed = false` (the creator).
+        let created: Vec<_> = results.iter().filter(|(_, existed)| !existed).collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "Exactly one thread must have created the tenant; got {} creators",
+            created.len()
+        );
+
+        // All other threads observed it as already existing.
+        let existed: Vec<_> = results.iter().filter(|(_, existed)| *existed).collect();
+        assert_eq!(existed.len(), 31);
+    }
+
+    /// Independent tenant IDs must never interfere with each other even
+    /// under concurrent access.
+    #[test]
+    fn test_concurrent_provision_different_tenants_are_isolated() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let tenant_ids: Vec<String> = (0..16).map(|i| format!("tenant-{}", i)).collect();
+        let mut handles = Vec::new();
+
+        for tid in &tenant_ids {
+            let reg = Arc::clone(&registry);
+            let tid = tid.clone();
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config(&tid)).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Each tenant was provisioned exactly once.
+        let created_count = results.iter().filter(|(_, existed)| !existed).count();
+        assert_eq!(
+            created_count,
+            16,
+            "Each of the 16 unique tenants must have been created exactly once"
+        );
+
+        // Every tenant is retrievable from the registry.
+        for tid in &tenant_ids {
+            let cfg = registry
+                .get_config(tid)
+                .unwrap_or_else(|| panic!("Tenant '{}' missing from registry", tid));
+            assert_eq!(cfg.tenant_id, *tid);
+        }
+    }
 }

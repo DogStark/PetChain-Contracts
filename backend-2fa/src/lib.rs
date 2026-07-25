@@ -1,3 +1,4 @@
+pub mod content_type_guard;
 pub mod db;
 pub mod error;
 pub mod handlers;
@@ -15,6 +16,7 @@ pub mod migrations;
 #[cfg(test)]
 mod tests;
 
+pub use content_type_guard::ContentTypeGuard;
 pub use db::PostgresTwoFactorStore;
 pub use db::{
     select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats,

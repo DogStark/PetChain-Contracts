@@ -70,6 +70,7 @@ pub enum ContractError {
     LicenseAlreadyUsed = 4,
     VetNotVerified = 5,
     InputTooLong = 6,
+    VetAlreadyVerified = 7,
 }
 
 /// ======================================================
@@ -207,6 +208,9 @@ impl VetRegistryContract {
         require_admin(&env);
 
         let mut vet = get_vet(&env, &vet_address);
+        if vet.verified {
+            panic_with_error!(env, ContractError::VetAlreadyVerified);
+        }
         vet.verified = true;
         save_vet(&env, &vet);
 
@@ -565,5 +569,28 @@ mod tests {
         assert_eq!(vets.len(), 1);
         let retrieved = vets.get(0).unwrap();
         assert!(retrieved.verified);
+    }
+
+    #[test]
+    fn test_verify_vet_twice_fails_with_vet_already_verified() {
+        let (env, _, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+
+        client.verify_vet(&vet1);
+
+        let result = client.try_verify_vet(&vet1);
+        assert_eq!(
+            result,
+            Err(Ok(Error::from_contract_error(
+                ContractError::VetAlreadyVerified as u32,
+            )))
+        );
     }
 }
