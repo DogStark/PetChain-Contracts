@@ -62,8 +62,9 @@ fn test_purge_nothing_when_no_deleted_records() {
 
     add_record(&client, &env, &vet, pet_id, "Healthy");
 
-    let purged = client.purge_deleted_records(&admin, &pet_id, &30);
-    assert_eq!(purged, 0);
+    client.set_retention_period(&admin, &(30 * 86_400));
+    let purged = client.purge_deleted_records(&pet_id, &admin, &false);
+    assert_eq!(purged.deleted.len(), 0);
 }
 
 #[test]
@@ -86,8 +87,9 @@ fn test_purge_partial_old_and_new() {
     env.ledger()
         .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
 
-    let purged = client.purge_deleted_records(&admin, &pet_id, &25);
-    assert_eq!(purged, 2);
+    client.set_retention_period(&admin, &(25 * 86_400));
+    let purged = client.purge_deleted_records(&pet_id, &admin, &false);
+    assert_eq!(purged.deleted.len(), 2);
 }
 
 #[test]
@@ -107,16 +109,22 @@ fn test_purge_all_old_records() {
     env.ledger()
         .with_mut(|l| l.timestamp = 1_700_000_000 + 60 * 86_400);
 
-    let purged = client.purge_deleted_records(&admin, &pet_id, &30);
-    assert_eq!(purged, 3);
+    client.set_retention_period(&admin, &(30 * 86_400));
+    let purged = client.purge_deleted_records(&pet_id, &admin, &false);
+    assert_eq!(purged.deleted.len(), 3);
 }
 
 #[test]
 #[should_panic]
 fn test_purge_requires_admin() {
     let env = Env::default();
-    let (client, _admin, vet, pet_id) = setup(&env);
+    let (client, admin, vet, pet_id) = setup(&env);
+
+    let r1 = add_record(&client, &env, &vet, pet_id, "Rec1");
+    client.delete_medical_record(&pet_id, &r1, &vet);
+
+    client.set_retention_period(&admin, &(30 * 86_400));
 
     let stranger = Address::generate(&env);
-    client.purge_deleted_records(&stranger, &pet_id, &30);
+    client.purge_deleted_records(&pet_id, &stranger, &false);
 }
