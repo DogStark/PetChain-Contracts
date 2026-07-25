@@ -268,6 +268,7 @@ pub enum ContractError {
     InvalidCallerNonce = 10,
     InvalidCertificateHash = 11,
     InvalidInput = 12,
+    InvalidNonce = 36,
     InvalidIpfsHash = 13,
     InvalidPetName = 14,
     InvalidRating = 15,
@@ -5162,20 +5163,144 @@ impl PetChainContract {
         }
     }
 
-    pub fn transfer_pet_ownership(env: Env, id: u64, to: Address) {
+    pub fn transfer_pet_ownership(env: Env, id: u64, to: Address, nonce: u64) {
         if let Some(mut pet) = env
             .storage()
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
-            pet.owner.require_auth();
+            let owner = pet.owner.clone();
+            owner.require_auth();
+            Self::consume_caller_nonce(&env, &owner, nonce);
             pet.new_owner = to;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
         }
     }
 
-    /// Transfer multiple pets to the same new owner atomically.
+    /// Grant a grantee access to a pet. The caller must be the pet owner and
+    /// supply the expected nonce value for replay protection.
+    pub fn grant_access(
+        env: Env,
+        pet_id: u64,
+        grantee: Address,
+        access_level: AccessLevel,
+        expires_at: Option<u64>,
+        nonce: u64,
+    ) -> bool {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            let owner = pet.owner.clone();
+            owner.require_auth();
+            Self::consume_caller_nonce(&env, &owner, nonce);
+
+            let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+            let now = env.ledger().timestamp();
+            let mut grant = if let Some(existing) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AccessGrant>(&key)
+            {
+                existing
+            } else {
+                AccessGrant {
+                    pet_id,
+                    granter: owner.clone(),
+                    grantee: grantee.clone(),
+                    access_level,
+                    granted_at: now,
+                    expires_at,
+                    is_active: true,
+                }
+            };
+
+            grant.access_level = access_level;
+            grant.granted_at = now;
+            grant.expires_at = expires_at;
+            grant.is_active = true;
+            grant.granter = owner.clone();
+
+            let is_new_grant = env
+                .storage()
+                .instance()
+                .get::<DataKey, AccessGrant>(&key)
+                .is_none();
+
+            env.storage().instance().set(&key, &grant);
+
+            if is_new_grant {
+                let existing_count: u64 = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+                    .unwrap_or(0);
+                let new_count = safe_increment(existing_count);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AccessGrantCount(pet_id), &new_count);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AccessGrantIndex((pet_id, new_count)), &grantee);
+            }
+
+            env.events().publish(
+                (String::from_str(&env, "AccessGranted"), pet_id),
+                AccessGrantedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    pet_id,
+                    granter: owner,
+                    grantee,
+                    access_level,
+                    expires_at,
+                    timestamp: now,
+                },
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Revoke an access grant for a pet. Only the owner may revoke access.
+    pub fn revoke_access(env: Env, pet_id: u64, grantee: Address) -> bool {
+        if let Some(pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+        {
+            pet.owner.require_auth();
+            let key = DataKey::AccessGrant((pet_id, grantee.clone()));
+            if let Some(mut grant) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AccessGrant>(&key)
+            {
+                if !grant.is_active {
+                    return false;
+                }
+                grant.is_active = false;
+                env.storage().instance().set(&key, &grant);
+                env.events().publish(
+                    (String::from_str(&env, "AccessRevoked"), pet_id),
+                    AccessRevokedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        pet_id,
+                        granter: pet.owner,
+                        grantee,
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Nonce-protected pet registration. Caller supplies their current nonce;
+    /// the nonce is incremented atomically on success, preventing replay.
     /// All pets must belong to the same caller and the entire batch fails if
     /// any pet is missing or owned by a different address.
     pub fn batch_transfer(env: Env, pet_ids: Vec<u64>, new_owner: Address) {
@@ -7601,7 +7726,7 @@ impl PetChainContract {
             .get(&DataKey::CallerNonce(caller.clone()))
             .unwrap_or(0);
         if supplied != current {
-            panic_with_error!(env, ContractError::InvalidCallerNonce);
+            panic_with_error!(env, ContractError::InvalidNonce);
         }
         env.storage()
             .instance()
