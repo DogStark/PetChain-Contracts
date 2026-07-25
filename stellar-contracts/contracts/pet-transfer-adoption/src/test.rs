@@ -174,6 +174,61 @@ fn trusted_contract_update_requires_multisig_threshold() {
 }
 
 #[test]
+fn test_multisig_approval_exactly_at_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin_one = Address::generate(&env);
+    let admin_two = Address::generate(&env);
+    let admin_three = Address::generate(&env);
+    let trusted = Address::generate(&env);
+    let updated = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(
+        &env,
+        &[admin_one.clone(), admin_two.clone(), admin_three.clone()],
+    );
+
+    // Initialize with threshold = 2 (out of 3 admins)
+    client.init_trusted_contract(&trusted, &admins, &2);
+
+    // First approval (1 of 2 threshold) -> should not complete yet
+    let res1 = client.update_trusted_contract(&updated, &admin_one);
+    assert!(!res1);
+    assert_eq!(client.get_trusted_contract_address(), trusted);
+
+    // Second approval (exactly 2 of 2 threshold) -> must complete!
+    let res2 = client.update_trusted_contract(&updated, &admin_two);
+    assert!(res2);
+    assert_eq!(client.get_trusted_contract_address(), updated);
+}
+
+#[test]
+fn test_multisig_approval_one_below_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin_one = Address::generate(&env);
+    let admin_two = Address::generate(&env);
+    let admin_three = Address::generate(&env);
+    let trusted = Address::generate(&env);
+    let updated = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(
+        &env,
+        &[admin_one.clone(), admin_two.clone(), admin_three.clone()],
+    );
+
+    // Initialize with threshold = 2 (out of 3 admins)
+    client.init_trusted_contract(&trusted, &admins, &2);
+
+    // Submit 1 approval (threshold - 1 = 1) -> must NOT complete
+    let completed = client.update_trusted_contract(&updated, &admin_one);
+    assert!(!completed);
+    assert_eq!(client.get_trusted_contract_address(), trusted);
+}
+
+#[test]
 fn trusted_contract_update_rejects_non_admin_signer() {
     let (env, admin, attacker, _) = setup();
     let trusted = Address::generate(&env);
