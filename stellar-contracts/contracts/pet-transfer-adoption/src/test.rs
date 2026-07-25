@@ -1,6 +1,7 @@
 use super::{
     AdoptionState, ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord,
     PetOwnershipContract, PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
+    MAX_CUSTODY_CHAIN_LENGTH,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -1004,4 +1005,54 @@ fn update_adoption_config_fails_without_prior_set() {
             ContractError::AdoptionConfigNotFound as u32,
         )))
     );
+}
+
+// ======================================================
+// Custody chain length cap tests (Issue #1011)
+// ======================================================
+
+/// Runs one full direct transfer cycle, leaving `to` as the current owner.
+fn transfer_once(
+    env: &Env,
+    client: &PetOwnershipContractClient,
+    pet_id: &u64,
+    to: &Address,
+) {
+    // 250+ transfers in one test would otherwise exhaust the test budget.
+    env.budget().reset_unlimited();
+    client.initiate_transfer(pet_id, to);
+    client.accept_transfer(pet_id);
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+    client.finalize_transfer(pet_id);
+}
+
+#[test]
+fn custody_chain_is_capped_at_max_length() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+
+    // Exactly MAX_CUSTODY_CHAIN_LENGTH transfers — nothing is dropped yet.
+    for i in 0..MAX_CUSTODY_CHAIN_LENGTH {
+        let to = if i % 2 == 0 { &new_owner } else { &owner };
+        transfer_once(&env, &client, &pet_id, to);
+    }
+    assert_eq!(client.get_custody_chain(&pet_id).len(), MAX_CUSTODY_CHAIN_LENGTH);
+
+    let second_entry = client.get_custody_chain(&pet_id).get(1).unwrap();
+
+    // One more transfer trims the oldest entry instead of growing the Vec.
+    transfer_once(&env, &client, &pet_id, &new_owner);
+
+    let chain = client.get_custody_chain(&pet_id);
+    assert_eq!(chain.len(), MAX_CUSTODY_CHAIN_LENGTH);
+    // The previous second entry is now first — the oldest one was dropped.
+    assert_eq!(chain.get(0).unwrap(), second_entry);
+    // The newest transfer is retained at the tail.
+    let newest = chain.get(MAX_CUSTODY_CHAIN_LENGTH - 1).unwrap();
+    assert_eq!(newest.to, new_owner);
 }
