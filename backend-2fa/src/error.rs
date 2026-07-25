@@ -118,12 +118,13 @@ impl ResponseError for ApiError {
         // ── Issue #885: Support Retry-After header for rate_limited errors ──
         let mut resp = HttpResponse::build(status);
         if self.code.as_str() == "RATE_LIMITED" {
-            if let Some(Value::Number(n)) = self.details.as_ref().and_then(|d| d.get("retry_after_secs")) {
+            if let Some(Value::Number(n)) = self
+                .details
+                .as_ref()
+                .and_then(|d| d.get("retry_after_secs"))
+            {
                 if let Some(secs) = n.as_u64() {
-                    resp.insert_header((
-                        actix_web::http::header::RETRY_AFTER,
-                        secs.to_string(),
-                    ));
+                    resp.insert_header((actix_web::http::header::RETRY_AFTER, secs.to_string()));
                 }
             }
         }
