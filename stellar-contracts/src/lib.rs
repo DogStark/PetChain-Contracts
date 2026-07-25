@@ -162,6 +162,8 @@ mod test_medical_record_soft_delete;
 mod test_nutrition_plan;
 #[cfg(test)]
 mod test_attachment_limit;
+#[cfg(test)]
+mod test_ipfs;
 mod test_search_medical_records;
 mod test_insurance_eligibility;
 mod test_breeding;
@@ -7963,18 +7965,17 @@ impl PetChainContract {
         )
     }
 
-    fn validate_ipfs_hash(_env: &Env, hash: &String) -> Result<(), ContractError> {
-        let len = hash.len() as usize;
+    fn is_valid_cid(hash: &str) -> bool {
+        let len = hash.len();
+        let bytes = hash.as_bytes();
+
+        // CIDv0: Qm... with exactly 46 Base58 characters.
         if len == 46 {
-            let mut bytes = [0u8; 46];
-            hash.copy_into_slice(&mut bytes);
-
             if bytes[0] != b'Q' || bytes[1] != b'm' {
-                return Err(ContractError::InvalidIpfsHash);
+                return false;
             }
-
-            for b in bytes.iter() {
-                if !matches!(
+            return bytes.iter().all(|b| {
+                matches!(
                     b,
                     b'1'..=b'9'
                         | b'A'..=b'H'
@@ -7982,32 +7983,35 @@ impl PetChainContract {
                         | b'P'..=b'Z'
                         | b'a'..=b'k'
                         | b'm'..=b'z'
-                ) {
-                    return Err(ContractError::InvalidIpfsHash);
-                }
-            }
-
-            return Ok(());
+                )
+            });
         }
 
-        if !(2..=128).contains(&len) {
+        // CIDv1: must start with "bafy" and use lowercase base32.
+        if len < 5 || len > 128 {
+            return false;
+        }
+        if &bytes[..4] != b"bafy" {
+            return false;
+        }
+
+        bytes.iter().skip(4).all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+    }
+
+    fn validate_ipfs_hash(_env: &Env, hash: &String) -> Result<(), ContractError> {
+        let len = hash.len() as usize;
+        if len > 128 {
             return Err(ContractError::InvalidIpfsHash);
         }
-
         let mut bytes = [0u8; 128];
         hash.copy_into_slice(&mut bytes[..len]);
+        let cid = core::str::from_utf8(&bytes[..len]).unwrap_or_default();
 
-        if bytes[0] != b'b' {
-            return Err(ContractError::InvalidIpfsHash);
+        if Self::is_valid_cid(cid) {
+            Ok(())
+        } else {
+            Err(ContractError::InvalidIpfsHash)
         }
-
-        for b in bytes.iter().take(len).skip(1) {
-            if !matches!(b, b'a'..=b'z' | b'2'..=b'7') {
-                return Err(ContractError::InvalidIpfsHash);
-            }
-        }
-
-        Ok(())
     }
 
     fn get_encryption_key(env: &Env) -> Bytes {
@@ -8131,8 +8135,15 @@ impl PetChainContract {
         content_hash: BytesN<32>,
     ) -> bool {
         // Validate the IPFS hash format up-front.
-        if let Err(e) = Self::validate_ipfs_hash(&env, &ipfs_hash) {
-            panic_with_error!(&env, e);
+        let len = ipfs_hash.len() as usize;
+        if len > 128 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let mut bytes = [0u8; 128];
+        ipfs_hash.copy_into_slice(&mut bytes[..len]);
+        let cid = core::str::from_utf8(&bytes[..len]).unwrap_or_default();
+        if !Self::is_valid_cid(cid) {
+            panic_with_error!(&env, ContractError::InvalidInput);
         }
 
         let mut record: MedicalRecord = env
