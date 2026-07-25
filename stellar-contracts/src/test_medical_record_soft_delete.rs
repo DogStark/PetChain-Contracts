@@ -1,5 +1,6 @@
 use crate::*;
 use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
     testutils::{Address as _, Ledger},
     Address, Env, String, Vec,
 };
@@ -198,6 +199,7 @@ fn test_purge_before_retention_rejected() {
     client.delete_medical_record(&pet_id, &rid, &owner);
 
     // Advance only 1 day — default retention is 30 days
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000 + 86_400);
     env.ledger()
         .with_mut(|l| l.timestamp = 1_700_000_000 + 86_400);
     client.purge_expired_records(&pet_id, &owner); // should panic
@@ -428,3 +430,65 @@ fn test_purge_at_exact_retention_boundary_succeeds() {
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 }
+
+// ---------------------------------------------------------------------------
+// dry_run mode tests for purge_deleted_records
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_purge_deleted_records_dry_run_true() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
+    let (client, vet, owner, pet_id) = setup(&env);
+    let rid1 = add_record(&client, &env, &vet, pet_id, "Ear Infection");
+    let rid2 = add_record(&client, &env, &vet, pet_id, "Dental Cleaning");
+
+    client.delete_medical_record(&pet_id, &rid1, &owner);
+    client.delete_medical_record(&pet_id, &rid2, &owner);
+
+    // Advance past retention period
+    env.ledger()
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
+
+    // Run purge with dry_run = true
+    let result = client.purge_deleted_records(&pet_id, &owner, &true);
+    assert!(result.dry_run);
+    assert_eq!(result.deleted.len(), 2);
+    assert_eq!(result.deleted.get(0).unwrap(), rid1);
+    assert_eq!(result.deleted.get(1).unwrap(), rid2);
+
+    // Dry run must NOT alter storage!
+    // Running dry_run again returns the exact same record IDs
+    let result2 = client.purge_deleted_records(&pet_id, &owner, &true);
+    assert!(result2.dry_run);
+    assert_eq!(result2.deleted.len(), 2);
+}
+
+#[test]
+fn test_purge_deleted_records_dry_run_false() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
+    let (client, vet, owner, pet_id) = setup(&env);
+    let rid = add_record(&client, &env, &vet, pet_id, "Routine Check");
+
+    client.delete_medical_record(&pet_id, &rid, &owner);
+
+    env.ledger()
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
+
+    // First do a dry-run check
+    let dry_res = client.purge_deleted_records(&pet_id, &owner, &true);
+    assert!(dry_res.dry_run);
+    assert_eq!(dry_res.deleted.len(), 1);
+
+    // Execute actual purge (dry_run = false)
+    let purge_res = client.purge_deleted_records(&pet_id, &owner, &false);
+    assert!(!purge_res.dry_run);
+    assert_eq!(purge_res.deleted.len(), 1);
+    assert_eq!(purge_res.deleted.get(0).unwrap(), rid);
+
+    // Subsequent dry_run returns 0 records
+    let dry_after = client.purge_deleted_records(&pet_id, &owner, &true);
+    assert_eq!(dry_after.deleted.len(), 0);
+}
+

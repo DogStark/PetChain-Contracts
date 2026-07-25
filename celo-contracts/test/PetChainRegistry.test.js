@@ -82,7 +82,7 @@ describe("PetChainRegistry", function () {
       t2 = base + 3000;
       for (const ts of [t0, t1, t2]) {
         await network.provider.send("evm_setNextBlockTimestamp", [ts]);
-        await registry.connect(vet).addMedicalRecord(petId, "diag", "treat", "");
+        await registry.connect(vet).addMedicalRecord(petId, 0, "diag", "treat", "");
       }
     });
 
@@ -100,11 +100,14 @@ describe("PetChainRegistry", function () {
     it("returns an empty array for a range with no records", async function () {
       const ids = await registry.getPetRecordsByDateRange(petId, t2 + 1000, t2 + 2000);
       expect(ids.length).to.equal(0);
+    });
+  });
+
   // Issue #924 — core flows & access-control revert paths
   // ---------------------------------------------------------------------------
   describe("#924 — vet management", function () {
     it("registers a vet and emits VetRegistered", async function () {
-      await expect(registry.connect(other).registerVet("LIC-XYZ"))
+      await expect(registry.connect(other).registerVet("LIC-XYZ", "General Practice"))
         .to.emit(registry, "VetRegistered")
         .withArgs(other.address, "LIC-XYZ");
       const v = await registry.vets(other.address);
@@ -113,12 +116,12 @@ describe("PetChainRegistry", function () {
     });
 
     it("reverts registering with an empty license number", async function () {
-      await expect(registry.connect(other).registerVet(""))
+      await expect(registry.connect(other).registerVet("", "General Practice"))
         .to.be.revertedWith("PetChainRegistry: empty licenseNumber");
     });
 
     it("admin verifies a vet and emits VetVerified", async function () {
-      await registry.connect(other).registerVet("LIC-XYZ");
+      await registry.connect(other).registerVet("LIC-XYZ", "General Practice");
       await expect(registry.connect(admin).verifyVet(other.address))
         .to.emit(registry, "VetVerified")
         .withArgs(other.address);
@@ -139,7 +142,7 @@ describe("PetChainRegistry", function () {
     });
 
     it("onlyAdmin: non-admin cannot verify", async function () {
-      await registry.connect(other).registerVet("LIC-XYZ");
+      await registry.connect(other).registerVet("LIC-XYZ", "General Practice");
       await expect(registry.connect(other).verifyVet(other.address))
         .to.be.revertedWith("PetChainRegistry: not admin");
     });
@@ -189,7 +192,7 @@ describe("PetChainRegistry", function () {
   describe("#924 — medical records", function () {
     it("a verified vet adds a record which is stored and emitted", async function () {
       const petId = await registerPet();
-      await expect(registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "note"))
+      await expect(registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", "note"))
         .to.emit(registry, "MedicalRecordAdded")
         .withArgs(petId, 1, vet.address);
       const records = await registry.getPetRecords(petId);
@@ -200,21 +203,21 @@ describe("PetChainRegistry", function () {
 
     it("onlyVerifiedVet: an unregistered address cannot add a record", async function () {
       const petId = await registerPet();
-      await expect(registry.connect(other).addMedicalRecord(petId, "flu", "rest", ""))
+      await expect(registry.connect(other).addMedicalRecord(petId, 0, "flu", "rest", ""))
         .to.be.revertedWith("PetChainRegistry: not a verified vet");
     });
 
     it("onlyVerifiedVet: a registered but unverified vet cannot add a record", async function () {
       const petId = await registerPet();
-      await registry.connect(other).registerVet("LIC-UNVERIFIED");
-      await expect(registry.connect(other).addMedicalRecord(petId, "flu", "rest", ""))
+      await registry.connect(other).registerVet("LIC-UNVERIFIED", "General Practice");
+      await expect(registry.connect(other).addMedicalRecord(petId, 0, "flu", "rest", ""))
         .to.be.revertedWith("PetChainRegistry: not a verified vet");
     });
 
     it("reverts adding a record for an inactive pet", async function () {
       const petId = await registerPet();
       await registry.connect(owner).deactivatePet(petId);
-      await expect(registry.connect(vet).addMedicalRecord(petId, "flu", "rest", ""))
+      await expect(registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", ""))
         .to.be.revertedWith("PetChainRegistry: pet inactive");
     });
   });
@@ -540,6 +543,9 @@ describe("PetChainRegistry", function () {
     it("allows distinct license numbers from different addresses", async function () {
       await expect(registry.connect(other).registerVet("LIC-002", "Surgery"))
         .to.not.be.reverted;
+    });
+  });
+
   // Issue — correctMedicalRecord
   // ---------------------------------------------------------------------------
   describe("correctMedicalRecord", function () {
@@ -550,7 +556,7 @@ describe("PetChainRegistry", function () {
       petId = await registerPet();
       // vet adds the initial record
       const tx = await registry.connect(vet).addMedicalRecord(
-        petId, "Initial diagnosis", "Initial treatment", "Initial notes"
+        petId, 0, "Initial diagnosis", "Initial treatment", "Initial notes"
       );
       const receipt = await tx.wait();
       const event = receipt.logs.find(
@@ -640,7 +646,7 @@ describe("PetChainRegistry", function () {
 
     it("reverts when called by a different verified vet (not the original)", async function () {
       const [, , , , vet2] = await ethers.getSigners();
-      await registry.connect(vet2).registerVet("LIC-002");
+      await registry.connect(vet2).registerVet("LIC-002", "Surgery");
       await registry.connect(admin).verifyVet(vet2.address);
 
       await expect(
@@ -727,7 +733,7 @@ describe("PetChainRegistry", function () {
     });
 
     it("old admin loses onlyAdmin access after transfer", async function () {
-      await registry.connect(vet).registerVet("LIC-NEW");
+      await registry.connect(vet).registerVet("LIC-NEW", "General Practice");
       await registry.connect(admin).transferAdmin(other.address);
       // original admin can no longer call verifyVet
       await expect(
@@ -736,7 +742,7 @@ describe("PetChainRegistry", function () {
     });
 
     it("new admin can exercise onlyAdmin functions", async function () {
-      await registry.connect(vet).registerVet("LIC-NEW");
+      await registry.connect(vet).registerVet("LIC-NEW", "General Practice");
       await registry.connect(admin).transferAdmin(other.address);
       // new admin (other) can now verify vets
       await expect(
@@ -754,6 +760,10 @@ describe("PetChainRegistry", function () {
       await expect(
         registry.connect(admin).transferAdmin(ethers.ZeroAddress)
       ).to.be.revertedWith("PetChainRegistry: zero address");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #928 — Pausable emergency stop
   // ---------------------------------------------------------------------------
   describe("#928 — Pausable emergency stop", function () {
@@ -792,7 +802,7 @@ describe("PetChainRegistry", function () {
       const petId = await registerPet();
       await registry.connect(admin).pause();
       await expect(
-        registry.connect(vet).addMedicalRecord(petId, "flu", "rest", "")
+        registry.connect(vet).addMedicalRecord(petId, 0, "flu", "rest", "")
       ).to.be.revertedWithCustomError(registry, "EnforcedPause");
     });
 
@@ -810,6 +820,10 @@ describe("PetChainRegistry", function () {
       await expect(
         registry.connect(owner).registerPet(PET.name, PET.species, PET.breed, PET.birthday)
       ).to.not.be.reverted;
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Issue #929 — getTotalVets / isPetActive
   // ---------------------------------------------------------------------------
   describe("#929 — getTotalVets and isPetActive", function () {
