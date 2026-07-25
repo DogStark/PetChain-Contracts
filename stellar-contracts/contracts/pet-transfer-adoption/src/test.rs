@@ -1063,6 +1063,57 @@ fn update_adoption_config_fails_without_prior_set() {
 }
 
 // ======================================================
+// cancel_expired_adoption tests (Issue #1009)
+// ======================================================
+
+#[test]
+fn cancel_expired_adoption_before_expiry_is_rejected() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    // Well within the 30-day window — must fail
+    env.ledger().with_mut(|l| {
+        l.timestamp += 29 * 24 * 60 * 60;
+    });
+
+    let result = client.try_cancel_expired_adoption(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::AdoptionNotExpired as u32,
+        )))
+    );
+    assert!(client.get_pending_adoption(&pet_id).is_some());
+}
+
+#[test]
+fn cancel_expired_adoption_after_expiry_succeeds() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += 30 * 24 * 60 * 60 + 1;
+    });
+
+    client.cancel_expired_adoption(&pet_id);
+
+    // Pending adoption is cleared and the owner can re-list the pet
+    assert!(client.get_pending_adoption(&pet_id).is_none());
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+}
+
+#[test]
+fn cancel_expired_adoption_without_pending_adoption_is_rejected() {
+    let (env, owner, _adopter, pet_id) = setup();
 // Custody chain length cap tests (Issue #1011)
 // ======================================================
 
@@ -1091,6 +1142,13 @@ fn custody_chain_is_capped_at_max_length() {
 
     client.create_pet(&pet_id, &owner);
 
+    let result = client.try_cancel_expired_adoption(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::NoPendingAdoption as u32,
+        )))
+    );
     // Exactly MAX_CUSTODY_CHAIN_LENGTH transfers — nothing is dropped yet.
     for i in 0..MAX_CUSTODY_CHAIN_LENGTH {
         let to = if i % 2 == 0 { &new_owner } else { &owner };
