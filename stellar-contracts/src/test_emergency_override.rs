@@ -573,3 +573,162 @@ fn test_emergency_access_logs_contain_correct_data() {
     // accessed_by should be set (contract address)
     assert_ne!(first_log.accessed_by, Address::generate(&env));
 }
+
+#[test]
+fn test_add_emergency_responder_writes_access_log() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let responder = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+    client.set_emergency_contacts(
+        &pet_id,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+
+    // Granting an emergency responder must append a tamper-evident audit
+    // entry visible to the owner.
+    client.add_emergency_responder(&pet_id, &responder);
+
+    let logs = client.get_access_logs(&pet_id, &owner);
+    assert!(logs.len() > 0);
+
+    let last = logs.get(logs.len() - 1).unwrap();
+    assert_eq!(last.action, AccessAction::EmergencyGrant);
+    assert_eq!(last.pet_id, pet_id);
+    assert_eq!(last.timestamp, env.ledger().timestamp());
+    assert_eq!(
+        last.details,
+        String::from_str(&env, "Emergency responder granted")
+    );
+}
+
+#[test]
+fn test_remove_emergency_responder_writes_access_log() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let responder = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &30u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+    client.set_emergency_contacts(
+        &pet_id,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+    client.add_emergency_responder(&pet_id, &responder);
+    client.remove_emergency_responder(&pet_id, &responder);
+
+    let logs = client.get_access_logs(&pet_id, &owner);
+    assert!(logs.len() >= 2);
+
+    let last = logs.get(logs.len() - 1).unwrap();
+    assert_eq!(last.action, AccessAction::EmergencyRevoke);
+    assert_eq!(last.pet_id, pet_id);
+    assert_eq!(last.timestamp, env.ledger().timestamp());
+    assert_eq!(
+        last.details,
+        String::from_str(&env, "Emergency responder revoked")
+    );
+
+    // The grant must still be present in the audit history alongside the revoke.
+    let grant = logs.get(logs.len() - 2).unwrap();
+    assert_eq!(grant.action, AccessAction::EmergencyGrant);
+    assert_eq!(grant.pet_id, pet_id);
+}
+
+#[test]
+fn test_admin_can_read_emergency_access_audit_log() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init_admin(&admin);
+
+    let owner = Address::generate(&env);
+    let responder = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+    client.set_emergency_contacts(
+        &pet_id,
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &String::from_str(&env, ""),
+    );
+    client.add_emergency_responder(&pet_id, &responder);
+
+    // Admins (not just the owner) can view the audit log entries.
+    let logs = client.get_access_logs(&pet_id, &admin);
+    let last = logs.get(logs.len() - 1).unwrap();
+    assert_eq!(last.action, AccessAction::EmergencyGrant);
+    assert_eq!(last.pet_id, pet_id);
+}
+
+#[test]
+#[should_panic]
+fn test_stranger_cannot_read_emergency_access_audit_log() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Buddy"),
+        &String::from_str(&env, "2020-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Labrador"),
+        &String::from_str(&env, "Black"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Public,
+    );
+
+    // A non-owner non-admin address must not see the tamper-evident audit log.
+    client.get_access_logs(&pet_id, &stranger);
+}
