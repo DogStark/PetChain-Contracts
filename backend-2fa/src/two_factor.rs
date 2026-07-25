@@ -479,6 +479,17 @@ impl InMemoryStore {
         self.data.lock().unwrap().clear();
     }
 
+    /// Test-only: clears the progressive-delay retry gate for `user_id`
+    /// without resetting its failed-attempt count or lock status, so tests
+    /// can drive `failed_attempts` up to a lockout threshold without also
+    /// waiting out the (unrelated) per-attempt progressive delay.
+    #[cfg(test)]
+    pub fn clear_retry_after_for_tests(&self, user_id: &str) {
+        if let Some(state) = self.lockouts.lock().unwrap().get_mut(user_id) {
+            state.retry_after_timestamp = None;
+        }
+    }
+
     pub fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         <Self as TwoFactorStore>::save(self, user_id, data)
     }
@@ -1255,17 +1266,19 @@ mod progressive_delay_tests {
     use super::*;
 
     #[test]
-    fn test_first_failure_no_delay() {
+    fn test_first_failure_has_minimal_delay() {
         let store = InMemoryStore::default();
         let state = store
             .record_failed_two_fa_attempt("user1", 10)
             .expect("record_failed_two_fa_attempt failed");
 
+        // progressive_delay_secs(1) == Some(1): even the first failure
+        // carries a brief 1s delay before another attempt is allowed.
         assert_eq!(state.failed_attempts, 1);
-        assert!(state.retry_after_timestamp.is_none(), "First attempt should have no delay");
+        assert_eq!(state.retry_after_timestamp, Some(state.updated_at + 1));
 
         let check = store.check_retry_after("user1");
-        assert!(check.is_ok(), "First attempt should pass retry_after check");
+        assert!(check.is_err(), "First attempt should be gated by its 1s delay");
     }
 
     #[test]
@@ -1305,6 +1318,10 @@ mod progressive_delay_tests {
 
         if let Err(msg) = check {
             assert!(msg.starts_with("retry_after:"), "Error should contain retry_after value");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
 // ---------------------------------------------------------------------------

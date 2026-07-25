@@ -1,9 +1,11 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
-use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::leaderboard::{
+    leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
+};
 use crate::rate_limiter::{
-    InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+    InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
@@ -858,17 +860,17 @@ impl AdminRecoveryHandlers {
 
 /// Admin handlers for managing flagged leaderboard scores
 pub struct AdminScoreHandlers {
-    flagged_store: Arc<FlaggedScoreStore>,
+    flagged_store: Arc<dyn FlaggedScoreStore>,
 }
 
 impl AdminScoreHandlers {
     pub fn new() -> Self {
         Self {
-            flagged_store: Arc::new(FlaggedScoreStore::new()),
+            flagged_store: Arc::new(InMemoryFlaggedScoreStore::new()),
         }
     }
 
-    pub fn with_store(flagged_store: Arc<FlaggedScoreStore>) -> Self {
+    pub fn with_store(flagged_store: Arc<dyn FlaggedScoreStore>) -> Self {
         Self { flagged_store }
     }
 
@@ -1389,15 +1391,10 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let max_failures = self.store.config.rate_limit_max_failures;
         let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("verify:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
@@ -1408,7 +1405,6 @@ impl MultiTenantHandlers {
             )
             .to_string());
         }
-        let _ = max_failures; // per-tenant config available for custom limiter wiring
 
         let data = self.store.get(user_id)?;
         let result = TwoFactorAuth::verify_token_with_config(
@@ -1418,7 +1414,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, true)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1435,10 +1431,6 @@ impl MultiTenantHandlers {
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("disable:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
@@ -1461,7 +1453,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, false)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
