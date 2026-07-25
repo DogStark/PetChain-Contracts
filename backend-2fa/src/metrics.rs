@@ -347,8 +347,14 @@ mod tests {
             output.contains("rate_limit_hits_total"),
             "missing rate limit counter"
         );
-        assert!(output.contains("db_pool_active"), "missing db_pool_active gauge");
-        assert!(output.contains("db_pool_idle"), "missing db_pool_idle gauge");
+        assert!(
+            output.contains("db_pool_active"),
+            "missing db_pool_active gauge"
+        );
+        assert!(
+            output.contains("db_pool_idle"),
+            "missing db_pool_idle gauge"
+        );
         assert!(
             output.contains("request_duration_seconds"),
             "missing histogram"
@@ -394,7 +400,10 @@ mod tests {
         let first = metrics() as *const Metrics;
         let second = metrics() as *const Metrics;
         // Both calls must return the same singleton pointer without panicking.
-        assert_eq!(first, second, "OnceLock should return the same instance on repeated calls");
+        assert_eq!(
+            first, second,
+            "OnceLock should return the same instance on repeated calls"
+        );
     }
 
     /// Issue #875 — `rate_limit_hits_total` must expose `endpoint` and `reason`

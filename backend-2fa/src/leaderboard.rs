@@ -68,12 +68,15 @@ pub struct ScoreSubmission {
 pub struct ScoreValidationConfig {
     /// Maximum allowed score delta per submission
     pub max_score_delta: u64,
+    /// Maximum z-score threshold for anomaly detection (default 3.0)
+    pub max_z_score: f32,
 }
 
 impl Default for ScoreValidationConfig {
     fn default() -> Self {
         Self {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         }
     }
 }
@@ -138,12 +141,36 @@ impl Default for FlaggedScoreStore {
     }
 }
 
-/// Validate a score submission against the maximum allowed delta.
+/// Compute the z-score of a value given a history of scores.
+/// Returns the z-score as an f64.
+pub fn compute_z_score(history: &[f64], value: f64) -> f64 {
+    if history.len() < 2 {
+        return 0.0;
+    }
+
+    let mean = history.iter().sum::<f64>() / history.len() as f64;
+    let variance = history
+        .iter()
+        .map(|x| (x - mean).powi(2))
+        .sum::<f64>()
+        / history.len() as f64;
+
+    let std_dev = variance.sqrt();
+
+    if std_dev == 0.0 {
+        return 0.0;
+    }
+
+    (value - mean) / std_dev
+}
+
+/// Validate a score submission against the maximum allowed delta and statistical anomalies.
 /// Returns an error if the submission is suspicious.
 pub fn validate_score_submission(
     submission: &ScoreSubmission,
     last_known_score: Option<u64>,
     config: &ScoreValidationConfig,
+    historical_scores: Option<&[u64]>,
 ) -> Result<(), ScoreSubmissionError> {
     if let Some(last_score) = last_known_score {
         let delta = submission.score.abs_diff(last_score);
@@ -157,6 +184,24 @@ pub fn validate_score_submission(
                     delta, config.max_score_delta
                 ),
             });
+        }
+    }
+
+    if let Some(history) = historical_scores {
+        if history.len() >= 5 {
+            let history_f64: Vec<f64> = history.iter().map(|s| *s as f64).collect();
+            let z_score = compute_z_score(&history_f64, submission.score as f64);
+
+            if z_score.abs() > config.max_z_score as f64 {
+                return Err(ScoreSubmissionError::SuspiciousScore {
+                    user_id: submission.user_id.clone(),
+                    attempted_score: submission.score,
+                    reason: format!(
+                        "Score anomaly detected: z-score {:.2} exceeds threshold {:.2}",
+                        z_score, config.max_z_score
+                    ),
+                });
+            }
         }
     }
 
@@ -422,10 +467,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for LeaderboardWsSess
                 if let Ok(command) = serde_json::from_str::<LeaderboardSubscriptionCommand>(&text) {
                     match self.apply_command(command) {
                         Ok(()) => ctx.text(r#"{"status":"ok"}"#),
-                        Err(reason) => ctx.text(format!(
-                            r#"{{"status":"error","reason":"{}"}}"#,
-                            reason
-                        )),
+                        Err(reason) => {
+                            ctx.text(format!(r#"{{"status":"error","reason":"{}"}}"#, reason))
+                        }
                     }
                 } else {
                     ctx.text(r#"{"status":"error","reason":"invalid_subscription_message"}"#);
@@ -483,34 +527,118 @@ pub fn broadcast_score_update(user_id: impl Into<String>, new_score: u64, rank: 
     });
 }
 
-/// Validate the `Authorization: Bearer <token>` header for the leaderboard
-/// WebSocket endpoint.
+/// Environment variable holding the HMAC-SHA256 secret used to verify
+/// leaderboard WebSocket JWTs.
+const LEADERBOARD_WS_JWT_SECRET_ENV: &str = "LEADERBOARD_WS_JWT_SECRET";
+
+/// Result of validating the leaderboard WebSocket bearer token.
+enum WsAuth {
+    /// A legacy opaque shared-secret token was accepted. No per-user
+    /// identity is available for this form.
+    LegacyToken,
+    /// A JWT was verified; carries the authenticated caller derived from
+    /// the `sub` claim.
+    Jwt(crate::handlers::AuthenticatedUser),
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Validate the raw bearer token used to authenticate the leaderboard
+/// WebSocket upgrade handshake (already stripped of any `Bearer ` prefix).
 ///
-/// * If `LEADERBOARD_WS_AUTH_TOKEN` is set, the provided token must match it exactly.
-/// * If the env var is unset, any non-empty Bearer token is accepted (development mode).
-/// * A missing or empty token always returns `false`.
+/// Accepts two forms:
+/// * A three-segment JWT (`header.payload.signature`) — verified via
+///   HMAC-SHA256 against `LEADERBOARD_WS_JWT_SECRET` and rejected if the
+///   signature is invalid or the `exp` claim has passed.
+/// * A legacy opaque token — compared against `LEADERBOARD_WS_AUTH_TOKEN`,
+///   or accepted as-is when that variable is unset (development mode).
+///
+/// A missing or empty token always returns `None`.
+fn authenticate_ws_token(token: &str) -> Option<WsAuth> {
+    if token.is_empty() {
+        return None;
+    }
+
+    if token.matches('.').count() == 2 {
+        let secret = std::env::var(LEADERBOARD_WS_JWT_SECRET_ENV).unwrap_or_default();
+        if secret.is_empty() {
+            return None;
+        }
+        let claims =
+            crate::two_factor::verify_jwt(token, secret.as_bytes(), current_unix_secs()).ok()?;
+        return Some(WsAuth::Jwt(crate::handlers::AuthenticatedUser::new(
+            claims.sub,
+        )));
+    }
+
+    let expected = std::env::var("LEADERBOARD_WS_AUTH_TOKEN").unwrap_or_default();
+    if expected.is_empty() || token == expected {
+        Some(WsAuth::LegacyToken)
+    } else {
+        None
+    }
+}
+
+/// Validate the `Authorization: Bearer <token>` header for the leaderboard
+/// WebSocket endpoint. Kept for backward compatibility with existing
+/// callers/tests; new code should use [`authenticate_ws_token`] directly.
 pub(crate) fn validate_ws_auth_token(authorization_header: Option<&str>) -> bool {
     let provided = match authorization_header.and_then(|v| v.strip_prefix("Bearer ")) {
         Some(t) if !t.is_empty() => t,
         _ => return false,
     };
+    authenticate_ws_token(provided).is_some()
+}
 
-    let expected = std::env::var("LEADERBOARD_WS_AUTH_TOKEN").unwrap_or_default();
-    expected.is_empty() || provided == expected
+/// Extract the bearer token for the leaderboard WS handshake from either the
+/// `Authorization: Bearer <token>` header or a `token` query parameter.
+/// Browser `WebSocket` clients cannot set custom headers during the
+/// handshake, so the query parameter is accepted as a fallback.
+fn extract_ws_token(req: &HttpRequest) -> Option<String> {
+    if let Some(token) = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty())
+    {
+        return Some(token.to_string());
+    }
+
+    req.query_string().split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        if key == "token" && !value.is_empty() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Actix-web websocket endpoint for `GET /leaderboard/ws`.
+///
+/// The upgrade handshake requires a valid Bearer JWT (or, for browser
+/// clients that cannot set headers on a WebSocket handshake, a `token`
+/// query parameter). Missing, malformed, unsigned, or expired tokens are
+/// rejected with `401 Unauthorized` before the WebSocket handshake
+/// completes.
 pub async fn leaderboard_ws_endpoint(
     req: HttpRequest,
     stream: Payload,
 ) -> Result<HttpResponse, Error> {
-    let auth_header = req
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok());
+    let token = extract_ws_token(&req);
+    let auth = token
+        .as_deref()
+        .and_then(authenticate_ws_token)
+        .ok_or_else(|| ErrorUnauthorized("Authentication required"))?;
 
-    if !validate_ws_auth_token(auth_header) {
-        return Err(ErrorUnauthorized("Authentication required"));
+    if let WsAuth::Jwt(caller) = &auth {
+        tracing::debug!(user_id = %caller.user_id, "Leaderboard WebSocket authenticated");
     }
 
     let peer_ip = req
@@ -519,9 +647,7 @@ pub async fn leaderboard_ws_endpoint(
         .ok_or_else(|| ErrorBadRequest("Missing peer address for leaderboard websocket"))?;
 
     let hub = LeaderboardWsHub::global();
-    let connection = hub
-        .connect(peer_ip)
-        .map_err(ErrorTooManyRequests)?;
+    let connection = hub.connect(peer_ip).map_err(ErrorTooManyRequests)?;
     ws::start(LeaderboardWsSession::new(hub, connection), &req, stream)
 }
 
@@ -1175,10 +1301,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        })
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            })
         };
 
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -1259,10 +1385,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        })
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            })
         };
 
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
@@ -1288,10 +1414,10 @@ mod tests {
         let mut session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        });
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            });
             let ip: IpAddr = "192.168.0.1".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 5)
@@ -1312,10 +1438,10 @@ mod tests {
         let session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        });
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            });
             let ip: IpAddr = "192.168.0.2".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 3)
@@ -1336,10 +1462,10 @@ mod tests {
     fn make_session() -> LeaderboardWsSession {
         let (broadcaster, _) = broadcast::channel(16);
         let hub = Arc::new(LeaderboardWsHub {
-                        broadcaster,
-                        connections_by_ip: Mutex::new(HashMap::new()),
-                        max_conn_per_ip: get_max_conn_per_ip(),
-                    });
+            broadcaster,
+            connections_by_ip: Mutex::new(HashMap::new()),
+            max_conn_per_ip: get_max_conn_per_ip(),
+        });
         let ip: IpAddr = "10.1.0.1".parse().unwrap();
         let guard = hub.connect(ip).expect("connect");
         LeaderboardWsSession::new(hub, guard)
@@ -1348,8 +1474,9 @@ mod tests {
     #[test]
     fn subscribe_at_limit_succeeds() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
         assert!(result.is_ok());
         assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
@@ -1358,19 +1485,24 @@ mod tests {
     #[test]
     fn subscribe_over_limit_rejected() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS + 1)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "too_many_user_ids");
-        assert!(session.subscriptions.is_empty(), "subscriptions must not be modified on rejection");
+        assert!(
+            session.subscriptions.is_empty(),
+            "subscriptions must not be modified on rejection"
+        );
     }
 
     #[test]
     fn replace_at_limit_succeeds() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
         assert!(result.is_ok());
         assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
@@ -1380,11 +1512,10 @@ mod tests {
     fn replace_over_limit_rejected() {
         let mut session = make_session();
         // Pre-populate subscriptions to verify they are not wiped on rejection.
-        session
-            .subscriptions
-            .insert("existing_user".to_string());
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        session.subscriptions.insert("existing_user".to_string());
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS + 1)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "too_many_user_ids");
@@ -1392,5 +1523,72 @@ mod tests {
             session.subscriptions.contains("existing_user"),
             "existing subscriptions must survive a rejected Replace"
         );
+    }
+
+    #[test]
+    fn test_normal_score_passes_validation() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 100,
+            timestamp: 1000,
+        };
+        let history = vec![95.0, 98.0, 101.0, 99.0, 102.0];
+
+        let result = validate_score_submission(&submission, Some(99), &config, Some(&[95, 98, 101, 99, 102]));
+        assert!(result.is_ok(), "Normal score within 1 std dev should pass");
+    }
+
+    #[test]
+    fn test_borderline_score_at_threshold() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 200,
+            timestamp: 1000,
+        };
+
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&[100, 105, 98, 102, 101]));
+        assert!(result.is_ok(), "Score near threshold (z-score ~3.0) should pass");
+    }
+
+    #[test]
+    fn test_anomalous_score_rejected() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 1000,
+            timestamp: 1000,
+        };
+
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&[100, 105, 98, 102, 101]));
+        assert!(result.is_err(), "Score with extreme z-score should be rejected");
+
+        if let Err(ScoreSubmissionError::SuspiciousScore { reason, .. }) = result {
+            assert!(reason.contains("anomaly"), "Error should mention anomaly detection");
+        }
+    }
+
+    #[test]
+    fn test_z_score_computation() {
+        let history = vec![100.0, 105.0, 98.0, 102.0, 101.0];
+        let mean = 101.2;
+        let z = compute_z_score(&history, 150.0);
+
+        assert!(z > 3.0, "Score 150 should have z-score > 3.0 for this history");
+    }
+
+    #[test]
+    fn test_insufficient_history_skips_z_score() {
+        let config = ScoreValidationConfig::default();
+        let submission = ScoreSubmission {
+            user_id: "user1".to_string(),
+            score: 1000,
+            timestamp: 1000,
+        };
+
+        let history = vec![100, 105];
+        let result = validate_score_submission(&submission, Some(100), &config, Some(&history));
+        assert!(result.is_ok(), "Anomaly check should be skipped with < 5 historical scores");
     }
 }

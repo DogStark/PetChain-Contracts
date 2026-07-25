@@ -563,6 +563,140 @@ mod test_search_medical_records {
         assert_eq!(client.get_lab_result_count(&9999u64), 0);
     }
 
+    // ============================================================
+    // DATE RANGE FILTER TESTS (Issue: search_medical_records)
+    // ============================================================
+
+    /// Only `from_date` is set: records on or after the bound are returned.
+    #[test]
+    fn test_date_range_only_from_date() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Early Visit", 100);
+        add_record_at(&client, &env, pet_id, &vet, "Mid Visit", 200);
+        add_record_at(&client, &env, pet_id, &vet, "Late Visit", 300);
+
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                from_date: Some(200),
+                to_date: None,
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+
+        // "Early Visit" (ts=100) must be excluded; Mid and Late must be present.
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Mid Visit")
+        );
+        assert_eq!(
+            results.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Late Visit")
+        );
+    }
+
+    /// Only `to_date` is set: records on or before the bound are returned.
+    #[test]
+    fn test_date_range_only_to_date() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Early Visit", 100);
+        add_record_at(&client, &env, pet_id, &vet, "Mid Visit", 200);
+        add_record_at(&client, &env, pet_id, &vet, "Late Visit", 300);
+
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                from_date: None,
+                to_date: Some(200),
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+
+        // "Late Visit" (ts=300) must be excluded; Early and Mid must be present.
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.get(0).unwrap().diagnosis,
+            String::from_str(&env, "Early Visit")
+        );
+        assert_eq!(
+            results.get(1).unwrap().diagnosis,
+            String::from_str(&env, "Mid Visit")
+        );
+    }
+
+    /// Both `from_date` and `to_date` set: only records within the window (inclusive) returned.
+    #[test]
+    fn test_date_range_both_from_and_to_date() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Before Window", 50);
+        add_record_at(&client, &env, pet_id, &vet, "At From Bound", 100);
+        add_record_at(&client, &env, pet_id, &vet, "Inside Window", 150);
+        add_record_at(&client, &env, pet_id, &vet, "At To Bound", 200);
+        add_record_at(&client, &env, pet_id, &vet, "After Window", 250);
+
+        let results = client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                from_date: Some(100),
+                to_date: Some(200),
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+
+        // Only the three records within [100, 200] should appear.
+        assert_eq!(results.len(), 3);
+        assert_eq!(results.get(0).unwrap().date, 100);
+        assert_eq!(results.get(1).unwrap().date, 150);
+        assert_eq!(results.get(2).unwrap().date, 200);
+    }
+
+    /// Neither `from_date` nor `to_date` is set: all active records are returned.
+    #[test]
+    fn test_date_range_neither_bound_returns_all() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        add_record_at(&client, &env, pet_id, &vet, "Alpha", 10);
+        add_record_at(&client, &env, pet_id, &vet, "Beta", 20);
+        add_record_at(&client, &env, pet_id, &vet, "Gamma", 30);
+
+        let results = client.search_medical_records(
+            &pet_id,
+            &empty_filter(), // no date bounds
+            &0u64,
+            &10u32,
+        );
+
+        assert_eq!(results.len(), 3);
+    }
+
+    /// Invalid range (from_date > to_date) must panic with ContractError::InvalidInput (#12).
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn test_date_range_invalid_from_greater_than_to_returns_error() {
+        let (env, client, _admin, _owner, _vet, pet_id) = setup();
+
+        client.search_medical_records(
+            &pet_id,
+            &MedicalRecordFilter {
+                from_date: Some(300),
+                to_date: Some(100), // from > to → InvalidInput
+                ..empty_filter()
+            },
+            &0u64,
+            &10u32,
+        );
+    }
+
     #[test]
     fn test_get_lab_result_count_increments_on_add() {
         let (env, client, _admin, _owner, vet, pet_id) = setup();

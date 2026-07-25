@@ -74,6 +74,41 @@ jobs:
         run: cargo test -- --test-threads=1
         working-directory: backend-2fa
 
+  # #781 — Verify that applying every migration then rolling back every
+  # migration in reverse leaves the schema in exactly the same state as
+  # before any migrations were applied. A broken .down.sql would be caught
+  # here before it ever reaches a production emergency rollback.
+  migration-rollback:
+    name: Migration round-trip rollback safety
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: petchain
+          POSTGRES_PASSWORD: petchain
+          POSTGRES_DB: petchain_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U petchain"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://petchain:petchain@localhost:5432/petchain_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Run migration round-trip rollback safety test
+        working-directory: backend-2fa
+        run: >
+          cargo test
+          migrations::tests::test_round_trip_migration_rollback_leaves_schema_unchanged
+          -- --test-threads=1 --nocapture
+
   # #844 — Validate schema.sql matches the concatenated migrations so the
   # file never drifts from the actual applied schema. If this check fails,
   # run `bash backend-2fa/scripts/generate-schema.sh` to regenerate.

@@ -1,7 +1,9 @@
+use hmac::{Hmac, Mac};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
-use rand::Rng;
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -37,7 +39,12 @@ impl Default for TotpConfig {
 }
 
 impl TotpConfig {
-    pub fn new(algorithm: Algorithm, digits: usize, period: u64, window: u8) -> Result<Self, String> {
+    pub fn new(
+        algorithm: Algorithm,
+        digits: usize,
+        period: u64,
+        window: u8,
+    ) -> Result<Self, String> {
         // Validate digits: RFC 6238 recommends 6-8 digits
         if !(6..=8).contains(&digits) {
             return Err(format!("digits must be between 6 and 8, got {}", digits));
@@ -114,6 +121,7 @@ pub struct TwoFactorData {
 pub struct RecoveryResult {
     pub new_secret: String,
     pub new_backup_codes: Vec<String>,
+    pub new_recovery_codes: Vec<String>,
     pub enabled: bool,
 }
 
@@ -173,13 +181,16 @@ impl TwoFactorAuth {
         )
     }
 
-    pub fn generate_secret() -> String {
+    fn sample_crypto_rng<R: Rng + CryptoRng>(rng: &mut R) -> String {
         const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        let mut rng = thread_rng();
         let range = Uniform::from(0..BASE32_ALPHABET.len());
         (0..32)
-            .map(|_| BASE32_ALPHABET[range.sample(&mut rng)] as char)
+            .map(|_| BASE32_ALPHABET[range.sample(rng)] as char)
             .collect()
+    }
+
+    pub fn generate_secret() -> String {
+        Self::sample_crypto_rng(&mut thread_rng())
     }
 
     /// Setup 2FA with default configuration (SHA1).
@@ -213,7 +224,8 @@ impl TwoFactorAuth {
             totp.get_qr_base64().map_err(|e| e.to_string())?
         );
         let backup_codes = Self::generate_backup_codes(config.backup_code_count);
-        let otpauth_uri = Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
+        let otpauth_uri =
+            Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
 
         Ok(TwoFactorSetup {
             secret,
@@ -711,7 +723,6 @@ impl TwoFactorStore for MockTwoFactorStore {
 }
 
 impl TwoFactorStore for InMemoryStore {
-
     fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         let key = format!("{}::{}", user_id, session_id);
         self.revoked_sessions.lock().unwrap().insert(key);
@@ -742,7 +753,7 @@ impl TwoFactorStore for InMemoryStore {
         }
         false
     }
-    
+
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         self.data.lock().unwrap().insert(user_id.to_string(), data);
         Ok(())
@@ -1196,15 +1207,22 @@ impl TenantRegistry {
     /// returned. If it already exists, the existing config is returned
     /// unchanged along with `(existing_config, true)` — the caller can use
     /// the `bool` to signal `already_existed` without treating this as an
-    /// error. The check-and-insert happens under a single lock acquisition
-    /// (via `Entry`), so concurrent calls for the same `tenant_id` cannot
-    /// race past each other and create duplicates.
+    /// error.
+    ///
+    /// # Concurrency guarantee (closes issue #1054)
+    ///
+    /// The check-and-insert is performed atomically under a **single**
+    /// `Mutex` lock acquisition using [`HashMap::entry`].  There is no
+    /// TOCTOU window between "check if tenant exists" and "insert new
+    /// tenant": both operations happen while the lock is held.  Parallel
+    /// first-requests for the same `tenant_id` therefore cannot each see
+    /// "tenant not found" and both proceed to create a new store instance.
+    /// Exactly one caller will win the `Vacant` arm; all racing callers
+    /// will receive the same `TenantConfig` that the winner inserted.
     pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
         match map.entry(config.tenant_id.clone()) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                Ok((entry.get().clone(), true))
-            }
+            std::collections::hash_map::Entry::Occupied(entry) => Ok((entry.get().clone(), true)),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(config.clone());
                 Ok((config, false))
@@ -1287,6 +1305,193 @@ mod progressive_delay_tests {
 
         if let Err(msg) = check {
             assert!(msg.starts_with("retry_after:"), "Error should contain retry_after value");
+// ---------------------------------------------------------------------------
+// Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
+// ---------------------------------------------------------------------------
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Claims extracted from a verified leaderboard-WS JWT.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtClaims {
+    /// Subject — the authenticated user's ID.
+    pub sub: String,
+    /// Expiry, in unix seconds. The token is rejected once `now >= exp`.
+    pub exp: u64,
+}
+
+/// Decode a base64url (no padding) string into bytes, per RFC 4648 §5.
+fn base64url_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4 + 3);
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+
+    for &byte in input.as_bytes() {
+        let v = value(byte).ok_or_else(|| "invalid base64url character".to_string())?;
+        buffer = (buffer << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+
+    Ok(out)
+}
+
+/// Verify an HS256-signed JWT and return its claims.
+///
+/// Returns `Err` if the token is malformed, uses an unsupported algorithm,
+/// has an invalid signature, or is expired (`exp <= now_unix_secs`).
+/// `now_unix_secs` is passed in explicitly so callers can test expiry
+/// without depending on wall-clock time.
+pub fn verify_jwt(token: &str, secret: &[u8], now_unix_secs: u64) -> Result<JwtClaims, String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("malformed token".to_string());
+    }
+    let header_b64 = parts[0];
+    let payload_b64 = parts[1];
+    let sig_b64 = parts[2];
+
+    let header_bytes = base64url_decode(header_b64)?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&header_bytes).map_err(|_| "invalid header".to_string())?;
+    if header.get("alg").and_then(|v| v.as_str()) != Some("HS256") {
+        return Err("unsupported algorithm".to_string());
+    }
+
+    let signature = base64url_decode(sig_b64)?;
+    let signing_input = format!("{header_b64}.{payload_b64}");
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| "invalid secret".to_string())?;
+    mac.update(signing_input.as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| "invalid signature".to_string())?;
+
+    let payload_bytes = base64url_decode(payload_b64)?;
+    let claims: JwtClaims =
+        serde_json::from_slice(&payload_bytes).map_err(|_| "invalid claims".to_string())?;
+
+    if claims.exp <= now_unix_secs {
+        return Err("token expired".to_string());
+    }
+
+    Ok(claims)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1054 — TenantRegistry::provision concurrent-initialisation tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tenant_registry_concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    fn make_config(tenant_id: &str) -> TenantConfig {
+        TenantConfig {
+            tenant_id: tenant_id.to_string(),
+            totp_issuer: format!("{}-issuer", tenant_id),
+            lockout_threshold: 5,
+            rate_limit_max_failures: 5,
+        }
+    }
+
+    /// Two threads calling `provision` for the same brand-new tenant
+    /// simultaneously must both get back the *same* `TenantConfig` and
+    /// exactly one must observe `already_existed = false`.
+    ///
+    /// This verifies that the `HashMap::entry` check-and-insert is atomic
+    /// under the `Mutex` and that no TOCTOU race can create duplicate
+    /// store instances. (Closes issue #1054.)
+    #[test]
+    fn test_concurrent_provision_same_tenant_returns_identical_config() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let reg = Arc::clone(&registry);
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config("race-tenant")).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All returned configs must be identical — only one winner inserts.
+        let first_config = &results[0].0;
+        for (cfg, _) in &results {
+            assert_eq!(
+                cfg.tenant_id, first_config.tenant_id,
+                "All threads must observe the same tenant_id"
+            );
+            assert_eq!(
+                cfg.totp_issuer, first_config.totp_issuer,
+                "All threads must observe the same totp_issuer — no duplicate was created"
+            );
+        }
+
+        // Exactly one thread saw `already_existed = false` (the creator).
+        let created: Vec<_> = results.iter().filter(|(_, existed)| !existed).collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "Exactly one thread must have created the tenant; got {} creators",
+            created.len()
+        );
+
+        // All other threads observed it as already existing.
+        let existed: Vec<_> = results.iter().filter(|(_, existed)| *existed).collect();
+        assert_eq!(existed.len(), 31);
+    }
+
+    /// Independent tenant IDs must never interfere with each other even
+    /// under concurrent access.
+    #[test]
+    fn test_concurrent_provision_different_tenants_are_isolated() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let tenant_ids: Vec<String> = (0..16).map(|i| format!("tenant-{}", i)).collect();
+        let mut handles = Vec::new();
+
+        for tid in &tenant_ids {
+            let reg = Arc::clone(&registry);
+            let tid = tid.clone();
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config(&tid)).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Each tenant was provisioned exactly once.
+        let created_count = results.iter().filter(|(_, existed)| !existed).count();
+        assert_eq!(
+            created_count,
+            16,
+            "Each of the 16 unique tenants must have been created exactly once"
+        );
+
+        // Every tenant is retrievable from the registry.
+        for tid in &tenant_ids {
+            let cfg = registry
+                .get_config(tid)
+                .unwrap_or_else(|| panic!("Tenant '{}' missing from registry", tid));
+            assert_eq!(cfg.tenant_id, *tid);
         }
     }
 }
