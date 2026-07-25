@@ -1,10 +1,7 @@
 use super::{
-    AdoptionState, ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord,
+    AdoptionState, ContractError, DataKey,
     PetOwnershipContract, PetOwnershipContractClient, TransferType, TrustedUpdateApprovalKey,
-    DISPUTE_WINDOW_SECONDS,
-    PetOwnershipContract, PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
-    MAX_REJECTION_REASON_LEN,
-    MAX_CUSTODY_CHAIN_LENGTH,
+    DISPUTE_WINDOW_SECONDS, MAX_REJECTION_REASON_LEN, MAX_CUSTODY_CHAIN_LENGTH,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -359,7 +356,7 @@ fn finalize_transfer_errors_when_history_is_missing() {
     env.as_contract(&contract_id, || {
         env.storage()
             .persistent()
-            .remove(&DataKey::OwnershipHistory(pet_id));
+            .remove(&DataKey::OwnershipCount(pet_id));
     });
 
     env.ledger().with_mut(|l| {
@@ -383,11 +380,10 @@ fn finalize_transfer_errors_when_history_is_empty() {
     create_pending_transfer(&client, pet_id, &owner, &new_owner);
     client.accept_transfer(&pet_id); // → Escrowed
 
-    let empty_history = Vec::<OwnershipRecord>::new(&env);
     env.as_contract(&contract_id, || {
         env.storage()
             .persistent()
-            .set(&DataKey::OwnershipHistory(pet_id), &empty_history);
+            .set(&DataKey::OwnershipCount(pet_id), &0u64);
     });
 
     env.ledger().with_mut(|l| {
@@ -1161,11 +1157,6 @@ fn update_adoption_config_fails_without_prior_set() {
 
 #[test]
 fn complete_adoption_without_adopter_approval_is_rejected() {
-// cancel_expired_adoption tests (Issue #1009)
-// ======================================================
-
-#[test]
-fn cancel_expired_adoption_before_expiry_is_rejected() {
     let (env, owner, adopter, pet_id) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
     let client = PetOwnershipContractClient::new(&env, &contract_id);
@@ -1185,6 +1176,19 @@ fn cancel_expired_adoption_before_expiry_is_rejected() {
 
     // Pet ownership must not have changed
     assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+// ======================================================
+// cancel_expired_adoption tests (Issue #1009)
+// ======================================================
+
+#[test]
+fn cancel_expired_adoption_before_expiry_is_rejected() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
     client.sign_adoption(&pet_id, &adopter, &None);
 
     // Well within the 30-day window — must fail
@@ -1226,6 +1230,22 @@ fn cancel_expired_adoption_after_expiry_succeeds() {
 #[test]
 fn cancel_expired_adoption_without_pending_adoption_is_rejected() {
     let (env, owner, _adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    // No adoption was ever signed
+
+    let result = client.try_cancel_expired_adoption(&pet_id);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::NoPendingAdoption as u32,
+        )))
+    );
+}
+
+// ======================================================
 // Custody chain length cap tests (Issue #1011)
 // ======================================================
 
@@ -1254,13 +1274,6 @@ fn custody_chain_is_capped_at_max_length() {
 
     client.create_pet(&pet_id, &owner);
 
-    let result = client.try_cancel_expired_adoption(&pet_id);
-    assert_eq!(
-        result,
-        Err(Ok(Error::from_contract_error(
-            ContractError::NoPendingAdoption as u32,
-        )))
-    );
     // Exactly MAX_CUSTODY_CHAIN_LENGTH transfers — nothing is dropped yet.
     for i in 0..MAX_CUSTODY_CHAIN_LENGTH {
         let to = if i % 2 == 0 { &new_owner } else { &owner };

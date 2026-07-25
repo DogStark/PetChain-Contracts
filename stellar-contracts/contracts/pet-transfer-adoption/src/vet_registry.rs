@@ -304,7 +304,7 @@ impl VetRegistryContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    use soroban_sdk::{testutils::Address as _, Address, Env, Error, String};
 
     fn setup() -> (Env, Address, Address, VetRegistryContractClient<'static>) {
         let env = Env::default();
