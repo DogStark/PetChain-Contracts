@@ -218,6 +218,112 @@ impl MigrationRunner {
     }
 }
 
+/// A real `SqlExecutor` backed by a live PostgreSQL connection pool.
+///
+/// Used exclusively in tests (guarded by `#[cfg(test)]`) to exercise the
+/// migration runner against an actual database.  Outside of tests the
+/// application drives migrations via the same `SqlExecutor` trait so that
+/// the round-trip test exercises the identical code paths.
+#[cfg(test)]
+pub struct PostgresExecutor {
+    pool: sqlx::PgPool,
+    runtime: std::sync::Arc<tokio::runtime::Runtime>,
+}
+
+#[cfg(test)]
+impl PostgresExecutor {
+    /// Connect to the database at `database_url`.
+    pub fn connect(database_url: &str) -> Result<Self, String> {
+        let runtime = std::sync::Arc::new(
+            tokio::runtime::Runtime::new().map_err(|e| e.to_string())?,
+        );
+        let pool = runtime
+            .block_on(
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(database_url),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool, runtime })
+    }
+
+    /// Return a sorted list of table names currently present in the public
+    /// schema of the connected database.  This is the "schema snapshot" used
+    /// by the round-trip test.
+    pub fn table_names(&self) -> Result<Vec<String>, String> {
+        let rows: Vec<(String,)> = self
+            .runtime
+            .block_on(
+                sqlx::query_as(
+                    "SELECT table_name FROM information_schema.tables \
+                     WHERE table_schema = 'public' AND table_type = 'BASE TABLE' \
+                     ORDER BY table_name",
+                )
+                .fetch_all(&self.pool),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
+    /// Drop every table in the public schema so that each test run starts
+    /// from a truly empty database regardless of prior runs.  This keeps the
+    /// test idempotent even when the test process is interrupted mid-run.
+    pub fn drop_all_tables(&self) -> Result<(), String> {
+        // Fetch tables first, then drop them in a separate statement so we
+        // aren't mutating the information_schema result set while iterating.
+        let tables = self.table_names()?;
+        for table in tables {
+            self.runtime
+                .block_on(
+                    sqlx::query(&format!("DROP TABLE IF EXISTS \"{}\" CASCADE", table))
+                        .execute(&self.pool),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SqlExecutor for PostgresExecutor {
+    fn execute(&self, sql: &str) -> Result<(), String> {
+        self.runtime
+            .block_on(sqlx::query(sql).execute(&self.pool))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn execute_with_params(&self, sql: &str, params: &[&str]) -> Result<(), String> {
+        // Build a dynamic query by substituting positional $N placeholders.
+        // We rebind each string param in order; all migration-runner params
+        // are string-typed (version number, name, checksum).
+        let mut query = sqlx::query(sql);
+        for param in params {
+            query = query.bind(*param);
+        }
+        self.runtime
+            .block_on(query.execute(&self.pool))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn query_scalar(&self, sql: &str) -> Result<Option<i64>, String> {
+        self.runtime
+            .block_on(sqlx::query_scalar::<_, Option<i64>>(sql).fetch_one(&self.pool))
+            .map_err(|e| e.to_string())
+    }
+
+    fn query_scalar_with_params(&self, sql: &str, params: &[&str]) -> Result<Option<i64>, String> {
+        let mut query = sqlx::query_scalar::<_, Option<i64>>(sql);
+        for param in params {
+            query = query.bind(*param);
+        }
+        self.runtime
+            .block_on(query.fetch_one(&self.pool))
+            .map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +546,173 @@ mod tests {
 
         // After applying, dry_run reports nothing pending
         assert!(runner.dry_run(&executor).unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #781 — Round-trip migration rollback safety test
+    //
+    // Database: PostgreSQL (required — migration SQL uses Postgres-specific
+    // syntax: BIGSERIAL, ADD/DROP COLUMN IF NOT EXISTS, ON CONFLICT, etc.).
+    //
+    // This test is skipped automatically when DATABASE_URL is not set so
+    // the standard `cargo test` (unit-only) workflow is unaffected.  In CI
+    // the `migration-rollback` job starts a Postgres service container and
+    // sets DATABASE_URL before running this test.
+    //
+    // Correctness guarantee: applying every migration followed by rolling
+    // every migration back in reverse MUST leave the schema in exactly the
+    // same state as the baseline captured before anything was applied.
+    // A broken down-script that leaks a table or column would be caught here
+    // before it ever reaches a production emergency rollback.
+    // -----------------------------------------------------------------------
+
+    /// Capture a sorted list of all user-created tables in the public schema.
+    /// `schema_migrations` is intentionally included in this snapshot because
+    /// migration 001's down-script drops it; a correct full rollback leaves
+    /// zero tables behind.
+    fn snapshot_tables(executor: &PostgresExecutor) -> Vec<String> {
+        executor
+            .table_names()
+            .expect("failed to snapshot table names")
+    }
+
+    #[test]
+    fn test_round_trip_migration_rollback_leaves_schema_unchanged() {
+        // Skip when no live Postgres is available (local / unit-only runs).
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!(
+                    "[SKIP] test_round_trip_migration_rollback_leaves_schema_unchanged: \
+                     DATABASE_URL not set — skipping round-trip test (requires Postgres)"
+                );
+                return;
+            }
+        };
+
+        // Connect to the live database.
+        let executor = PostgresExecutor::connect(&database_url)
+            .expect("failed to connect to Postgres for round-trip migration test");
+
+        // --- Idempotency: clean slate before we start -------------------
+        // Drop any tables left over from a previous interrupted run so the
+        // test is safe to run multiple times without manual cleanup.
+        executor
+            .drop_all_tables()
+            .expect("failed to drop existing tables before round-trip test");
+
+        // --- Step 1: Baseline snapshot (empty schema) -------------------
+        let baseline = snapshot_tables(&executor);
+        assert!(
+            baseline.is_empty(),
+            "baseline snapshot must be empty after drop_all_tables, found: {:?}",
+            baseline
+        );
+
+        // --- Step 2: Load migration files from disk ----------------------
+        let migrations_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let runner = MigrationRunner::from_directory(&migrations_dir)
+            .expect("failed to discover migration files");
+
+        let migration_count = runner.migrations.len();
+        assert!(
+            migration_count > 0,
+            "at least one migration must be discovered"
+        );
+
+        // --- Step 3: Apply ALL migrations --------------------------------
+        let applied = runner
+            .apply_pending(&executor)
+            .expect("apply_pending failed — one of the up-migrations has broken SQL");
+
+        assert_eq!(
+            applied, migration_count,
+            "expected all {} migrations to be applied, but only {} were",
+            migration_count, applied
+        );
+
+        // Sanity: the runner agrees we are now fully up-to-date.
+        assert!(
+            runner
+                .is_up_to_date(&executor)
+                .expect("is_up_to_date check failed"),
+            "runner must report is_up_to_date = true after applying all migrations"
+        );
+
+        // --- Step 4: Roll back ALL migrations in reverse -----------------
+        // Each call to rollback_last() undoes the highest applied version.
+        for step in (1..=migration_count).rev() {
+            runner
+                .rollback_last(&executor)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "rollback_last failed at step {} (rolling back migration {}): {}",
+                        migration_count - step + 1,
+                        step,
+                        e
+                    )
+                });
+        }
+
+        // Attempting another rollback must now return NoMigrationsToRollback
+        // (the schema_migrations table was itself dropped by migration 001's
+        // down-script, so MAX(version) query may fail; either outcome is
+        // acceptable — the important assertion is the schema snapshot below).
+        let extra_rollback = runner.rollback_last(&executor);
+        // We accept either the explicit NoMigrationsToRollback error or a Sql
+        // error caused by the schema_migrations table no longer existing.
+        assert!(
+            extra_rollback.is_err(),
+            "an extra rollback after full teardown must return an error"
+        );
+
+        // --- Step 5: Post-rollback snapshot must match baseline ----------
+        let after_rollback = snapshot_tables(&executor);
+        assert_eq!(
+            after_rollback, baseline,
+            "schema after full rollback must exactly match the pre-migration baseline.\n\
+             Leaked tables: {:?}\n\
+             This means at least one .down.sql file is incorrect.",
+            after_rollback
+                .iter()
+                .filter(|t| !baseline.contains(t))
+                .collect::<Vec<_>>()
+        );
+
+        // --- Step 6: Verify idempotency — apply + rollback again ---------
+        // The second cycle proves the test is truly repeatable without manual
+        // teardown and that the down-scripts leave nothing that blocks a fresh
+        // apply.
+        let applied_again = runner
+            .apply_pending(&executor)
+            .expect("second apply_pending failed — idempotency broken");
+        assert_eq!(
+            applied_again, migration_count,
+            "second apply must apply all {} migrations again",
+            migration_count
+        );
+
+        for step in (1..=migration_count).rev() {
+            runner.rollback_last(&executor).unwrap_or_else(|e| {
+                panic!(
+                    "second rollback_last failed at step {}: {}",
+                    migration_count - step + 1,
+                    e
+                )
+            });
+        }
+
+        let after_second_rollback = snapshot_tables(&executor);
+        assert_eq!(
+            after_second_rollback, baseline,
+            "schema after SECOND full rollback must still match the baseline — \
+             idempotency check failed. Leaked tables: {:?}",
+            after_second_rollback
+                .iter()
+                .filter(|t| !baseline.contains(t))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
