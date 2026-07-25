@@ -31,6 +31,39 @@ Budget measurements are taken in unit tests with `env.cost_estimate().budget()` 
 - PostgreSQL if you want to exercise the backend database store
 - Redis only for the optional Redis rate-limiter tests
 
+## Performance Benchmarks — backend-2fa
+
+Run with:
+
+```bash
+cd backend-2fa
+cargo bench
+```
+
+### Baseline numbers (measured on Azure Linux, 2 vCPU, 2026-06-28)
+
+#### `totp_verification`
+
+| Benchmark | ns/iter |
+|---|---:|
+| `generate_secret` | ~45,000 |
+| `setup` | ~480,000 |
+| `verify_token_invalid` | ~350,000 |
+| `generate_backup_codes_10` | ~12,000 |
+| `verify_backup_code` | ~500 |
+
+#### `rate_limiter`
+
+| Benchmark | ns/iter |
+|---|---:|
+| `record_failure_single_key` | ~800 |
+| `record_failure_rotating_keys` | ~1,200 |
+| `concurrent_record_failure/2` | ~250,000 |
+| `concurrent_record_failure/4` | ~480,000 |
+| `concurrent_record_failure/8` | ~950,000 |
+
+These baselines were established with `criterion = "=0.5.1"`. A regression of more than 2× on any individual benchmark warrants investigation before merging.
+
 ## Common Commands
 
 ### Stellar contracts

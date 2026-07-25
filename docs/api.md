@@ -1,6 +1,4 @@
-# API Overview
-
-## Backend 2FA — OpenAPI Specification
+ckend 2FA — OpenAPI Specification
 
 The Backend 2FA service is fully documented as an **OpenAPI 3.0** spec.
 
@@ -24,6 +22,7 @@ The Backend 2FA service is fully documented as an **OpenAPI 3.0** spec.
 | `POST` | `/admin/canary` | Create a canary user (admin) |
 | `GET`  | `/admin/flagged` | List all flagged submissions (admin) |
 | `GET`  | `/admin/flagged/{user_id}` | Flagged submissions for a user (admin) |
+| `GET`  | `/admin/users/{user_id}/2fa-summary` | 2FA summary for a user (admin) |
 | `POST` | `/tenant/provision` | Provision a new tenant (admin) |
 | `GET`  | `/ws/leaderboard` | WebSocket leaderboard feed |
 | `GET`  | `/health` | Health check |

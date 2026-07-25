@@ -12,6 +12,9 @@ env:
   STELLAR_NETWORK: testnet
   STELLAR_RPC_URL: https://soroban-testnet.stellar.org
   STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+  # Soroban currently enforces a ~128KB max WASM contract size; keeping a 100KB
+  # budget catches size regressions early while leaving headroom.
+  MAX_WASM_SIZE_KB: 100
 
 jobs:
   audit:
@@ -74,6 +77,23 @@ jobs:
       - name: Build Stellar contracts
         working-directory: stellar-contracts
         run: cargo build --target wasm32-unknown-unknown --release
+
+      # Soroban WASM contracts have a maximum binary size (currently ~128KB).
+      # Fail CI as soon as a release build exceeds the configured budget.
+      - name: Check contract WASM size
+        working-directory: stellar-contracts
+        run: |
+          WASM_PATH=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name "*.wasm" | head -n 1)
+          if [ -z "$WASM_PATH" ]; then
+            echo "No WASM artifact found" >&2
+            exit 1
+          fi
+          SIZE_KB=$(stat -c%s "$WASM_PATH" | awk '{print int($1/1024)}')
+          echo "WASM size: ${SIZE_KB}KB ($WASM_PATH)"
+          if [ "$SIZE_KB" -gt "$MAX_WASM_SIZE_KB" ]; then
+            echo "ERROR: WASM size ${SIZE_KB}KB exceeds ${MAX_WASM_SIZE_KB}KB limit" >&2
+            exit 1
+          fi
 
       - name: Test Stellar contracts
         working-directory: stellar-contracts

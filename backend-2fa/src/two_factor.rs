@@ -1,7 +1,9 @@
+use hmac::{Hmac, Mac};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
-use rand::Rng;
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -20,6 +22,8 @@ pub struct TotpConfig {
     pub digits: usize,
     pub period: u64,
     pub window: u8,
+    /// Number of backup codes to generate during setup (default: 8).
+    pub backup_code_count: usize,
 }
 
 impl Default for TotpConfig {
@@ -29,6 +33,7 @@ impl Default for TotpConfig {
             digits: 6,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 }
@@ -36,7 +41,7 @@ impl Default for TotpConfig {
 impl TotpConfig {
     pub fn new(algorithm: Algorithm, digits: usize, period: u64, window: u8) -> Result<Self, String> {
         // Validate digits: RFC 6238 recommends 6-8 digits
-        if digits < 6 || digits > 8 {
+        if !(6..=8).contains(&digits) {
             return Err(format!("digits must be between 6 and 8, got {}", digits));
         }
         // Validate period: must be > 0
@@ -52,6 +57,7 @@ impl TotpConfig {
             digits,
             period,
             window,
+            backup_code_count: 8,
         })
     }
 
@@ -61,6 +67,7 @@ impl TotpConfig {
             digits: 6,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 
@@ -70,6 +77,7 @@ impl TotpConfig {
             digits: 8,
             period: 30,
             window: 1,
+            backup_code_count: 8,
         }
     }
 }
@@ -83,12 +91,24 @@ pub struct TwoFactorSetup {
     pub config: TotpConfig,
 }
 
+/// A revoked session, keyed by JTI (JWT ID claim from the bearer token).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RevokedSession {
+    pub session_id: String,
+    pub user_id: String,
+    pub revoked_at: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct TwoFactorData {
     pub secret: String,
     pub backup_codes: Vec<String>,
     pub enabled: bool,
     pub algorithm: HmacAlgorithm,
+    /// The last successfully-used TOTP time-step for replay protection.
+    /// Once a token for a given step is accepted, repeated attempts with
+    /// the same step are rejected even if the token is numerically valid.
+    pub last_used_step: Option<u64>,
 }
 
 /// Returned after a successful backup-code recovery.
@@ -128,6 +148,13 @@ impl TwoFactorAuth {
         encoded
     }
 
+    /// Replace colons with spaces so the issuer is consistent across QR and otpauth URI.
+    /// Colons in the issuer label conflict with the `otpauth://` URI format where the
+    /// delimiter between issuer and account is also a colon.
+    pub fn sanitize_issuer(issuer: &str) -> String {
+        issuer.replace(':', " ")
+    }
+
     pub fn generate_otpauth_uri(
         issuer: &str,
         account: &str,
@@ -148,13 +175,16 @@ impl TwoFactorAuth {
         )
     }
 
-    pub fn generate_secret() -> String {
+    fn sample_crypto_rng<R: Rng + CryptoRng>(rng: &mut R) -> String {
         const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        let mut rng = thread_rng();
         let range = Uniform::from(0..BASE32_ALPHABET.len());
         (0..32)
-            .map(|_| BASE32_ALPHABET[range.sample(&mut rng)] as char)
+            .map(|_| BASE32_ALPHABET[range.sample(rng)] as char)
             .collect()
+    }
+
+    pub fn generate_secret() -> String {
+        Self::sample_crypto_rng(&mut thread_rng())
     }
 
     /// Setup 2FA with default configuration (SHA1).
@@ -169,7 +199,7 @@ impl TwoFactorAuth {
         config: TotpConfig,
     ) -> Result<TwoFactorSetup, String> {
         let secret = Self::generate_secret();
-        let qr_issuer = issuer.replace(':', " ");
+        let sanitized_issuer = Self::sanitize_issuer(issuer);
         let totp = TOTP::new(
             config.algorithm,
             config.digits,
@@ -178,7 +208,7 @@ impl TwoFactorAuth {
             Secret::Encoded(secret.clone())
                 .to_bytes()
                 .map_err(|e| e.to_string())?,
-            Some(qr_issuer),
+            Some(sanitized_issuer.clone()),
             user_email.to_string(),
         )
         .map_err(|e| e.to_string())?;
@@ -187,8 +217,8 @@ impl TwoFactorAuth {
             "data:image/png;base64,{}",
             totp.get_qr_base64().map_err(|e| e.to_string())?
         );
-        let backup_codes = Self::generate_backup_codes(8);
-        let otpauth_uri = Self::generate_otpauth_uri(issuer, user_email, &secret, &config);
+        let backup_codes = Self::generate_backup_codes(config.backup_code_count);
+        let otpauth_uri = Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
 
         Ok(TwoFactorSetup {
             secret,
@@ -291,6 +321,13 @@ pub struct TwoFactorLockoutState {
     pub updated_at: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LockedUserSummary {
+    pub user_id: String,
+    pub failed_attempts: u32,
+    pub locked_at: Option<u64>,
+}
+
 /// Persistence abstraction for 2FA state (kept for compatibility)
 pub trait TwoFactorStore: Send + Sync {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String>;
@@ -352,20 +389,59 @@ pub trait TwoFactorStore: Send + Sync {
     /// Persistent lockout state, used after Redis restarts.
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
 
-    /// Increment failed 2FA attempts and persist lockout after the tenth failure.
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
+    /// Increment failed 2FA attempts and persist lockout once the threshold is reached.
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String>;
 
     /// Reset failed attempts after a successful TOTP verification or recovery.
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String>;
 
+    /// Record the last successfully-used TOTP time-step for replay protection.
+    /// Returns an error if the store cannot be updated.
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String>;
+
     /// Admin/recovery unlock for fully locked accounts.
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String>;
+
+    /// Return all currently locked-out user accounts.
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String>;
 
     /// Return pool utilisation stats when the backing store supports it.
     /// Returns `None` for stores that have no connection pool (e.g. in-memory).
     fn try_pool_stats(&self) -> Option<crate::db::PoolStats> {
         None
     }
+
+    /// Clear all recovery code usage log entries for a user.
+    /// Called after successful backup-code recovery so that rotated codes are
+    /// not blocked by log entries from the previous code set.
+    /// Default implementation is a no-op (safe for stores that enforce
+    /// replay protection differently, e.g. Postgres relies on the secret
+    /// being rotated).
+    fn reset_recovery_log(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Revoke a single session by its JTI. Idempotent — revoking an
+    /// already-revoked session is not an error.
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String>;
+
+    /// Revoke all currently-tracked sessions for a user (e.g. on 2FA disable
+    /// or suspected compromise). Implementations only need to invalidate
+    /// sessions they know about; for the in-memory store this means every
+    /// session_id ever passed to `revoke_session` for this user, plus a
+    /// "revoke everything before this timestamp" marker so that even
+    /// not-yet-seen JTIs issued before now are rejected.
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String>;
+
+    /// Check whether a given session (JTI) has been revoked for a user.
+    /// Returns true if `revoke_session` was called with this exact
+    /// session_id, or if `revoke_all_sessions` was called for this user
+    /// and `issued_at` predates that revocation.
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool;
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -376,6 +452,11 @@ pub struct InMemoryStore {
     audit_log: Arc<Mutex<Vec<AuditLogEntry>>>,
     canary_flags: Arc<Mutex<HashMap<String, bool>>>,
     lockouts: Arc<Mutex<HashMap<String, TwoFactorLockoutState>>>,
+    revoked_sessions: Arc<Mutex<HashSet<String>>>,
+    revoke_all_before: Arc<Mutex<HashMap<String, u64>>>,
+    /// Per-user Unix timestamp: log entries recorded before this time are
+    /// ignored for replay-protection purposes (but still returned in audit queries).
+    recovery_log_reset_at: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl InMemoryStore {
@@ -592,6 +673,7 @@ impl TwoFactorStore for MockTwoFactorStore {
     fn record_failed_two_fa_attempt(
         &self,
         _user_id: &str,
+        _lockout_threshold: u32,
     ) -> Result<TwoFactorLockoutState, String> {
         Ok(TwoFactorLockoutState::default())
     }
@@ -600,14 +682,78 @@ impl TwoFactorStore for MockTwoFactorStore {
         Ok(())
     }
 
+    fn set_last_used_step(&self, _user_id: &str, _step: u64) -> Result<(), String> {
+        Ok(())
+    }
+
     fn unlock_two_fa_account(&self, _user_id: &str, _actor: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        Ok(vec![])
+    }
+
+    fn revoke_session(&self, _user_id: &str, _session_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, _user_id: &str, _session_id: &str, _issued_at: u64) -> bool {
+        false
     }
 }
 
 impl TwoFactorStore for InMemoryStore {
+
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        let key = format!("{}::{}", user_id, session_id);
+        self.revoked_sessions.lock().unwrap().insert(key);
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.revoke_all_before
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), now);
+        Ok(())
+    }
+
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool {
+        let key = format!("{}::{}", user_id, session_id);
+        if self.revoked_sessions.lock().unwrap().contains(&key) {
+            return true;
+        }
+        if let Some(&cutoff) = self.revoke_all_before.lock().unwrap().get(user_id) {
+            if issued_at <= cutoff {
+                return true;
+            }
+        }
+        false
+    }
+    
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         self.data.lock().unwrap().insert(user_id.to_string(), data);
+        Ok(())
+    }
+
+    fn reset_recovery_log(&self, user_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.recovery_log_reset_at
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), now);
         Ok(())
     }
 
@@ -651,13 +797,29 @@ impl TwoFactorStore for InMemoryStore {
         code_index: i32,
         ip_address: Option<&str>,
     ) -> Result<(), String> {
+        let reset_cutoff = self
+            .recovery_log_reset_at
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .copied();
+
         let mut log = self.recovery_log.lock().unwrap();
 
-        // Check if already used
-        if log
-            .iter()
-            .any(|e| e.user_id == user_id && e.code_index == code_index)
-        {
+        // Check if already used — ignore entries that predate a log reset
+        // (i.e., entries from a previous backup-code generation).
+        if log.iter().any(|e| {
+            if e.user_id != user_id || e.code_index != code_index {
+                return false;
+            }
+            if let Some(cutoff) = reset_cutoff {
+                // Parse stored timestamp; entries at-or-before the cutoff are stale.
+                let entry_ts: u64 = e.used_at.parse().unwrap_or(0);
+                entry_ts > cutoff
+            } else {
+                true
+            }
+        }) {
             return Err("InvalidRecoveryCode".to_string());
         }
 
@@ -797,7 +959,11 @@ impl TwoFactorStore for InMemoryStore {
             .unwrap_or_default())
     }
 
-    fn record_failed_two_fa_attempt(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String> {
         let mut lockouts = self.lockouts.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -806,7 +972,7 @@ impl TwoFactorStore for InMemoryStore {
         let state = lockouts.entry(user_id.to_string()).or_default();
         state.failed_attempts = state.failed_attempts.saturating_add(1);
         state.updated_at = now;
-        if state.failed_attempts >= 10 {
+        if state.failed_attempts >= lockout_threshold {
             state.locked = true;
             state.locked_at = Some(now);
         }
@@ -818,10 +984,33 @@ impl TwoFactorStore for InMemoryStore {
         Ok(())
     }
 
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        let mut data = self.data.lock().unwrap();
+        if let Some(entry) = data.get_mut(user_id) {
+            entry.last_used_step = Some(step);
+        }
+        Ok(())
+    }
+
     fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
         self.reset_two_fa_failures(user_id)?;
         self.append_audit_log(user_id, "two_fa_account_unlocked", actor, None)?;
         Ok(())
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        let lockouts = self.lockouts.lock().unwrap();
+        let mut result: Vec<LockedUserSummary> = lockouts
+            .iter()
+            .filter(|(_, state)| state.locked)
+            .map(|(uid, state)| LockedUserSummary {
+                user_id: uid.clone(),
+                failed_attempts: state.failed_attempts,
+                locked_at: state.locked_at,
+            })
+            .collect();
+        result.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+        Ok(result)
     }
 }
 
@@ -835,6 +1024,7 @@ pub struct TenantConfig {
     pub tenant_id: String,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
+    pub lockout_threshold: u32,
 }
 
 impl TenantConfig {
@@ -843,6 +1033,7 @@ impl TenantConfig {
             tenant_id: tenant_id.into(),
             totp_issuer: "PetChain".to_string(),
             rate_limit_max_failures: 5,
+            lockout_threshold: 10,
         }
     }
 }
@@ -854,6 +1045,14 @@ impl TenantConfig {
 pub struct TenantScopedStore {
     inner: Arc<dyn TwoFactorStore>,
     pub config: TenantConfig,
+}
+
+impl std::fmt::Debug for TenantScopedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TenantScopedStore")
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 impl TenantScopedStore {
@@ -933,11 +1132,16 @@ impl TenantScopedStore {
         &self,
         user_id: &str,
     ) -> Result<TwoFactorLockoutState, String> {
-        self.inner.record_failed_two_fa_attempt(&self.key(user_id))
+        self.inner
+            .record_failed_two_fa_attempt(&self.key(user_id), self.config.lockout_threshold)
     }
 
     pub fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
         self.inner.reset_two_fa_failures(&self.key(user_id))
+    }
+
+    pub fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        self.inner.set_last_used_step(&self.key(user_id), step)
     }
 
     pub fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
@@ -964,9 +1168,18 @@ impl TenantRegistry {
     /// returned. If it already exists, the existing config is returned
     /// unchanged along with `(existing_config, true)` — the caller can use
     /// the `bool` to signal `already_existed` without treating this as an
-    /// error. The check-and-insert happens under a single lock acquisition
-    /// (via `Entry`), so concurrent calls for the same `tenant_id` cannot
-    /// race past each other and create duplicates.
+    /// error.
+    ///
+    /// # Concurrency guarantee (closes issue #1054)
+    ///
+    /// The check-and-insert is performed atomically under a **single**
+    /// `Mutex` lock acquisition using [`HashMap::entry`].  There is no
+    /// TOCTOU window between "check if tenant exists" and "insert new
+    /// tenant": both operations happen while the lock is held.  Parallel
+    /// first-requests for the same `tenant_id` therefore cannot each see
+    /// "tenant not found" and both proceed to create a new store instance.
+    /// Exactly one caller will win the `Vacant` arm; all racing callers
+    /// will receive the same `TenantConfig` that the winner inserted.
     pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
         match map.entry(config.tenant_id.clone()) {
@@ -997,5 +1210,196 @@ impl TenantRegistry {
 
     pub fn get_config(&self, tenant_id: &str) -> Option<TenantConfig> {
         self.tenants.lock().unwrap().get(tenant_id).cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
+// ---------------------------------------------------------------------------
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Claims extracted from a verified leaderboard-WS JWT.
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtClaims {
+    /// Subject — the authenticated user's ID.
+    pub sub: String,
+    /// Expiry, in unix seconds. The token is rejected once `now >= exp`.
+    pub exp: u64,
+}
+
+/// Decode a base64url (no padding) string into bytes, per RFC 4648 §5.
+fn base64url_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4 + 3);
+    let mut buffer: u32 = 0;
+    let mut bits: u32 = 0;
+
+    for &byte in input.as_bytes() {
+        let v = value(byte).ok_or_else(|| "invalid base64url character".to_string())?;
+        buffer = (buffer << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+
+    Ok(out)
+}
+
+/// Verify an HS256-signed JWT and return its claims.
+///
+/// Returns `Err` if the token is malformed, uses an unsupported algorithm,
+/// has an invalid signature, or is expired (`exp <= now_unix_secs`).
+/// `now_unix_secs` is passed in explicitly so callers can test expiry
+/// without depending on wall-clock time.
+pub fn verify_jwt(token: &str, secret: &[u8], now_unix_secs: u64) -> Result<JwtClaims, String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("malformed token".to_string());
+    }
+    let header_b64 = parts[0];
+    let payload_b64 = parts[1];
+    let sig_b64 = parts[2];
+
+    let header_bytes = base64url_decode(header_b64)?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&header_bytes).map_err(|_| "invalid header".to_string())?;
+    if header.get("alg").and_then(|v| v.as_str()) != Some("HS256") {
+        return Err("unsupported algorithm".to_string());
+    }
+
+    let signature = base64url_decode(sig_b64)?;
+    let signing_input = format!("{header_b64}.{payload_b64}");
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| "invalid secret".to_string())?;
+    mac.update(signing_input.as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| "invalid signature".to_string())?;
+
+    let payload_bytes = base64url_decode(payload_b64)?;
+    let claims: JwtClaims =
+        serde_json::from_slice(&payload_bytes).map_err(|_| "invalid claims".to_string())?;
+
+    if claims.exp <= now_unix_secs {
+        return Err("token expired".to_string());
+    }
+
+    Ok(claims)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1054 — TenantRegistry::provision concurrent-initialisation tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tenant_registry_concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    fn make_config(tenant_id: &str) -> TenantConfig {
+        TenantConfig {
+            tenant_id: tenant_id.to_string(),
+            totp_issuer: format!("{}-issuer", tenant_id),
+            lockout_threshold: 5,
+            rate_limit_max_failures: 5,
+        }
+    }
+
+    /// Two threads calling `provision` for the same brand-new tenant
+    /// simultaneously must both get back the *same* `TenantConfig` and
+    /// exactly one must observe `already_existed = false`.
+    ///
+    /// This verifies that the `HashMap::entry` check-and-insert is atomic
+    /// under the `Mutex` and that no TOCTOU race can create duplicate
+    /// store instances. (Closes issue #1054.)
+    #[test]
+    fn test_concurrent_provision_same_tenant_returns_identical_config() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let reg = Arc::clone(&registry);
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config("race-tenant")).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All returned configs must be identical — only one winner inserts.
+        let first_config = &results[0].0;
+        for (cfg, _) in &results {
+            assert_eq!(
+                cfg.tenant_id, first_config.tenant_id,
+                "All threads must observe the same tenant_id"
+            );
+            assert_eq!(
+                cfg.totp_issuer, first_config.totp_issuer,
+                "All threads must observe the same totp_issuer — no duplicate was created"
+            );
+        }
+
+        // Exactly one thread saw `already_existed = false` (the creator).
+        let created: Vec<_> = results.iter().filter(|(_, existed)| !existed).collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "Exactly one thread must have created the tenant; got {} creators",
+            created.len()
+        );
+
+        // All other threads observed it as already existing.
+        let existed: Vec<_> = results.iter().filter(|(_, existed)| *existed).collect();
+        assert_eq!(existed.len(), 31);
+    }
+
+    /// Independent tenant IDs must never interfere with each other even
+    /// under concurrent access.
+    #[test]
+    fn test_concurrent_provision_different_tenants_are_isolated() {
+        let registry = Arc::new(TenantRegistry::default());
+
+        let tenant_ids: Vec<String> = (0..16).map(|i| format!("tenant-{}", i)).collect();
+        let mut handles = Vec::new();
+
+        for tid in &tenant_ids {
+            let reg = Arc::clone(&registry);
+            let tid = tid.clone();
+            handles.push(thread::spawn(move || {
+                reg.provision(make_config(&tid)).unwrap()
+            }));
+        }
+
+        let results: Vec<(TenantConfig, bool)> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Each tenant was provisioned exactly once.
+        let created_count = results.iter().filter(|(_, existed)| !existed).count();
+        assert_eq!(
+            created_count,
+            16,
+            "Each of the 16 unique tenants must have been created exactly once"
+        );
+
+        // Every tenant is retrievable from the registry.
+        for tid in &tenant_ids {
+            let cfg = registry
+                .get_config(tid)
+                .unwrap_or_else(|| panic!("Tenant '{}' missing from registry", tid));
+            assert_eq!(cfg.tenant_id, *tid);
+        }
     }
 }

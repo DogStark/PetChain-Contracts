@@ -646,4 +646,114 @@ mod test_recurring_grooming {
         assert_eq!(result, 0);
     }
 }
+// -------------------------------------------------------
+// Grooming Slot Conflict Detection (Issue #792)
+// -------------------------------------------------------
+
+#[cfg(test)]
+mod test_grooming_conflict {
+    use crate::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn setup_groomer(env: &Env, client: &PetChainContractClient) -> Address {
+        let admin = Address::generate(env);
+        client.init_admin(&admin);
+        let groomer = Address::generate(env);
+        client.register_groomer(
+            &admin,
+            &groomer,
+            &String::from_str(env, "Groomer Tester"),
+            &String::from_str(env, "LIC-GRM-001"),
+        );
+        groomer
+    }
+
+    #[test]
+    fn test_book_non_overlapping_slots_succeed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let groomer = setup_groomer(&env, &client);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Max"),
+            &String::from_str(&env, "2019-06-15"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Beagle"),
+            &PrivacyLevel::Public,
+        );
+
+        // Slot A: 10:00 – 11:00 (60 min)
+        let slot_a = client.book_grooming_slot(&groomer, &1000u64, &60u64, &pet_id, &owner);
+        assert!(slot_a > 0);
+
+        // Slot B: 11:00 – 12:00 (60 min) — immediately after, no overlap
+        let slot_b = client.book_grooming_slot(&groomer, &1060u64, &60u64, &pet_id, &owner);
+        assert!(slot_b > 0);
+        // Different slot IDs means two distinct slots were created
+        assert_ne!(slot_a, slot_b);
+    }
+
+    #[test]
+    #[should_panic(expected = "SlotAlreadyBooked")]
+    fn test_overlapping_slot_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let groomer = setup_groomer(&env, &client);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Bella"),
+            &String::from_str(&env, "2018-03-10"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&env, "Poodle"),
+            &PrivacyLevel::Public,
+        );
+
+        // Slot A: 10:00 – 11:00 (60 min)
+        client.book_grooming_slot(&groomer, &1000u64, &60u64, &pet_id, &owner);
+
+        // Slot B: 10:30 – 11:30 (60 min) — overlaps with Slot A
+        client.book_grooming_slot(&groomer, &1030u64, &60u64, &pet_id, &owner);
+    }
+
+    #[test]
+    #[should_panic(expected = "SlotAlreadyBooked")]
+    fn test_same_start_time_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+        let groomer = setup_groomer(&env, &client);
+
+        let owner = Address::generate(&env);
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Charlie"),
+            &String::from_str(&env, "2020-11-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Labrador"),
+            &PrivacyLevel::Public,
+        );
+
+        // Slot A: 14:00 – 15:00 (60 min)
+        client.book_grooming_slot(&groomer, &1400u64, &60u64, &pet_id, &owner);
+
+        // Slot B: exactly the same start time — must be detected as overlap
+        client.book_grooming_slot(&groomer, &1400u64, &45u64, &pet_id, &owner);
+    }
+
+
 }

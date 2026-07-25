@@ -1,0 +1,19 @@
+-- Migration 005: Document encrypted secret storage requirement
+--
+-- MANUAL RE-ENCRYPTION REQUIRED FOR EXISTING RECORDS:
+-- Existing plain-text secrets in `user_two_factor.secret` must be re-encrypted
+-- before deploying application code that reads them as AES-256-GCM ciphertext.
+--
+-- Steps:
+--   1. Set TOTP_ENCRYPTION_KEY in your secret store (64 hex chars = 32 bytes).
+--   2. Run the provided migration script (scripts/encrypt_existing_secrets.py)
+--      which reads each row, encrypts the secret with AES-256-GCM, and writes
+--      back the ciphertext in the format `<nonce_hex>:<ciphertext_hex>`.
+--   3. Only then deploy the new application binary.
+--
+-- There is intentionally no automatic SQL transformation here because the
+-- encryption key is not available to the database engine.
+--
+-- This migration is a no-op at the SQL level; its purpose is to document
+-- the required operational step in the migration history.
+SELECT 1;

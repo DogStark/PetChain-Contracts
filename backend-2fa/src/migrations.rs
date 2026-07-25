@@ -92,7 +92,7 @@ impl MigrationRunner {
                 applied_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 checksum    TEXT NOT NULL
             )",
-        ).map_err(|e| MigrationError::Sql(e))
+        ).map_err(MigrationError::Sql)
     }
 
     fn get_applied_migrations(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
@@ -103,7 +103,7 @@ impl MigrationRunner {
             let count = executor.query_scalar_with_params(
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
                 &[version_str.as_str()]
-            ).map_err(|e| MigrationError::Sql(e))?.unwrap_or(0);
+            ).map_err(MigrationError::Sql)?.unwrap_or(0);
             if count > 0 {
                 applied.push((migration.version, migration.name.clone()));
             }
@@ -138,7 +138,7 @@ impl MigrationRunner {
 
     pub fn rollback_last(&self, executor: &dyn SqlExecutor) -> Result<u32, MigrationError> {
         let max_version = executor.query_scalar("SELECT MAX(version) FROM schema_migrations")
-            .map_err(|e| MigrationError::Sql(e))?.unwrap_or(0) as u32;
+            .map_err(MigrationError::Sql)?.unwrap_or(0) as u32;
         if max_version == 0 {
             return Err(MigrationError::NoMigrationsToRollback);
         }
@@ -154,7 +154,7 @@ impl MigrationRunner {
         executor.execute_with_params(
             "DELETE FROM schema_migrations WHERE version = $1",
             &[version_str.as_str()]
-        ).map_err(|e| MigrationError::Sql(e))?;
+        ).map_err(MigrationError::Sql)?;
         Ok(migration.version)
     }
 
@@ -169,6 +169,12 @@ impl MigrationRunner {
     pub fn is_up_to_date(&self, executor: &dyn SqlExecutor) -> Result<bool, MigrationError> {
         let pending = self.pending_migrations(executor)?;
         Ok(pending.is_empty())
+    }
+
+    /// Returns the list of pending migrations (version + name) without executing any up_script.
+    pub fn dry_run(&self, executor: &dyn SqlExecutor) -> Result<Vec<(u32, String)>, MigrationError> {
+        let pending = self.pending_migrations(executor)?;
+        Ok(pending.iter().map(|m| (m.version, m.name.clone())).collect())
     }
 }
 
@@ -249,6 +255,117 @@ mod tests {
         let runner = MigrationRunner::new(vec![]);
         let result = runner.rollback_last(&executor);
         assert!(matches!(result, Err(MigrationError::NoMigrationsToRollback)));
+    }
+
+    #[test]
+    fn real_migration_files_are_discoverable_and_well_formed() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        assert!(
+            migrations_dir.exists(),
+            "migrations/ directory must exist at {}",
+            migrations_dir.display()
+        );
+
+        let migrations = discover_migrations(&migrations_dir)
+            .expect("discover_migrations must succeed on real migration files");
+        assert!(
+            !migrations.is_empty(),
+            "at least one migration must be discovered"
+        );
+
+        let mut seen_versions = std::collections::HashSet::new();
+        for m in &migrations {
+            assert!(
+                !m.up_script.trim().is_empty(),
+                "migration {} ({}) has empty up script",
+                m.version, m.name
+            );
+            assert!(
+                !m.checksum.is_empty(),
+                "migration {} must have a non-empty checksum",
+                m.version
+            );
+            assert!(
+                seen_versions.insert(m.version),
+                "duplicate migration version {}",
+                m.version
+            );
+        }
+
+        let versions: Vec<u32> = migrations.iter().map(|m| m.version).collect();
+        let mut sorted = versions.clone();
+        sorted.sort();
+        assert_eq!(versions, sorted, "migrations must be sorted by version");
+    }
+
+    #[test]
+    fn migration_sql_contains_expected_tables() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let migrations = discover_migrations(&migrations_dir).unwrap();
+        let all_sql: String = migrations.iter().map(|m| m.up_script.as_str()).collect::<Vec<_>>().join("\n");
+
+        let required_tables = [
+            "schema_migrations",
+            "user_two_factor",
+            "recovery_code_usage",
+            "two_fa_audit_log",
+        ];
+        for table in &required_tables {
+            assert!(
+                all_sql.contains(table),
+                "migration SQL must reference table '{}' but it was not found",
+                table
+            );
+        }
+    }
+
+    #[test]
+    fn every_up_migration_has_a_down_script() {
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let migrations = discover_migrations(&migrations_dir).unwrap();
+
+        for m in &migrations {
+            assert!(
+                !m.down_script.is_empty(),
+                "migration {} ({}) is missing a .down.sql file",
+                m.version, m.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_dry_run_reports_pending_without_mutation() {
+        let executor = MockExecutor::new();
+        let migrations = vec![
+            Migration {
+                version: 1,
+                name: "create_users".to_string(),
+                up_script: "CREATE TABLE users (id INT);".to_string(),
+                down_script: "DROP TABLE IF EXISTS users;".to_string(),
+                checksum: "abc".to_string(),
+            },
+            Migration {
+                version: 2,
+                name: "add_email".to_string(),
+                up_script: "ALTER TABLE users ADD COLUMN email TEXT;".to_string(),
+                down_script: String::new(),
+                checksum: "def".to_string(),
+            },
+        ];
+        let runner = MigrationRunner::new(migrations);
+
+        // Both migrations should be reported as pending
+        let pending = runner.dry_run(&executor).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0], (1, "create_users".to_string()));
+        assert_eq!(pending[1], (2, "add_email".to_string()));
+
+        // State must be unchanged: is_up_to_date still false, apply still finds both
+        assert!(!runner.is_up_to_date(&executor).unwrap());
+        assert_eq!(runner.apply_pending(&executor).unwrap(), 2);
+
+        // After applying, dry_run reports nothing pending
+        assert!(runner.dry_run(&executor).unwrap().is_empty());
     }
 }
 

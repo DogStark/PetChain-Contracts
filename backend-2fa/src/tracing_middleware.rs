@@ -75,14 +75,17 @@ impl TraceContext {
     }
 }
 
-/// List of sensitive fields that should be redacted in logs
+/// List of sensitive fields that should be redacted in logs, regardless of
+/// nesting depth. Add new field names here to extend redaction coverage.
 const SENSITIVE_FIELDS: &[&str] = &[
     "totp_code",
+    "totp_token",
     "secret",
     "recovery_code",
     "password",
     "token",
     "backup_code",
+    "backup_codes",
 ];
 
 /// Sanitize JSON by redacting sensitive fields
@@ -160,20 +163,15 @@ where
             .map(|s| s.to_owned())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // Parse traceparent header for W3C Trace Context propagation
-        let trace_context = req
-            .headers()
-            .get(TRACEPARENT_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| TraceContext::parse(s))
-            .or_else(|| {
-                // Fall back to generating a fresh trace context
-                Some(TraceContext {
-                    trace_id: hex::encode(rand::random::<[u8; 16]>()),
-                    parent_span_id: "0000000000000000".to_string(),
-                    flags: "01".to_string(),
-                })
-            });
+        // Parse traceparent header for W3C Trace Context propagation.
+        // Use synthesize_trace_context which respects TRACE_CONTEXT_AUTOGENERATE.
+        let trace_context = synthesize_trace_context(
+            req
+                .headers()
+                .get(TRACEPARENT_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(TraceContext::parse),
+        );
 
         if let Some(tc) = &trace_context {
             tracing::debug!(
@@ -235,6 +233,31 @@ where
 #[derive(Clone, Debug)]
 pub struct RequestId(pub String);
 
+/// Check the `TRACE_CONTEXT_AUTOGENERATE` env var; synthesis is skipped when the
+/// value is exactly `"0"`. Any other value (or unset) preserves the default behaviour.
+fn autogenerate_trace_context_enabled() -> bool {
+    std::env::var("TRACE_CONTEXT_AUTOGENERATE").as_deref() != Ok("0")
+}
+
+/// Given an already-parsed trace context (from an incoming header or `None`),
+/// decide what to propagate:
+/// - If a parsed context exists, return it as-is.
+/// - If none exists and autogenerate is enabled, synthesise a fresh one.
+/// - If none exists and autogenerate is disabled, return `None`.
+pub fn synthesize_trace_context(incoming: Option<TraceContext>) -> Option<TraceContext> {
+    incoming.or_else(|| {
+        if autogenerate_trace_context_enabled() {
+            Some(TraceContext {
+                trace_id: hex::encode(rand::random::<[u8; 16]>()),
+                parent_span_id: "0000000000000000".to_string(),
+                flags: "01".to_string(),
+            })
+        } else {
+            None
+        }
+    })
+}
+
 /// Initialise a `tracing-subscriber` that emits structured JSON logs.
 /// Call once at application startup before building the Actix app.
 pub fn init_tracing() {
@@ -263,6 +286,117 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_empty_string() {
+        assert!(TraceContext::parse("").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_wrong_segment_count() {
+        assert!(TraceContext::parse("00").is_none());
+        assert!(TraceContext::parse("00-abc").is_none());
+        assert!(TraceContext::parse("00-abc-def").is_none());
+        assert!(TraceContext::parse("00-a-b-c-d").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_non_hex_characters() {
+        assert!(TraceContext::parse(
+            "zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-ghijklmnopqrstuv-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-xx"
+        ).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_wrong_length_segments() {
+        assert!(TraceContext::parse(
+            "0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b-01"
+        ).is_none());
+        assert!(TraceContext::parse(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0"
+        ).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_multibyte_unicode_that_reports_misleading_len() {
+        // Use a 3-byte UTF-8 character (U+2665 ♥) so 16 repetitions give
+        // 16 chars but 48 bytes — clearly greater than 32.
+        let multibyte_32 = "♥".repeat(16);
+        assert_eq!(multibyte_32.chars().count(), 16);
+        assert!(multibyte_32.len() > 32);
+        let header = format!("00-{}-0000000000000000-01", multibyte_32);
+        assert!(TraceContext::parse(&header).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_embedded_nulls_and_control_chars() {
+        let with_null = "00-4bf92f3577b34da6a3ce929d\x000e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(with_null).is_none());
+
+        let with_newline = "00-4bf92f3577b34da6a3ce929d\n0e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(with_newline).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_leading_trailing_dashes_and_only_dashes() {
+        assert!(TraceContext::parse("---").is_none());
+        assert!(TraceContext::parse("-00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").is_none());
+        assert!(TraceContext::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-").is_none());
+    }
+
+    #[test]
+    fn parse_never_panics_on_random_input() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..10_000 {
+            let len = rng.gen_range(0..256);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+            let input = String::from_utf8_lossy(&bytes);
+            let _ = TraceContext::parse(&input);
+        }
+
+        for _ in 0..5_000 {
+            let ndashes = rng.gen_range(0..6);
+            let mut parts = Vec::new();
+            for _ in 0..=ndashes {
+                let seg_len = rng.gen_range(0..40);
+                let seg: String = (0..seg_len)
+                    .map(|_| {
+                        let charset = b"0123456789abcdefABCDEF \x00\n\txyz";
+                        charset[rng.gen_range(0..charset.len())] as char
+                    })
+                    .collect();
+                parts.push(seg);
+            }
+            let input = parts.join("-");
+            let _ = TraceContext::parse(&input);
+        }
+    }
+
+    #[test]
+    fn parse_accepts_all_valid_hex_combinations() {
+        let valid = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-00";
+        assert!(TraceContext::parse(valid).is_some());
+
+        let upper_hex = "00-0123456789ABCDEF0123456789ABCDEF-0123456789ABCDEF-FF";
+        assert!(TraceContext::parse(upper_hex).is_some());
+    }
+
+    #[test]
     fn traceparent_parse_roundtrip() {
         let tc = TraceContext {
             trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".to_string(),
@@ -274,5 +408,112 @@ mod tests {
         assert_eq!(parsed.trace_id, tc.trace_id);
         assert_eq!(parsed.parent_span_id, tc.parent_span_id);
         assert_eq!(parsed.flags, tc.flags);
+    }
+
+    // ── Issue #882: Array-of-objects sanitization ──────────────────────────
+
+    #[test]
+    fn sanitize_json_body_redacts_sensitive_fields_in_array_of_objects() {
+        let payload = serde_json::json!([
+            { "token": "abc123", "username": "alice" },
+            { "token": "def456", "username": "bob", "totp_code": "987654" },
+            { "username": "charlie", "secret": "JBSWY3DPEHPK3PXP" },
+        ])
+        .to_string();
+
+        let sanitized = sanitize_json_body(&payload);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&sanitized).expect("sanitized output must be valid JSON");
+
+        match &parsed {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 3);
+                // First object
+                assert_eq!(arr[0]["username"], "alice");
+                assert_eq!(arr[0]["token"], "[REDACTED]");
+                // Second object
+                assert_eq!(arr[1]["username"], "bob");
+                assert_eq!(arr[1]["token"], "[REDACTED]");
+                assert_eq!(arr[1]["totp_code"], "[REDACTED]");
+                // Third object
+                assert_eq!(arr[2]["username"], "charlie");
+                assert_eq!(arr[2]["secret"], "[REDACTED]");
+            }
+            other => panic!("expected JSON array, got {other:?}"),
+        }
+
+        // Verify the raw sensitive values do NOT appear in the output
+        assert!(!sanitized.contains("abc123"), "raw token abc123 leaked");
+        assert!(!sanitized.contains("def456"), "raw token def456 leaked");
+        assert!(!sanitized.contains("987654"), "raw totp_code 987654 leaked");
+        assert!(
+            !sanitized.contains("JBSWY3DPEHPK3PXP"),
+            "raw secret leaked"
+        );
+    }
+
+    #[test]
+    fn sanitize_json_body_redacts_sensitive_fields_in_deeply_nested_arrays() {
+        let payload = serde_json::json!({
+            "batch": [
+                { "token": "sensitive1" },
+                { "nested": { "token": "sensitive2" } },
+                { "deep": [ { "secret": "very-sensitive" } ] }
+            ]
+        })
+        .to_string();
+
+        let sanitized = sanitize_json_body(&payload);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&sanitized).expect("sanitized output must be valid JSON");
+
+        assert_eq!(parsed["batch"][0]["token"], "[REDACTED]");
+        assert_eq!(parsed["batch"][1]["nested"]["token"], "[REDACTED]");
+        assert_eq!(parsed["batch"][2]["deep"][0]["secret"], "[REDACTED]");
+
+        assert!(!sanitized.contains("sensitive1"));
+        assert!(!sanitized.contains("sensitive2"));
+        assert!(!sanitized.contains("very-sensitive"));
+    }
+
+    // ── Issue #881: TRACE_CONTEXT_AUTOGENERATE flag ────────────────────────
+
+    #[test]
+    fn trace_context_autogenerate_disabled_returns_none_when_no_header() {
+        // When TRACE_CONTEXT_AUTOGENERATE=0, synthesis should be skipped
+        std::env::set_var("TRACE_CONTEXT_AUTOGENERATE", "0");
+
+        let result = synthesize_trace_context(None);
+        assert!(result.is_none(), "expected None when autogenerate is disabled and no header present");
+
+        std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
+    }
+
+    #[test]
+    fn trace_context_autogenerate_enabled_synthesizes_when_no_header() {
+        // Default behaviour (unset or any value other than "0") should synthesise
+        std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
+
+        let result = synthesize_trace_context(None);
+        assert!(result.is_some(), "expected Some trace context when autogenerate is enabled");
+        if let Some(tc) = result {
+            assert_eq!(tc.trace_id.len(), 32);
+            assert_eq!(tc.parent_span_id, "0000000000000000");
+            assert_eq!(tc.flags, "01");
+        }
+    }
+
+    #[test]
+    fn trace_context_autogenerate_disabled_still_parses_incoming_header() {
+        std::env::set_var("TRACE_CONTEXT_AUTOGENERATE", "0");
+
+        let header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let ctx = TraceContext::parse(header);
+        assert!(ctx.is_some(), "incoming header should still be parsed");
+
+        let result = synthesize_trace_context(ctx);
+        assert!(result.is_some(), "should return the parsed trace context even when autogenerate is disabled");
+
+        std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
     }
 }
