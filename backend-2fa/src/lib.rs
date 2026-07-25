@@ -6,6 +6,7 @@ pub mod health;
 pub mod ip_access;
 pub mod leaderboard;
 pub mod metrics;
+pub mod migrations;
 pub mod rate_limit_middleware;
 pub mod rate_limiter;
 pub mod tracing_middleware;
@@ -31,6 +32,10 @@ pub use handlers::{
     CanaryHandlers, CreateCanaryRequest, CreateCanaryResponse, GrantUnlimitedRequest,
     PoolMetricsHandlers, PoolStatsResponse, SetUserQuotaRequest, TwoFactorHandlers,
 };
+pub use health::{
+    HealthAggregator, HealthCheck, HealthReport, PostgresHealthCheck, RedisHealthCheck,
+    SubsystemStatus, WebhookHealthCheck,
+};
 pub use ip_access::{
     CidrBlock, InMemoryIpAccessStore, IpAccessDecision, IpAccessEntry, IpAccessMiddleware,
     IpAccessStore, IpListType,
@@ -42,8 +47,9 @@ pub use leaderboard::{
 };
 pub use metrics::{
     dec_leaderboard_ws_connections, inc_leaderboard_ws_connections, metrics, record_rate_limit_hit,
-    record_recovery_code_use, record_redis_fallback, record_totp_verification, record_webhook_delivery,
-    record_webhook_retry, render_metrics, set_db_pool_stats, start_request_timer,
+    record_recovery_code_use, record_redis_fallback, record_totp_verification,
+    record_webhook_delivery, record_webhook_retry, render_metrics, set_db_pool_stats,
+    start_request_timer,
 };
 pub use rate_limit_middleware::{
     RateLimitMiddleware, HEADER_LIMIT, HEADER_REMAINING, HEADER_RESET, HEADER_RETRY_AFTER,
@@ -51,12 +57,7 @@ pub use rate_limit_middleware::{
 pub use rate_limiter::{
     progressive_delay_secs, DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter,
     LiveRedisBackend, MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend,
-    RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter,
-    TenantRateLimitKey,
-};
-pub use health::{
-    HealthAggregator, HealthCheck, HealthReport, PostgresHealthCheck, RedisHealthCheck,
-    SubsystemStatus, WebhookHealthCheck,
+    RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter, TenantRateLimitKey,
 };
 pub use tracing_middleware::sanitize_json_body;
 pub use two_factor::{
@@ -67,7 +68,7 @@ pub use two_factor::{
 #[cfg(feature = "redis-store")]
 pub use redis_store::{MockRedisTwoFactorStore, RedisTwoFactorStore};
 pub use webhooks::{
-    sanitize_metadata, DefaultHttpClient, HttpClient, SecurityEventType, WebhookDeliveryLog,
-    WebhookManager, WebhookPayload, WebhookUrlError, validate_webhook_url,
-    METADATA_MAX_BYTES, METADATA_MAX_ENTRIES,
+    sanitize_metadata, validate_webhook_url, DefaultHttpClient, HttpClient, SecurityEventType,
+    WebhookDeliveryLog, WebhookManager, WebhookPayload, WebhookUrlError, METADATA_MAX_BYTES,
+    METADATA_MAX_ENTRIES,
 };

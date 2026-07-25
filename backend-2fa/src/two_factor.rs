@@ -39,7 +39,12 @@ impl Default for TotpConfig {
 }
 
 impl TotpConfig {
-    pub fn new(algorithm: Algorithm, digits: usize, period: u64, window: u8) -> Result<Self, String> {
+    pub fn new(
+        algorithm: Algorithm,
+        digits: usize,
+        period: u64,
+        window: u8,
+    ) -> Result<Self, String> {
         // Validate digits: RFC 6238 recommends 6-8 digits
         if !(6..=8).contains(&digits) {
             return Err(format!("digits must be between 6 and 8, got {}", digits));
@@ -218,7 +223,8 @@ impl TwoFactorAuth {
             totp.get_qr_base64().map_err(|e| e.to_string())?
         );
         let backup_codes = Self::generate_backup_codes(config.backup_code_count);
-        let otpauth_uri = Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
+        let otpauth_uri =
+            Self::generate_otpauth_uri(&sanitized_issuer, user_email, &secret, &config);
 
         Ok(TwoFactorSetup {
             secret,
@@ -708,7 +714,6 @@ impl TwoFactorStore for MockTwoFactorStore {
 }
 
 impl TwoFactorStore for InMemoryStore {
-
     fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         let key = format!("{}::{}", user_id, session_id);
         self.revoked_sessions.lock().unwrap().insert(key);
@@ -739,7 +744,7 @@ impl TwoFactorStore for InMemoryStore {
         }
         false
     }
-    
+
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         self.data.lock().unwrap().insert(user_id.to_string(), data);
         Ok(())
@@ -1183,9 +1188,7 @@ impl TenantRegistry {
     pub fn provision(&self, config: TenantConfig) -> Result<(TenantConfig, bool), String> {
         let mut map = self.tenants.lock().unwrap();
         match map.entry(config.tenant_id.clone()) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                Ok((entry.get().clone(), true))
-            }
+            std::collections::hash_map::Entry::Occupied(entry) => Ok((entry.get().clone(), true)),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(config.clone());
                 Ok((config, false))

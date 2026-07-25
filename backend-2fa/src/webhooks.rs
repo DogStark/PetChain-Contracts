@@ -168,10 +168,7 @@ pub fn sanitize_metadata(
     }
 
     // --- 2. Enforce total byte size ---
-    let byte_size: usize = metadata
-        .iter()
-        .map(|(k, v)| k.len() + v.len())
-        .sum();
+    let byte_size: usize = metadata.iter().map(|(k, v)| k.len() + v.len()).sum();
 
     if byte_size > METADATA_MAX_BYTES {
         let original_size = byte_size;
@@ -190,11 +187,7 @@ pub fn sanitize_metadata(
         eprintln!(
             "[WebhookManager] metadata truncated: byte size {} exceeded max {} \
              (reduced to {} bytes) event_type={} user_id={}",
-            original_size,
-            METADATA_MAX_BYTES,
-            current_size,
-            event_type,
-            user_id,
+            original_size, METADATA_MAX_BYTES, current_size, event_type, user_id,
         );
     }
 
@@ -273,7 +266,9 @@ pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), WebhookUr
 
     let host = parsed.host_str().ok_or(WebhookUrlError::MissingHost)?;
 
-    let port = parsed.port().unwrap_or(if scheme == "https" { 443 } else { 80 });
+    let port = parsed
+        .port()
+        .unwrap_or(if scheme == "https" { 443 } else { 80 });
     let addr_str = format!("{host}:{port}");
 
     if let Ok(addrs) = addr_str.to_socket_addrs() {
@@ -335,7 +330,10 @@ impl HttpClient for DefaultHttpClient {
         if response.status() >= 200 && response.status() < 300 {
             Ok(())
         } else {
-            Err(format!("server returned error status: {}", response.status()))
+            Err(format!(
+                "server returned error status: {}",
+                response.status()
+            ))
         }
     }
 }
@@ -356,7 +354,9 @@ impl HttpClient for DefaultHttpClient {
         let host = parsed
             .host_str()
             .ok_or_else(|| "URL has no host".to_string())?;
-        let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+        let port = parsed
+            .port()
+            .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
 
         if parsed.scheme() == "https" {
             eprintln!(
@@ -629,7 +629,9 @@ impl WebhookManager {
     ) {
         let urls = {
             let cfg = self.config.lock().unwrap();
-            cfg.get(&event_type.to_string()).cloned().unwrap_or_default()
+            cfg.get(&event_type.to_string())
+                .cloned()
+                .unwrap_or_default()
         };
         if urls.is_empty() {
             return;
@@ -699,7 +701,9 @@ impl WebhookManager {
     ) {
         let urls = {
             let cfg = self.config.lock().unwrap();
-            cfg.get(&event_type.to_string()).cloned().unwrap_or_default()
+            cfg.get(&event_type.to_string())
+                .cloned()
+                .unwrap_or_default()
         };
         if urls.is_empty() {
             return;
@@ -863,11 +867,7 @@ mod tests {
                 "http://example.com/hook".to_string(),
             )
             .unwrap();
-        manager.fire_sync(
-            SecurityEventType::RecoveryCodeUsed,
-            "user2",
-            HashMap::new(),
-        );
+        manager.fire_sync(SecurityEventType::RecoveryCodeUsed, "user2", HashMap::new());
         assert_eq!(mock.call_count.load(Ordering::SeqCst), 2);
         let log = manager.get_delivery_log(1, 10);
         assert!(log[0].success);
@@ -1014,10 +1014,7 @@ mod tests {
     #[test]
     fn test_configure_rejects_invalid_url() {
         let manager = WebhookManager::default();
-        let result = manager.configure(
-            SecurityEventType::FailedTwoFa,
-            "not-a-url".to_string(),
-        );
+        let result = manager.configure(SecurityEventType::FailedTwoFa, "not-a-url".to_string());
         assert!(result.is_err());
     }
 
@@ -1200,10 +1197,17 @@ mod tests {
 
         manager.fire_sync(SecurityEventType::FailedTwoFa, "u1", HashMap::new());
 
-        assert_eq!(mock.call_count.load(Ordering::SeqCst), 3, "all 3 URLs should be called");
+        assert_eq!(
+            mock.call_count.load(Ordering::SeqCst),
+            3,
+            "all 3 URLs should be called"
+        );
         assert_eq!(manager.delivery_log_count(), 3);
         let log = manager.get_delivery_log(1, 10);
-        assert!(log.iter().all(|e| e.success), "all deliveries should succeed");
+        assert!(
+            log.iter().all(|e| e.success),
+            "all deliveries should succeed"
+        );
     }
 
     #[test]
@@ -1353,7 +1357,11 @@ mod tests {
         }
         let original_len = meta.len();
         let sanitized = sanitize_metadata(meta, "failed_two_fa", "user1");
-        assert_eq!(sanitized.len(), original_len, "under-limit map must be unchanged");
+        assert_eq!(
+            sanitized.len(),
+            original_len,
+            "under-limit map must be unchanged"
+        );
     }
 
     /// A map with exactly METADATA_MAX_ENTRIES entries must not be trimmed.
@@ -1391,10 +1399,7 @@ mod tests {
             meta.insert(format!("k{i:02}"), "x".repeat(128));
         }
         let sanitized = sanitize_metadata(meta, "recovery_code_used", "user5");
-        let byte_size: usize = sanitized
-            .iter()
-            .map(|(k, v)| k.len() + v.len())
-            .sum();
+        let byte_size: usize = sanitized.iter().map(|(k, v)| k.len() + v.len()).sum();
         assert!(
             byte_size <= METADATA_MAX_BYTES,
             "byte size {byte_size} must be <= METADATA_MAX_BYTES ({METADATA_MAX_BYTES})"
@@ -1436,6 +1441,9 @@ mod tests {
         manager.fire_sync(SecurityEventType::FailedTwoFa, "user1", meta);
         let log = manager.get_delivery_log(1, 10);
         assert_eq!(log.len(), 1);
-        assert!(log[0].success, "delivery should still succeed after truncation");
+        assert!(
+            log[0].success,
+            "delivery should still succeed after truncation"
+        );
     }
 }

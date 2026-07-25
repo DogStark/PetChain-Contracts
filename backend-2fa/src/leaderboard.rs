@@ -422,10 +422,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for LeaderboardWsSess
                 if let Ok(command) = serde_json::from_str::<LeaderboardSubscriptionCommand>(&text) {
                     match self.apply_command(command) {
                         Ok(()) => ctx.text(r#"{"status":"ok"}"#),
-                        Err(reason) => ctx.text(format!(
-                            r#"{{"status":"error","reason":"{}"}}"#,
-                            reason
-                        )),
+                        Err(reason) => {
+                            ctx.text(format!(r#"{{"status":"error","reason":"{}"}}"#, reason))
+                        }
                     }
                 } else {
                     ctx.text(r#"{"status":"error","reason":"invalid_subscription_message"}"#);
@@ -603,9 +602,7 @@ pub async fn leaderboard_ws_endpoint(
         .ok_or_else(|| ErrorBadRequest("Missing peer address for leaderboard websocket"))?;
 
     let hub = LeaderboardWsHub::global();
-    let connection = hub
-        .connect(peer_ip)
-        .map_err(ErrorTooManyRequests)?;
+    let connection = hub.connect(peer_ip).map_err(ErrorTooManyRequests)?;
     ws::start(LeaderboardWsSession::new(hub, connection), &req, stream)
 }
 
@@ -1259,10 +1256,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        })
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            })
         };
 
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -1343,10 +1340,10 @@ mod tests {
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        })
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            })
         };
 
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
@@ -1372,10 +1369,10 @@ mod tests {
         let mut session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        });
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            });
             let ip: IpAddr = "192.168.0.1".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 5)
@@ -1396,10 +1393,10 @@ mod tests {
         let session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
-                            broadcaster,
-                            connections_by_ip: Mutex::new(HashMap::new()),
-                            max_conn_per_ip: get_max_conn_per_ip(),
-                        });
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: get_max_conn_per_ip(),
+            });
             let ip: IpAddr = "192.168.0.2".parse().unwrap();
             let guard = hub.connect(ip).expect("connect");
             LeaderboardWsSession::with_rate_limit(hub, guard, 3)
@@ -1420,10 +1417,10 @@ mod tests {
     fn make_session() -> LeaderboardWsSession {
         let (broadcaster, _) = broadcast::channel(16);
         let hub = Arc::new(LeaderboardWsHub {
-                        broadcaster,
-                        connections_by_ip: Mutex::new(HashMap::new()),
-                        max_conn_per_ip: get_max_conn_per_ip(),
-                    });
+            broadcaster,
+            connections_by_ip: Mutex::new(HashMap::new()),
+            max_conn_per_ip: get_max_conn_per_ip(),
+        });
         let ip: IpAddr = "10.1.0.1".parse().unwrap();
         let guard = hub.connect(ip).expect("connect");
         LeaderboardWsSession::new(hub, guard)
@@ -1432,8 +1429,9 @@ mod tests {
     #[test]
     fn subscribe_at_limit_succeeds() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
         assert!(result.is_ok());
         assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
@@ -1442,19 +1440,24 @@ mod tests {
     #[test]
     fn subscribe_over_limit_rejected() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS + 1)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Subscribe { user_ids });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "too_many_user_ids");
-        assert!(session.subscriptions.is_empty(), "subscriptions must not be modified on rejection");
+        assert!(
+            session.subscriptions.is_empty(),
+            "subscriptions must not be modified on rejection"
+        );
     }
 
     #[test]
     fn replace_at_limit_succeeds() {
         let mut session = make_session();
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS).map(|i| format!("u{}", i)).collect();
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
         assert!(result.is_ok());
         assert_eq!(session.subscriptions.len(), MAX_SUBSCRIPTION_USER_IDS);
@@ -1464,11 +1467,10 @@ mod tests {
     fn replace_over_limit_rejected() {
         let mut session = make_session();
         // Pre-populate subscriptions to verify they are not wiped on rejection.
-        session
-            .subscriptions
-            .insert("existing_user".to_string());
-        let user_ids: Vec<String> =
-            (0..MAX_SUBSCRIPTION_USER_IDS + 1).map(|i| format!("u{}", i)).collect();
+        session.subscriptions.insert("existing_user".to_string());
+        let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS + 1)
+            .map(|i| format!("u{}", i))
+            .collect();
         let result = session.apply_command(LeaderboardSubscriptionCommand::Replace { user_ids });
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "too_many_user_ids");

@@ -50,7 +50,9 @@ impl RateLimitResult {
     pub fn retry_after_secs(&self) -> u64 {
         match self {
             RateLimitResult::Allowed { .. } => 0,
-            RateLimitResult::Blocked { retry_after_secs, .. } => *retry_after_secs,
+            RateLimitResult::Blocked {
+                retry_after_secs, ..
+            } => *retry_after_secs,
         }
     }
 }
@@ -576,7 +578,10 @@ impl Default for InMemoryRateLimiter {
 impl RateLimiter for InMemoryRateLimiter {
     fn record_failure(&self, key: &str) -> RateLimitResult {
         // Recover from poisoned lock: data is still valid, just recover the Mutex
-        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
         let unix_now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -593,12 +598,12 @@ impl RateLimiter for InMemoryRateLimiter {
             if now < locked_until {
                 let retry_after_secs = (locked_until - now).as_secs().max(1);
                 let reset_at = unix_now + retry_after_secs;
-                
+
                 // Extract user_id and endpoint from key (format: "endpoint:user_id" or just "key")
                 let parts: Vec<&str> = key.split(':').collect();
                 let endpoint = parts.first().unwrap_or(&"unknown");
                 let user_id = parts.get(1).unwrap_or(&"unknown");
-                
+
                 tracing::warn!(
                     user_id = %user_id,
                     endpoint = %endpoint,
@@ -608,7 +613,7 @@ impl RateLimiter for InMemoryRateLimiter {
                     retry_after_secs = %retry_after_secs,
                     "Rate limit exceeded: user locked out"
                 );
-                
+
                 return RateLimitResult::Blocked {
                     limit: self.max_failures,
                     remaining: 0,
@@ -636,12 +641,12 @@ impl RateLimiter for InMemoryRateLimiter {
 
         if record.failures > self.max_failures {
             record.locked_until = Some(now + self.lockout);
-            
+
             // Extract user_id and endpoint from key
             let parts: Vec<&str> = key.split(':').collect();
             let endpoint = parts.first().unwrap_or(&"unknown");
             let user_id = parts.get(1).unwrap_or(&"unknown");
-            
+
             tracing::warn!(
                 user_id = %user_id,
                 endpoint = %endpoint,
@@ -652,7 +657,7 @@ impl RateLimiter for InMemoryRateLimiter {
                 lockout_secs = %self.lockout.as_secs(),
                 "Rate limit exceeded: initiating lockout"
             );
-            
+
             RateLimitResult::Blocked {
                 limit: self.max_failures,
                 remaining: 0,
@@ -670,7 +675,10 @@ impl RateLimiter for InMemoryRateLimiter {
 
     fn record_success(&self, key: &str) {
         // Recover from poisoned lock: data is still valid, just recover the Mutex
-        let mut records = self.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         records.remove(key);
     }
 
@@ -760,7 +768,7 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
             let parts: Vec<&str> = key.split(':').collect();
             let endpoint = parts.first().unwrap_or(&"unknown");
             let user_id = parts.get(1).unwrap_or(&"unknown");
-            
+
             tracing::warn!(
                 user_id = %user_id,
                 endpoint = %endpoint,
@@ -770,7 +778,7 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
                 retry_after_secs = %lockout_ttl,
                 "Rate limit exceeded: user locked out"
             );
-            
+
             return RateLimitResult::Blocked {
                 limit: cfg.max_failures,
                 remaining: 0,
@@ -793,12 +801,12 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
 
         if count > cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
-            
+
             // Extract user_id and endpoint from key
             let parts: Vec<&str> = key.split(':').collect();
             let endpoint = parts.first().unwrap_or(&"unknown");
             let user_id = parts.get(1).unwrap_or(&"unknown");
-            
+
             tracing::warn!(
                 user_id = %user_id,
                 endpoint = %endpoint,
@@ -809,7 +817,7 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
                 lockout_secs = %cfg.lockout_secs,
                 "Rate limit exceeded: initiating lockout"
             );
-            
+
             return RateLimitResult::Blocked {
                 limit: cfg.max_failures,
                 remaining: 0,
@@ -949,7 +957,11 @@ impl DistributedRateLimiter {
             .ok()?;
 
         // ttl may be -1 (no expiry) or -2 (key missing); fall back to window_secs
-        let ttl_secs = if ttl > 0 { ttl as u64 } else { self.window_secs };
+        let ttl_secs = if ttl > 0 {
+            ttl as u64
+        } else {
+            self.window_secs
+        };
         let reset_at = unix_now + ttl_secs;
 
         if count > self.max_requests as u64 {
@@ -957,7 +969,7 @@ impl DistributedRateLimiter {
             let parts: Vec<&str> = key.split(':').collect();
             let endpoint = parts.first().unwrap_or(&"unknown");
             let user_id = parts.get(1).unwrap_or(&"unknown");
-            
+
             tracing::warn!(
                 user_id = %user_id,
                 endpoint = %endpoint,
@@ -967,7 +979,7 @@ impl DistributedRateLimiter {
                 count = %count,
                 "Rate limit exceeded in Redis backend"
             );
-            
+
             Some(RateLimitResult::Blocked {
                 limit: self.max_requests,
                 remaining: 0,
@@ -1000,12 +1012,12 @@ impl RateLimiter for DistributedRateLimiter {
         if matches!(result, RateLimitResult::Blocked { .. }) {
             let endpoint = key.split(':').next().unwrap_or(key);
             crate::metrics::record_rate_limit_hit(endpoint, "limit_exceeded");
-            
+
             // Extract user_id and endpoint from key for structured logging
             let parts: Vec<&str> = key.split(':').collect();
             let endpoint_str = parts.first().unwrap_or(&"unknown");
             let user_id = parts.get(1).unwrap_or(&"unknown");
-            
+
             tracing::warn!(
                 user_id = %user_id,
                 endpoint = %endpoint_str,
@@ -1131,7 +1143,6 @@ mod tenant_key_tests {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests for structured logging (Issue #831)
 // ---------------------------------------------------------------------------
@@ -1139,9 +1150,9 @@ mod tenant_key_tests {
 #[cfg(test)]
 mod structured_logging_tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use std::sync::{Arc, Mutex};
 
     /// Simple test subscriber that captures log events
     #[derive(Clone, Default)]
@@ -1233,16 +1244,28 @@ mod structured_logging_tests {
 
         let logs = capture.get_logs();
         assert!(!logs.is_empty(), "Expected log events to be emitted");
-        
+
         // Find the log entry for rate limit
         let rate_limit_log = logs.iter().find(|log| log.contains("Rate limit exceeded"));
         assert!(rate_limit_log.is_some(), "Expected rate limit log entry");
-        
+
         let log = rate_limit_log.unwrap();
-        assert!(log.contains("user_id=\"user123\"") || log.contains("user123"), "Log should contain user_id");
-        assert!(log.contains("endpoint=\"login\"") || log.contains("login"), "Log should contain endpoint");
-        assert!(log.contains("limit=\"2\"") || log.contains("limit=2"), "Log should contain limit");
-        assert!(log.contains("window_secs=\"60\"") || log.contains("window_secs=60"), "Log should contain window_secs");
+        assert!(
+            log.contains("user_id=\"user123\"") || log.contains("user123"),
+            "Log should contain user_id"
+        );
+        assert!(
+            log.contains("endpoint=\"login\"") || log.contains("login"),
+            "Log should contain endpoint"
+        );
+        assert!(
+            log.contains("limit=\"2\"") || log.contains("limit=2"),
+            "Log should contain limit"
+        );
+        assert!(
+            log.contains("window_secs=\"60\"") || log.contains("window_secs=60"),
+            "Log should contain window_secs"
+        );
     }
 
     #[test]
@@ -1266,14 +1289,23 @@ mod structured_logging_tests {
 
         let logs = capture.get_logs();
         assert!(!logs.is_empty(), "Expected log events to be emitted");
-        
+
         let rate_limit_log = logs.iter().find(|log| log.contains("Rate limit exceeded"));
         assert!(rate_limit_log.is_some(), "Expected rate limit log entry");
-        
+
         let log = rate_limit_log.unwrap();
-        assert!(log.contains("user_id=\"alice\"") || log.contains("alice"), "Log should contain user_id");
-        assert!(log.contains("endpoint=\"verify\"") || log.contains("verify"), "Log should contain endpoint");
-        assert!(log.contains("limit=\"2\"") || log.contains("limit=2"), "Log should contain limit");
+        assert!(
+            log.contains("user_id=\"alice\"") || log.contains("alice"),
+            "Log should contain user_id"
+        );
+        assert!(
+            log.contains("endpoint=\"verify\"") || log.contains("verify"),
+            "Log should contain endpoint"
+        );
+        assert!(
+            log.contains("limit=\"2\"") || log.contains("limit=2"),
+            "Log should contain limit"
+        );
     }
 
     #[test]
@@ -1296,13 +1328,19 @@ mod structured_logging_tests {
 
         let logs = capture.get_logs();
         assert!(!logs.is_empty(), "Expected log events to be emitted");
-        
+
         let rate_limit_log = logs.iter().find(|log| log.contains("Rate limit exceeded"));
         assert!(rate_limit_log.is_some(), "Expected rate limit log entry");
-        
+
         let log = rate_limit_log.unwrap();
-        assert!(log.contains("user_id=\"bob\"") || log.contains("bob"), "Log should contain user_id");
-        assert!(log.contains("endpoint=\"disable\"") || log.contains("disable"), "Log should contain endpoint");
+        assert!(
+            log.contains("user_id=\"bob\"") || log.contains("bob"),
+            "Log should contain user_id"
+        );
+        assert!(
+            log.contains("endpoint=\"disable\"") || log.contains("disable"),
+            "Log should contain endpoint"
+        );
     }
 
     #[test]
@@ -1321,14 +1359,23 @@ mod structured_logging_tests {
         assert!(result.is_blocked());
 
         let logs = capture.get_logs();
-        let log = logs.iter().find(|log| log.contains("Rate limit exceeded")).unwrap();
+        let log = logs
+            .iter()
+            .find(|log| log.contains("Rate limit exceeded"))
+            .unwrap();
 
         // Verify all required fields are present
         assert!(log.contains("user_id="), "Log should contain user_id field");
-        assert!(log.contains("endpoint="), "Log should contain endpoint field");
+        assert!(
+            log.contains("endpoint="),
+            "Log should contain endpoint field"
+        );
         assert!(log.contains("key="), "Log should contain key field");
         assert!(log.contains("limit="), "Log should contain limit field");
-        assert!(log.contains("window_secs="), "Log should contain window_secs field");
+        assert!(
+            log.contains("window_secs="),
+            "Log should contain window_secs field"
+        );
     }
 
     #[test]
@@ -1365,7 +1412,7 @@ mod structured_logging_tests {
             .set_default();
 
         let limiter = InMemoryRateLimiter::new(1, 60, 300);
-        
+
         // Use a key that might contain sensitive data
         let key = "login:user123:token123456";
 
@@ -1373,7 +1420,7 @@ mod structured_logging_tests {
         limiter.record_failure(key);
 
         let logs = capture.get_logs();
-        
+
         // Ensure the full key is logged (which is fine for debugging)
         // but verify no actual TOTP tokens or recovery codes are logged
         for log in logs.iter() {
@@ -1382,10 +1429,13 @@ mod structured_logging_tests {
                 // This is acceptable - we log the rate limit key
                 continue;
             }
-            
+
             // But we should never log patterns that look like actual tokens
             assert!(!log.contains("TOTP:"), "Should not log TOTP tokens");
-            assert!(!log.contains("recovery_code:"), "Should not log recovery codes");
+            assert!(
+                !log.contains("recovery_code:"),
+                "Should not log recovery codes"
+            );
         }
     }
 
@@ -1405,10 +1455,16 @@ mod structured_logging_tests {
         assert!(result.is_blocked());
 
         let logs = capture.get_logs();
-        let log = logs.iter().find(|log| log.contains("Rate limit exceeded")).unwrap();
+        let log = logs
+            .iter()
+            .find(|log| log.contains("Rate limit exceeded"))
+            .unwrap();
 
         // The tenant information is in the key, which is logged
-        assert!(log.contains("tenant_a"), "Log should contain tenant information");
+        assert!(
+            log.contains("tenant_a"),
+            "Log should contain tenant information"
+        );
         assert!(log.contains("verify"), "Log should contain action/endpoint");
         assert!(log.contains("user42"), "Log should contain user_id");
     }

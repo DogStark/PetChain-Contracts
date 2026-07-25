@@ -66,7 +66,10 @@ fn test_set_error_message_multiple_languages() {
     let es_message = client.get_error_message(&3, &String::from_str(&env, "es"));
 
     assert_eq!(en_message, Some(String::from_str(&env, "Pet not found")));
-    assert_eq!(es_message, Some(String::from_str(&env, "Mascota no encontrada")));
+    assert_eq!(
+        es_message,
+        Some(String::from_str(&env, "Mascota no encontrada"))
+    );
 }
 
 #[test]
@@ -125,7 +128,10 @@ fn test_overwrite_existing_message() {
 
     // Retrieve the updated message
     let message = client.get_error_message(&3, &String::from_str(&env, "en"));
-    assert_eq!(message, Some(String::from_str(&env, "Pet record not found in database")));
+    assert_eq!(
+        message,
+        Some(String::from_str(&env, "Pet record not found in database"))
+    );
 }
 
 // --- BATCH OPERATIONS ---
@@ -159,7 +165,10 @@ fn test_batch_set_error_messages() {
     let msg1_es = client.get_error_message(&1, &String::from_str(&env, "es"));
 
     assert_eq!(msg1_en, Some(String::from_str(&env, "Unauthorized")));
-    assert_eq!(msg2_en, Some(String::from_str(&env, "Admin not initialized")));
+    assert_eq!(
+        msg2_en,
+        Some(String::from_str(&env, "Admin not initialized"))
+    );
     assert_eq!(msg1_es, Some(String::from_str(&env, "No autorizado")));
 }
 
@@ -180,7 +189,10 @@ fn test_initialize_error_messages() {
     let msg_es = client.get_error_message(&3, &String::from_str(&env, "es"));
 
     assert_eq!(msg_en, Some(String::from_str(&env, "Pet not found")));
-    assert_eq!(msg_es, Some(String::from_str(&env, "Mascota no encontrada")));
+    assert_eq!(
+        msg_es,
+        Some(String::from_str(&env, "Mascota no encontrada"))
+    );
 }
 
 // --- REMOVE MESSAGES ---
@@ -361,7 +373,10 @@ fn test_multiple_error_codes_same_language() {
 
     assert_eq!(msg1, Some(String::from_str(&env, "Unauthorized")));
     assert_eq!(msg3, Some(String::from_str(&env, "Pet not found")));
-    assert_eq!(msg160, Some(String::from_str(&env, "Storage quota exceeded")));
+    assert_eq!(
+        msg160,
+        Some(String::from_str(&env, "Storage quota exceeded"))
+    );
 }
 
 // --- LANGUAGE ISOLATION ---
@@ -395,7 +410,10 @@ fn test_languages_are_isolated() {
     let es_message = client.get_error_message(&3, &String::from_str(&env, "es"));
 
     assert_eq!(en_message, Some(String::from_str(&env, "Pet not found")));
-    assert_eq!(es_message, Some(String::from_str(&env, "Mascota no encontrada")));
+    assert_eq!(
+        es_message,
+        Some(String::from_str(&env, "Mascota no encontrada"))
+    );
 }
 
 // --- EDGE CASES ---
@@ -501,13 +519,19 @@ fn test_update_existing_translation() {
         &admin,
         &3,
         &String::from_str(&env, "en"),
-        &String::from_str(&env, "The requested pet record could not be found in the database"),
+        &String::from_str(
+            &env,
+            "The requested pet record could not be found in the database",
+        ),
     );
 
     let message = client.get_error_message(&3, &String::from_str(&env, "en"));
     assert_eq!(
         message,
-        Some(String::from_str(&env, "The requested pet record could not be found in the database"))
+        Some(String::from_str(
+            &env,
+            "The requested pet record could not be found in the database"
+        ))
     );
 }
 // Append-only addition for issue #793
@@ -526,7 +550,10 @@ fn test_batch_set_error_messages_at_limit_succeeds() {
 
     client.batch_set_error_messages(&admin, &messages);
 
-    let msg = client.get_error_message(&(MAX_BATCH_ERROR_MESSAGES as u32 - 1), &String::from_str(&env, "en"));
+    let msg = client.get_error_message(
+        &(MAX_BATCH_ERROR_MESSAGES as u32 - 1),
+        &String::from_str(&env, "en"),
+    );
     assert_eq!(msg, Some(String::from_str(&env, "Test message")));
 }
 
