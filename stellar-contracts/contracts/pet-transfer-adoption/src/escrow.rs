@@ -290,6 +290,12 @@ mod tests {
     use crate::PetOwnershipContract;
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
+    // Storage access requires a contract context in tests, so setup
+    // registers a contract and tests run inside env.as_contract.
+    fn setup() -> (Env, Address, Address, Address, Address) {
+        let env      = Env::default();
+        env.mock_all_auths();
+        let contract = env.register_contract(None, crate::PetOwnershipContract);
     fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
@@ -309,6 +315,8 @@ mod tests {
 
     #[test]
     fn deposit_creates_held_entry() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
         let (env, buyer, seller, platform) = setup();
         init_escrow_config(&env, 250, platform);
         deposit_fee(&env, 1, buyer.clone(), seller, 10_000_000);
@@ -329,6 +337,8 @@ mod tests {
 
     #[test]
     fn finalize_sets_released() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 250, platform);
@@ -346,6 +356,8 @@ mod tests {
 
     #[test]
     fn refund_sets_refunded() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 100, platform);
@@ -358,6 +370,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn cannot_finalize_twice() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 100, platform);
@@ -370,6 +384,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn cannot_refund_after_release() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 100, platform);
@@ -381,6 +397,13 @@ mod tests {
 
     #[test]
     fn dispute_freezes_escrow() {
+        let (env, contract, buyer, seller, platform) = setup();
+        // require_auth may only run once per frame; each call gets its own.
+        env.as_contract(&contract, || {
+            init_escrow_config(&env, 100, platform);
+            deposit_fee(&env, 6, buyer.clone(), seller, 2_000_000);
+        });
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 100, platform);
@@ -394,6 +417,12 @@ mod tests {
 
     #[test]
     fn refund_works_from_disputed() {
+        let (env, contract, buyer, seller, platform) = setup();
+        env.as_contract(&contract, || {
+            init_escrow_config(&env, 100, platform);
+            deposit_fee(&env, 7, buyer.clone(), seller, 3_000_000);
+        });
+        env.as_contract(&contract, || {
         let (env, cid, buyer, seller, platform) = setup();
         env.as_contract(&cid, || {
             init_escrow_config(&env, 100, platform);

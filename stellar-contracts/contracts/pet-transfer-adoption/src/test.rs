@@ -1,5 +1,7 @@
 use super::{
     AdoptionState, ContractError, CustodyEntry, DataKey, EscrowedTransfer, OwnershipRecord,
+    PetOwnershipContract, PetOwnershipContractClient, TransferType, TrustedUpdateApprovalKey,
+    DISPUTE_WINDOW_SECONDS,
     PetOwnershipContract, PetOwnershipContractClient, TransferType, DISPUTE_WINDOW_SECONDS,
     MAX_REJECTION_REASON_LEN,
     MAX_CUSTODY_CHAIN_LENGTH,
@@ -250,6 +252,43 @@ fn trusted_contract_update_rejects_non_admin_signer() {
 }
 
 #[test]
+fn trusted_update_approvals_are_keyed_by_proposal_then_approver() {
+    let (env, admin_one, admin_two, _) = setup();
+    let trusted = Address::generate(&env);
+    let proposal = Address::generate(&env);
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let admins = address_vec(&env, &[admin_one.clone(), admin_two.clone()]);
+
+    client.init_trusted_contract(&trusted, &admins, &2);
+    assert!(!client.update_trusted_contract(&proposal, &admin_one));
+
+    env.as_contract(&contract_id, || {
+        let stored: Option<bool> = env.storage().instance().get(
+            &DataKey::TrustedUpdateApproval(TrustedUpdateApprovalKey {
+                proposal: proposal.clone(),
+                approver: admin_one.clone(),
+            }),
+        );
+        assert_eq!(stored, Some(true));
+
+        // A swapped key must not resolve to the stored approval.
+        let swapped: Option<bool> = env.storage().instance().get(
+            &DataKey::TrustedUpdateApproval(TrustedUpdateApprovalKey {
+                proposal: admin_one.clone(),
+                approver: proposal.clone(),
+            }),
+        );
+        assert_eq!(swapped, None);
+    });
+
+    // The second approval is collected under the same ordering and
+    // reaches the threshold.
+    assert!(client.update_trusted_contract(&proposal, &admin_two));
+    assert_eq!(client.get_trusted_contract_address(), proposal);
+}
+
+#[test]
 fn get_owner_pets_returns_all_pets_for_owner() {
     let (env, owner, new_owner, _) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
@@ -442,6 +481,7 @@ fn batch_initiate_transfer_single_element_behaves_like_initiate_transfer() {
     assert_eq!(transfer.from, owner);
     assert_eq!(transfer.to, new_owner);
     assert_eq!(transfer.pet_id, pet_id);
+    assert_eq!(transfer.timeout_secs, 7 * 24 * 60 * 60);
 }
 
 #[test]
