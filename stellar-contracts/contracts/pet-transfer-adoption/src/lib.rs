@@ -12,6 +12,14 @@ use soroban_sdk::{
 /// so it is independent of ledger sequence numbers.
 pub const TRANSFER_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
 
+/// Maximum number of `CustodyEntry` items retained per pet.
+///
+/// The custody chain is stored as a single persistent entry, so an unbounded
+/// `Vec` would eventually exceed the XDR serialisation limit and make every
+/// further transfer panic. Once the cap is reached the oldest entries are
+/// dropped so transfers keep working.
+pub const MAX_CUSTODY_CHAIN_LENGTH: u32 = 256;
+
 /// Dispute window: after both parties sign, either party has 48 hours to raise
 /// a dispute before [`finalize_transfer`] may be called.
 pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
@@ -267,6 +275,10 @@ fn append_custody_entry(
         timestamp: env.ledger().timestamp(),
         transfer_type,
     });
+    // Keep only the most recent MAX_CUSTODY_CHAIN_LENGTH entries.
+    if chain.len() > MAX_CUSTODY_CHAIN_LENGTH {
+        chain = chain.slice(chain.len() - MAX_CUSTODY_CHAIN_LENGTH..);
+    }
     env.storage()
         .persistent()
         .set(&DataKey::CustodyChain(pet_id), &chain);
