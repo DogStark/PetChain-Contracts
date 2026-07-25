@@ -12,7 +12,6 @@ pub mod rate_limiter;
 pub mod tracing_middleware;
 pub mod two_factor;
 pub mod webhooks;
-pub mod migrations;
 #[cfg(feature = "redis-store")]
 pub mod redis_store;
 

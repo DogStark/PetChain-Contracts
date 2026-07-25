@@ -1390,10 +1390,6 @@ impl MultiTenantHandlers {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
         let max_failures = self.store.config.rate_limit_max_failures;
-        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
-        if let RateLimitResult::Blocked {
-            retry_after_secs, ..
-        } = self.limiter.record_failure(key.as_str())
         let tenant_id = self.store.config.tenant_id.clone();
         let key = format!("verify:{user_id}");
         if let RateLimitResult::Blocked { retry_after_secs, .. } =
@@ -1431,10 +1427,6 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "disable", user_id);
-        if let RateLimitResult::Blocked {
-            retry_after_secs, ..
-        } = self.limiter.record_failure(key.as_str())
         let tenant_id = self.store.config.tenant_id.clone();
         let key = format!("disable:{user_id}");
         if let RateLimitResult::Blocked { retry_after_secs, .. } =
