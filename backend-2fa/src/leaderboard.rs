@@ -732,6 +732,11 @@ mod tests {
         3_000_000
     }
 
+    /// `LEADERBOARD_WS_AUTH_TOKEN` is process-global, and `cargo test` runs
+    /// tests in parallel threads by default, so any test that sets/clears it
+    /// must hold this lock for its whole body to avoid racing with the others.
+    static WS_AUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn sales() -> Vec<TicketSale> {
         vec![
             TicketSale {
@@ -803,7 +808,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, None, &config);
+        let result = validate_score_submission(&submission, None, &config, None);
         assert!(result.is_ok());
     }
 
@@ -816,7 +821,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -829,7 +834,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -842,9 +847,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -857,9 +863,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_err());
 
         if let Err(ScoreSubmissionError::SuspiciousScore {
@@ -885,9 +892,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(2000), &config);
+        let result = validate_score_submission(&submission, Some(2000), &config, None);
         assert!(result.is_err());
     }
 
@@ -900,7 +908,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(500), &config);
+        let result = validate_score_submission(&submission, Some(500), &config, None);
         assert!(result.is_ok());
     }
 
@@ -913,9 +921,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 10000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(500), &config);
+        let result = validate_score_submission(&submission, Some(500), &config, None);
         assert!(result.is_ok());
     }
 
@@ -928,9 +937,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 100,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(100), &config);
+        let result = validate_score_submission(&submission, Some(100), &config, None);
         assert!(result.is_ok());
     }
 
@@ -1245,6 +1255,7 @@ mod tests {
 
     #[test]
     fn auth_passes_with_correct_token() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(validate_ws_auth_token(Some("Bearer supersecret")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1252,6 +1263,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_wrong_token() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Bearer wrongtoken")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1259,6 +1271,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_missing_header() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(None));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1266,6 +1279,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_empty_bearer_value() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Bearer ")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1273,6 +1287,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_non_bearer_scheme() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Basic supersecret")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1280,12 +1295,14 @@ mod tests {
 
     #[test]
     fn auth_passes_any_non_empty_token_when_env_unset() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
         assert!(validate_ws_auth_token(Some("Bearer anytoken")));
     }
 
     #[test]
     fn auth_fails_missing_header_even_when_env_unset() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
         assert!(!validate_ws_auth_token(None));
     }
@@ -1542,9 +1559,11 @@ mod tests {
     #[test]
     fn test_borderline_score_at_threshold() {
         let config = ScoreValidationConfig::default();
+        // History [100, 105, 98, 102, 101] has mean 101.2, std_dev ~2.315.
+        // 108 sits at z ~= 2.94, just under the default max_z_score of 3.0.
         let submission = ScoreSubmission {
             user_id: "user1".to_string(),
-            score: 200,
+            score: 108,
             timestamp: 1000,
         };
 

@@ -3,7 +3,7 @@ use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
 use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::rate_limiter::{
-    InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+    InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
@@ -1308,6 +1308,8 @@ pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProvisionTenantRequest {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
 }
@@ -1315,6 +1317,8 @@ pub struct ProvisionTenantRequest {
 #[derive(Debug, Serialize)]
 pub struct ProvisionTenantResponse {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
     /// `true` if `tenant_id` already existed and this call returned the
@@ -1322,6 +1326,61 @@ pub struct ProvisionTenantResponse {
     /// infrastructure automation safely retry `POST /tenant/provision`
     /// without erroring or creating duplicates.
     pub already_existed: bool,
+}
+
+/// Maximum length for `TenantConfig::tenant_id`.
+const MAX_TENANT_ID_LEN: usize = 64;
+/// Maximum length for `TenantConfig::name`.
+const MAX_TENANT_NAME_LEN: usize = 128;
+
+/// Validates a [`TenantConfig`] before it is persisted by `provision_tenant`.
+///
+/// - `tenant_id`: non-empty, at most 64 characters, alphanumeric plus hyphens only.
+/// - `max_users`: must be >= 1.
+/// - `name`: non-empty, at most 128 characters.
+///
+/// On failure, returns a `BAD_REQUEST` [`ApiError`] naming the offending field
+/// in `details.field`.
+fn validate_tenant_config(config: &TenantConfig) -> Result<(), ApiError> {
+    let bad_field = |field: &str, message: String| {
+        ApiError::bad_request(message, Some(serde_json::json!({ "field": field })))
+    };
+
+    if config.tenant_id.is_empty() {
+        return Err(bad_field("tenant_id", "tenant_id must not be empty".into()));
+    }
+    if config.tenant_id.len() > MAX_TENANT_ID_LEN {
+        return Err(bad_field(
+            "tenant_id",
+            format!("tenant_id must be at most {MAX_TENANT_ID_LEN} characters"),
+        ));
+    }
+    if !config
+        .tenant_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(bad_field(
+            "tenant_id",
+            "tenant_id must contain only alphanumeric characters and hyphens".into(),
+        ));
+    }
+
+    if config.max_users < 1 {
+        return Err(bad_field("max_users", "max_users must be >= 1".into()));
+    }
+
+    if config.name.is_empty() {
+        return Err(bad_field("name", "name must not be empty".into()));
+    }
+    if config.name.len() > MAX_TENANT_NAME_LEN {
+        return Err(bad_field(
+            "name",
+            format!("name must be at most {MAX_TENANT_NAME_LEN} characters"),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Handlers that operate within a single tenant's namespace.
@@ -1389,15 +1448,10 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let max_failures = self.store.config.rate_limit_max_failures;
         let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("verify:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
@@ -1408,7 +1462,6 @@ impl MultiTenantHandlers {
             )
             .to_string());
         }
-        let _ = max_failures; // per-tenant config available for custom limiter wiring
 
         let data = self.store.get(user_id)?;
         let result = TwoFactorAuth::verify_token_with_config(
@@ -1418,7 +1471,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, true)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1435,10 +1488,6 @@ impl MultiTenantHandlers {
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("disable:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
@@ -1461,7 +1510,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, false)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1488,16 +1537,24 @@ impl TenantProvisioningHandlers {
         &self,
         _super_admin: &AuthenticatedAdmin,
         req: ProvisionTenantRequest,
-    ) -> Result<ProvisionTenantResponse, String> {
+    ) -> Result<ProvisionTenantResponse, ApiError> {
         let config = TenantConfig {
             tenant_id: req.tenant_id.clone(),
+            name: req.name.clone(),
+            max_users: req.max_users,
             totp_issuer: req.totp_issuer.clone(),
             rate_limit_max_failures: req.rate_limit_max_failures,
             lockout_threshold: 10,
         };
-        let (existing_or_new, already_existed) = self.registry.provision(config)?;
+        validate_tenant_config(&config)?;
+        let (existing_or_new, already_existed) = self
+            .registry
+            .provision(config)
+            .map_err(|e| ApiError::internal_error(e, None))?;
         Ok(ProvisionTenantResponse {
             tenant_id: existing_or_new.tenant_id,
+            name: existing_or_new.name,
+            max_users: existing_or_new.max_users,
             totp_issuer: existing_or_new.totp_issuer,
             rate_limit_max_failures: existing_or_new.rate_limit_max_failures,
             already_existed,

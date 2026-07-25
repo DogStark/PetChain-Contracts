@@ -127,6 +127,7 @@ fn load_encryption_key(provider: &dyn SecretProvider) -> Result<[u8; 32], String
         .map_err(|_| "TOTP_ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string())
 }
 
+#[derive(Debug)]
 pub struct PostgresTwoFactorStore {
     pool: PgPool,
     runtime: Arc<Runtime>,
@@ -158,16 +159,17 @@ impl PostgresTwoFactorStore {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
 
+        // sqlx's pool has a single `acquire_timeout` covering both "wait for
+        // a free slot" and "make the initial TCP connection" — apply the
+        // tighter of the two configured bounds so either one is honored.
+        let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
+
         let pool = runtime
             .block_on(
                 PgPoolOptions::new()
                     .min_connections(min_conns)
                     .max_connections(max_conns)
-                    .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
-                    // connect_timeout governs each individual TCP connection
-                    // attempt, distinct from acquire_timeout which governs
-                    // waiting for a free slot in an already-built pool.
-                    .connect_timeout(Duration::from_secs(connect_timeout_secs))
+                    .acquire_timeout(Duration::from_secs(effective_timeout_secs))
                     .connect(database_url),
             )
             .map_err(|e| format!(
@@ -690,6 +692,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 locked: r.locked,
                 locked_at: r.locked_at.map(|ts| ts as u64),
                 updated_at: r.updated_at as u64,
+                // The Postgres-backed store does not yet persist a
+                // progressive-delay retry timestamp column.
+                retry_after_timestamp: None,
             })
             .unwrap_or_default())
     }
