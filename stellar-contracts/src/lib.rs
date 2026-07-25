@@ -177,6 +177,7 @@ mod test_remove_admin;
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
+#[cfg(test)]
 mod test_upgrade_proposal;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
