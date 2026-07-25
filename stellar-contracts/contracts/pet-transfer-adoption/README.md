@@ -52,7 +52,8 @@ Creates the initial pet record and ownership history entry.
 - Auth: `owner.require_auth()`
 - Writes:
   - `DataKey::Pet(pet_id)`
-  - `DataKey::OwnershipHistory(pet_id)`
+  - `DataKey::OwnershipCount(pet_id)` (set to 1)
+  - `DataKey::OwnershipEntry((pet_id, 1))`
 - Notes:
   - The initial history record uses the current ledger timestamp as `acquired_at`.
   - This function is intended as the bootstrap step before transfers.
@@ -110,7 +111,10 @@ Returns the current owner for `pet_id`.
 
 ### `get_ownership_history(env: Env, pet_id: u64) -> Vec<OwnershipRecord>`
 
-Returns the ownership history vector for `pet_id`.
+Returns the ownership history for `pet_id` using a paginated index pattern.
+Entries are stored individually at `DataKey::OwnershipEntry((pet_id, seq))` with
+a count tracked at `DataKey::OwnershipCount(pet_id)`. The history is capped at
+`MAX_OWNERSHIP_HISTORY_LEN` (512) entries; oldest entries are trimmed on save.
 
 ### `has_pending_transfer(env: Env, pet_id: u64) -> bool`
 
@@ -153,6 +157,7 @@ Returns the current pending transfer, or `None` if there is no active transfer.
 | 7 | `MissingOwnershipRecord` | The latest ownership record could not be loaded. |
 | 8 | `TransferNotExpired` | `reclaim_transfer` was called before the expiry window elapsed. |
 | 9 | `StaleCancellation` | The sender tried to cancel a transfer after the pet owner had changed. |
+| 32 | `InputStringTooLong` | A string argument exceeded its maximum allowed length. |
 
 ## Transfer Expiry Policy
 
