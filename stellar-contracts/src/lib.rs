@@ -6370,6 +6370,60 @@ impl PetChainContract {
         lab_id
     }
 
+    pub fn get_lab_results(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+        from_timestamp: Option<u64>,
+        to_timestamp: Option<u64>,
+    ) -> Vec<LabResult> {
+        if let (Some(from), Some(to)) = (from_timestamp, to_timestamp) {
+            if from > to {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
+
+        let lab_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+        let mut included_count = 0u64;
+
+        for i in 1..=lab_count {
+            if included_count >= limit as u64 {
+                break;
+            }
+
+            if let Some(lab_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(lab) = PetChainContract::get_lab_result(env.clone(), lab_id) {
+                    let in_range = match (from_timestamp, to_timestamp) {
+                        (Some(from), Some(to)) => lab.date >= from && lab.date <= to,
+                        (Some(from), None) => lab.date >= from,
+                        (None, Some(to)) => lab.date <= to,
+                        (None, None) => true,
+                    };
+
+                    if in_range {
+                        if included_count >= offset {
+                            result.push_back(lab);
+                        }
+                        included_count += 1;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
         if let Some(record) = env
             .storage()
