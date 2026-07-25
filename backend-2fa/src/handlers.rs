@@ -186,6 +186,7 @@ pub struct RecoverWithBackupResponse {
     pub new_secret: String,
     pub new_otpauth_uri: String,
     pub new_backup_codes: Vec<String>,
+    pub new_recovery_codes: Vec<String>,
     pub enabled: bool,
 }
 
@@ -658,10 +659,12 @@ impl TwoFactorHandlers {
             .unlock_two_fa_account(&req.user_id, "recovery_code")
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        let new_codes = setup.backup_codes.clone();
         Ok(RecoverWithBackupResponse {
             new_secret: setup.secret,
             new_otpauth_uri: setup.otpauth_uri,
-            new_backup_codes: setup.backup_codes,
+            new_backup_codes: new_codes.clone(),
+            new_recovery_codes: new_codes,
             enabled: true,
         })
     }

@@ -121,6 +121,7 @@ pub struct TwoFactorData {
 pub struct RecoveryResult {
     pub new_secret: String,
     pub new_backup_codes: Vec<String>,
+    pub new_recovery_codes: Vec<String>,
     pub enabled: bool,
 }
 
