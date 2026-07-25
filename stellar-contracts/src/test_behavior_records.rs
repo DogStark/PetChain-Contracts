@@ -95,7 +95,10 @@ fn test_get_behavior_records_type_filter() {
     assert_eq!(training.items.len(), 2);
     assert_eq!(training.total, 2);
     for i in 0..training.items.len() {
-        assert_eq!(training.items.get(i).unwrap().behavior_type, BehaviorType::Training);
+        assert_eq!(
+            training.items.get(i).unwrap().behavior_type,
+            BehaviorType::Training
+        );
     }
 
     let aggression = client.get_behavior_records(
@@ -134,24 +137,14 @@ fn test_get_behavior_records_pagination_with_type_filter() {
     }
 
     // Page size 3 on Training → 3 of 4
-    let page = client.get_behavior_records(
-        &pet_id,
-        &owner,
-        &0u32,
-        &3u32,
-        &Some(BehaviorType::Training),
-    );
+    let page =
+        client.get_behavior_records(&pet_id, &owner, &0u32, &3u32, &Some(BehaviorType::Training));
     assert_eq!(page.items.len(), 3);
     assert_eq!(page.total, 4);
 
     // Second page of Training → 1 remaining
-    let page2 = client.get_behavior_records(
-        &pet_id,
-        &owner,
-        &1u32,
-        &3u32,
-        &Some(BehaviorType::Training),
-    );
+    let page2 =
+        client.get_behavior_records(&pet_id, &owner, &1u32, &3u32, &Some(BehaviorType::Training));
     assert_eq!(page2.items.len(), 1);
     assert_eq!(page2.total, 4);
 }

@@ -1,6 +1,7 @@
 use crate::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Ledger},
     Address, Env, String, Vec,
 };
 
@@ -199,6 +200,8 @@ fn test_purge_before_retention_rejected() {
 
     // Advance only 1 day — default retention is 30 days
     env.ledger().with_mut(|l| l.timestamp = 1_700_000_000 + 86_400);
+    env.ledger()
+        .with_mut(|l| l.timestamp = 1_700_000_000 + 86_400);
     client.purge_expired_records(&pet_id, &owner); // should panic
 }
 
@@ -215,13 +218,11 @@ fn test_owner_purge_after_retention_succeeds() {
 
     client.delete_medical_record(&pet_id, &rid, &owner);
 
-    // Advance past default 30-day retention
     env.ledger()
         .with_mut(|l| l.timestamp = 1_700_000_000 + 31 * 86_400);
     let purged = client.purge_expired_records(&pet_id, &owner);
     assert_eq!(purged, 1);
 
-    // Record is gone from storage entirely
     assert!(client.get_medical_record(&rid).is_none());
 }
 
