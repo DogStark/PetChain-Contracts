@@ -161,6 +161,7 @@ mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_nutrition_plan;
 #[cfg(test)]
+mod test_attachment_limit;
 mod test_search_medical_records;
 mod test_insurance_eligibility;
 mod test_breeding;
@@ -191,6 +192,12 @@ const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
 const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
 const MAX_BATCH_ERROR_MESSAGES: usize = 50;
+/// Maximum number of attachments allowed on a single medical record.
+///
+/// Each attachment consumes a ledger entry, so an unbounded count would let an
+/// adversarial or buggy client flood one record and silently exhaust the pet
+/// owner's storage quota. `add_attachment` enforces this cap. (Issue #774)
+const MAX_ATTACHMENTS_PER_RECORD: u32 = 20;
 
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
@@ -8051,6 +8058,92 @@ impl PetChainContract {
 
         let _ = pet_id;
         Some(record.notes.clone())
+    }
+
+    // --- ATTACHMENT MANAGEMENT ---
+
+    /// Add an attachment to a medical record.
+    ///
+    /// Only the vet who created the record may add attachments. The number of
+    /// attachments per record is capped at [`MAX_ATTACHMENTS_PER_RECORD`]; a
+    /// request that would exceed the cap fails with
+    /// [`ContractError::StorageQuotaExceeded`] so a single record cannot be
+    /// flooded to silently exhaust the owner's storage quota (Issue #774).
+    pub fn add_attachment(
+        env: Env,
+        record_id: u64,
+        ipfs_hash: String,
+        metadata: AttachmentMetadata,
+        content_hash: BytesN<32>,
+    ) -> bool {
+        // Validate the IPFS hash format up-front.
+        if let Err(e) = Self::validate_ipfs_hash(&env, &ipfs_hash) {
+            panic_with_error!(&env, e);
+        }
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        // Only the authoring vet can attach files to the record.
+        record.vet_address.require_auth();
+
+        // Validate metadata.
+        if metadata.filename.len() == 0
+            || metadata.file_type.len() == 0
+            || metadata.size == 0
+        {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        // Enforce the per-record attachment cap before inserting so the count
+        // can never exceed MAX_ATTACHMENTS_PER_RECORD.
+        if record.attachment_hashes.len() >= MAX_ATTACHMENTS_PER_RECORD {
+            panic_with_error!(&env, ContractError::StorageQuotaExceeded);
+        }
+
+        let attachment = Attachment {
+            ipfs_hash,
+            metadata,
+            content_hash,
+            scan_result: None,
+        };
+
+        record.attachment_hashes.push_back(attachment);
+        record.updated_at = env.ledger().timestamp();
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+
+        Self::log_access(
+            &env,
+            record.pet_id,
+            record.vet_address,
+            AccessAction::Write,
+            String::from_str(&env, "Attachment added to medical record"),
+        );
+
+        true
+    }
+
+    /// Return all attachments for a medical record (empty if it does not exist).
+    pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
+        match Self::get_medical_record(env.clone(), record_id) {
+            Some(record) => record.attachment_hashes,
+            None => Vec::new(&env),
+        }
+    }
+
+    /// Return the number of attachments on a medical record (0 if it does not
+    /// exist). Used to enforce [`MAX_ATTACHMENTS_PER_RECORD`].
+    pub fn get_attachment_count(env: Env, record_id: u64) -> u32 {
+        match Self::get_medical_record(env, record_id) {
+            Some(record) => record.attachment_hashes.len(),
+            None => 0,
+        }
     }
 
     fn log_ownership_change(
