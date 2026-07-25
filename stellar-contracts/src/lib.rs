@@ -178,6 +178,8 @@ mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_disputes;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
