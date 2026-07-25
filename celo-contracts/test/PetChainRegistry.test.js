@@ -842,4 +842,78 @@ describe("PetChainRegistry", function () {
       expect(await registry.isPetActive(9999)).to.equal(false);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #920 — correctMedicalRecord
+  // ---------------------------------------------------------------------------
+  describe("#920 — correctMedicalRecord", function () {
+    let petId, recordId;
+
+    beforeEach(async function () {
+      petId = await registerPet();
+      const tx = await registry.connect(vet).addMedicalRecord(
+        petId, "wrong diagnosis", "wrong treatment", "wrong notes"
+      );
+      const receipt = await tx.wait();
+      const event = receipt.logs.find(
+        l => l.fragment && l.fragment.name === "MedicalRecordAdded"
+      );
+      recordId = event.args.recordId;
+    });
+
+    it("original vet can correct the record and emits MedicalRecordCorrected", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "correct diagnosis", "correct treatment", "correct notes"
+        )
+      )
+        .to.emit(registry, "MedicalRecordCorrected")
+        .withArgs(
+          recordId, vet.address,
+          "wrong diagnosis", "wrong treatment", "wrong notes",
+          "correct diagnosis", "correct treatment", "correct notes"
+        );
+
+      const records = await registry.getPetRecords(petId);
+      expect(records[0].diagnosis).to.equal("correct diagnosis");
+      expect(records[0].treatment).to.equal("correct treatment");
+      expect(records[0].notes).to.equal("correct notes");
+    });
+
+    it("admin can correct the record", async function () {
+      await expect(
+        registry.connect(admin).correctMedicalRecord(
+          recordId, "admin fix", "admin treatment", ""
+        )
+      ).to.emit(registry, "MedicalRecordCorrected");
+    });
+
+    it("unauthorized caller cannot correct the record", async function () {
+      await expect(
+        registry.connect(other).correctMedicalRecord(
+          recordId, "hack", "hack", ""
+        )
+      ).to.be.revertedWith("PetChainRegistry: not authorized");
+    });
+
+    it("reverts on empty diagnosis", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(recordId, "", "treatment", "")
+      ).to.be.revertedWith("PetChainRegistry: invalid diagnosis length");
+    });
+
+    it("reverts on empty treatment", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(recordId, "diagnosis", "", "")
+      ).to.be.revertedWith("PetChainRegistry: invalid treatment length");
+    });
+
+    it("reverts on notes over MAX_LONG_LEN", async function () {
+      await expect(
+        registry.connect(vet).correctMedicalRecord(
+          recordId, "diagnosis", "treatment", "a".repeat(1001)
+        )
+      ).to.be.revertedWith("PetChainRegistry: notes too long");
+    });
+  });
 });
