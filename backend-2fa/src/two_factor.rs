@@ -326,6 +326,7 @@ pub struct TwoFactorLockoutState {
     pub locked: bool,
     pub locked_at: Option<u64>,
     pub updated_at: u64,
+    pub retry_after_timestamp: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -452,6 +453,13 @@ pub trait TwoFactorStore: Send + Sync {
     /// session_id, or if `revoke_all_sessions` was called for this user
     /// and `issued_at` predates that revocation.
     fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool;
+
+    /// Check if a retry_after delay is in effect for this user.
+    /// Returns Ok(()) if delay has expired or doesn't exist.
+    /// Returns Err with "retry_after:N" (N = seconds remaining) if delay is active.
+    fn check_retry_after(&self, user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// In-memory implementation of TwoFactorStore for testing
@@ -990,6 +998,8 @@ impl TwoFactorStore for InMemoryStore {
         user_id: &str,
         lockout_threshold: u32,
     ) -> Result<TwoFactorLockoutState, String> {
+        use crate::rate_limiter::progressive_delay_secs;
+
         let mut lockouts = self.lockouts.lock().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -998,6 +1008,11 @@ impl TwoFactorStore for InMemoryStore {
         let state = lockouts.entry(user_id.to_string()).or_default();
         state.failed_attempts = state.failed_attempts.saturating_add(1);
         state.updated_at = now;
+
+        if let Some(delay_secs) = progressive_delay_secs(state.failed_attempts) {
+            state.retry_after_timestamp = Some(now + delay_secs);
+        }
+
         if state.failed_attempts >= lockout_threshold {
             state.locked = true;
             state.locked_at = Some(now);
@@ -1007,6 +1022,24 @@ impl TwoFactorStore for InMemoryStore {
 
     fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
         self.lockouts.lock().unwrap().remove(user_id);
+        Ok(())
+    }
+
+    fn check_retry_after(&self, user_id: &str) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let lockouts = self.lockouts.lock().unwrap();
+        if let Some(state) = lockouts.get(user_id) {
+            if let Some(retry_at) = state.retry_after_timestamp {
+                if now < retry_at {
+                    let retry_after_secs = retry_at - now;
+                    return Err(format!("retry_after:{}", retry_after_secs));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1237,6 +1270,61 @@ impl TenantRegistry {
     }
 }
 
+#[cfg(test)]
+mod progressive_delay_tests {
+    use super::*;
+
+    #[test]
+    fn test_first_failure_no_delay() {
+        let store = InMemoryStore::default();
+        let state = store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("record_failed_two_fa_attempt failed");
+
+        assert_eq!(state.failed_attempts, 1);
+        assert!(state.retry_after_timestamp.is_none(), "First attempt should have no delay");
+
+        let check = store.check_retry_after("user1");
+        assert!(check.is_ok(), "First attempt should pass retry_after check");
+    }
+
+    #[test]
+    fn test_third_failure_has_delay() {
+        let store = InMemoryStore::default();
+        store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("first attempt failed");
+        store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("second attempt failed");
+        let state = store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("third attempt failed");
+
+        assert_eq!(state.failed_attempts, 3);
+        assert!(state.retry_after_timestamp.is_some(), "Third attempt should have delay");
+    }
+
+    #[test]
+    fn test_attempt_before_delay_expires_returns_error() {
+        let store = InMemoryStore::default();
+        store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("first attempt failed");
+        store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("second attempt failed");
+        let state = store
+            .record_failed_two_fa_attempt("user1", 10)
+            .expect("third attempt failed");
+
+        assert!(state.retry_after_timestamp.is_some());
+
+        let check = store.check_retry_after("user1");
+        assert!(check.is_err(), "Should return error when retry_after delay is active");
+
+        if let Err(msg) = check {
+            assert!(msg.starts_with("retry_after:"), "Error should contain retry_after value");
 // ---------------------------------------------------------------------------
 // Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
 // ---------------------------------------------------------------------------

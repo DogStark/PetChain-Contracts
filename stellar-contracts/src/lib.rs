@@ -161,6 +161,7 @@ mod test_medical_record_soft_delete;
 #[cfg(test)]
 mod test_nutrition_plan;
 #[cfg(test)]
+mod test_attachment_limit;
 mod test_search_medical_records;
 mod test_insurance_eligibility;
 mod test_breeding;
@@ -191,6 +192,12 @@ const MAX_LINEAGE_DEPTH: u32 = 16;
 const MAX_LOG_ENTRIES: u32 = 1_000;
 const MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
 const MAX_BATCH_ERROR_MESSAGES: usize = 50;
+/// Maximum number of attachments allowed on a single medical record.
+///
+/// Each attachment consumes a ledger entry, so an unbounded count would let an
+/// adversarial or buggy client flood one record and silently exhaust the pet
+/// owner's storage quota. `add_attachment` enforces this cap. (Issue #774)
+const MAX_ATTACHMENTS_PER_RECORD: u32 = 20;
 
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
@@ -1145,6 +1152,7 @@ pub enum SystemKey {
     // Multisig keys
     Admins,
     AdminThreshold,
+    AdminQuorumPercent,
     PendingConfig, // Issue #626: Three-phase bootstrap
     Proposal(u64),
     ProposalCount,
@@ -1783,6 +1791,7 @@ pub struct MultiSigProposal {
     pub proposed_by: Address,
     pub approvals: Vec<Address>,
     pub required_approvals: u32,
+    pub quorum_percent: u32,
     pub created_at: u64,
     pub expires_at: u64,
     pub executed: bool,
@@ -2704,19 +2713,25 @@ impl PetChainContract {
             .get::<SystemKey, Vec<Address>>(&SystemKey::Admins)
             .map(|admins| admins.len())
             .unwrap_or(1);
-        let required_approvals = env
-            .storage()
-            .instance()
-            .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
-            .unwrap_or(admin_count.max(1));
+    let required_approvals = env
+        .storage()
+        .instance()
+        .get::<SystemKey, u32>(&SystemKey::AdminThreshold)
+        .unwrap_or(admin_count.max(1));
+    let quorum_percent: u32 = env
+        .storage()
+        .instance()
+        .get(&SystemKey::AdminQuorumPercent)
+        .unwrap_or(0);
 
-        let proposal = MultiSigProposal {
-            id: proposal_id,
-            action,
-            proposed_by: proposer,
-            approvals: Vec::new(&env),
-            required_approvals,
-            created_at: now,
+    let proposal = MultiSigProposal {
+        id: proposal_id,
+        action,
+        proposed_by: proposer,
+        approvals: Vec::new(&env),
+        required_approvals,
+        quorum_percent,
+        created_at: now,
             expires_at: now.saturating_add(ttl),
             executed: false,
             state: ProposalState::Pending,
@@ -2731,6 +2746,187 @@ impl PetChainContract {
             .instance()
             .set(&SystemKey::ProposalCount, &proposal_id);
         proposal_id
+    }
+
+    /// Returns the current global storage quota. Used by governance tests
+    /// to verify that parameter changes take effect after proposal execution.
+    pub fn get_global_storage_quota(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::GlobalStorageQuota)
+            .unwrap_or(DEFAULT_STORAGE_QUOTA)
+    }
+
+    /// Fetches a multisig proposal by ID.
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+    }
+
+    /// An admin casts an approval vote on a multisig proposal.
+    ///
+    /// # Panics
+    /// - If the caller is not an admin.
+    /// - If the admin has already approved.
+    /// - If the proposal has expired.
+    /// - If the proposal is not in `Pending` state.
+    pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+
+        if proposal.state != ProposalState::Pending {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        if proposal.approvals.contains(&admin) {
+            panic_with_error!(&env, ContractError::AdminAlreadyApproved);
+        }
+
+        let was_below_threshold =
+            (proposal.approvals.len() as u32) < proposal.required_approvals;
+        proposal.approvals.push_back(admin);
+
+        // Transition to TimelockPending only on the vote that first crosses
+        // the threshold. Subsequent approvals leave the state unchanged.
+        if was_below_threshold
+            && proposal.approvals.len() as u32 >= proposal.required_approvals
+        {
+            let timelock_duration: u64 = env
+                .storage()
+                .instance()
+                .get::<SystemKey, AdminTimelockConfig>(&SystemKey::AdminTimelockConfig)
+                .map(|c| c.timelock_duration)
+                .unwrap_or(86_400); // default 24 hours
+            // Clamp timelock_end so it never exceeds expires_at.
+            proposal.timelock_end =
+                core::cmp::min(now.saturating_add(timelock_duration), proposal.expires_at);
+            proposal.state = ProposalState::TimelockPending;
+        }
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+    }
+
+    /// Executes a multisig proposal that has met the threshold and quorum
+    /// requirements and whose timelock has elapsed.
+    ///
+    /// # Quorum check
+    /// Quorum is calculated against the admin list at execution time:
+    ///   `approvals.len() >= quorum_percent * admin_count / 100`
+    /// A quorum_percent of 0 disables the quorum check entirely.
+    ///
+    /// # Panics
+    /// - If the proposal does not exist.
+    /// - If the proposal has already been executed.
+    /// - If the timelock has not elapsed.
+    /// - If the proposal has expired.
+    /// - If threshold is not met.
+    /// - If quorum is not met.
+    pub fn execute_proposal(env: Env, proposal_id: u64) {
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        let admin_list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
+
+        // Check threshold
+        if proposal.approvals.len() < proposal.required_approvals as usize {
+            panic_with_error!(&env, ContractError::ThresholdNotMet);
+        }
+
+        // Check quorum (Issue #775) — read quorum_percent from storage at
+        // execution time, not from the proposal snapshot, consistent with
+        // the admin list being read at execution time.
+        let current_quorum: u32 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::AdminQuorumPercent)
+            .unwrap_or(0);
+        if current_quorum > 0 {
+            let admin_count = admin_list.len() as u64;
+            if admin_count == 0 {
+                panic_with_error!(&env, ContractError::NoAdminsConfigured);
+            }
+            let votes_cast = proposal.approvals.len() as u64;
+            // Ceiling division so that e.g. 50 % of 3 admins = 2 votes, not 1.
+            let required_votes =
+                ((current_quorum as u64).saturating_mul(admin_count) + 99) / 100;
+            if votes_cast < required_votes {
+                panic_with_error!(&env, ContractError::QuorumNotMet);
+            }
+        }
+
+        // Must be in Executable state (timelock elapsed)
+        match proposal.state {
+            ProposalState::TimelockPending => {
+                if now < proposal.timelock_end {
+                    panic_with_error!(&env, ContractError::InvalidState);
+                }
+            }
+            ProposalState::Executable => {}
+            _ => panic_with_error!(&env, ContractError::InvalidState),
+        }
+
+        proposal.executed = true;
+        proposal.state = ProposalState::Executed;
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+
+        // Execute the proposal action
+        match &proposal.action {
+            ProposalAction::ParameterChange((key, value)) => {
+                match key {
+                    ParamKey::GlobalStorageQuota => {
+                        env.storage()
+                            .instance()
+                            .set(&DataKey::GlobalStorageQuota, &(*value));
+                    }
+                    ParamKey::HealthScoreCacheTtl => {
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::HealthScoreCacheTtl, &(*value));
+                    }
+                    ParamKey::AdminThreshold => {
+                        env.storage()
+                            .instance()
+                            .set(&SystemKey::AdminThreshold, &(*value as u32));
+                        env.events().publish(
+                            (Symbol::new(&env, "ThresholdChanged"),),
+                            *value as u32,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Appends a `StatPoint` for `key`, pruning the oldest entry when the
@@ -3570,6 +3766,37 @@ impl PetChainContract {
             (Symbol::new(&env, "ThresholdChanged"),),
             (old_threshold, new_threshold),
         );
+    }
+
+    /// Set the quorum percentage required for governance proposal execution.
+    /// `percent` is a whole-number percentage (e.g. 50 means 50% of admins
+    /// must vote). 0 disables quorum checks entirely.
+    ///
+    /// Only callable by an existing admin.
+    pub fn set_quorum_percent(env: Env, admin: Address, percent: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        if percent > 100 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        env.storage()
+            .instance()
+            .set(&SystemKey::AdminQuorumPercent, &percent);
+
+        env.events().publish(
+            (Symbol::new(&env, "QuorumPercentChanged"),),
+            percent,
+        );
+    }
+
+    /// Returns the current quorum percentage. 0 means quorum is disabled.
+    pub fn get_quorum_percent(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::AdminQuorumPercent)
+            .unwrap_or(0)
     }
 
     fn update_vet_stats(
@@ -6363,6 +6590,60 @@ impl PetChainContract {
         lab_id
     }
 
+    pub fn get_lab_results(
+        env: Env,
+        pet_id: u64,
+        offset: u64,
+        limit: u32,
+        from_timestamp: Option<u64>,
+        to_timestamp: Option<u64>,
+    ) -> Vec<LabResult> {
+        if let (Some(from), Some(to)) = (from_timestamp, to_timestamp) {
+            if from > to {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
+
+        let lab_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetLabResultCount(pet_id))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+        let mut included_count = 0u64;
+
+        for i in 1..=lab_count {
+            if included_count >= limit as u64 {
+                break;
+            }
+
+            if let Some(lab_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetLabResultIndex((pet_id, i)))
+            {
+                if let Some(lab) = PetChainContract::get_lab_result(env.clone(), lab_id) {
+                    let in_range = match (from_timestamp, to_timestamp) {
+                        (Some(from), Some(to)) => lab.date >= from && lab.date <= to,
+                        (Some(from), None) => lab.date >= from,
+                        (None, Some(to)) => lab.date <= to,
+                        (None, None) => true,
+                    };
+
+                    if in_range {
+                        if included_count >= offset {
+                            result.push_back(lab);
+                        }
+                        included_count += 1;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     pub fn get_vaccinations(env: Env, vaccine_id: u64) -> Option<Vaccination> {
         if let Some(record) = env
             .storage()
@@ -8051,6 +8332,92 @@ impl PetChainContract {
 
         let _ = pet_id;
         Some(record.notes.clone())
+    }
+
+    // --- ATTACHMENT MANAGEMENT ---
+
+    /// Add an attachment to a medical record.
+    ///
+    /// Only the vet who created the record may add attachments. The number of
+    /// attachments per record is capped at [`MAX_ATTACHMENTS_PER_RECORD`]; a
+    /// request that would exceed the cap fails with
+    /// [`ContractError::StorageQuotaExceeded`] so a single record cannot be
+    /// flooded to silently exhaust the owner's storage quota (Issue #774).
+    pub fn add_attachment(
+        env: Env,
+        record_id: u64,
+        ipfs_hash: String,
+        metadata: AttachmentMetadata,
+        content_hash: BytesN<32>,
+    ) -> bool {
+        // Validate the IPFS hash format up-front.
+        if let Err(e) = Self::validate_ipfs_hash(&env, &ipfs_hash) {
+            panic_with_error!(&env, e);
+        }
+
+        let mut record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::InvalidInput));
+
+        // Only the authoring vet can attach files to the record.
+        record.vet_address.require_auth();
+
+        // Validate metadata.
+        if metadata.filename.len() == 0
+            || metadata.file_type.len() == 0
+            || metadata.size == 0
+        {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        // Enforce the per-record attachment cap before inserting so the count
+        // can never exceed MAX_ATTACHMENTS_PER_RECORD.
+        if record.attachment_hashes.len() >= MAX_ATTACHMENTS_PER_RECORD {
+            panic_with_error!(&env, ContractError::StorageQuotaExceeded);
+        }
+
+        let attachment = Attachment {
+            ipfs_hash,
+            metadata,
+            content_hash,
+            scan_result: None,
+        };
+
+        record.attachment_hashes.push_back(attachment);
+        record.updated_at = env.ledger().timestamp();
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::MedicalRecord(record_id), &record);
+
+        Self::log_access(
+            &env,
+            record.pet_id,
+            record.vet_address,
+            AccessAction::Write,
+            String::from_str(&env, "Attachment added to medical record"),
+        );
+
+        true
+    }
+
+    /// Return all attachments for a medical record (empty if it does not exist).
+    pub fn get_attachments(env: Env, record_id: u64) -> Vec<Attachment> {
+        match Self::get_medical_record(env.clone(), record_id) {
+            Some(record) => record.attachment_hashes,
+            None => Vec::new(&env),
+        }
+    }
+
+    /// Return the number of attachments on a medical record (0 if it does not
+    /// exist). Used to enforce [`MAX_ATTACHMENTS_PER_RECORD`].
+    pub fn get_attachment_count(env: Env, record_id: u64) -> u32 {
+        match Self::get_medical_record(env, record_id) {
+            Some(record) => record.attachment_hashes.len(),
+            None => 0,
+        }
     }
 
     fn log_ownership_change(

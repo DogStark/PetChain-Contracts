@@ -752,6 +752,32 @@ impl<B: RedisBackend> SlidingWindowRateLimiter<B> {
         self
     }
 
+    /// Create a new limiter with a full set of per-endpoint overrides supplied
+    /// up-front via a [`HashMap`].  Keys are matched as prefixes of the
+    /// rate-limit key (e.g. `"login"` matches `"login:user:42"`).  Any key
+    /// that has no matching entry falls back to `default`.
+    ///
+    /// This is a convenience alternative to chaining multiple
+    /// [`with_endpoint`](Self::with_endpoint) calls when the overrides are
+    /// already collected in a map (e.g. loaded from config).
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::collections::HashMap;
+    /// let endpoints = HashMap::from([
+    ///     ("login".to_string(),   EndpointConfig::new(60,  3, 300)),
+    ///     ("recover".to_string(), EndpointConfig::new(300, 2, 900)),
+    /// ]);
+    /// let limiter = SlidingWindowRateLimiter::with_endpoints(backend, default_cfg, endpoints);
+    /// ```
+    pub fn with_endpoints(
+        backend: B,
+        default: EndpointConfig,
+        endpoints: HashMap<String, EndpointConfig>,
+    ) -> Self {
+        Self { backend, default, endpoints }
+    }
+
     fn config_for(&self, key: &str) -> &EndpointConfig {
         self.endpoints
             .iter()

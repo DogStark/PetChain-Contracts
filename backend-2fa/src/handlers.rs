@@ -236,6 +236,33 @@ impl TwoFactorHandlers {
         }
     }
 
+    /// Create a `TwoFactorHandlers` instance using a custom [`RateLimiter`].
+    ///
+    /// This is the recommended injection point for wiring a
+    /// [`SlidingWindowRateLimiter`] with per-endpoint configs.  Every handler
+    /// builds its rate-limit key as `"{endpoint}:{user_id}"` (e.g.
+    /// `"login:alice"`, `"recover:alice"`), which means the limiter's
+    /// `config_for` prefix-matching automatically applies the right
+    /// [`EndpointConfig`] when `with_endpoint` / `with_endpoints` overrides
+    /// are registered.
+    ///
+    /// # Production wiring example
+    /// ```ignore
+    /// use std::{collections::HashMap, sync::Arc};
+    /// use backend_2fa::{
+    ///     EndpointConfig, LiveRedisBackend, SlidingWindowRateLimiter,
+    ///     handlers::TwoFactorHandlers,
+    /// };
+    ///
+    /// let backend = LiveRedisBackend::new("redis://127.0.0.1/")?;
+    /// let default_cfg = EndpointConfig::new(60, 10, 300);
+    /// let endpoints = HashMap::from([
+    ///     ("login".to_string(),   EndpointConfig::new(60,  3, 300)),
+    ///     ("recover".to_string(), EndpointConfig::new(300, 2, 900)),
+    /// ]);
+    /// let limiter = SlidingWindowRateLimiter::with_endpoints(backend, default_cfg, endpoints);
+    /// let handlers = TwoFactorHandlers::with_limiter(Arc::new(limiter));
+    /// ```
     pub fn new_with_optional_limiter(limiter: Option<Arc<dyn RateLimiter>>) -> Self {
         let lim = match limiter {
             Some(l) => l,
@@ -260,6 +287,7 @@ impl TwoFactorHandlers {
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
+
         Self {
             limiter,
             store: two_factor_store(),
@@ -500,6 +528,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("login", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
@@ -544,6 +584,18 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
+
+        if let Err(e) = self.store.check_retry_after(&req.user_id) {
+            if e.starts_with("retry_after:") {
+                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                return Err(ApiError::rate_limited(
+                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    retry_secs,
+                ));
+            }
+            return Err(ApiError::internal_error(e, None));
+        }
+
         let key = Self::rate_limit_key("disable", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {

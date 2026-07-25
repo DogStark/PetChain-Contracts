@@ -82,6 +82,22 @@ cargo fmt
 cargo test
 ```
 
+## OpenAPI Spec Validation
+
+The backend-2fa CI validates that the OpenAPI specification stays in sync with the actual implementation:
+
+1. **Spectral linting** (`.github/workflows/backend-2fa.yml`): Validates OpenAPI 3.0 structural correctness and enforces the `spectral:oas` ruleset.
+
+2. **Endpoint validation** (`backend-2fa/tests/openapi_validation.rs`): An integration test that:
+   - Parses `docs/openapi.yaml`
+   - Verifies all documented paths have corresponding implementations
+   - Ensures critical endpoints (e.g., `/2fa/enable`, `/2fa/verify`) are documented
+
+If you add or rename an endpoint:
+1. Update `docs/openapi.yaml` with the new path and methods
+2. Update the `implemented_endpoints` set in `openapi_validation.rs` 
+3. Run `cargo test --test openapi_validation` to validate the spec stays in sync
+
 ## Notes
 
 - The backend test suite skips Redis integration tests unless `REDIS_URL` is set.

@@ -71,7 +71,7 @@ mod test_get_lab_results {
         let (env, client, _owner, _vet, pet_id) = setup();
 
         // No lab results added - should return empty vector
-        let results = client.get_lab_results(&pet_id, &0u64, &10u32);
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &None, &None);
         assert_eq!(results.len(), 0);
     }
 
@@ -81,7 +81,7 @@ mod test_get_lab_results {
 
         add_lab_result(&client, &env, pet_id, &vet, "Blood Test", "Normal", 100);
 
-        let results = client.get_lab_results(&pet_id, &0u64, &10u32);
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &None, &None);
         assert_eq!(results.len(), 1);
         assert_eq!(
             results.get(0).unwrap().test_type,
@@ -101,7 +101,7 @@ mod test_get_lab_results {
         add_lab_result(&client, &env, pet_id, &vet, "Urinalysis", "Abnormal", 200);
         add_lab_result(&client, &env, pet_id, &vet, "X-Ray", "Clear", 300);
 
-        let results = client.get_lab_results(&pet_id, &0u64, &10u32);
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &None, &None);
         assert_eq!(results.len(), 3);
         assert_eq!(
             results.get(0).unwrap().test_type,
@@ -342,5 +342,72 @@ mod test_get_lab_results {
         );
         let result = client.get_lab_result(&id).unwrap();
         assert_eq!(result.biomarker_flags.len(), 0);
+    }
+
+    #[test]
+    fn test_get_lab_results_closed_range() {
+        let (env, client, _owner, vet, pet_id) = setup();
+
+        add_lab_result(&client, &env, pet_id, &vet, "Test 1", "Result 1", 100);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 2", "Result 2", 200);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 3", "Result 3", 300);
+
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &Some(150u64), &Some(250u64));
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 2")
+        );
+    }
+
+    #[test]
+    fn test_get_lab_results_open_range_from() {
+        let (env, client, _owner, vet, pet_id) = setup();
+
+        add_lab_result(&client, &env, pet_id, &vet, "Test 1", "Result 1", 100);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 2", "Result 2", 200);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 3", "Result 3", 300);
+
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &Some(200u64), &None);
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 2")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Test 3")
+        );
+    }
+
+    #[test]
+    fn test_get_lab_results_open_range_to() {
+        let (env, client, _owner, vet, pet_id) = setup();
+
+        add_lab_result(&client, &env, pet_id, &vet, "Test 1", "Result 1", 100);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 2", "Result 2", 200);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 3", "Result 3", 300);
+
+        let results = client.get_lab_results(&pet_id, &0u64, &10u32, &None, &Some(200u64));
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results.get(0).unwrap().test_type,
+            String::from_str(&env, "Test 1")
+        );
+        assert_eq!(
+            results.get(1).unwrap().test_type,
+            String::from_str(&env, "Test 2")
+        );
+    }
+
+    #[test]
+    fn test_get_lab_results_reversed_range_error() {
+        let (env, client, _owner, vet, pet_id) = setup();
+
+        add_lab_result(&client, &env, pet_id, &vet, "Test 1", "Result 1", 100);
+        add_lab_result(&client, &env, pet_id, &vet, "Test 2", "Result 2", 200);
+
+        let result = client.try_get_lab_results(&pet_id, &0u64, &10u32, &Some(300u64), &Some(100u64));
+        assert!(result.is_err());
     }
 }

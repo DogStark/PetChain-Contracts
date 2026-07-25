@@ -13,6 +13,12 @@ soroban-sdk = "21.7.7"
 
 [dev-dependencies]
 soroban-sdk = { version = "21.7.7", features = ["testutils"] }
+# soroban-env-host's own manifest allows ed25519-dalek >=2.0.0 with no upper
+# bound, so without this constraint Cargo resolves it to a newer major (3.x)
+# that's incompatible with the 2.x version soroban-sdk itself resolves to,
+# and the two copies can't interoperate in testutils. Cap it so the whole
+# graph unifies on one 2.x release.
+ed25519-dalek = "2"
 
 [profile.release]
 opt-level = "z"
