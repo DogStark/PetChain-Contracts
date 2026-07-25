@@ -151,6 +151,8 @@ mod test_error_registry;
 mod test_behavior_records;
 #[cfg(test)]
 mod test_nutrition_plan;
+#[cfg(test)]
+mod test_upgrade_proposal;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -270,7 +272,12 @@ pub enum ContractError {
     VeterinarianNotVerified = 33,
     SlotAlreadyBooked = 34,
     DuplicateActivity = 35,
-
+    ProposalExpired = 36,
+    ProposalNotApproved = 37,
+    ProposalAlreadyExecuted = 38,
+    ProposalNotFound = 39,
+    RollbackWindowExpired = 40,
+    NoPreviousUpgrade = 41,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -898,6 +905,7 @@ pub struct UpgradeProposal {
     pub timelock_duration: u64,   // seconds; min 86400 (24h)
     pub approved_at: Option<u64>, // when quorum was reached
     pub vetoed: bool,
+    pub expires_at: u64,          // timestamp after which execute_upgrade is rejected
 }
 #[contracttype]
 #[derive(Clone)]
@@ -1119,6 +1127,14 @@ pub enum SystemKey {
     StatisticsSnapshot(u64), // snapshot_id -> StatisticsSnapshot
     SnapshotCount,           // Total number of snapshots
     SnapshotIndex(u64),      // index (0-99) -> snapshot_id (for purging oldest)
+    // Upgrade proposal keys (Issue #818)
+    UpgradeProposal(u64),    // proposal_id -> UpgradeProposal
+    UpgradeProposalCount,    // Total number of upgrade proposals
+    // Rollback keys
+    RollbackDeadline,        // timestamp after which rollback is no longer possible
+    PreviousWasmHash,        // BytesN<32> of the previous WASM hash before upgrade
+    // Version keys
+    StorageVersion,          // ContractVersion for storage schema
 }
 
 /// Statistics snapshot for governance reporting (Issue #828)
@@ -9542,6 +9558,297 @@ impl PetChainContract {
         // The actual purging happens lazily during add_activity_record checks
         
         purged
+    }
+    // --- Upgrade Proposal with Expiry (Issue #818) ---
+
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        expires_in_days: u32,
+    ) -> u64 {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let proposal_id = count + 1;
+        let now = env.ledger().timestamp();
+        let expires_at = now.saturating_add((expires_in_days as u64).saturating_mul(86400));
+
+        let proposal = UpgradeProposal {
+            id: proposal_id,
+            proposed_by: admin,
+            new_wasm_hash,
+            proposed_at: now,
+            approved: false,
+            executed: false,
+            timelock_duration: 86400,
+            approved_at: None,
+            vetoed: false,
+            expires_at,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposalCount, &proposal_id);
+        proposal_id
+    }
+
+    pub fn approve_upgrade_proposal(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+
+        proposal.approved = true;
+        proposal.approved_at = Some(now);
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+    }
+
+    pub fn execute_upgrade(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+        if !proposal.approved {
+            panic_with_error!(&env, ContractError::ProposalNotApproved);
+        }
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if proposal.new_wasm_hash != zero_hash {
+            env.deployer()
+                .update_current_contract_wasm(proposal.new_wasm_hash.clone());
+        }
+
+        // Store rollback info
+        env.storage()
+            .instance()
+            .set(&SystemKey::PreviousWasmHash, &proposal.new_wasm_hash);
+        env.storage()
+            .instance()
+            .set(&SystemKey::RollbackDeadline, &now.saturating_add(86400));
+
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+    }
+
+    pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+    }
+
+    pub fn list_upgrade_proposals(env: Env, start: u64, limit: u32) -> Vec<UpgradeProposal> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let mut result = Vec::new(&env);
+        let mut added: u32 = 0;
+        let mut id = start + 1;
+        while id <= count && added < limit {
+            if let Some(p) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, UpgradeProposal>(&SystemKey::UpgradeProposal(id))
+            {
+                result.push_back(p);
+                added += 1;
+            }
+            id += 1;
+        }
+        result
+    }
+
+    // --- Version management ---
+
+    pub fn get_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn set_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let version = ContractVersion {
+            major,
+            minor,
+            patch,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn migrate_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let version = ContractVersion {
+            major,
+            minor,
+            patch,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn migrate_v1_to_v2(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_version(env.clone());
+        if current.major >= 2 {
+            return;
+        }
+        let version = ContractVersion {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn get_storage_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&SystemKey::StorageVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn migrate_storage(
+        env: Env,
+        admin: Address,
+        _from_major: u32,
+        _from_minor: u32,
+        _from_patch: u32,
+        to_major: u32,
+        to_minor: u32,
+        to_patch: u32,
+    ) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_storage_version(env.clone());
+        if current.major >= to_major {
+            return;
+        }
+        let version = ContractVersion {
+            major: to_major,
+            minor: to_minor,
+            patch: to_patch,
+        };
+        env.storage()
+            .instance()
+            .set(&SystemKey::StorageVersion, &version);
+    }
+
+    // --- Rollback ---
+
+    pub fn rollback_upgrade(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let deadline: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::RollbackDeadline)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPreviousUpgrade));
+        if deadline == 0 {
+            panic_with_error!(&env, ContractError::NoPreviousUpgrade);
+        }
+
+        let now = env.ledger().timestamp();
+        if now > deadline {
+            panic_with_error!(&env, ContractError::RollbackWindowExpired);
+        }
+
+        let prev_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PreviousWasmHash)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPreviousUpgrade));
+
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if prev_hash != zero_hash {
+            env.deployer()
+                .update_current_contract_wasm(prev_hash);
+        }
+
+        // Clear rollback state
+        env.storage()
+            .instance()
+            .set(&SystemKey::RollbackDeadline, &0u64);
+    }
+
+    pub fn get_rollback_deadline(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::RollbackDeadline)
+            .unwrap_or(0)
     }
 } // end impl PetChainContract
 
