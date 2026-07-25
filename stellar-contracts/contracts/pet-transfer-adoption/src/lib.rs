@@ -198,6 +198,8 @@ enum DataKey {
     AdoptionWaitingPeriod(u64), // pet_id -> waiting_period_days (per-pet override, optional)
     SpeciesAdoptionConfig(String), // species -> waiting_period_days
     JurisdictionAdoptionConfig(String), // jurisdiction -> AdoptionConfig
+    Admin,                        // adoption contract admin set on first set_adoption_config call
+    OwnerPetSet((Address, u64)),   // (owner, pet_id) -> bool for O(1) membership checks
     Admin,                      // adoption contract admin set on first set_adoption_config call
 }
 
@@ -372,18 +374,22 @@ fn save_owner_pet_ids(env: &Env, owner: &Address, pet_ids: &Vec<u64>) {
 }
 
 fn add_pet_to_owner(env: &Env, owner: &Address, pet_id: u64) {
-    let mut pet_ids = get_owner_pet_ids(env, owner);
-    for existing_pet_id in pet_ids.iter() {
-        if existing_pet_id == pet_id {
-            return;
-        }
+    let set_key = DataKey::OwnerPetSet((owner.clone(), pet_id));
+    if env.storage().persistent().has(&set_key) {
+        return;
     }
 
+    env.storage().persistent().set(&set_key, &true);
+    let mut pet_ids = get_owner_pet_ids(env, owner);
     pet_ids.push_back(pet_id);
     save_owner_pet_ids(env, owner, &pet_ids);
 }
 
 fn remove_pet_from_owner(env: &Env, owner: &Address, pet_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::OwnerPetSet((owner.clone(), pet_id)));
+
     let pet_ids = get_owner_pet_ids(env, owner);
     let mut updated_pet_ids = Vec::new(env);
 
