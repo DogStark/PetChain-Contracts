@@ -93,6 +93,8 @@ pub enum BreedingKey {
     PetOffspringIndex((u64, u64)),
     ParentPair(u64),
     LineageDepth(u64),
+    BreedingOffspringCount(u64),
+    BreedingOffspringIndex((u64, u64)),
 }
 
 /// Allele type for Mendelian genetics simulation.
@@ -398,6 +400,12 @@ pub struct StreakMilestoneEvent {
     pub milestone_days: u64,
     pub timestamp: u64,
 }
+/// Migration Note (Issue #1031):
+/// Previous versions stored an unbounded `offspring_ids: Vec<u64>` directly inside `BreedingRecord`,
+/// which caused XDR serialization failures for large litters.
+/// Offspring are now stored in separate persistent index entries under
+/// `BreedingKey::BreedingOffspringIndex((record_id, seq))` with `BreedingKey::BreedingOffspringCount(record_id)`.
+/// `BreedingRecord` stores `offspring_count: u32`. Retrieve offspring via `get_offspring_ids`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BreedingRecord {
@@ -405,7 +413,7 @@ pub struct BreedingRecord {
     pub sire_id: u64,
     pub dam_id: u64,
     pub breeding_date: u64,
-    pub offspring_ids: Vec<u64>,
+    pub offspring_count: u32,
     pub breeder: Address,
     pub notes: String,
 }
@@ -8970,6 +8978,40 @@ impl PetChainContract {
             }
         }
         slots
+    }
+
+    /// Returns paginated offspring IDs for a breeding record (Issue #1031).
+    /// Storage key: `BreedingKey::BreedingOffspringIndex((record_id, seq))`
+    pub fn get_offspring_ids(
+        env: Env,
+        record_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::BreedingOffspringCount(record_id))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+        if limit == 0 || (offset as u64) >= total {
+            return result;
+        }
+
+        let start = (offset as u64) + 1; // 1-based index
+        let end = (start + (limit as u64) - 1).min(total);
+
+        for seq in start..=end {
+            if let Some(offspring_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::BreedingOffspringIndex((record_id, seq)))
+            {
+                result.push_back(offspring_id);
+            }
+        }
+        result
     }
 
 

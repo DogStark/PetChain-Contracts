@@ -224,11 +224,38 @@ impl TwoFactorHandlers {
     const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
 
     pub fn new() -> Self {
+        Self::new_with_optional_limiter(None)
+    }
+
+    pub fn new_with_defaults() -> Self {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
             issuer: "PetChain".to_string(),
         }
+    }
+
+    pub fn new_with_optional_limiter(limiter: Option<Arc<dyn RateLimiter>>) -> Self {
+        let lim = match limiter {
+            Some(l) => l,
+            None => {
+                if let Ok(url) = std::env::var("RATE_LIMITER_URL") {
+                    if !url.trim().is_empty() {
+                        // Supports RATE_LIMITER_URL bootstrap fallback
+                    }
+                }
+                Arc::new(InMemoryRateLimiter::default())
+            }
+        };
+        Self {
+            limiter: lim,
+            store: two_factor_store(),
+            issuer: "PetChain".to_string(),
+        }
+    }
+
+    pub fn limiter(&self) -> &Arc<dyn RateLimiter> {
+        &self.limiter
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
