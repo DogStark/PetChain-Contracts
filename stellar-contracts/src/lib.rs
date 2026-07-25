@@ -854,6 +854,9 @@ pub struct Vaccination {
     pub encrypted_batch_number: EncryptedData, // Encrypted value
 
     pub created_at: u64,
+
+    pub revoked: bool,
+    pub revocation_reason: Option<String>,
 }
 
 /// Certificate anchor for vaccination PDF metadata
@@ -984,6 +987,7 @@ pub enum EventType {
     TreatmentAdded,
     MedicalRecordAdded,
     VaccinationAdded,
+    VaccinationRevoked,
     AccessGranted,
     AccessRevoked,
     InsuranceClaimSubmitted,
@@ -2069,6 +2073,17 @@ pub struct VaccinationAddedEvent {
     pub next_due_date: u64,
     pub timestamp: u64,
     pub subscription_ids: Vec<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationRevokedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub vet_or_admin: Address,
+    pub reason: String,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -5806,6 +5821,8 @@ impl PetChainContract {
             batch_number: None,
             encrypted_batch_number,
             created_at: now,
+            revoked: false,
+            revocation_reason: None,
         };
 
         PetChainContract::update_vet_stats(&env, &veterinarian, pet_id, 1, 1, 0);
@@ -5870,6 +5887,54 @@ impl PetChainContract {
         PetChainContract::check_and_emit_expiry_events(env, pet_id, 30);
 
         vaccine_id
+    }
+
+    pub fn revoke_vaccination_certificate(
+        env: Env,
+        vet_or_admin: Address,
+        pet_id: u64,
+        cert_id: u64,
+        reason: String,
+    ) {
+        vet_or_admin.require_auth();
+
+        // Must exist
+        let mut vax: Vaccination = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::Vaccination(cert_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaccinationNotFound));
+
+        // Must match pet
+        if vax.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::VaccinationNotFound);
+        }
+
+        // Verify authorization: must be issuing vet OR admin
+        let is_admin = PetChainContract::is_admin(&env, &vet_or_admin);
+        if !is_admin && vax.veterinarian != vet_or_admin {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        vax.revoked = true;
+        vax.revocation_reason = Some(reason.clone());
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::Vaccination(cert_id), &vax);
+
+        // Emit event
+        env.events().publish(
+            (String::from_str(&env, "VaccinationRevoked"), pet_id),
+            VaccinationRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id: cert_id,
+                vet_or_admin,
+                reason,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -6139,7 +6204,7 @@ impl PetChainContract {
         let mut most_recent: Option<Vaccination> = None;
 
         for vax in history.iter() {
-            if vax.vaccine_type == vaccine_type {
+            if vax.vaccine_type == vaccine_type && !vax.revoked {
                 match most_recent.clone() {
                     Some(current) => {
                         if vax.administered_at > current.administered_at {
