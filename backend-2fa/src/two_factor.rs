@@ -1,7 +1,7 @@
 use hmac::{Hmac, Mac};
 use rand::distributions::{Distribution, Uniform};
 use rand::thread_rng;
-use rand::Rng;
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -175,13 +175,16 @@ impl TwoFactorAuth {
         )
     }
 
-    pub fn generate_secret() -> String {
+    fn sample_crypto_rng<R: Rng + CryptoRng>(rng: &mut R) -> String {
         const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        let mut rng = thread_rng();
         let range = Uniform::from(0..BASE32_ALPHABET.len());
         (0..32)
-            .map(|_| BASE32_ALPHABET[range.sample(&mut rng)] as char)
+            .map(|_| BASE32_ALPHABET[range.sample(rng)] as char)
             .collect()
+    }
+
+    pub fn generate_secret() -> String {
+        Self::sample_crypto_rng(&mut thread_rng())
     }
 
     /// Setup 2FA with default configuration (SHA1).
