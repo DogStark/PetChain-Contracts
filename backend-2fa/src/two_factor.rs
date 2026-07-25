@@ -393,6 +393,9 @@ pub trait TwoFactorStore: Send + Sync {
     /// Check whether a user account is a canary.
     fn is_canary(&self, user_id: &str) -> bool;
 
+    /// Return all user IDs that are currently marked as canary accounts.
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String>;
+
     /// Persistent lockout state, used after Redis restarts.
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
 
@@ -511,6 +514,10 @@ impl InMemoryStore {
     }
     pub fn is_canary(&self, user_id: &str) -> bool {
         <Self as TwoFactorStore>::is_canary(self, user_id)
+    }
+
+    pub fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        <Self as TwoFactorStore>::get_canary_accounts(self)
     }
 }
 
@@ -671,6 +678,10 @@ impl TwoFactorStore for MockTwoFactorStore {
 
     fn is_canary(&self, _user_id: &str) -> bool {
         false
+    }
+
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        Ok(vec![])
     }
 
     fn get_lockout_state(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> {
@@ -953,6 +964,15 @@ impl TwoFactorStore for InMemoryStore {
             .get(user_id)
             .copied()
             .unwrap_or(false)
+    }
+
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        let flags = self.canary_flags.lock().unwrap();
+        Ok(flags
+            .iter()
+            .filter(|(_, &is_canary)| is_canary)
+            .map(|(uid, _)| uid.clone())
+            .collect())
     }
 
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {

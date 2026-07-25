@@ -223,6 +223,7 @@ pub struct RedisTwoFactorFailureCounter<B: RedisBackend> {
     backend: B,
     key_prefix: String,
     ttl_secs: u64,
+    fallback: InMemoryRateLimiter,
 }
 
 impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
@@ -231,6 +232,7 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
             backend,
             key_prefix: key_prefix.into(),
             ttl_secs,
+            fallback: InMemoryRateLimiter::default(),
         }
     }
 
@@ -239,21 +241,43 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
     }
 
     pub fn record_failure(&self, user_id: &str) -> u32 {
-        self.backend
-            .incr_with_ttl(&self.key(user_id), self.ttl_secs)
-            .min(u32::MAX as u64) as u32
+        let key = self.key(user_id);
+        let count = self.backend.incr_with_ttl(&key, self.ttl_secs);
+        if count == 0 {
+            tracing::error!(
+                user_id = user_id,
+                "[RedisTwoFactorFailureCounter] Redis unavailable, falling back to in-memory counter"
+            );
+            crate::metrics::record_redis_fallback();
+            let result = self.fallback.record_failure(&key);
+            return match result {
+                RateLimitResult::Blocked { limit, .. } => limit,
+                RateLimitResult::Allowed { remaining, limit, .. } => limit.saturating_sub(remaining),
+            };
+        }
+        count.min(u32::MAX as u64) as u32
     }
 
     pub fn get_failures(&self, user_id: &str) -> u32 {
-        self.backend
-            .get_u64(&self.key(user_id))
-            .unwrap_or(0)
-            .min(u32::MAX as u64) as u32
+        let key = self.key(user_id);
+        match self.backend.get_u64(&key) {
+            Some(count) => count.min(u32::MAX as u64) as u32,
+            None => {
+                tracing::error!(
+                    user_id = user_id,
+                    "[RedisTwoFactorFailureCounter] Redis unavailable, using in-memory fallback"
+                );
+                crate::metrics::record_redis_fallback();
+                let result = self.fallback.record_failure(&key);
+                result.limit().saturating_sub(result.remaining())
+            }
+        }
     }
 
     pub fn reset(&self, user_id: &str) {
         let key = self.key(user_id);
         self.backend.del(&[&key]);
+        self.fallback.record_success(&key);
     }
 }
 
@@ -1001,7 +1025,7 @@ impl RateLimiter for DistributedRateLimiter {
         let result = match self.try_redis(key) {
             Some(result) => result,
             None => {
-                tracing::warn!(
+                tracing::error!(
                     key = key,
                     "[DistributedRateLimiter] Redis unavailable, falling back to in-memory"
                 );
@@ -1467,5 +1491,111 @@ mod structured_logging_tests {
         );
         assert!(log.contains("verify"), "Log should contain action/endpoint");
         assert!(log.contains("user42"), "Log should contain user_id");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Redis unavailability fallback (Issue #1055)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod redis_fallback_tests {
+    use super::*;
+
+    /// A Redis backend that always fails (returns 0 / None for all operations).
+    struct FailingRedisBackend;
+
+    impl RedisBackend for FailingRedisBackend {
+        fn ttl(&self, _key: &str) -> i64 {
+            -2
+        }
+        fn sliding_window_add(
+            &self,
+            _key: &str,
+            _now_ms: u64,
+            _cutoff_ms: u64,
+            _member: &str,
+            _ttl_secs: u64,
+        ) -> u64 {
+            0
+        }
+        fn set_ex(&self, _key: &str, _value: &str, _ttl_secs: u64) {}
+        fn del(&self, _keys: &[&str]) {}
+        fn incr_with_ttl(&self, _key: &str, _ttl_secs: u64) -> u64 {
+            0
+        }
+        fn get_u64(&self, _key: &str) -> Option<u64> {
+            None
+        }
+    }
+
+    #[test]
+    fn test_distributed_limiter_falls_back_when_redis_unavailable() {
+        let limiter = DistributedRateLimiter::new(None, 3, 60, "test:");
+        let key = "verify:user1";
+
+        // First three attempts should be allowed (in-memory fallback)
+        let r1 = limiter.record_failure(key);
+        assert!(matches!(r1, RateLimitResult::Allowed { .. }));
+
+        let r2 = limiter.record_failure(key);
+        assert!(matches!(r2, RateLimitResult::Allowed { .. }));
+
+        let r3 = limiter.record_failure(key);
+        assert!(matches!(r3, RateLimitResult::Allowed { .. }));
+
+        // Fourth attempt should trigger lockout
+        let r4 = limiter.record_failure(key);
+        assert!(matches!(r4, RateLimitResult::Blocked { .. }));
+    }
+
+    #[test]
+    fn test_redis_failure_counter_falls_back_to_in_memory() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        // Each record_failure should increment the in-memory counter
+        let count1 = counter.record_failure("user1");
+        assert!(count1 > 0, "in-memory fallback should track failures");
+
+        let count2 = counter.record_failure("user1");
+        assert!(
+            count2 >= count1,
+            "subsequent failures should increment counter"
+        );
+    }
+
+    #[test]
+    fn test_redis_failure_counter_fallback_records_metric() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        let _ = counter.record_failure("user1");
+
+        let output = crate::metrics::render_metrics().expect("render");
+        assert!(
+            output.contains("rate_limiter_redis_fallback_total"),
+            "fallback metric should be recorded"
+        );
+    }
+
+    #[test]
+    fn test_redis_failure_counter_reset_clears_fallback() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        counter.record_failure("user1");
+        counter.record_failure("user1");
+        counter.reset("user1");
+
+        // After reset, the in-memory fallback should be cleared
+        let result = counter.fallback.record_failure("test:2fa:failures:user1");
+        // Should only have 1 failure (the one we just recorded after reset)
+        match result {
+            RateLimitResult::Allowed { remaining, limit, .. } => {
+                assert_eq!(remaining, limit - 1);
+            }
+            _ => panic!("should be allowed after reset"),
+        }
     }
 }
