@@ -5390,4 +5390,20 @@ mod algorithm_upgrade_tests {
         assert!(login_result.is_ok());
         assert!(!login_result.unwrap());
     }
+
+    #[test]
+    fn test_two_factor_handlers_new_with_defaults() {
+        let handlers = TwoFactorHandlers::new_with_defaults();
+        let _limiter = handlers.limiter();
+    }
+
+    #[test]
+    fn test_two_factor_handlers_custom_limiter_injected() {
+        use crate::rate_limiter::InMemoryRateLimiter;
+        use std::sync::Arc;
+
+        let custom_limiter = Arc::new(InMemoryRateLimiter::default());
+        let handlers = TwoFactorHandlers::new_with_optional_limiter(Some(custom_limiter.clone()));
+        assert!(Arc::ptr_eq(handlers.limiter(), &custom_limiter));
+    }
 }

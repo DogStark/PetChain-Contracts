@@ -57,10 +57,38 @@ impl RateLimitResult {
     }
 }
 
+/// Build a rate-limit key optionally namespaced by tenant.
+///
+/// When `tenant_id` is `Some` and non-empty, the key becomes
+/// `"{tenant_id}:{key}"` so that two tenants sharing the same
+/// `user_id`/`endpoint` never share a rate-limit bucket. Returns `key`
+/// unchanged when `tenant_id` is `None` (or empty), preserving existing
+/// single-tenant behavior.
+pub fn tenant_scoped_key(tenant_id: Option<&str>, key: &str) -> String {
+    match tenant_id {
+        Some(tid) if !tid.is_empty() => format!("{tid}:{key}"),
+        _ => key.to_string(),
+    }
+}
+
 /// A pluggable rate limiter interface.
 pub trait RateLimiter: Send + Sync {
     fn record_failure(&self, key: &str) -> RateLimitResult;
     fn record_success(&self, key: &str);
+
+    /// Tenant-scoped variant of `record_failure`. When `tenant_id` is
+    /// `Some`, the underlying key is namespaced per-tenant (see
+    /// [`tenant_scoped_key`]) so a noisy tenant cannot exhaust another
+    /// tenant's rate-limit budget. Falls back to unscoped `record_failure`
+    /// when `tenant_id` is `None`.
+    fn check(&self, tenant_id: Option<&str>, key: &str) -> RateLimitResult {
+        self.record_failure(&tenant_scoped_key(tenant_id, key))
+    }
+
+    /// Tenant-scoped variant of `record_success` (see [`RateLimiter::check`]).
+    fn record(&self, tenant_id: Option<&str>, key: &str) {
+        self.record_success(&tenant_scoped_key(tenant_id, key))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +681,14 @@ impl RateLimiter for InMemoryRateLimiter {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         records.remove(key);
     }
+
+    fn check(&self, tenant_id: Option<&str>, key: &str) -> RateLimitResult {
+        self.record_failure(&tenant_scoped_key(tenant_id, key))
+    }
+
+    fn record(&self, tenant_id: Option<&str>, key: &str) {
+        self.record_success(&tenant_scoped_key(tenant_id, key))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -836,6 +872,14 @@ impl RateLimiter for RedisRateLimiter {
     }
     fn record_success(&self, key: &str) {
         self.inner.record_success(key)
+    }
+
+    fn check(&self, tenant_id: Option<&str>, key: &str) -> RateLimitResult {
+        self.inner.check(tenant_id, key)
+    }
+
+    fn record(&self, tenant_id: Option<&str>, key: &str) {
+        self.inner.record(tenant_id, key)
     }
 }
 

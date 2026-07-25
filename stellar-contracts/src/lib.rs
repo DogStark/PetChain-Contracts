@@ -103,6 +103,8 @@ pub enum BreedingKey {
     PetOffspringIndex((u64, u64)),
     ParentPair(u64),
     LineageDepth(u64),
+    BreedingOffspringCount(u64),
+    BreedingOffspringIndex((u64, u64)),
 }
 
 /// Allele type for Mendelian genetics simulation.
@@ -168,6 +170,7 @@ mod test_remove_admin;
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
+mod test_upgrade_proposal;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -290,6 +293,12 @@ pub enum ContractError {
     RecordAlreadyDeleted = 160,
     RecordNotFound = 161,
     RetentionPeriodNotMet = 162,
+    ProposalExpired = 36,
+    ProposalNotApproved = 37,
+    ProposalAlreadyExecuted = 38,
+    ProposalNotFound = 39,
+    RollbackWindowExpired = 40,
+    NoPreviousUpgrade = 41,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -416,6 +425,12 @@ pub struct StreakMilestoneEvent {
     pub milestone_days: u64,
     pub timestamp: u64,
 }
+/// Migration Note (Issue #1031):
+/// Previous versions stored an unbounded `offspring_ids: Vec<u64>` directly inside `BreedingRecord`,
+/// which caused XDR serialization failures for large litters.
+/// Offspring are now stored in separate persistent index entries under
+/// `BreedingKey::BreedingOffspringIndex((record_id, seq))` with `BreedingKey::BreedingOffspringCount(record_id)`.
+/// `BreedingRecord` stores `offspring_count: u32`. Retrieve offspring via `get_offspring_ids`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BreedingRecord {
@@ -423,7 +438,7 @@ pub struct BreedingRecord {
     pub sire_id: u64,
     pub dam_id: u64,
     pub breeding_date: u64,
-    pub offspring_ids: Vec<u64>,
+    pub offspring_count: u32,
     pub breeder: Address,
     pub notes: String,
 }
@@ -864,6 +879,9 @@ pub struct Vaccination {
     pub encrypted_batch_number: EncryptedData, // Encrypted value
 
     pub created_at: u64,
+
+    pub revoked: bool,
+    pub revocation_reason: Option<String>,
 }
 
 /// Certificate anchor for vaccination PDF metadata
@@ -916,6 +934,7 @@ pub struct UpgradeProposal {
     pub timelock_duration: u64,   // seconds; min 86400 (24h)
     pub approved_at: Option<u64>, // when quorum was reached
     pub vetoed: bool,
+    pub expires_at: u64,          // timestamp after which execute_upgrade is rejected
 }
 #[contracttype]
 #[derive(Clone)]
@@ -995,6 +1014,7 @@ pub enum EventType {
     TreatmentAdded,
     MedicalRecordAdded,
     VaccinationAdded,
+    VaccinationRevoked,
     AccessGranted,
     AccessRevoked,
     InsuranceClaimSubmitted,
@@ -1138,6 +1158,14 @@ pub enum SystemKey {
     StatisticsSnapshot(u64), // snapshot_id -> StatisticsSnapshot
     SnapshotCount,           // Total number of snapshots
     SnapshotIndex(u64),      // index (0-99) -> snapshot_id (for purging oldest)
+    // Upgrade proposal keys (Issue #818)
+    UpgradeProposal(u64),    // proposal_id -> UpgradeProposal
+    UpgradeProposalCount,    // Total number of upgrade proposals
+    // Rollback keys
+    RollbackDeadline,        // timestamp after which rollback is no longer possible
+    PreviousWasmHash,        // BytesN<32> of the previous WASM hash before upgrade
+    // Version keys
+    StorageVersion,          // ContractVersion for storage schema
 }
 
 /// Statistics snapshot for governance reporting (Issue #828)
@@ -2080,6 +2108,17 @@ pub struct VaccinationAddedEvent {
     pub next_due_date: u64,
     pub timestamp: u64,
     pub subscription_ids: Vec<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaccinationRevokedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub vet_or_admin: Address,
+    pub reason: String,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -5002,6 +5041,10 @@ impl PetChainContract {
             if let Err(err) = PetChainContract::validate_ipfs_hash(&env, &photo_hash) {
                 env.panic_with_error(err);
             }
+
+            // Check storage quota (Issue #782)
+            Self::increment_pet_storage(&env, pet_id);
+
             pet.photo_hashes.push_back(photo_hash);
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
@@ -5841,6 +5884,8 @@ impl PetChainContract {
             batch_number: None,
             encrypted_batch_number,
             created_at: now,
+            revoked: false,
+            revocation_reason: None,
         };
 
         PetChainContract::update_vet_stats(&env, &veterinarian, pet_id, 1, 1, 0);
@@ -5905,6 +5950,54 @@ impl PetChainContract {
         PetChainContract::check_and_emit_expiry_events(env, pet_id, 30);
 
         vaccine_id
+    }
+
+    pub fn revoke_vaccination_certificate(
+        env: Env,
+        vet_or_admin: Address,
+        pet_id: u64,
+        cert_id: u64,
+        reason: String,
+    ) {
+        vet_or_admin.require_auth();
+
+        // Must exist
+        let mut vax: Vaccination = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::Vaccination(cert_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaccinationNotFound));
+
+        // Must match pet
+        if vax.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::VaccinationNotFound);
+        }
+
+        // Verify authorization: must be issuing vet OR admin
+        let is_admin = PetChainContract::is_admin(&env, &vet_or_admin);
+        if !is_admin && vax.veterinarian != vet_or_admin {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        vax.revoked = true;
+        vax.revocation_reason = Some(reason.clone());
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::Vaccination(cert_id), &vax);
+
+        // Emit event
+        env.events().publish(
+            (String::from_str(&env, "VaccinationRevoked"), pet_id),
+            VaccinationRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id: cert_id,
+                vet_or_admin,
+                reason,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -6178,7 +6271,7 @@ impl PetChainContract {
         let mut most_recent: Option<Vaccination> = None;
 
         for vax in history.iter() {
-            if vax.vaccine_type == vaccine_type {
+            if vax.vaccine_type == vaccine_type && !vax.revoked {
                 match most_recent.clone() {
                     Some(current) => {
                         if vax.administered_at > current.administered_at {
@@ -9017,6 +9110,42 @@ impl PetChainContract {
         slots
     }
 
+    /// Returns paginated offspring IDs for a breeding record (Issue #1031).
+    /// Storage key: `BreedingKey::BreedingOffspringIndex((record_id, seq))`
+    pub fn get_offspring_ids(
+        env: Env,
+        record_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        let total: u64 = env
+            .storage()
+            .instance()
+            .get(&BreedingKey::BreedingOffspringCount(record_id))
+            .unwrap_or(0);
+
+        let mut result = Vec::new(&env);
+        if limit == 0 || (offset as u64) >= total {
+            return result;
+        }
+
+        let start = (offset as u64) + 1; // 1-based index
+        let end = (start + (limit as u64) - 1).min(total);
+
+        for seq in start..=end {
+            if let Some(offspring_id) = env
+                .storage()
+                .instance()
+                .get::<BreedingKey, u64>(&BreedingKey::BreedingOffspringIndex((record_id, seq)))
+            {
+                result.push_back(offspring_id);
+            }
+        }
+        result
+    }
+
+
+
     pub fn add_breed_metadata(
         env: Env,
         admin: Address,
@@ -10001,6 +10130,14 @@ impl PetChainContract {
     }
 
     pub fn set_retention_period(env: Env, admin: Address, seconds: u64) {
+    // --- Upgrade Proposal with Expiry (Issue #818) ---
+
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        expires_in_days: u32,
+    ) -> u64 {
         admin.require_auth();
         if !Self::is_admin_address(&env, &admin) {
             panic_with_error!(&env, ContractError::NotAnAdmin);
@@ -10008,6 +10145,284 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::RetentionPeriod, &seconds);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let proposal_id = count + 1;
+        let now = env.ledger().timestamp();
+        let expires_at = now.saturating_add((expires_in_days as u64).saturating_mul(86400));
+
+        let proposal = UpgradeProposal {
+            id: proposal_id,
+            proposed_by: admin,
+            new_wasm_hash,
+            proposed_at: now,
+            approved: false,
+            executed: false,
+            timelock_duration: 86400,
+            approved_at: None,
+            vetoed: false,
+            expires_at,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposalCount, &proposal_id);
+        proposal_id
+    }
+
+    pub fn approve_upgrade_proposal(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+
+        proposal.approved = true;
+        proposal.approved_at = Some(now);
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+    }
+
+    pub fn execute_upgrade(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: UpgradeProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+        if !proposal.approved {
+            panic_with_error!(&env, ContractError::ProposalNotApproved);
+        }
+        if proposal.executed {
+            panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+        }
+
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if proposal.new_wasm_hash != zero_hash {
+            env.deployer()
+                .update_current_contract_wasm(proposal.new_wasm_hash.clone());
+        }
+
+        // Store rollback info
+        env.storage()
+            .instance()
+            .set(&SystemKey::PreviousWasmHash, &proposal.new_wasm_hash);
+        env.storage()
+            .instance()
+            .set(&SystemKey::RollbackDeadline, &now.saturating_add(86400));
+
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&SystemKey::UpgradeProposal(proposal_id), &proposal);
+    }
+
+    pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposal(proposal_id))
+    }
+
+    pub fn list_upgrade_proposals(env: Env, start: u64, limit: u32) -> Vec<UpgradeProposal> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::UpgradeProposalCount)
+            .unwrap_or(0);
+        let mut result = Vec::new(&env);
+        let mut added: u32 = 0;
+        let mut id = start + 1;
+        while id <= count && added < limit {
+            if let Some(p) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, UpgradeProposal>(&SystemKey::UpgradeProposal(id))
+            {
+                result.push_back(p);
+                added += 1;
+            }
+            id += 1;
+        }
+        result
+    }
+
+    // --- Version management ---
+
+    pub fn get_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn set_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let version = ContractVersion {
+            major,
+            minor,
+            patch,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn migrate_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let version = ContractVersion {
+            major,
+            minor,
+            patch,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn migrate_v1_to_v2(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_version(env.clone());
+        if current.major >= 2 {
+            return;
+        }
+        let version = ContractVersion {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn get_storage_version(env: Env) -> ContractVersion {
+        env.storage()
+            .instance()
+            .get(&SystemKey::StorageVersion)
+            .unwrap_or(ContractVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            })
+    }
+
+    pub fn migrate_storage(
+        env: Env,
+        admin: Address,
+        _from_major: u32,
+        _from_minor: u32,
+        _from_patch: u32,
+        to_major: u32,
+        to_minor: u32,
+        to_patch: u32,
+    ) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_storage_version(env.clone());
+        if current.major >= to_major {
+            return;
+        }
+        let version = ContractVersion {
+            major: to_major,
+            minor: to_minor,
+            patch: to_patch,
+        };
+        env.storage()
+            .instance()
+            .set(&SystemKey::StorageVersion, &version);
+    }
+
+    // --- Rollback ---
+
+    pub fn rollback_upgrade(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let deadline: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::RollbackDeadline)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPreviousUpgrade));
+        if deadline == 0 {
+            panic_with_error!(&env, ContractError::NoPreviousUpgrade);
+        }
+
+        let now = env.ledger().timestamp();
+        if now > deadline {
+            panic_with_error!(&env, ContractError::RollbackWindowExpired);
+        }
+
+        let prev_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PreviousWasmHash)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoPreviousUpgrade));
+
+        let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if prev_hash != zero_hash {
+            env.deployer()
+                .update_current_contract_wasm(prev_hash);
+        }
+
+        // Clear rollback state
+        env.storage()
+            .instance()
+            .set(&SystemKey::RollbackDeadline, &0u64);
+    }
+
+    pub fn get_rollback_deadline(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::RollbackDeadline)
+            .unwrap_or(0)
     }
 } // end impl PetChainContract
 
