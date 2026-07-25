@@ -3,7 +3,14 @@ use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 /// Sets up a contract with a single admin, an owner (claimer), and an
 /// opposing party (target), plus a pet and an open dispute between them.
-fn setup() -> (Env, PetChainContractClient<'static>, Address, Address, Address, u64) {
+fn setup() -> (
+    Env,
+    PetChainContractClient<'static>,
+    Address,
+    Address,
+    Address,
+    u64,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -47,7 +54,10 @@ fn test_unanimous_approval_auto_resolves_in_favor_of_claimer() {
 
     // Owner (claimer) and admin both approve -> 2 of 3 stakeholders agree.
     let resolved_by_owner = client.vote_on_dispute(&owner, &dispute_id, &DisputeVote::Approve);
-    assert!(!resolved_by_owner, "single vote must not resolve the dispute");
+    assert!(
+        !resolved_by_owner,
+        "single vote must not resolve the dispute"
+    );
     assert_eq!(
         client.get_dispute(&dispute_id).unwrap().status,
         DisputeStatus::Pending
@@ -89,7 +99,10 @@ fn test_split_vote_does_not_resolve_dispute() {
 
     // Admin breaks the tie in favor of the target.
     let r3 = client.vote_on_dispute(&admin, &dispute_id, &DisputeVote::Reject);
-    assert!(r3, "admin's matching vote should reach the 2-of-3 threshold");
+    assert!(
+        r3,
+        "admin's matching vote should reach the 2-of-3 threshold"
+    );
 
     let resolved = client.get_dispute(&dispute_id).unwrap();
     assert_eq!(resolved.status, DisputeStatus::ResolvedInFavorOfTarget);
@@ -132,7 +145,11 @@ fn test_revoting_updates_existing_vote_instead_of_double_counting() {
     client.vote_on_dispute(&owner, &dispute_id, &DisputeVote::Reject);
 
     let votes = client.get_dispute_votes(&dispute_id);
-    assert_eq!(votes.len(), 1, "changing a vote must not create a duplicate entry");
+    assert_eq!(
+        votes.len(),
+        1,
+        "changing a vote must not create a duplicate entry"
+    );
     assert_eq!(votes.get(0).unwrap().vote, DisputeVote::Reject);
 
     // Target agrees with the (updated) reject vote -> resolves in favor of target.

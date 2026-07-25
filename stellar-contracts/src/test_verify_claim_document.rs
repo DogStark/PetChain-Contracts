@@ -5,7 +5,12 @@ fn make_hash(env: &Env, val: u8) -> BytesN<32> {
     BytesN::from_array(env, &[val; 32])
 }
 
-fn store_doc_hashes(env: &Env, contract_id: &soroban_sdk::Address, claim_id: u64, hashes: soroban_sdk::Vec<BytesN<32>>) {
+fn store_doc_hashes(
+    env: &Env,
+    contract_id: &soroban_sdk::Address,
+    claim_id: u64,
+    hashes: soroban_sdk::Vec<BytesN<32>>,
+) {
     env.as_contract(contract_id, || {
         env.storage()
             .instance()

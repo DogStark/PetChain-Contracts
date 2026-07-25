@@ -461,3 +461,72 @@ fn test_anchor_timestamp_recorded() {
     assert!(anchor.anchored_at >= before_time);
     assert!(anchor.anchored_at <= after_time);
 }
+
+#[test]
+fn test_revoke_vaccination_certificate_by_issuing_vet() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    let pet_id = register_pet(&client, &env, &owner);
+    register_and_verify_vet(&client, &env, &vet);
+    let vax_id = add_vaccination(&client, &env, pet_id, &vet);
+
+    // Verify it's current
+    assert!(client.is_vaccination_current(&pet_id, &VaccineType::Rabies));
+
+    let reason = String::from_str(&env, "Issued in error");
+    client.revoke_vaccination_certificate(&vet, &pet_id, &vax_id, &reason);
+
+    // Verify it's revoked
+    let vax = client.get_vaccinations(&vax_id).unwrap();
+    assert!(vax.revoked);
+    assert_eq!(vax.revocation_reason.unwrap(), reason);
+
+    // Verify it's no longer current
+    assert!(!client.is_vaccination_current(&pet_id, &VaccineType::Rabies));
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_revoke_vaccination_certificate_by_third_party_vet() {
+    let (env, client, _admin) = setup();
+    let owner = Address::generate(&env);
+    let vet1 = Address::generate(&env);
+    let vet2 = Address::generate(&env);
+
+    let pet_id = register_pet(&client, &env, &owner);
+    register_and_verify_vet(&client, &env, &vet1);
+    client.register_vet(
+        &vet2,
+        &String::from_str(&env, "Dr. Other"),
+        &String::from_str(&env, "VET444"),
+        &String::from_str(&env, "General Practice"),
+    );
+    client.verify_vet_license(&vet2, &String::from_str(&env, "VET444"));
+
+    let vax_id = add_vaccination(&client, &env, pet_id, &vet1);
+
+    // Vet 2 tries to revoke Vet 1's certificate
+    let reason = String::from_str(&env, "Should fail");
+    client.revoke_vaccination_certificate(&vet2, &pet_id, &vax_id, &reason);
+}
+
+#[test]
+fn test_revoke_vaccination_certificate_by_admin() {
+    let (env, client, admin) = setup();
+    let owner = Address::generate(&env);
+    let vet = Address::generate(&env);
+
+    let pet_id = register_pet(&client, &env, &owner);
+    register_and_verify_vet(&client, &env, &vet);
+    let vax_id = add_vaccination(&client, &env, pet_id, &vet);
+
+    let reason = String::from_str(&env, "Admin revocation");
+    client.revoke_vaccination_certificate(&admin, &pet_id, &vax_id, &reason);
+
+    let vax = client.get_vaccinations(&vax_id).unwrap();
+    assert!(vax.revoked);
+    assert_eq!(vax.revocation_reason.unwrap(), reason);
+}
+
