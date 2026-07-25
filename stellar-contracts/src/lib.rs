@@ -199,6 +199,26 @@ const MAX_BATCH_ERROR_MESSAGES: usize = 50;
 /// owner's storage quota. `add_attachment` enforces this cap. (Issue #774)
 const MAX_ATTACHMENTS_PER_RECORD: u32 = 20;
 
+/// Maximum number of milestone entries that can be stored in
+/// [`ActivityStreak::milestones_reached`].
+///
+/// The `milestones_reached` Vec is embedded inline inside `ActivityStreak` and
+/// serialised in a single XDR entry in Soroban persistent storage. An unbounded
+/// Vec could exceed the XDR entry size limit if many milestones are added over
+/// time (e.g. 365-day, 1000-day, etc.) or via a bug that appends duplicates.
+/// Once the entry exceeds the XDR limit every subsequent `add_activity_record`
+/// call would panic, effectively bricking all activity updates for the pet.
+///
+/// 32 slots is far more than the current milestone set (7, 30, 100 days) and
+/// leaves ample room for future milestones while keeping the entry size bounded.
+const MAX_MILESTONES: u32 = 32;
+
+/// Standard activity-streak milestones (in streak-days).
+/// A new milestone entry is recorded in `ActivityStreak::milestones_reached`
+/// the first time a pet's consecutive-day streak reaches one of these values,
+/// subject to the [`MAX_MILESTONES`] cap.
+const STREAK_MILESTONE_DAYS: &[u64] = &[7, 30, 100, 365, 1000];
+
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
 
@@ -10120,7 +10140,129 @@ impl PetChainContract {
             .instance()
             .set(&ActivityKey::PetActivityCount(pet_id), &pet_index);
 
+        // ── STREAK TRACKING ──────────────────────────────────────────────────
+        // Update the pet's consecutive-day activity streak.
+        //
+        // The streak is stored in persistent storage (not instance storage) so
+        // it survives ledger TTL extension.  The last-activity-date entry is
+        // stored alongside it for gap detection.
+        //
+        // Day boundaries use whole-day slots: `timestamp / 86400`.
+        let seconds_per_day: u64 = 86400;
+        let today: u64 = now / seconds_per_day;
+
+        let mut streak: ActivityStreak = env
+            .storage()
+            .persistent()
+            .get(&ActivityKey::PetActivityStreak(pet_id))
+            .unwrap_or(ActivityStreak {
+                pet_id,
+                current_streak: 0,
+                longest_streak: 0,
+                last_activity_date: 0,
+                milestones_reached: Vec::new(&env),
+            });
+
+        let last_day = streak.last_activity_date;
+
+        if last_day == 0 {
+            // First-ever activity for this pet.
+            streak.current_streak = 1;
+        } else if today == last_day {
+            // Same calendar day — streak already counted for today; no change.
+        } else if today == last_day + 1 {
+            // Consecutive day — extend streak.
+            streak.current_streak = streak.current_streak.saturating_add(1);
+        } else {
+            // Gap of >1 day — streak resets to 1 (today counts as day 1 of a
+            // new streak but does not carry forward old milestone progress).
+            streak.current_streak = 1;
+        }
+
+        // Update longest streak.
+        if streak.current_streak > streak.longest_streak {
+            streak.longest_streak = streak.current_streak;
+        }
+
+        // Record any newly-crossed milestones.
+        // Guard with MAX_MILESTONES so the Vec never grows without bound.
+        for &milestone in STREAK_MILESTONE_DAYS {
+            if streak.current_streak >= milestone {
+                // Only append if not already present AND cap not exceeded.
+                let already_recorded = streak.milestones_reached.contains(&milestone);
+                let under_cap =
+                    (streak.milestones_reached.len() as u32) < MAX_MILESTONES;
+
+                if !already_recorded && under_cap {
+                    streak.milestones_reached.push_back(milestone);
+
+                    // Emit a streak-milestone event.
+                    env.events().publish(
+                        (
+                            soroban_sdk::Symbol::new(&env, "streak_milestone"),
+                            pet_id,
+                        ),
+                        StreakMilestoneEvent {
+                            pet_id,
+                            milestone_days: milestone,
+                            timestamp: now,
+                        },
+                    );
+                }
+            }
+        }
+
+        // Advance the last-activity-date only when we move to a new day or on
+        // the very first activity (last_day == 0).
+        if today != last_day {
+            streak.last_activity_date = today;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&ActivityKey::PetActivityStreak(pet_id), &streak);
+
         activity_id
+    }
+
+    /// Return the current [`ActivityStreak`] for a pet.
+    ///
+    /// If the pet has never had an activity recorded the returned streak has all
+    /// fields set to zero / empty.  Returns a default struct rather than
+    /// panicking so callers can distinguish "no data yet" from an error.
+    pub fn get_activity_streak(env: Env, pet_id: u64) -> ActivityStreak {
+        env.storage()
+            .persistent()
+            .get(&ActivityKey::PetActivityStreak(pet_id))
+            .unwrap_or(ActivityStreak {
+                pet_id,
+                current_streak: 0,
+                longest_streak: 0,
+                last_activity_date: 0,
+                milestones_reached: Vec::new(&env),
+            })
+    }
+
+    /// Return `true` if `pet_id` has reached the given `milestone_days` streak.
+    ///
+    /// This checks [`ActivityStreak::milestones_reached`] for the exact value.
+    /// The milestone is recorded when the consecutive-day streak first reaches
+    /// (or exceeds) that value inside [`Self::add_activity_record`].
+    pub fn has_reached_milestone(env: Env, pet_id: u64, milestone_days: u64) -> bool {
+        let streak: ActivityStreak = env
+            .storage()
+            .persistent()
+            .get(&ActivityKey::PetActivityStreak(pet_id))
+            .unwrap_or(ActivityStreak {
+                pet_id,
+                current_streak: 0,
+                longest_streak: 0,
+                last_activity_date: 0,
+                milestones_reached: Vec::new(&env),
+            });
+        streak
+            .milestones_reached
+            .contains(&milestone_days)
     }
 
     pub fn set_activity_idempotency_window(env: Env, admin: Address, window_seconds: u64) {
