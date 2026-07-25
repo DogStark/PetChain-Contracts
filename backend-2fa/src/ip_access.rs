@@ -78,7 +78,10 @@ impl CidrBlock {
             ));
         }
 
-        Ok(Self { network, prefix_len })
+        Ok(Self {
+            network,
+            prefix_len,
+        })
     }
 
     pub fn contains(&self, ip: &IpAddr) -> bool {
@@ -189,7 +192,10 @@ impl IpAccessStore for InMemoryIpAccessStore {
             created_by: created_by.to_string(),
         };
 
-        self.entries.lock().expect("ip access store lock poisoned").insert(id, entry.clone());
+        self.entries
+            .lock()
+            .expect("ip access store lock poisoned")
+            .insert(id, entry.clone());
         Ok(entry)
     }
 
@@ -253,7 +259,10 @@ where
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(IpAccessMiddlewareService { service, store: self.store.clone() })
+        ok(IpAccessMiddlewareService {
+            service,
+            store: self.store.clone(),
+        })
     }
 }
 

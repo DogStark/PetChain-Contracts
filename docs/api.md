@@ -1,6 +1,4 @@
-# API Overview
-
-## Backend 2FA — OpenAPI Specification
+ckend 2FA — OpenAPI Specification
 
 The Backend 2FA service is fully documented as an **OpenAPI 3.0** spec.
 
