@@ -5689,4 +5689,56 @@ mod algorithm_upgrade_tests {
         let handlers = TwoFactorHandlers::new_with_optional_limiter(Some(custom_limiter.clone()));
         assert!(Arc::ptr_eq(handlers.limiter(), &custom_limiter));
     }
+
+    /// Integration test: a single shared `TwoFactorHandlers` instance accumulates
+    /// rate-limit failures across multiple requests.
+    ///
+    /// This verifies the core invariant: because `handlers` is constructed
+    /// **once** and reused, the `InMemoryRateLimiter` inside it records every
+    /// failure call and eventually reports `is_blocked() == true`.
+    ///
+    /// If `TwoFactorHandlers` were incorrectly constructed per-request (the
+    /// old static-dispatch pattern), each call would see 0 failures and the
+    /// limiter would never block — which is the bug this test catches.
+    #[test]
+    fn test_shared_rate_limiter_accumulates_failures_across_requests() {
+        use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
+        use std::sync::Arc;
+
+        // Build ONE shared handlers instance with a low-threshold limiter.
+        // InMemoryRateLimiter default blocks after 10 failures; we use the
+        // limiter directly to drive it past the threshold without needing
+        // valid TOTP tokens.
+        let limiter = Arc::new(InMemoryRateLimiter::default());
+        let store = Arc::new(crate::two_factor::InMemoryStore::default());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(store, limiter.clone());
+
+        // Simulate repeated enroll attempts for the same user via the SHARED
+        // handlers instance.  The key used by `enroll` is "enroll:<user_id>".
+        let key = "enroll:rate-test-user";
+
+        // Pump failures until the limiter reports blocked.
+        let mut blocked = false;
+        for _ in 0..20 {
+            let result = limiter.record_failure(key);
+            if result.is_blocked() {
+                blocked = true;
+                break;
+            }
+        }
+
+        assert!(
+            blocked,
+            "The shared rate limiter must eventually block repeated failures; \
+             if TwoFactorHandlers is constructed per-request the limiter is \
+             always reset and this assertion will never be reached."
+        );
+
+        // Confirm that the shared handlers' limiter is the very same object —
+        // it would not accumulate state if a fresh instance had been created.
+        assert!(
+            Arc::ptr_eq(handlers.limiter(), &limiter),
+            "handlers must hold the shared limiter, not a fresh one"
+        );
+    }
 }

@@ -217,6 +217,61 @@ pub struct RevokeSessionRequest {
     pub revoke_all: bool,
 }
 
+/// HTTP handler collection for all 2FA endpoints.
+///
+/// # IMPORTANT: This struct MUST be constructed once and shared
+///
+/// `TwoFactorHandlers` owns an [`InMemoryRateLimiter`] (or any [`RateLimiter`]
+/// implementation). The rate limiter accumulates failure state over time. If a
+/// **new** `TwoFactorHandlers` is instantiated per request (e.g. by calling
+/// `TwoFactorHandlers::new()` inside a route closure), each request starts with
+/// a **completely empty** failure history — an attacker making thousands of
+/// enrollment or recovery requests per second is never blocked because every
+/// request sees 0 recorded failures.
+///
+/// ## Correct usage (actix-web)
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use actix_web::{web, App, HttpServer};
+/// use backend_2fa::handlers::TwoFactorHandlers;
+///
+/// #[actix_web::main]
+/// async fn main() -> std::io::Result<()> {
+///     // Construct ONCE — the rate-limiter state lives here.
+///     let handlers = web::Data::new(TwoFactorHandlers::new_with_defaults());
+///
+///     HttpServer::new(move || {
+///         App::new()
+///             .app_data(handlers.clone()) // share the same instance
+///             .route("/2fa/enroll", web::post().to(enroll_handler))
+///             .route("/2fa/recover", web::post().to(recover_handler))
+///     })
+///     .bind("0.0.0.0:8080")?
+///     .run()
+///     .await
+/// }
+///
+/// async fn enroll_handler(
+///     data: web::Data<TwoFactorHandlers>,
+///     // ... extract caller and body ...
+/// ) -> impl actix_web::Responder {
+///     // Correct: calls `enroll` on the shared instance.
+///     // data.enroll(&caller, req)
+///     todo!()
+/// }
+/// ```
+///
+/// ## Wrong usage (creates per-request limiter — DO NOT DO THIS)
+///
+/// ```rust,ignore
+/// // ❌ Every request gets a fresh rate limiter with 0 failures.
+/// async fn bad_handler() -> impl actix_web::Responder {
+///     let handlers = TwoFactorHandlers::new();
+///     // handlers.enroll(...)  ← rate limit is always reset
+///     todo!()
+/// }
+/// ```
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     store: Arc<dyn TwoFactorStore>,
@@ -393,6 +448,27 @@ impl TwoFactorHandlers {
         Ok(())
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// # Why this is dangerous
+    ///
+    /// This method calls `Self::new()` internally, which constructs a brand-new
+    /// [`TwoFactorHandlers`] with a **fresh, empty** [`InMemoryRateLimiter`] on
+    /// every invocation. When wired into actix-web routes without a shared
+    /// `web::Data<TwoFactorHandlers>`, the rate limiter accumulates zero failures
+    /// across requests — an attacker can make unlimited enrollment attempts with
+    /// no backoff or blocking.
+    ///
+    /// # Migration
+    ///
+    /// Construct `TwoFactorHandlers` **once** (e.g. at server start), wrap it in
+    /// `web::Data::new(...)`, clone the `web::Data` into each route closure, and
+    /// call `handlers.enroll(caller, req)` on the shared instance instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .enroll() instead."
+    )]
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
@@ -400,6 +476,12 @@ impl TwoFactorHandlers {
         Self::new().enroll(caller, req)
     }
 
+    /// Enroll a user in 2FA using this shared `TwoFactorHandlers` instance.
+    ///
+    /// Prefer calling this method over the deprecated
+    /// [`TwoFactorHandlers::enable_two_factor`] static dispatch form. The static
+    /// form constructs a fresh rate limiter on every call, making rate limiting
+    /// ineffective.
     pub fn enroll(
         &self,
         caller: &AuthenticatedUser,
@@ -636,6 +718,17 @@ impl TwoFactorHandlers {
         Ok(false)
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// Calls `Self::new()` internally, which creates a fresh [`InMemoryRateLimiter`]
+    /// per call. Rate-limit state for the recovery endpoint is silently discarded
+    /// after every request. Use a shared `TwoFactorHandlers` instance and call
+    /// `.recover()` directly.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .recover() instead."
+    )]
     pub fn recover_with_backup(
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
@@ -643,6 +736,14 @@ impl TwoFactorHandlers {
         Self::new().recover(caller, req, None)
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// See [`Self::recover_with_backup`] for why this is dangerous.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .recover() instead."
+    )]
     pub fn recover_with_backup_with_ip(
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
@@ -651,6 +752,12 @@ impl TwoFactorHandlers {
         Self::new().recover(caller, req, ip_address)
     }
 
+    /// Recover 2FA using a backup code via this shared `TwoFactorHandlers` instance.
+    ///
+    /// Prefer calling this method over the deprecated
+    /// [`Self::recover_with_backup`] / [`Self::recover_with_backup_with_ip`]
+    /// static forms. Those static methods construct a fresh rate limiter on every
+    /// call, making rate limiting ineffective.
     pub fn recover(
         &self,
         caller: &AuthenticatedUser,
