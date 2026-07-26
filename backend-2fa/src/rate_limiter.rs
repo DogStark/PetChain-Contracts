@@ -849,7 +849,7 @@ impl<B: RedisBackend> RateLimiter for SlidingWindowRateLimiter<B> {
             cfg.window_secs,
         );
 
-        if count > cfg.max_failures as u64 {
+        if count >= cfg.max_failures as u64 {
             self.backend.set_ex(&lockout_key, "1", cfg.lockout_secs);
 
             // Extract user_id and endpoint from key
