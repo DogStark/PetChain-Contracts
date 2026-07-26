@@ -22,7 +22,7 @@ pub use content_type_guard::ContentTypeGuard;
 pub use db::PostgresTwoFactorStore;
 pub use db::{
     select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats,
-    PostgresIpAccessStore, SecretProvider,
+    PostgresFlaggedScoreStore, PostgresIpAccessStore, SecretProvider,
 };
 pub use error::{ApiError, ErrorResponseMiddleware, NoCacheMiddleware};
 pub use handlers::{
@@ -40,9 +40,9 @@ pub use ip_access::{
     IpAccessStore, IpListType,
 };
 pub use leaderboard::{
-    broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, LeaderboardEntry,
-    LeaderboardScoreUpdate, LeaderboardWsHub, LeaderboardWsSession, ScoreSubmissionError,
-    ScoreValidationConfig,
+    broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
+    LeaderboardEntry, LeaderboardScoreUpdate, LeaderboardWsHub, LeaderboardWsSession,
+    ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use metrics::{
     dec_leaderboard_ws_connections, inc_leaderboard_ws_connections, metrics, record_rate_limit_hit,

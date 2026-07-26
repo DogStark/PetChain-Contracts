@@ -34,6 +34,7 @@ aws-sdk-secretsmanager = "1"
 
 [dev-dependencies]
 criterion = { version = "=0.5.1", features = ["html_reports"] }
+serde_yaml = "0.9"
 
 [features]
 webhook-client = []
