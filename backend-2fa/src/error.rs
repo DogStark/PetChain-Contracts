@@ -95,6 +95,7 @@ impl ResponseError for ApiError {
             "FORBIDDEN" => StatusCode::FORBIDDEN,
             "NOT_FOUND" => StatusCode::NOT_FOUND,
             "CONFLICT" => StatusCode::CONFLICT,
+            "INVALID_TOKEN" => StatusCode::UNAUTHORIZED,
             "LOCKED" => StatusCode::LOCKED,
             "TOO_MANY_REQUESTS" => StatusCode::TOO_MANY_REQUESTS,
             "RATE_LIMITED" => StatusCode::TOO_MANY_REQUESTS,
