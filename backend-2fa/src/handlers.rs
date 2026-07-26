@@ -217,6 +217,39 @@ pub struct RevokeSessionRequest {
     pub revoke_all: bool,
 }
 
+/// Caller identity for `GET /2fa/{user_id}/recovery-log` — reachable by
+/// either the account owner or an admin.
+pub enum RecoveryLogCaller<'a> {
+    Owner(&'a AuthenticatedUser),
+    Admin(&'a AuthenticatedAdmin),
+}
+
+impl RecoveryLogCaller<'_> {
+    fn authorize(&self, user_id: &str) -> Result<(), ApiError> {
+        match self {
+            RecoveryLogCaller::Admin(_) => Ok(()),
+            RecoveryLogCaller::Owner(caller) => caller.authorize(user_id),
+        }
+    }
+}
+
+fn default_recovery_log_page() -> u32 {
+    1
+}
+
+fn default_recovery_log_page_size() -> u32 {
+    20
+}
+
+/// Query params for `GET /2fa/{user_id}/recovery-log`.
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct GetRecoveryLogQuery {
+    #[serde(default = "default_recovery_log_page")]
+    pub page: u32,
+    #[serde(default = "default_recovery_log_page_size")]
+    pub page_size: u32,
+}
+
 /// HTTP handler collection for all 2FA endpoints.
 ///
 /// # IMPORTANT: This struct MUST be constructed once and shared
@@ -408,6 +441,35 @@ impl TwoFactorHandlers {
             store,
             issuer: issuer.into(),
         }
+    }
+
+    /// GET /2fa/{user_id}/recovery-log?page=1&page_size=20
+    ///
+    /// Returns recovery-code usage log entries for `user_id`. Callable by
+    /// the user themselves ([`RecoveryLogCaller::Owner`]) or by an admin
+    /// querying any user's log ([`RecoveryLogCaller::Admin`]).
+    pub fn get_recovery_log(
+        &self,
+        caller: &RecoveryLogCaller,
+        user_id: &str,
+        query: GetRecoveryLogQuery,
+    ) -> Result<Vec<RecoveryUsageLogEntry>, ApiError> {
+        caller.authorize(user_id)?;
+        let entries = self
+            .store
+            .get_recovery_usage_log(query.page, query.page_size)
+            .map_err(|e| ApiError::internal_error(e, None))?
+            .into_iter()
+            .filter(|entry| entry.user_id == user_id)
+            .map(|entry| RecoveryUsageLogEntry {
+                id: entry.id as i32,
+                user_id: entry.user_id,
+                code_index: entry.code_index,
+                used_at: entry.used_at,
+                ip_address: entry.ip_address,
+            })
+            .collect();
+        Ok(entries)
     }
 
     fn rate_limit_key(prefix: &str, user_id: &str) -> String {
