@@ -1050,6 +1050,7 @@ pub enum DataKey {
     NonceMaxUse((u64, String)),
     NonceUsage((u64, String, Bytes)),
     RetentionPeriod,
+    MaxSubscriptionsPerAddress,
 }
 
 #[contracttype]
@@ -2449,7 +2450,7 @@ impl PetChainContract {
             }
         }
 
-        if active_count >= MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS {
+        if active_count >= Self::max_subscriptions_per_address(env.clone()) {
             panic_with_error!(&env, ContractError::TooManyItems);
         }
 
@@ -2488,6 +2489,28 @@ impl PetChainContract {
         );
 
         subscription_id
+    }
+
+    /// Admin-only: override the per-address active subscription cap enforced
+    /// by `register_subscription`. Lets private deployments (e.g. hospital
+    /// instances) scale the limit without redeploying the contract.
+    pub fn set_max_subscriptions_per_address(env: Env, admin: Address, max: u32) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxSubscriptionsPerAddress, &max);
+    }
+
+    /// Current per-address active subscription cap: the admin-configured
+    /// value if one has been set, otherwise the default of 10.
+    pub fn max_subscriptions_per_address(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MaxSubscriptionsPerAddress)
+            .unwrap_or(MAX_ACTIVE_SUBSCRIPTIONS_PER_ADDRESS)
     }
 
     pub fn get_subscription(env: Env, subscription_id: u64) -> Option<EventSubscription> {
