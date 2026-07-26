@@ -16,6 +16,7 @@
 //! | `db_pool_active` | Gauge | — |
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
+//! | `totp_verification_duration_seconds` | Histogram | — |
 //! | `leaderboard_ws_connections_total` | Gauge | — |
 //!
 //! # Registry
@@ -27,7 +28,8 @@
 //! no-op, rather than panicking the service.
 
 use prometheus::{
-    CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+    CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+    TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -44,6 +46,7 @@ pub struct Metrics {
     pub db_pool_active: Gauge,
     pub db_pool_idle: Gauge,
     pub request_duration_seconds: HistogramVec,
+    pub totp_verification_duration_seconds: Histogram,
     /// Tracks the current number of open leaderboard WebSocket connections.
     pub leaderboard_ws_connections_total: Gauge,
     /// Total webhook delivery attempts with `result` label (`ok`/`fail`).
@@ -138,6 +141,19 @@ pub fn metrics() -> &'static Metrics {
             "request_duration_seconds",
         );
 
+        let totp_verification_duration_seconds = try_register(
+            &registry,
+            Histogram::with_opts(
+                HistogramOpts::new(
+                    "totp_verification_duration_seconds",
+                    "TOTP verification duration in seconds",
+                )
+                .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+            )
+            .expect("valid metric name"),
+            "totp_verification_duration_seconds",
+        );
+
         let leaderboard_ws_connections_total = try_register(
             &registry,
             Gauge::new(
@@ -190,6 +206,7 @@ pub fn metrics() -> &'static Metrics {
             db_pool_active,
             db_pool_idle,
             request_duration_seconds,
+            totp_verification_duration_seconds,
             leaderboard_ws_connections_total,
             webhook_delivery_total,
             webhook_delivery_retries_total,
@@ -209,6 +226,13 @@ pub fn record_totp_verification(success: bool) {
         .totp_verifications_total
         .with_label_values(&[label])
         .inc();
+}
+
+/// Record a TOTP verification latency observation in seconds.
+pub fn record_totp_latency(duration_secs: f64) {
+    metrics()
+        .totp_verification_duration_seconds
+        .observe(duration_secs);
 }
 
 /// Record a recovery code use.
@@ -327,6 +351,7 @@ mod tests {
         set_db_pool_stats(2.0, 8.0);
         let _timer = start_request_timer("/verify");
         // timer dropped immediately — records a near-zero observation
+        record_totp_latency(0.001);
         inc_leaderboard_ws_connections();
         dec_leaderboard_ws_connections();
 
@@ -403,6 +428,16 @@ mod tests {
         assert_eq!(
             first, second,
             "OnceLock should return the same instance on repeated calls"
+        );
+    }
+
+    #[test]
+    fn totp_verification_histogram_present_in_output() {
+        record_totp_latency(0.042);
+        let output = render_metrics().expect("render");
+        assert!(
+            output.contains("totp_verification_duration_seconds"),
+            "missing totp verification duration histogram"
         );
     }
 

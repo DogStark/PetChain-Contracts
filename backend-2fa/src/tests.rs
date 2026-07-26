@@ -3263,6 +3263,52 @@ mod redis_rate_limiter_tests {
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].attempted_score, max_score);
         }
+
+        // ---------------------------------------------------------------
+        // FlaggedScoreStore trait injection (Issue #789)
+        //
+        // AdminScoreHandlers::new() defaults to InMemoryFlaggedScoreStore,
+        // but with_store() accepts any Arc<dyn FlaggedScoreStore> — the same
+        // injection point a caller would use to swap in
+        // PostgresFlaggedScoreStore for cross-restart persistence in
+        // production, without changing any handler logic.
+        // ---------------------------------------------------------------
+
+        #[test]
+        fn admin_with_store_uses_injected_in_memory_store() {
+            use crate::leaderboard::{FlaggedScoreStore, InMemoryFlaggedScoreStore};
+            use std::sync::Arc;
+
+            let store: Arc<dyn FlaggedScoreStore> = Arc::new(InMemoryFlaggedScoreStore::new());
+            let admin = AdminScoreHandlers::with_store(store);
+
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+            let flagged = admin.get_all_flagged();
+            assert_eq!(flagged.len(), 1);
+            assert_eq!(flagged[0].user_id, "user1");
+        }
+
+        /// A store injected into two independent handler instances is shared
+        /// state, not per-handler state — this is exactly what lets a
+        /// persistent store survive a fresh `AdminScoreHandlers::with_store`
+        /// call after a process restart (only the store, not the handler,
+        /// needs to outlive the process).
+        #[test]
+        fn admin_with_store_shares_state_across_handler_instances() {
+            use crate::leaderboard::{FlaggedScoreStore, InMemoryFlaggedScoreStore};
+            use std::sync::Arc;
+
+            let store: Arc<dyn FlaggedScoreStore> = Arc::new(InMemoryFlaggedScoreStore::new());
+
+            let admin1 = AdminScoreHandlers::with_store(Arc::clone(&store));
+            admin1.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+
+            // A brand-new handler wired to the same store sees the same data.
+            let admin2 = AdminScoreHandlers::with_store(Arc::clone(&store));
+            let flagged = admin2.get_all_flagged();
+            assert_eq!(flagged.len(), 1);
+            assert_eq!(flagged[0].user_id, "user1");
+        }
     }
 }
 

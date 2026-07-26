@@ -1,7 +1,9 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
-use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::leaderboard::{
+    leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
+};
 use crate::rate_limiter::{
     InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
@@ -858,17 +860,17 @@ impl AdminRecoveryHandlers {
 
 /// Admin handlers for managing flagged leaderboard scores
 pub struct AdminScoreHandlers {
-    flagged_store: Arc<FlaggedScoreStore>,
+    flagged_store: Arc<dyn FlaggedScoreStore>,
 }
 
 impl AdminScoreHandlers {
     pub fn new() -> Self {
         Self {
-            flagged_store: Arc::new(FlaggedScoreStore::new()),
+            flagged_store: Arc::new(InMemoryFlaggedScoreStore::new()),
         }
     }
 
-    pub fn with_store(flagged_store: Arc<FlaggedScoreStore>) -> Self {
+    pub fn with_store(flagged_store: Arc<dyn FlaggedScoreStore>) -> Self {
         Self { flagged_store }
     }
 
@@ -1452,6 +1454,11 @@ impl MultiTenantHandlers {
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
+        let max_failures = self.store.config.rate_limit_max_failures;
+        let tenant_id = self.store.config.tenant_id.clone();
+        let key = format!("verify:{user_id}");
+        if let RateLimitResult::Blocked { retry_after_secs, .. } =
+            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(

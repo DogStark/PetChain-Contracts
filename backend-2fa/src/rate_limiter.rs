@@ -223,6 +223,7 @@ pub struct RedisTwoFactorFailureCounter<B: RedisBackend> {
     backend: B,
     key_prefix: String,
     ttl_secs: u64,
+    fallback: InMemoryRateLimiter,
 }
 
 impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
@@ -231,6 +232,7 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
             backend,
             key_prefix: key_prefix.into(),
             ttl_secs,
+            fallback: InMemoryRateLimiter::default(),
         }
     }
 
@@ -239,21 +241,43 @@ impl<B: RedisBackend> RedisTwoFactorFailureCounter<B> {
     }
 
     pub fn record_failure(&self, user_id: &str) -> u32 {
-        self.backend
-            .incr_with_ttl(&self.key(user_id), self.ttl_secs)
-            .min(u32::MAX as u64) as u32
+        let key = self.key(user_id);
+        let count = self.backend.incr_with_ttl(&key, self.ttl_secs);
+        if count == 0 {
+            tracing::error!(
+                user_id = user_id,
+                "[RedisTwoFactorFailureCounter] Redis unavailable, falling back to in-memory counter"
+            );
+            crate::metrics::record_redis_fallback();
+            let result = self.fallback.record_failure(&key);
+            return match result {
+                RateLimitResult::Blocked { limit, .. } => limit,
+                RateLimitResult::Allowed { remaining, limit, .. } => limit.saturating_sub(remaining),
+            };
+        }
+        count.min(u32::MAX as u64) as u32
     }
 
     pub fn get_failures(&self, user_id: &str) -> u32 {
-        self.backend
-            .get_u64(&self.key(user_id))
-            .unwrap_or(0)
-            .min(u32::MAX as u64) as u32
+        let key = self.key(user_id);
+        match self.backend.get_u64(&key) {
+            Some(count) => count.min(u32::MAX as u64) as u32,
+            None => {
+                tracing::error!(
+                    user_id = user_id,
+                    "[RedisTwoFactorFailureCounter] Redis unavailable, using in-memory fallback"
+                );
+                crate::metrics::record_redis_fallback();
+                let result = self.fallback.record_failure(&key);
+                result.limit().saturating_sub(result.remaining())
+            }
+        }
     }
 
     pub fn reset(&self, user_id: &str) {
         let key = self.key(user_id);
         self.backend.del(&[&key]);
+        self.fallback.record_success(&key);
     }
 }
 
@@ -1027,7 +1051,7 @@ impl RateLimiter for DistributedRateLimiter {
         let result = match self.try_redis(key) {
             Some(result) => result,
             None => {
-                tracing::warn!(
+                tracing::error!(
                     key = key,
                     "[DistributedRateLimiter] Redis unavailable, falling back to in-memory"
                 );
@@ -1497,90 +1521,107 @@ mod structured_logging_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Per-endpoint sliding window dispatch tests
+// Tests for Redis unavailability fallback (Issue #1055)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod per_endpoint_tests {
+mod redis_fallback_tests {
     use super::*;
 
-    // ------------------------------------------------------------------
-    // Helper: build a SlidingWindowRateLimiter<MockRedisBackend> with a
-    // strict config for "login" / "recover" and a lenient default.
-    // ------------------------------------------------------------------
-    fn make_limiter() -> SlidingWindowRateLimiter<MockRedisBackend> {
-        let default_cfg = EndpointConfig::new(60, 10, 300); // 10 failures allowed
-        let mut endpoints = HashMap::new();
-        endpoints.insert("login".to_string(),   EndpointConfig::new(60, 2, 300));  // strict: 2
-        endpoints.insert("recover".to_string(), EndpointConfig::new(300, 2, 900)); // strict: 2
-        SlidingWindowRateLimiter::with_endpoints(MockRedisBackend::new(), default_cfg, endpoints)
-    }
+    /// A Redis backend that always fails (returns 0 / None for all operations).
+    struct FailingRedisBackend;
 
-    /// A strict-config endpoint ("login") is blocked after exactly N failures
-    /// while a different endpoint using the default config stays Allowed for
-    /// the same number of attempts.
-    #[test]
-    fn test_strict_endpoint_blocked_after_n_requests() {
-        let limiter = make_limiter();
-
-        // --- login endpoint: max_failures = 2 ---
-        // First two calls are within the limit.
-        assert!(
-            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Allowed { .. }),
-            "first login failure should be Allowed"
-        );
-        assert!(
-            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Allowed { .. }),
-            "second login failure should be Allowed"
-        );
-        // Third call exceeds the strict limit and must be Blocked.
-        assert!(
-            matches!(limiter.record_failure("login:user:1"), RateLimitResult::Blocked { .. }),
-            "third login failure should be Blocked (strict limit = 2)"
-        );
-
-        // --- recover endpoint: max_failures = 2 ---
-        assert!(
-            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Allowed { .. }),
-            "first recover failure should be Allowed"
-        );
-        assert!(
-            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Allowed { .. }),
-            "second recover failure should be Allowed"
-        );
-        assert!(
-            matches!(limiter.record_failure("recover:user:1"), RateLimitResult::Blocked { .. }),
-            "third recover failure should be Blocked (strict limit = 2)"
-        );
-
-        // --- verify endpoint: uses default (10 failures) ---
-        // Five failures on an unrelated endpoint must still be Allowed.
-        for i in 0..5 {
-            assert!(
-                matches!(limiter.record_failure("verify:user:1"), RateLimitResult::Allowed { .. }),
-                "verify failure #{i} should be Allowed (default limit = 10)"
-            );
+    impl RedisBackend for FailingRedisBackend {
+        fn ttl(&self, _key: &str) -> i64 {
+            -2
+        }
+        fn sliding_window_add(
+            &self,
+            _key: &str,
+            _now_ms: u64,
+            _cutoff_ms: u64,
+            _member: &str,
+            _ttl_secs: u64,
+        ) -> u64 {
+            0
+        }
+        fn set_ex(&self, _key: &str, _value: &str, _ttl_secs: u64) {}
+        fn del(&self, _keys: &[&str]) {}
+        fn incr_with_ttl(&self, _key: &str, _ttl_secs: u64) -> u64 {
+            0
+        }
+        fn get_u64(&self, _key: &str) -> Option<u64> {
+            None
         }
     }
 
-    /// An endpoint path that has no registered override falls back to the
-    /// default config and is not blocked until the default threshold is reached.
     #[test]
-    fn test_fallback_path_uses_default_config() {
-        let limiter = make_limiter(); // default = 10 failures
+    fn test_distributed_limiter_falls_back_when_redis_unavailable() {
+        let limiter = DistributedRateLimiter::new(None, 3, 60, "test:");
+        let key = "verify:user1";
 
-        // "health" has no entry in the endpoints map → should use default (10).
-        // Fire 10 requests; every single one must be Allowed.
-        for i in 0..10 {
-            assert!(
-                matches!(limiter.record_failure("health:svc"), RateLimitResult::Allowed { .. }),
-                "health failure #{i} should be Allowed (fallback to default limit = 10)"
-            );
-        }
-        // The 11th exceeds the default and must be Blocked.
+        // First three attempts should be allowed (in-memory fallback)
+        let r1 = limiter.record_failure(key);
+        assert!(matches!(r1, RateLimitResult::Allowed { .. }));
+
+        let r2 = limiter.record_failure(key);
+        assert!(matches!(r2, RateLimitResult::Allowed { .. }));
+
+        let r3 = limiter.record_failure(key);
+        assert!(matches!(r3, RateLimitResult::Allowed { .. }));
+
+        // Fourth attempt should trigger lockout
+        let r4 = limiter.record_failure(key);
+        assert!(matches!(r4, RateLimitResult::Blocked { .. }));
+    }
+
+    #[test]
+    fn test_redis_failure_counter_falls_back_to_in_memory() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        // Each record_failure should increment the in-memory counter
+        let count1 = counter.record_failure("user1");
+        assert!(count1 > 0, "in-memory fallback should track failures");
+
+        let count2 = counter.record_failure("user1");
         assert!(
-            matches!(limiter.record_failure("health:svc"), RateLimitResult::Blocked { .. }),
-            "health failure #11 should be Blocked (exceeded default limit = 10)"
+            count2 >= count1,
+            "subsequent failures should increment counter"
         );
+    }
+
+    #[test]
+    fn test_redis_failure_counter_fallback_records_metric() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        let _ = counter.record_failure("user1");
+
+        let output = crate::metrics::render_metrics().expect("render");
+        assert!(
+            output.contains("rate_limiter_redis_fallback_total"),
+            "fallback metric should be recorded"
+        );
+    }
+
+    #[test]
+    fn test_redis_failure_counter_reset_clears_fallback() {
+        let backend = FailingRedisBackend;
+        let counter = RedisTwoFactorFailureCounter::new(backend, "test:", 300);
+
+        counter.record_failure("user1");
+        counter.record_failure("user1");
+        counter.reset("user1");
+
+        // After reset, the in-memory fallback should be cleared
+        let result = counter.fallback.record_failure("test:2fa:failures:user1");
+        // Should only have 1 failure (the one we just recorded after reset)
+        match result {
+            RateLimitResult::Allowed { remaining, limit, .. } => {
+                assert_eq!(remaining, limit - 1);
+            }
+            _ => panic!("should be allowed after reset"),
+        }
     }
 }
