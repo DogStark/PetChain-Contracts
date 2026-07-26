@@ -188,6 +188,8 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_disputes;
 mod test_book_slot;
+#[cfg(test)]
+mod test_admin_activity_log;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -346,6 +348,7 @@ pub enum ContractError {
     ProposalNotFound = 39,
     RollbackWindowExpired = 40,
     NoPreviousUpgrade = 41,
+    QuorumNotMet = 45,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -737,6 +740,25 @@ pub struct AuditEntry {
     pub timestamp: u64,
     pub reason_code: u32,
     pub pet_id: u64,
+}
+
+/// A single recorded admin action (Issue #816).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminActivityEntry {
+    pub actor: Address,
+    pub action: String,
+    pub timestamp: u64,
+}
+
+/// Paginated, actor-filtered view over the admin activity log (Issue #816).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminActivityPage {
+    pub items: Vec<AdminActivityEntry>,
+    pub total: u64,
+    pub page: u32,
+    pub page_size: u32,
 }
 
 #[contracttype]
@@ -1223,6 +1245,9 @@ pub enum SystemKey {
     PreviousWasmHash,        // BytesN<32> of the previous WASM hash before upgrade
     // Version keys
     StorageVersion,          // ContractVersion for storage schema
+    // Admin activity log keys (Issue #816)
+    AdminActivityLog(u64), // index -> AdminActivityEntry
+    AdminActivityCount,    // Total number of recorded admin actions
 }
 
 /// Statistics snapshot for governance reporting (Issue #828)
@@ -2899,7 +2924,7 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
 
         // Check threshold
-        if proposal.approvals.len() < proposal.required_approvals as usize {
+        if proposal.approvals.len() < proposal.required_approvals {
             panic_with_error!(&env, ContractError::ThresholdNotMet);
         }
 
@@ -3760,6 +3785,86 @@ impl PetChainContract {
             .unwrap_or(0u32)
     }
 
+    /// Appends an entry to the admin activity log (Issue #816).
+    fn record_admin_activity(env: &Env, actor: &Address, action: &str) {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::AdminActivityCount)
+            .unwrap_or(0);
+        let next = count + 1;
+        env.storage().instance().set(
+            &SystemKey::AdminActivityLog(next),
+            &AdminActivityEntry {
+                actor: actor.clone(),
+                action: String::from_str(env, action),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        env.storage()
+            .instance()
+            .set(&SystemKey::AdminActivityCount, &next);
+    }
+
+    /// Returns a paginated view of on-chain actions performed by `admin`.
+    ///
+    /// Only current admins may call this — for their own activity log or
+    /// any other admin's — since the log itself only tracks admin actions.
+    pub fn get_admin_activity_log(
+        env: Env,
+        caller: Address,
+        admin: Address,
+        page: u32,
+        page_size: u32,
+    ) -> AdminActivityPage {
+        caller.require_auth();
+        if !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let size = if page_size == 0 || page_size > 50 {
+            50
+        } else {
+            page_size
+        };
+
+        let total_count: u64 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::AdminActivityCount)
+            .unwrap_or(0);
+
+        let mut matches: Vec<AdminActivityEntry> = Vec::new(&env);
+        for i in 1..=total_count {
+            if let Some(entry) = env
+                .storage()
+                .instance()
+                .get::<SystemKey, AdminActivityEntry>(&SystemKey::AdminActivityLog(i))
+            {
+                if entry.actor == admin {
+                    matches.push_back(entry);
+                }
+            }
+        }
+
+        let total = matches.len() as u64;
+        let start = (page as u64).saturating_mul(size as u64) as u32;
+        let mut items = Vec::new(&env);
+        for i in start..start.saturating_add(size) {
+            match matches.get(i) {
+                Some(entry) => items.push_back(entry),
+                None => break,
+            }
+        }
+
+        AdminActivityPage {
+            items,
+            total,
+            page,
+            page_size: size,
+        }
+    }
+
     /// Update the multisig admin threshold via a multisig proposal.
     /// Requires quorum approval. Rejects if an active proposal exists.
     /// Validates 1 <= new_threshold <= signer_count.
@@ -3954,6 +4059,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalStorageQuota, &quota);
+        Self::record_admin_activity(&env, &admin, "set_global_storage_quota");
 
         env.events()
             .publish((Symbol::new(&env, "GlobalStorageQuotaSet"),), quota);
@@ -3971,6 +4077,7 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::PetStorageQuota(pet_id), &quota);
+        Self::record_admin_activity(&env, &admin, "set_pet_storage_quota");
 
         env.events()
             .publish((Symbol::new(&env, "PetStorageQuotaSet"), pet_id), quota);
@@ -6091,7 +6198,11 @@ impl PetChainContract {
 
     pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool {
         PetChainContract::require_admin_auth(&env, &admin);
-        PetChainContract::_verify_vet_internal(&env, vet_address)
+        let verified = PetChainContract::_verify_vet_internal(&env, vet_address);
+        if verified {
+            Self::record_admin_activity(&env, &admin, "verify_vet");
+        }
+        verified
     }
 
     /// Batch verify multiple vets in a single call
@@ -6219,7 +6330,11 @@ impl PetChainContract {
 
     pub fn revoke_vet_license(env: Env, admin: Address, vet_address: Address) -> bool {
         PetChainContract::require_admin_auth(&env, &admin);
-        PetChainContract::_revoke_vet_internal(&env, vet_address)
+        let revoked = PetChainContract::_revoke_vet_internal(&env, vet_address);
+        if revoked {
+            Self::record_admin_activity(&env, &admin, "revoke_vet_license");
+        }
+        revoked
     }
 
     fn _revoke_vet_internal(env: &Env, vet_address: Address) -> bool {
@@ -11010,6 +11125,9 @@ impl PetChainContract {
         }
 
         if !dry_run && !deleted.is_empty() {
+            if Self::is_admin_address(&env, &caller) {
+                Self::record_admin_activity(&env, &caller, "purge_deleted_records");
+            }
             env.events().publish(
                 (String::from_str(&env, "MedicalRecordPurged"), pet_id),
                 MedicalRecordPurgedEvent {
