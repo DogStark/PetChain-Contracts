@@ -185,6 +185,8 @@ mod test_verify_claim_document;
 mod test_vet_pagination;
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_book_slot;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
