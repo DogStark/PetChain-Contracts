@@ -1246,6 +1246,143 @@ fn cancel_expired_adoption_without_pending_adoption_is_rejected() {
 }
 
 // ======================================================
+// reject_adoption by organisation admin tests (Issue #1018)
+// ======================================================
+
+#[test]
+fn reject_adoption_by_organisation_admin_succeeds() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let organization = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &Some(organization.clone()));
+
+    // Organisation admin rejects — distinct code path from owner/adopter.
+    client.reject_adoption(
+        &pet_id,
+        &organization,
+        &String::from_str(&env, "Rescue declined placement"),
+    );
+
+    // Pending adoption must be removed.
+    assert!(client.get_pending_adoption(&pet_id).is_none());
+
+    let record = client.get_adoption_record(&pet_id).unwrap();
+    assert_eq!(record.state, AdoptionState::Rejected);
+    assert_eq!(record.rejected_by, Some(organization));
+    assert_eq!(
+        record.rejection_reason,
+        Some(String::from_str(&env, "Rescue declined placement"))
+    );
+}
+
+#[test]
+fn reject_adoption_by_org_without_org_set_is_unauthorized() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    // No organization on this adoption.
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+
+    let stranger = Address::generate(&env);
+    let result = client.try_reject_adoption(
+        &pet_id,
+        &stranger,
+        &String::from_str(&env, "Unauthorized attempt"),
+    );
+
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::InvalidApprover as u32,
+        )))
+    );
+    // Adoption must still be pending.
+    assert!(client.get_pending_adoption(&pet_id).is_some());
+}
+
+#[test]
+fn reject_adoption_org_admin_different_from_pending_org_is_unauthorized() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let real_org = Address::generate(&env);
+    let fake_org = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &Some(real_org.clone()));
+
+    // A different address that is not the registered org must be rejected.
+    let result = client.try_reject_adoption(
+        &pet_id,
+        &fake_org,
+        &String::from_str(&env, "Impersonation attempt"),
+    );
+
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::InvalidApprover as u32,
+        )))
+    );
+    assert!(client.get_pending_adoption(&pet_id).is_some());
+}
+
+// ======================================================
+// complete_adoption event emission tests (Issue #1010)
+// ======================================================
+
+#[test]
+fn complete_adoption_emits_adoption_cmpl_event() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+    client.approve_adoption(&pet_id, &adopter);
+
+    let events_before = env.events().all().len();
+    client.complete_adoption(&pet_id);
+
+    // At least one new event must be emitted.
+    let events_after = env.events().all().len();
+    assert!(
+        events_after > events_before,
+        "complete_adoption must emit an event"
+    );
+}
+
+#[test]
+fn complete_adoption_event_includes_from_to_and_timestamp() {
+    let (env, owner, adopter, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+    client.approve_adoption(&pet_id, &adopter);
+
+    let events_before = env.events().all().len();
+    client.complete_adoption(&pet_id);
+
+    // Exactly one new event is emitted by complete_adoption.
+    assert_eq!(env.events().all().len(), events_before + 1);
+
+    // The adoption record confirms ownership transferred to the adopter,
+    // meaning the completion logic (and its event) ran to completion.
+    let record = client.get_adoption_record(&pet_id).unwrap();
+    assert_eq!(record.state, AdoptionState::Completed);
+    assert_eq!(record.to, adopter);
+    assert_eq!(record.from, owner);
+    assert!(record.completed_at.is_some());
+}
+
+// ======================================================
 // Custody chain length cap tests (Issue #1011)
 // ======================================================
 
