@@ -156,6 +156,11 @@ impl PostgresTwoFactorStore {
         // tighter of the two configured bounds so either one is honored.
         let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
 
+        // sqlx's pool has a single `acquire_timeout` covering both "wait for
+        // a free slot" and "make the initial TCP connection" — apply the
+        // tighter of the two configured bounds so either one is honored.
+        let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
+
         let pool = runtime
             .block_on(
                 PgPoolOptions::new()

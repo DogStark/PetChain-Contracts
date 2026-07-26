@@ -4520,6 +4520,8 @@ mod tenant_provisioning_idempotency_tests {
     fn provision_req(tenant_id: &str) -> ProvisionTenantRequest {
         ProvisionTenantRequest {
             tenant_id: tenant_id.to_string(),
+            name: format!("{tenant_id} Inc"),
+            max_users: 50,
             totp_issuer: "AcmeCo".to_string(),
             rate_limit_max_failures: 7,
         }
@@ -4599,6 +4601,109 @@ mod tenant_provisioning_idempotency_tests {
 
         let existed_count = responses.iter().filter(|r| r.already_existed).count();
         assert_eq!(existed_count, 15);
+    }
+
+    #[test]
+    fn test_provision_rejects_empty_tenant_id() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = String::new();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_tenant_id_over_max_length() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = "a".repeat(65);
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_tenant_id_with_invalid_characters() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = "tenant_with_underscores".to_string();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_zero_max_users() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-zero-users");
+        req.max_users = 0;
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "max_users"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_empty_name() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-empty-name");
+        req.name = String::new();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "name"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_name_over_max_length() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-long-name");
+        req.name = "a".repeat(129);
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "name"
+        );
+    }
+
+    #[test]
+    fn test_provision_accepts_valid_config() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let response = handlers
+            .provision_tenant(&admin(), provision_req("tenant-valid"))
+            .unwrap();
+
+        assert_eq!(response.tenant_id, "tenant-valid");
+        assert_eq!(response.name, "tenant-valid Inc");
+        assert_eq!(response.max_users, 50);
     }
 
     #[test]

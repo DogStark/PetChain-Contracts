@@ -1092,6 +1092,8 @@ impl TwoFactorStore for InMemoryStore {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TenantConfig {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
     pub lockout_threshold: u32,
@@ -1099,8 +1101,11 @@ pub struct TenantConfig {
 
 impl TenantConfig {
     pub fn new(tenant_id: impl Into<String>) -> Self {
+        let tenant_id = tenant_id.into();
         Self {
-            tenant_id: tenant_id.into(),
+            name: tenant_id.clone(),
+            tenant_id,
+            max_users: 100,
             totp_issuer: "PetChain".to_string(),
             rate_limit_max_failures: 5,
             lockout_threshold: 10,
@@ -1440,6 +1445,8 @@ mod tenant_registry_concurrency_tests {
     fn make_config(tenant_id: &str) -> TenantConfig {
         TenantConfig {
             tenant_id: tenant_id.to_string(),
+            name: tenant_id.to_string(),
+            max_users: 100,
             totp_issuer: format!("{}-issuer", tenant_id),
             lockout_threshold: 5,
             rate_limit_max_failures: 5,
