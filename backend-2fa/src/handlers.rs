@@ -316,8 +316,47 @@ pub struct TwoFactorHandlers {
 impl TwoFactorHandlers {
     const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
 
+    /// Create a `TwoFactorHandlers` instance for single-tenant deployments.
+    ///
+    /// **DEPRECATED**: Use [`TwoFactorHandlers::for_tenant`] for multi-tenant
+    /// deployments to ensure proper tenant isolation. This constructor uses a
+    /// shared singleton store, which can lead to cross-tenant data leakage if
+    /// user IDs are not properly namespaced by callers.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use TwoFactorHandlers::for_tenant() for multi-tenant deployments to ensure proper tenant isolation"
+    )]
     pub fn new() -> Self {
         Self::new_with_optional_limiter(None)
+    }
+
+    /// Create a `TwoFactorHandlers` instance scoped to a specific tenant.
+    ///
+    /// This constructor wraps the singleton store in a [`TenantScopedStore`],
+    /// which automatically prefixes all user IDs with the tenant ID to ensure
+    /// complete data isolation between tenants. This is the recommended approach
+    /// for multi-tenant deployments.
+    ///
+    /// # Arguments
+    ///
+    /// * `tenant_id` - The unique identifier for this tenant
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use backend_2fa::handlers::TwoFactorHandlers;
+    ///
+    /// let handlers = TwoFactorHandlers::for_tenant("tenant-123");
+    /// // All operations through this handler are scoped to tenant-123
+    /// ```
+    pub fn for_tenant(tenant_id: &str) -> Self {
+        let config = TenantConfig::new(tenant_id);
+        let scoped_store = TenantScopedStore::new(two_factor_store(), config);
+        Self {
+            limiter: Arc::new(InMemoryRateLimiter::default()),
+            store: Arc::new(scoped_store),
+            issuer: "PetChain".to_string(),
+        }
     }
 
     pub fn new_with_defaults() -> Self {
