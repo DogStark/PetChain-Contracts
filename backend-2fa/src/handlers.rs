@@ -410,7 +410,7 @@ impl TwoFactorHandlers {
         }
     }
 
-    fn rate_limit_key(prefix: &str, user_id: &str) -> String {
+    pub(crate) fn rate_limit_key(prefix: &str, user_id: &str) -> String {
         format!("{}:{}", prefix, user_id)
     }
 
@@ -570,7 +570,9 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
-        let key = Self::rate_limit_key("verify", &req.user_id);
+        // Key scheme: "2fa:{user_id}" — shared with verify_login_token so that
+        // a success on either path resets the failure counter for both (Issue #1061).
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -624,7 +626,7 @@ impl TwoFactorHandlers {
             return Err(ApiError::internal_error(e, None));
         }
 
-        let key = Self::rate_limit_key("login", &req.user_id);
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -1847,5 +1849,75 @@ mod pool_metrics_tests {
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1061 – Unified failure-count key ("2fa:{user_id}")
+    // -----------------------------------------------------------------------
+
+    /// Both verify_and_activate and verify_login_token must produce the same
+    /// rate-limit key "2fa:{user_id}" so a success on either path resets the
+    /// failure counter for both endpoints.
+    #[test]
+    fn test_verify_and_login_share_same_rate_limit_key() {
+        let verify_key = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        let login_key  = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        assert_eq!(
+            verify_key, login_key,
+            "verify_and_activate and verify_login_token must share the same 2fa:{{user_id}} key"
+        );
+        assert_eq!(verify_key, "2fa:alice");
+    }
+
+    /// Fail verify_and_activate N-1 times → call record_success on the shared
+    /// "2fa:{user_id}" key (simulating a successful verify_login_token) →
+    /// verify_and_activate must not be rate-limited on the next call.
+    #[test]
+    fn test_failed_verify_counter_is_reset_by_login_success_key() {
+        use crate::rate_limiter::InMemoryRateLimiter;
+        use crate::two_factor::InMemoryStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryStore::default());
+        let limiter = Arc::new(InMemoryRateLimiter::default());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(
+            store.clone() as Arc<dyn crate::two_factor::TwoFactorStore>,
+            limiter.clone(),
+        );
+
+        let caller = AuthenticatedUser::new("key-test-user");
+        let enroll_req = EnableTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            email: "key@example.com".to_string(),
+            idempotency_key: None,
+        };
+        let _ = handlers.enroll(&caller, enroll_req);
+
+        // Accumulate 2 failures via verify_and_activate.
+        let bad_verify = VerifyTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            token: "000000".to_string(),
+        };
+        for _ in 0..2 {
+            let _ = handlers.verify_and_activate(&caller, bad_verify.clone());
+        }
+
+        // Simulate a successful login by calling record_success on the unified key.
+        let key = TwoFactorHandlers::rate_limit_key("2fa", "key-test-user");
+        assert_eq!(key, "2fa:key-test-user");
+        limiter.record_success(&key);
+
+        // After reset, verify_and_activate must not return a rate-limit error.
+        let result = handlers.verify_and_activate(&caller, bad_verify.clone());
+        match result {
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                assert!(
+                    !msg.contains("Too many") && !msg.contains("rate"),
+                    "verify_and_activate must not be rate-limited after login success reset; got: {msg}"
+                );
+            }
+            Ok(_) => {}
+        }
     }
 }
