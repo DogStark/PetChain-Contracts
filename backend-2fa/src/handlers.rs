@@ -217,6 +217,39 @@ pub struct RevokeSessionRequest {
     pub revoke_all: bool,
 }
 
+/// Caller identity for `GET /2fa/{user_id}/audit-log` — reachable by
+/// either the account owner or an admin.
+pub enum AuditLogCaller<'a> {
+    Owner(&'a AuthenticatedUser),
+    Admin(&'a AuthenticatedAdmin),
+}
+
+impl AuditLogCaller<'_> {
+    fn authorize(&self, user_id: &str) -> Result<(), ApiError> {
+        match self {
+            AuditLogCaller::Admin(_) => Ok(()),
+            AuditLogCaller::Owner(caller) => caller.authorize(user_id),
+        }
+    }
+}
+
+fn default_audit_log_page() -> u32 {
+    1
+}
+
+fn default_audit_log_page_size() -> u32 {
+    50
+}
+
+/// Query params for `GET /2fa/{user_id}/audit-log`.
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct GetAuditLogQuery {
+    #[serde(default = "default_audit_log_page")]
+    pub page: u32,
+    #[serde(default = "default_audit_log_page_size")]
+    pub page_size: u32,
+}
+
 /// HTTP handler collection for all 2FA endpoints.
 ///
 /// # IMPORTANT: This struct MUST be constructed once and shared
@@ -408,6 +441,24 @@ impl TwoFactorHandlers {
             store,
             issuer: issuer.into(),
         }
+    }
+
+    /// GET /2fa/{user_id}/audit-log?page=1&page_size=50
+    ///
+    /// Returns the security audit log (2FA enable/disable, admin unlocks,
+    /// etc.) for `user_id`. Callable by the user themselves
+    /// ([`AuditLogCaller::Owner`]) or by an admin querying any user's log
+    /// ([`AuditLogCaller::Admin`]).
+    pub fn get_audit_log(
+        &self,
+        caller: &AuditLogCaller,
+        user_id: &str,
+        query: GetAuditLogQuery,
+    ) -> Result<Vec<AuditLogEntry>, ApiError> {
+        caller.authorize(user_id)?;
+        self.store
+            .get_audit_log(user_id, query.page, query.page_size)
+            .map_err(|e| ApiError::internal_error(e, None))
     }
 
     fn rate_limit_key(prefix: &str, user_id: &str) -> String {
