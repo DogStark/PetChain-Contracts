@@ -593,4 +593,27 @@ mod tests {
             )))
         );
     }
+
+    // ---- get_vet_by_license after revocation ----
+
+    // Chosen semantics: `revoke_vet_license` only flips `verified` to false
+    // and does NOT remove the `VetByLicense` mapping, so `get_vet_by_license`
+    // keeps resolving to the revoked vet's record (with `verified == false`)
+    // rather than returning `None`. Callers must check `verified` themselves.
+    #[test]
+    fn test_get_vet_by_license_after_revocation() {
+        let (env, _, _, client) = setup();
+
+        let vet = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-REVOKED-001");
+        client.register_vet(&vet, &str(&env, "Dr. Revoked"), &license, &str(&env, "General"));
+        client.verify_vet(&vet);
+        client.revoke_vet_license(&vet);
+
+        let found = client.get_vet_by_license(&license);
+        assert!(found.is_some());
+        let record = found.unwrap();
+        assert_eq!(record.address, vet);
+        assert_eq!(record.verified, false);
+    }
 }
