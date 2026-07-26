@@ -232,3 +232,87 @@ fn param_change_window_is_72_hours() {
         "voting window must be 72 hours"
     );
 }
+
+// ─── Quorum requirement (Issue #775) ─────────────────────────────────────────
+
+/// Test that when both quorum and threshold are met, the proposal executes.
+#[test]
+fn quorum_met_and_threshold_met_executes() {
+    // Build an env with 3 admins, threshold=2, quorum_percent=66 (66% of 3 = 2 votes).
+    // With 2 votes out of 3, both threshold (2) and quorum (ceil(66*3/100)=2) are met.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.budget().reset_unlimited();
+
+    let contract_id = env.register(crate::PetChainContract, ());
+    let client = crate::PetChainContractClient::new(&env, &contract_id);
+
+    let admin1 = soroban_sdk::Address::generate(&env);
+    let admin2 = soroban_sdk::Address::generate(&env);
+    let admin3 = soroban_sdk::Address::generate(&env);
+    let mut admins = soroban_sdk::Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    admins.push_back(admin3.clone());
+    client.init_multisig(&admin1, &admins, &2); // threshold = 2
+    client.set_quorum_percent(&admin1, &66); // 66% of 3 = 2 votes needed
+
+    let action = ProposalAction::ParameterChange((ParamKey::GlobalStorageQuota, 2000));
+    let proposal_id = client.propose_action(&admin1, &action, &(72 * 3_600));
+    client.approve_proposal(&admin2, &proposal_id);
+    // 2 out of 3 voted — threshold=2 and quorum=66% both met
+
+    let p = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(p.state, ProposalState::TimelockPending);
+
+    // Advance past timelock
+    let ts = p.timelock_end + 1;
+    env.ledger().with_mut(|l| l.timestamp = ts);
+    client.execute_proposal(&proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id).unwrap();
+    assert!(proposal.executed);
+    assert_eq!(proposal.state, ProposalState::Executed);
+    assert_eq!(client.get_global_storage_quota(), 2000);
+}
+
+/// Test that when threshold is met but quorum is NOT met (quorum_percent > 0),
+/// the proposal stays pending (cannot execute).
+#[test]
+#[should_panic]
+fn threshold_met_but_quorum_not_met_remains_pending() {
+    // Build an env with 3 admins, threshold=2, and quorum_percent=100 (100% must vote).
+    // With only 2 out of 3 admins voting, threshold is met but quorum is not.
+    let env = Env::default();
+    env.mock_all_auths();
+    env.budget().reset_unlimited();
+
+    let contract_id = env.register(crate::PetChainContract, ());
+    let client = crate::PetChainContractClient::new(&env, &contract_id);
+
+    let admin1 = soroban_sdk::Address::generate(&env);
+    let admin2 = soroban_sdk::Address::generate(&env);
+    let admin3 = soroban_sdk::Address::generate(&env);
+    let mut admins = soroban_sdk::Vec::new(&env);
+    admins.push_back(admin1.clone());
+    admins.push_back(admin2.clone());
+    admins.push_back(admin3.clone());
+    client.init_multisig(&admin1, &admins, &2); // threshold = 2
+    client.set_quorum_percent(&admin1, &100); // 100% of 3 = 3 votes needed
+
+    let action = ProposalAction::ParameterChange((ParamKey::GlobalStorageQuota, 500));
+    let proposal_id = client.propose_action(&admin1, &action, &(72 * 3_600));
+    client.approve_proposal(&admin2, &proposal_id);
+    // Only 2 out of 3 voted — threshold=2 is met, but quorum (100% × 3 = 3 votes) is NOT.
+
+    let p = client.get_proposal(&proposal_id).unwrap();
+    // Proposal should be in TimelockPending because threshold was met.
+    assert_eq!(p.state, ProposalState::TimelockPending);
+
+    // Advance past timelock
+    let ts = p.timelock_end + 1;
+    env.ledger().with_mut(|l| l.timestamp = ts);
+
+    // execute_proposal must panic because quorum is not met.
+    client.execute_proposal(&proposal_id);
+}

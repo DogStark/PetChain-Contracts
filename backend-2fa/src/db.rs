@@ -150,15 +150,6 @@ impl PostgresTwoFactorStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
-        // Issue #1042: cap the initial TCP connection handshake so that a
-        // misconfigured DATABASE_URL (unreachable host, firewall drop, slow
-        // container startup) produces a descriptive Err within a bounded time
-        // rather than hanging the OnceLock initialisation forever.
-        // Configurable via DB_CONNECT_TIMEOUT_SECS; defaults to 10 seconds.
-        let connect_timeout_secs: u64 = std::env::var("DB_CONNECT_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(10);
 
         // sqlx's pool has a single `acquire_timeout` covering both "wait for
         // a free slot" and "make the initial TCP connection" — apply the
@@ -171,13 +162,14 @@ impl PostgresTwoFactorStore {
                     .min_connections(min_conns)
                     .max_connections(max_conns)
                     .acquire_timeout(Duration::from_secs(effective_timeout_secs))
+                    .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
                     .connect(database_url),
             )
             .map_err(|e| format!(
                 "Failed to connect to database within {}s: {}. \
                  Check DATABASE_URL and network reachability. \
                  Falling back to in-memory store.",
-                connect_timeout_secs, e
+                acquire_timeout_secs, e
             ))?;
 
         Ok(Self {
@@ -247,9 +239,6 @@ impl PostgresTwoFactorStore {
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
     pub fn health_check(&self) -> Result<(), String> {
-        if self.pool.size() >= self.pool.options().get_max_connections() {
-            return Err("pool exhausted".to_string());
-        }
         self.block_on(sqlx::query("SELECT 1").execute(&self.pool))?;
         Ok(())
     }
@@ -659,6 +648,22 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         })
         .map(|c| c > 0)
         .unwrap_or(false)
+    }
+
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+        }
+
+        let rows = self.with_retry(|| {
+            self.block_on_typed(
+                sqlx::query_as::<_, Row>("SELECT user_id FROM canary_accounts ORDER BY user_id")
+                    .fetch_all(&self.pool),
+            )
+        })?;
+
+        Ok(rows.into_iter().map(|r| r.user_id).collect())
     }
 
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
@@ -1461,32 +1466,27 @@ mod tests {
     /// rather than hanging the process indefinitely.
     ///
     /// We use a non-routable IP address (RFC 5737 TEST-NET-1: 192.0.2.1) and
-    /// a 1-second timeout so the test completes well within the default test
-    /// runner timeout.  A successful `Err` return with a descriptive message
-    /// proves the timeout fired.
+    /// set `DB_ACQUIRE_TIMEOUT_SECS` to 1 so the test completes within the
+    /// default test runner timeout.  A successful `Err` return with a
+    /// descriptive message proves the timeout fired.
     #[test]
     fn connect_returns_err_when_host_unreachable_within_timeout() {
-        // Point at a non-routable address: this will never respond.
-        // RFC 5737 documentation addresses are guaranteed to be unreachable.
         let unreachable_url = "postgres://user:pass@192.0.2.1:5432/db";
 
-        // Override the connect timeout to 1 second so the test is fast.
-        std::env::set_var("DB_CONNECT_TIMEOUT_SECS", "1");
+        // Override acquire timeout to 1 second so the test is fast.
+        std::env::set_var("DB_ACQUIRE_TIMEOUT_SECS", "1");
 
         let start = std::time::Instant::now();
         let result = PostgresTwoFactorStore::connect(unreachable_url);
         let elapsed = start.elapsed();
 
-        // Restore env variable.
-        std::env::remove_var("DB_CONNECT_TIMEOUT_SECS");
+        std::env::remove_var("DB_ACQUIRE_TIMEOUT_SECS");
 
-        // Must return Err — not hang.
         assert!(
             result.is_err(),
             "connect() must return Err on an unreachable host, got Ok"
         );
 
-        // The error message must be descriptive (includes timeout and original error).
         let err_msg = result.unwrap_err();
         assert!(
             err_msg.contains("Failed to connect to database within 1s"),
@@ -1498,6 +1498,24 @@ mod tests {
             elapsed.as_secs() < 10,
             "connect() took {}s — timeout was not applied",
             elapsed.as_secs()
+        );
+    }
+
+    /// Issue #1051 — health_check must not reject a pool that is at max size
+    /// but has all connections idle. The old code used `pool.size() >= max`
+    /// which falsely reported a fully-warmed pool as exhausted.
+    #[test]
+    fn health_check_does_not_reject_pool_at_max_idle_size() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let store = PostgresTwoFactorStore::connect(&database_url).unwrap();
+        // A warm pool with idle connections should report Ok(()) not Err.
+        let result = store.health_check();
+        assert!(
+            result.is_ok(),
+            "health_check should succeed on a warm pool: {:?}",
+            result
         );
     }
 }
