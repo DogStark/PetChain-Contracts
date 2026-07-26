@@ -394,6 +394,9 @@ pub trait TwoFactorStore: Send + Sync {
     /// Check whether a user account is a canary.
     fn is_canary(&self, user_id: &str) -> bool;
 
+    /// Return all user IDs that are currently marked as canary accounts.
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String>;
+
     /// Persistent lockout state, used after Redis restarts.
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String>;
 
@@ -479,6 +482,17 @@ impl InMemoryStore {
         self.data.lock().unwrap().clear();
     }
 
+    /// Test-only: clears the progressive-delay retry gate for `user_id`
+    /// without resetting its failed-attempt count or lock status, so tests
+    /// can drive `failed_attempts` up to a lockout threshold without also
+    /// waiting out the (unrelated) per-attempt progressive delay.
+    #[cfg(test)]
+    pub fn clear_retry_after_for_tests(&self, user_id: &str) {
+        if let Some(state) = self.lockouts.lock().unwrap().get_mut(user_id) {
+            state.retry_after_timestamp = None;
+        }
+    }
+
     pub fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         <Self as TwoFactorStore>::save(self, user_id, data)
     }
@@ -519,6 +533,10 @@ impl InMemoryStore {
     }
     pub fn is_canary(&self, user_id: &str) -> bool {
         <Self as TwoFactorStore>::is_canary(self, user_id)
+    }
+
+    pub fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        <Self as TwoFactorStore>::get_canary_accounts(self)
     }
 }
 
@@ -679,6 +697,10 @@ impl TwoFactorStore for MockTwoFactorStore {
 
     fn is_canary(&self, _user_id: &str) -> bool {
         false
+    }
+
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        Ok(vec![])
     }
 
     fn get_lockout_state(&self, _user_id: &str) -> Result<TwoFactorLockoutState, String> {
@@ -963,6 +985,15 @@ impl TwoFactorStore for InMemoryStore {
             .unwrap_or(false)
     }
 
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        let flags = self.canary_flags.lock().unwrap();
+        Ok(flags
+            .iter()
+            .filter(|(_, &is_canary)| is_canary)
+            .map(|(uid, _)| uid.clone())
+            .collect())
+    }
+
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
         Ok(self
             .lockouts
@@ -1061,6 +1092,8 @@ impl TwoFactorStore for InMemoryStore {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TenantConfig {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
     pub lockout_threshold: u32,
@@ -1068,8 +1101,11 @@ pub struct TenantConfig {
 
 impl TenantConfig {
     pub fn new(tenant_id: impl Into<String>) -> Self {
+        let tenant_id = tenant_id.into();
         Self {
-            tenant_id: tenant_id.into(),
+            name: tenant_id.clone(),
+            tenant_id,
+            max_users: 100,
             totp_issuer: "PetChain".to_string(),
             rate_limit_max_failures: 5,
             lockout_threshold: 10,
@@ -1255,17 +1291,19 @@ mod progressive_delay_tests {
     use super::*;
 
     #[test]
-    fn test_first_failure_no_delay() {
+    fn test_first_failure_has_minimal_delay() {
         let store = InMemoryStore::default();
         let state = store
             .record_failed_two_fa_attempt("user1", 10)
             .expect("record_failed_two_fa_attempt failed");
 
+        // progressive_delay_secs(1) == Some(1): even the first failure
+        // carries a brief 1s delay before another attempt is allowed.
         assert_eq!(state.failed_attempts, 1);
-        assert!(state.retry_after_timestamp.is_none(), "First attempt should have no delay");
+        assert_eq!(state.retry_after_timestamp, Some(state.updated_at + 1));
 
         let check = store.check_retry_after("user1");
-        assert!(check.is_ok(), "First attempt should pass retry_after check");
+        assert!(check.is_err(), "First attempt should be gated by its 1s delay");
     }
 
     #[test]
@@ -1305,6 +1343,10 @@ mod progressive_delay_tests {
 
         if let Err(msg) = check {
             assert!(msg.starts_with("retry_after:"), "Error should contain retry_after value");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lightweight JWT verification (Issue #783 — leaderboard WebSocket auth)
 // ---------------------------------------------------------------------------
@@ -1403,6 +1445,8 @@ mod tenant_registry_concurrency_tests {
     fn make_config(tenant_id: &str) -> TenantConfig {
         TenantConfig {
             tenant_id: tenant_id.to_string(),
+            name: tenant_id.to_string(),
+            max_users: 100,
             totp_issuer: format!("{}-issuer", tenant_id),
             lockout_threshold: 5,
             rate_limit_max_failures: 5,

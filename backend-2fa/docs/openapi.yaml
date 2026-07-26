@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info:
+  title: PetChain 2FA Service
+  version: 1.0.0
+  description: Multi-tenant two-factor authentication, leaderboard, and admin API.
+
+paths:
+  /2fa/enable:
+    post:
+      summary: Enable two-factor authentication for a user
+      responses:
+        "200":
+          description: 2FA setup details (secret, QR code, backup codes)
+  /2fa/disable:
+    post:
+      summary: Disable two-factor authentication for a user
+      responses:
+        "200":
+          description: Whether 2FA was disabled
+  /2fa/verify:
+    post:
+      summary: Verify a TOTP token and activate 2FA
+      responses:
+        "200":
+          description: Verification result
+  /2fa/login:
+    post:
+      summary: Verify a TOTP token during login
+      responses:
+        "200":
+          description: Login verification result
+  /2fa/recover:
+    post:
+      summary: Recover account access using a backup code
+      responses:
+        "200":
+          description: New secret and backup/recovery codes
+  /2fa/recovery-log:
+    get:
+      summary: Fetch the recovery-code usage audit log for a user
+      responses:
+        "200":
+          description: List of recovery code usage entries
+  /2fa/upgrade-algorithm:
+    post:
+      summary: Upgrade a user's TOTP HMAC algorithm
+      responses:
+        "200":
+          description: Upgrade result
+  /2fa/revoke-session:
+    post:
+      summary: Revoke a session by JWT ID
+      responses:
+        "200":
+          description: Revocation result
+  /admin/quota:
+    post:
+      summary: Grant a user an unlimited rate-limit quota
+      responses:
+        "200":
+          description: Quota update result
+  /admin/canary:
+    post:
+      summary: Create a canary token for breach detection
+      responses:
+        "200":
+          description: Canary creation result
+  /admin/flagged-scores:
+    get:
+      summary: List flagged leaderboard score submissions
+      responses:
+        "200":
+          description: List of flagged submissions
+  /admin/list-users:
+    get:
+      summary: List users with two-factor status
+      responses:
+        "200":
+          description: Paginated list of users
+  /admin/unlock:
+    post:
+      summary: Unlock a user locked out of two-factor verification
+      responses:
+        "200":
+          description: Unlock result
+  /admin/list-locked:
+    get:
+      summary: List users currently locked out
+      responses:
+        "200":
+          description: Paginated list of locked users
+  /tenant/provision:
+    post:
+      summary: Provision a new tenant (super-admin only)
+      responses:
+        "200":
+          description: Tenant configuration
+        "400":
+          description: Invalid tenant configuration (BAD_REQUEST)
+  /leaderboard/subscribe:
+    get:
+      summary: Subscribe to real-time leaderboard updates over WebSocket
+      responses:
+        "101":
+          description: Switching Protocols (WebSocket upgrade)

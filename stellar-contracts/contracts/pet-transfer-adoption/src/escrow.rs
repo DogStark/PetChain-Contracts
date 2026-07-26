@@ -4,6 +4,7 @@
 //!   1. Buyer calls `deposit_fee()` — XLM (in stroops) held in contract storage
 //!   2. `finalize_transfer()` — platform fee deducted; remainder released to seller
 //!   3. `refund_fee()` — full amount back to buyer (Held or Disputed state)
+//!   4. `admin_resolve_dispute()` — admin ruling from Disputed state (buyer, seller, or split)
 //!
 //! Platform fee: configurable basis points (e.g. 250 = 2.50%)
 //!   platform_fee   = amount * fee_bps / 10_000
@@ -14,8 +15,7 @@
 //!   DataKey::PlatformFeeBps          → u32
 //!   DataKey::PlatformFeeRecipient    → Address
 
-use soroban_sdk::{contracttype, token, Address, Env};
-use soroban_sdk::{contracterror, contracttype, panic_with_error, Address, Env};
+use soroban_sdk::{contracterror, contracttype, panic_with_error, token, Address, Env, Symbol};
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,15 @@ pub enum EscrowStatus {
     Released,
     Refunded,
     Disputed,
+    Resolved,
+}
+
+#[contracttype]
+#[derive(Debug, Clone, PartialEq)]
+pub enum DisputeDecision {
+    RefundBuyer,
+    PaySeller,
+    Split(u32), // basis points of the escrowed amount awarded to the seller
 }
 
 #[contracttype]
@@ -74,19 +83,16 @@ pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address, token_address: Address) {
-    assert!(fee_bps <= 10_000, "fee_bps must be <= 10000");
-    env.storage()
-        .instance()
-        .set(&EscrowDataKey::FeeBps, &fee_bps);
-    env.storage()
-        .instance()
-        .set(&EscrowDataKey::FeeRecipient, &fee_recipient);
     if fee_bps > 10_000 {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
     }
     env.storage().instance().set(&EscrowDataKey::FeeBps, &fee_bps);
-    env.storage().instance().set(&EscrowDataKey::FeeRecipient, &fee_recipient);
-    env.storage().instance().set(&EscrowDataKey::TokenAddress, &token_address);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::FeeRecipient, &fee_recipient);
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::TokenAddress, &token_address);
     // Store the initial caller as Admin (first call sets the admin)
     if !env.storage().instance().has(&EscrowDataKey::Admin) {
         env.storage()
@@ -178,10 +184,6 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
         panic_with_error!(env, EscrowError::InvalidAmount);
     }
     let key = EscrowDataKey::Entry(transfer_id);
-    assert!(
-        !env.storage().persistent().has(&key),
-        "escrow already exists"
-    );
     if env.storage().persistent().has(&key) {
         panic_with_error!(env, EscrowError::EscrowAlreadyExists);
     }
@@ -204,16 +206,6 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
 /// Releases escrowed fee to seller minus platform fee.
 pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .expect("escrow not found");
-    assert!(
-        entry.status == EscrowStatus::Held,
-        "cannot finalize: not in Held state"
-    );
-    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
     let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
         Some(entry) => entry,
         None => panic_with_error!(env, EscrowError::EscrowNotFound),
@@ -221,10 +213,10 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
-    let platform_fee  = compute_platform_fee(entry.amount, entry.platform_fee_bps);
+    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
     let seller_amount = entry.amount - platform_fee;
     let contract = env.current_contract_address();
-    let client   = token_client(env);
+    let client = token_client(env);
     client.transfer(&contract, &entry.seller, &seller_amount);
     if platform_fee > 0 {
         let fee_recipient = get_fee_recipient(env).expect("fee recipient not configured");
@@ -241,16 +233,6 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
 /// Refunds the full fee to the buyer (from Held or Disputed state).
 pub fn refund_fee(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .expect("escrow not found");
-    assert!(
-        entry.status == EscrowStatus::Held || entry.status == EscrowStatus::Disputed,
-        "cannot refund: invalid state"
-    );
-    token_client(env).transfer(&env.current_contract_address(), &entry.buyer, &entry.amount);
     let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
         Some(entry) => entry,
         None => panic_with_error!(env, EscrowError::EscrowNotFound),
@@ -258,7 +240,7 @@ pub fn refund_fee(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held && entry.status != EscrowStatus::Disputed {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
-    // Wire-up: token_client.transfer(&contract, &entry.buyer, &entry.amount);
+    token_client(env).transfer(&env.current_contract_address(), &entry.buyer, &entry.amount);
     entry.status = EscrowStatus::Refunded;
     env.storage().persistent().set(&key, &entry);
     env.events().publish(
@@ -271,19 +253,6 @@ pub fn refund_fee(env: &Env, transfer_id: u64) {
 pub fn dispute_transfer(env: &Env, transfer_id: u64, initiator: Address) {
     initiator.require_auth();
     let key = EscrowDataKey::Entry(transfer_id);
-    let mut entry: EscrowEntry = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .expect("escrow not found");
-    assert!(
-        entry.status == EscrowStatus::Held,
-        "cannot dispute: not in Held state"
-    );
-    assert!(
-        initiator == entry.buyer || initiator == entry.seller,
-        "only buyer or seller may dispute"
-    );
     let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
         Some(entry) => entry,
         None => panic_with_error!(env, EscrowError::EscrowNotFound),
@@ -296,6 +265,54 @@ pub fn dispute_transfer(env: &Env, transfer_id: u64, initiator: Address) {
     }
     entry.status = EscrowStatus::Disputed;
     env.storage().persistent().set(&key, &entry);
+}
+
+/// Admin-controlled ruling on a disputed escrow. Only the configured `FeeRecipient`
+/// (platform admin) may call this. Unlike `refund_fee`, which always returns the full
+/// amount to the buyer, this allows the admin to pay the seller in full or split the
+/// escrowed amount between buyer and seller when the dispute is resolved in the
+/// seller's favour (in whole or in part).
+pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecision) {
+    let admin = get_fee_recipient(env).unwrap_or_else(|| panic_with_error!(env, EscrowError::Unauthorized));
+    admin.require_auth();
+
+    let key = EscrowDataKey::Entry(transfer_id);
+    let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
+        Some(entry) => entry,
+        None => panic_with_error!(env, EscrowError::EscrowNotFound),
+    };
+    if entry.status != EscrowStatus::Disputed {
+        panic_with_error!(env, EscrowError::InvalidEscrowState);
+    }
+
+    let (seller_amount, buyer_amount): (i128, i128) = match decision {
+        DisputeDecision::RefundBuyer => (0, entry.amount),
+        DisputeDecision::PaySeller => (entry.amount, 0),
+        DisputeDecision::Split(seller_bps) => {
+            if seller_bps > 10_000 {
+                panic_with_error!(env, EscrowError::FeeBpsTooHigh);
+            }
+            let seller_amount = entry.amount * seller_bps as i128 / 10_000;
+            (seller_amount, entry.amount - seller_amount)
+        }
+    };
+
+    let contract = env.current_contract_address();
+    let client = token_client(env);
+    if seller_amount > 0 {
+        client.transfer(&contract, &entry.seller, &seller_amount);
+    }
+    if buyer_amount > 0 {
+        client.transfer(&contract, &entry.buyer, &buyer_amount);
+    }
+
+    entry.status = EscrowStatus::Resolved;
+    env.storage().persistent().set(&key, &entry);
+
+    env.events().publish(
+        (Symbol::new(env, "DISPUTE_RESOLVED"), transfer_id),
+        (entry.buyer.clone(), entry.seller.clone(), seller_amount, buyer_amount),
+    );
 }
 
 pub fn get_escrow(env: &Env, transfer_id: u64) -> Option<EscrowEntry> {
@@ -344,31 +361,9 @@ mod tests {
         let platform     = Address::generate(&env);
         StellarAssetClient::new(&env, &token).mint(&buyer, &1_000_000_000);
         Ctx { env, contract, token, buyer, seller, platform }
-    use soroban_sdk::{testutils::Address as _, Address, Env};
-
-    // Storage access requires a contract context in tests, so setup
-    // registers a contract and tests run inside env.as_contract.
-    fn setup() -> (Env, Address, Address, Address, Address) {
-        let env      = Env::default();
-        env.mock_all_auths();
-        let contract = env.register_contract(None, crate::PetOwnershipContract);
-    fn setup() -> (Env, Address, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-    /// Escrow config lives in instance storage, so every test body must run
-    /// inside a contract frame — `setup` returns the registered contract id.
-    fn setup() -> (Env, Address, Address, Address, Address) {
-        let env      = Env::default();
-        env.mock_all_auths();
-        let contract = env.register_contract(None, PetOwnershipContract);
-        let buyer    = Address::generate(&env);
-        let seller   = Address::generate(&env);
-        let platform = Address::generate(&env);
-        (env, contract, buyer, seller, platform)
     }
 
+    #[test]
     fn deposit_creates_held_entry() {
         let c = setup();
         c.run(|| {
@@ -378,23 +373,6 @@ mod tests {
             assert_eq!(e.status, EscrowStatus::Held);
             assert_eq!(e.amount, 10_000_000);
             assert_eq!(e.buyer, c.buyer);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-        let (env, buyer, seller, platform) = setup();
-        init_escrow_config(&env, 250, platform);
-        deposit_fee(&env, 1, buyer.clone(), seller, 10_000_000);
-        let e = get_escrow(&env, 1).unwrap();
-        assert_eq!(e.status, EscrowStatus::Held);
-        assert_eq!(e.amount, 10_000_000);
-        assert_eq!(e.buyer, buyer);
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 1, buyer.clone(), seller, 10_000_000);
-            let e = get_escrow(&env, 1).unwrap();
-            assert_eq!(e.status, EscrowStatus::Held);
-            assert_eq!(e.amount, 10_000_000);
-            assert_eq!(e.buyer,  buyer);
         });
     }
 
@@ -406,14 +384,6 @@ mod tests {
             deposit_fee(&c.env, 2, c.buyer.clone(), c.seller.clone(), 10_000_000);
             finalize_transfer(&c.env, 2);
             assert_eq!(get_escrow(&c.env, 2).unwrap().status, EscrowStatus::Released);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 2, buyer, seller, 10_000_000);
-            finalize_transfer(&env, 2);
-            assert_eq!(get_escrow(&env, 2).unwrap().status, EscrowStatus::Released);
         });
     }
 
@@ -431,19 +401,11 @@ mod tests {
             deposit_fee(&c.env, 3, c.buyer.clone(), c.seller.clone(), 5_000_000);
             refund_fee(&c.env, 3);
             assert_eq!(get_escrow(&c.env, 3).unwrap().status, EscrowStatus::Refunded);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 3, buyer, seller, 5_000_000);
-            refund_fee(&env, 3);
-            assert_eq!(get_escrow(&env, 3).unwrap().status, EscrowStatus::Refunded);
         });
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn cannot_finalize_twice() {
         let c = setup();
         c.run(|| {
@@ -451,19 +413,11 @@ mod tests {
             deposit_fee(&c.env, 4, c.buyer.clone(), c.seller.clone(), 1_000_000);
             finalize_transfer(&c.env, 4);
             finalize_transfer(&c.env, 4);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 4, buyer, seller, 1_000_000);
-            finalize_transfer(&env, 4);
-            finalize_transfer(&env, 4);
         });
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn cannot_refund_after_release() {
         let c = setup();
         c.run(|| {
@@ -471,14 +425,6 @@ mod tests {
             deposit_fee(&c.env, 5, c.buyer.clone(), c.seller.clone(), 1_000_000);
             finalize_transfer(&c.env, 5);
             refund_fee(&c.env, 5);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 5, buyer, seller, 1_000_000);
-            finalize_transfer(&env, 5);
-            refund_fee(&env, 5);
         });
     }
 
@@ -492,21 +438,6 @@ mod tests {
         c.run(|| {
             dispute_transfer(&c.env, 6, c.buyer.clone());
             assert_eq!(get_escrow(&c.env, 6).unwrap().status, EscrowStatus::Disputed);
-        let (env, contract, buyer, seller, platform) = setup();
-        // require_auth may only run once per frame; each call gets its own.
-        env.as_contract(&contract, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 6, buyer.clone(), seller, 2_000_000);
-        });
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 6, buyer.clone(), seller, 2_000_000);
-        });
-        env.as_contract(&cid, || {
-            dispute_transfer(&env, 6, buyer);
-            assert_eq!(get_escrow(&env, 6).unwrap().status, EscrowStatus::Disputed);
         });
     }
 
@@ -521,21 +452,6 @@ mod tests {
             dispute_transfer(&c.env, 7, c.buyer.clone());
             refund_fee(&c.env, 7);
             assert_eq!(get_escrow(&c.env, 7).unwrap().status, EscrowStatus::Refunded);
-        let (env, contract, buyer, seller, platform) = setup();
-        env.as_contract(&contract, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 7, buyer.clone(), seller, 3_000_000);
-        });
-        env.as_contract(&contract, || {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 100, platform);
-            deposit_fee(&env, 7, buyer.clone(), seller, 3_000_000);
-        });
-        env.as_contract(&cid, || {
-            dispute_transfer(&env, 7, buyer);
-            refund_fee(&env, 7);
-            assert_eq!(get_escrow(&env, 7).unwrap().status, EscrowStatus::Refunded);
         });
     }
 
@@ -614,11 +530,6 @@ mod tests {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
             // transfer_id 999 was never deposited
             finalize_transfer(&c.env, 999);
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            // transfer_id 999 was never deposited
-            finalize_transfer(&env, 999);
         });
     }
 
@@ -631,11 +542,6 @@ mod tests {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
             // transfer_id 999 was never deposited
             refund_fee(&c.env, 999);
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            // transfer_id 999 was never deposited
-            refund_fee(&env, 999);
         });
     }
 
@@ -648,11 +554,6 @@ mod tests {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
             // transfer_id 999 was never deposited
             dispute_transfer(&c.env, 999, c.buyer.clone());
-        let (env, cid, buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            // transfer_id 999 was never deposited
-            dispute_transfer(&env, 999, buyer);
         });
     }
 
@@ -664,10 +565,6 @@ mod tests {
         c.run(|| {
             init_escrow_config(&c.env, 300, c.platform.clone(), c.token.clone());
             assert_eq!(get_fee_bps(&c.env), 300);
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 300, platform);
-            assert_eq!(get_fee_bps(&env), 300);
         });
     }
 
@@ -675,10 +572,6 @@ mod tests {
     fn get_fee_bps_returns_zero_when_not_configured() {
         let c = setup();
         c.run(|| assert_eq!(get_fee_bps(&c.env), 0));
-        let (env, cid, _buyer, _seller, _platform) = setup();
-        env.as_contract(&cid, || {
-            assert_eq!(get_fee_bps(&env), 0);
-        });
     }
 
     #[test]
@@ -687,10 +580,6 @@ mod tests {
         c.run(|| {
             init_escrow_config(&c.env, 150, c.platform.clone(), c.token.clone());
             assert_eq!(get_fee_recipient(&c.env), Some(c.platform.clone()));
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 150, platform.clone());
-            assert_eq!(get_fee_recipient(&env), Some(platform));
         });
     }
 
@@ -698,10 +587,6 @@ mod tests {
     fn get_fee_recipient_returns_none_when_not_configured() {
         let c = setup();
         c.run(|| assert_eq!(get_fee_recipient(&c.env), None));
-        let (env, cid, _buyer, _seller, _platform) = setup();
-        env.as_contract(&cid, || {
-            assert_eq!(get_fee_recipient(&env), None);
-        });
     }
 
     // ── Issue #1005: update_fee_config admin-only update ─────────────────────
@@ -715,15 +600,6 @@ mod tests {
             update_fee_config(&c.env, 100, new_recipient.clone());
             assert_eq!(get_fee_bps(&c.env), 100);
             assert_eq!(get_fee_recipient(&c.env), Some(new_recipient.clone()));
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            let new_recipient = Address::generate(&env);
-            init_escrow_config(&env, 250, platform.clone());
-
-            update_fee_config(&env, 100, new_recipient.clone());
-
-            assert_eq!(get_fee_bps(&env), 100);
-            assert_eq!(get_fee_recipient(&env), Some(new_recipient));
         });
     }
 
@@ -740,18 +616,6 @@ mod tests {
             // New deposit captures the updated rate
             deposit_fee(&c.env, 10, c.buyer.clone(), c.seller.clone(), 10_000_000);
             assert_eq!(get_escrow(&c.env, 10).unwrap().platform_fee_bps, 500);
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            let new_recipient = Address::generate(&env);
-            init_escrow_config(&env, 250, platform.clone());
-
-            // Update fee to 500 bps (5%)
-            update_fee_config(&env, 500, new_recipient.clone());
-
-            // New deposit captures the updated rate
-            deposit_fee(&env, 10, buyer.clone(), seller.clone(), 10_000_000);
-            let entry = get_escrow(&env, 10).unwrap();
-            assert_eq!(entry.platform_fee_bps, 500);
         });
     }
 
@@ -770,20 +634,6 @@ mod tests {
 
             // Existing escrow is unchanged
             assert_eq!(get_escrow(&c.env, 20).unwrap().platform_fee_bps, 250);
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            let new_recipient = Address::generate(&env);
-            init_escrow_config(&env, 250, platform.clone());
-
-            // Deposit before update — captures 250 bps
-            deposit_fee(&env, 20, buyer.clone(), seller.clone(), 10_000_000);
-
-            // Update fee to 500 bps
-            update_fee_config(&env, 500, new_recipient.clone());
-
-            // Existing escrow is unchanged
-            let entry = get_escrow(&env, 20).unwrap();
-            assert_eq!(entry.platform_fee_bps, 250);
         });
     }
 
@@ -794,10 +644,6 @@ mod tests {
         c.run(|| {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
             update_fee_config(&c.env, 10_001, c.platform.clone());
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform.clone());
-            update_fee_config(&env, 10_001, platform);
         });
     }
 
@@ -807,9 +653,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #1)")]
     fn init_escrow_config_rejects_fee_bps_over_10000() {
-        let (env, cid, _buyer, _seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 10_001, platform);
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 10_001, c.platform.clone(), c.token.clone());
         });
     }
 
@@ -817,10 +663,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #2)")]
     fn deposit_fee_rejects_non_positive_amount() {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 30, buyer, seller, 0);
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 30, c.buyer.clone(), c.seller.clone(), 0);
         });
     }
 
@@ -828,13 +674,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #3)")]
     fn deposit_fee_rejects_duplicate_transfer_id() {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 31, buyer.clone(), seller.clone(), 1_000_000);
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 31, c.buyer.clone(), c.seller.clone(), 1_000_000);
         });
-        env.as_contract(&cid, || {
-            deposit_fee(&env, 31, buyer, seller, 1_000_000);
+        // A fresh top-level call is needed since `buyer.require_auth()` can only
+        // be satisfied once per invocation frame under `mock_all_auths`.
+        c.run(|| {
+            deposit_fee(&c.env, 31, c.buyer.clone(), c.seller.clone(), 1_000_000);
         });
     }
 
@@ -842,12 +690,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #5)")]
     fn finalize_transfer_rejects_non_held_state() {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 32, buyer, seller, 1_000_000);
-            finalize_transfer(&env, 32);
-            finalize_transfer(&env, 32);
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 32, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            finalize_transfer(&c.env, 32);
+            finalize_transfer(&c.env, 32);
         });
     }
 
@@ -855,12 +703,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #5)")]
     fn refund_fee_rejects_non_refundable_state() {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 33, buyer, seller, 1_000_000);
-            finalize_transfer(&env, 33);
-            refund_fee(&env, 33);
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 33, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            finalize_transfer(&c.env, 33);
+            refund_fee(&c.env, 33);
         });
     }
 
@@ -868,12 +716,89 @@ mod tests {
     #[test]
     #[should_panic(expected = "Error(Contract, #6)")]
     fn dispute_transfer_rejects_third_party() {
-        let (env, cid, buyer, seller, platform) = setup();
-        env.as_contract(&cid, || {
-            let stranger = Address::generate(&env);
-            init_escrow_config(&env, 250, platform);
-            deposit_fee(&env, 34, buyer, seller, 1_000_000);
-            dispute_transfer(&env, 34, stranger);
+        let c = setup();
+        c.run(|| {
+            let stranger = Address::generate(&c.env);
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 34, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            dispute_transfer(&c.env, 34, stranger);
+        });
+    }
+
+    // ── Issue #1003: admin_resolve_dispute ────────────────────────────────────
+
+    /// Admin rules for the buyer: the full escrowed amount is refunded.
+    #[test]
+    fn admin_resolve_dispute_refunds_buyer() {
+        let c = setup();
+        let before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 200, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        // Separate top-level calls: `buyer.require_auth()` can only be satisfied
+        // once per invocation frame under `mock_all_auths`.
+        c.run(|| {
+            dispute_transfer(&c.env, 200, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 200, DisputeDecision::RefundBuyer);
+        });
+        assert_eq!(c.balance(&c.buyer), before);
+        assert_eq!(c.balance(&c.seller), 0);
+        assert_eq!(c.balance(&c.contract), 0);
+        c.run(|| {
+            assert_eq!(get_escrow(&c.env, 200).unwrap().status, EscrowStatus::Resolved);
+        });
+    }
+
+    /// Admin rules for the seller: the full escrowed amount is paid out.
+    #[test]
+    fn admin_resolve_dispute_pays_seller() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 201, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 201, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 201, DisputeDecision::PaySeller);
+        });
+        assert_eq!(c.balance(&c.seller), 10_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+        c.run(|| {
+            assert_eq!(get_escrow(&c.env, 201).unwrap().status, EscrowStatus::Resolved);
+        });
+    }
+
+    /// Admin splits the escrowed amount between buyer and seller.
+    #[test]
+    fn admin_resolve_dispute_split_decision() {
+        let c = setup();
+        let before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 202, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 202, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 202, DisputeDecision::Split(3_000));
+        });
+        assert_eq!(c.balance(&c.seller), 3_000_000);
+        assert_eq!(c.balance(&c.buyer), before - 10_000_000 + 7_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+        c.run(|| {
+            assert_eq!(get_escrow(&c.env, 202).unwrap().status, EscrowStatus::Resolved);
+        });
+    }
+
+    /// admin_resolve_dispute can only be called from the Disputed state.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn admin_resolve_dispute_rejects_non_disputed_state() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 203, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            admin_resolve_dispute(&c.env, 203, DisputeDecision::RefundBuyer);
         });
     }
 }

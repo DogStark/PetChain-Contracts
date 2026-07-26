@@ -1,4 +1,5 @@
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
+use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::two_factor::HmacAlgorithm;
 use crate::two_factor::{
     AuditLogEntry, LockedUserSummary, RecoveryCodeUsageLog, TwoFactorData, TwoFactorLockoutState,
@@ -127,6 +128,7 @@ fn load_encryption_key(provider: &dyn SecretProvider) -> Result<[u8; 32], String
         .map_err(|_| "TOTP_ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string())
 }
 
+#[derive(Debug)]
 pub struct PostgresTwoFactorStore {
     pool: PgPool,
     runtime: Arc<Runtime>,
@@ -148,33 +150,31 @@ impl PostgresTwoFactorStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
-        // Issue #1042: cap the initial TCP connection handshake so that a
-        // misconfigured DATABASE_URL (unreachable host, firewall drop, slow
-        // container startup) produces a descriptive Err within a bounded time
-        // rather than hanging the OnceLock initialisation forever.
-        // Configurable via DB_CONNECT_TIMEOUT_SECS; defaults to 10 seconds.
-        let connect_timeout_secs: u64 = std::env::var("DB_CONNECT_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(10);
+
+        // sqlx's pool has a single `acquire_timeout` covering both "wait for
+        // a free slot" and "make the initial TCP connection" — apply the
+        // tighter of the two configured bounds so either one is honored.
+        let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
+
+        // sqlx's pool has a single `acquire_timeout` covering both "wait for
+        // a free slot" and "make the initial TCP connection" — apply the
+        // tighter of the two configured bounds so either one is honored.
+        let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
 
         let pool = runtime
             .block_on(
                 PgPoolOptions::new()
                     .min_connections(min_conns)
                     .max_connections(max_conns)
+                    .acquire_timeout(Duration::from_secs(effective_timeout_secs))
                     .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
-                    // connect_timeout governs each individual TCP connection
-                    // attempt, distinct from acquire_timeout which governs
-                    // waiting for a free slot in an already-built pool.
-                    .connect_timeout(Duration::from_secs(connect_timeout_secs))
                     .connect(database_url),
             )
             .map_err(|e| format!(
                 "Failed to connect to database within {}s: {}. \
                  Check DATABASE_URL and network reachability. \
                  Falling back to in-memory store.",
-                connect_timeout_secs, e
+                acquire_timeout_secs, e
             ))?;
 
         Ok(Self {
@@ -244,9 +244,6 @@ impl PostgresTwoFactorStore {
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
     pub fn health_check(&self) -> Result<(), String> {
-        if self.pool.size() >= self.pool.options().get_max_connections() {
-            return Err("pool exhausted".to_string());
-        }
         self.block_on(sqlx::query("SELECT 1").execute(&self.pool))?;
         Ok(())
     }
@@ -658,6 +655,22 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         .unwrap_or(false)
     }
 
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+        }
+
+        let rows = self.with_retry(|| {
+            self.block_on_typed(
+                sqlx::query_as::<_, Row>("SELECT user_id FROM canary_accounts ORDER BY user_id")
+                    .fetch_all(&self.pool),
+            )
+        })?;
+
+        Ok(rows.into_iter().map(|r| r.user_id).collect())
+    }
+
     fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -690,6 +703,9 @@ impl TwoFactorStore for PostgresTwoFactorStore {
                 locked: r.locked,
                 locked_at: r.locked_at.map(|ts| ts as u64),
                 updated_at: r.updated_at as u64,
+                // The Postgres-backed store does not yet persist a
+                // progressive-delay retry timestamp column.
+                retry_after_timestamp: None,
             })
             .unwrap_or_default())
     }
@@ -935,6 +951,135 @@ impl IpAccessStore for PostgresIpAccessStore {
                 .collect()
         })
         .unwrap_or_default()
+    }
+}
+
+/// Postgres-backed [`FlaggedScoreStore`] (Issue #789). Persists flagged
+/// leaderboard score submissions in the `flagged_scores` table
+/// (see `migrations/006_create_flagged_scores.sql`) so they survive process
+/// restarts. The in-memory `InMemoryFlaggedScoreStore` remains available for
+/// tests and for deployments without a configured database.
+#[derive(Clone)]
+pub struct PostgresFlaggedScoreStore {
+    pool: PgPool,
+    runtime: Arc<Runtime>,
+}
+
+impl PostgresFlaggedScoreStore {
+    pub fn connect(database_url: &str) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        let pool = runtime
+            .block_on(
+                PgPoolOptions::new()
+                    .max_connections(10)
+                    .connect(database_url),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool, runtime })
+    }
+
+    pub fn from_pool(pool: PgPool) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        Ok(Self { pool, runtime })
+    }
+
+    fn block_on<F, T>(&self, future: F) -> Result<T, String>
+    where
+        F: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        self.runtime.block_on(future).map_err(|e| e.to_string())
+    }
+}
+
+impl FlaggedScoreStore for PostgresFlaggedScoreStore {
+    fn add_flagged(&self, flagged: FlaggedScoreSubmission) {
+        let _ = self.block_on(
+            sqlx::query(
+                r#"
+                INSERT INTO flagged_scores (user_id, score, reason, flagged_at)
+                VALUES ($1, $2, $3, to_timestamp($4))
+                "#,
+            )
+            .bind(&flagged.user_id)
+            .bind(flagged.attempted_score as i64)
+            .bind(&flagged.reason)
+            .bind(flagged.timestamp as f64)
+            .execute(&self.pool),
+        );
+    }
+
+    fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+            score: i64,
+            reason: String,
+            flagged_at: i64,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT user_id, score, reason,
+                       EXTRACT(EPOCH FROM flagged_at)::bigint AS flagged_at
+                FROM flagged_scores
+                WHERE user_id = $1
+                ORDER BY flagged_at
+                "#,
+            )
+            .bind(user_id)
+            .fetch_all(&self.pool),
+        );
+
+        rows.map(|rows| {
+            rows.into_iter()
+                .map(|r| FlaggedScoreSubmission {
+                    user_id: r.user_id,
+                    attempted_score: r.score.max(0) as u64,
+                    timestamp: r.flagged_at.max(0) as u64,
+                    reason: r.reason,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: String,
+            score: i64,
+            reason: String,
+            flagged_at: i64,
+        }
+
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT user_id, score, reason,
+                       EXTRACT(EPOCH FROM flagged_at)::bigint AS flagged_at
+                FROM flagged_scores
+                ORDER BY flagged_at
+                "#,
+            )
+            .fetch_all(&self.pool),
+        );
+
+        rows.map(|rows| {
+            rows.into_iter()
+                .map(|r| FlaggedScoreSubmission {
+                    user_id: r.user_id,
+                    attempted_score: r.score.max(0) as u64,
+                    timestamp: r.flagged_at.max(0) as u64,
+                    reason: r.reason,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn clear(&self) {
+        let _ = self.block_on(sqlx::query("DELETE FROM flagged_scores").execute(&self.pool));
     }
 }
 
@@ -1326,32 +1471,27 @@ mod tests {
     /// rather than hanging the process indefinitely.
     ///
     /// We use a non-routable IP address (RFC 5737 TEST-NET-1: 192.0.2.1) and
-    /// a 1-second timeout so the test completes well within the default test
-    /// runner timeout.  A successful `Err` return with a descriptive message
-    /// proves the timeout fired.
+    /// set `DB_ACQUIRE_TIMEOUT_SECS` to 1 so the test completes within the
+    /// default test runner timeout.  A successful `Err` return with a
+    /// descriptive message proves the timeout fired.
     #[test]
     fn connect_returns_err_when_host_unreachable_within_timeout() {
-        // Point at a non-routable address: this will never respond.
-        // RFC 5737 documentation addresses are guaranteed to be unreachable.
         let unreachable_url = "postgres://user:pass@192.0.2.1:5432/db";
 
-        // Override the connect timeout to 1 second so the test is fast.
-        std::env::set_var("DB_CONNECT_TIMEOUT_SECS", "1");
+        // Override acquire timeout to 1 second so the test is fast.
+        std::env::set_var("DB_ACQUIRE_TIMEOUT_SECS", "1");
 
         let start = std::time::Instant::now();
         let result = PostgresTwoFactorStore::connect(unreachable_url);
         let elapsed = start.elapsed();
 
-        // Restore env variable.
-        std::env::remove_var("DB_CONNECT_TIMEOUT_SECS");
+        std::env::remove_var("DB_ACQUIRE_TIMEOUT_SECS");
 
-        // Must return Err — not hang.
         assert!(
             result.is_err(),
             "connect() must return Err on an unreachable host, got Ok"
         );
 
-        // The error message must be descriptive (includes timeout and original error).
         let err_msg = result.unwrap_err();
         assert!(
             err_msg.contains("Failed to connect to database within 1s"),
@@ -1363,6 +1503,24 @@ mod tests {
             elapsed.as_secs() < 10,
             "connect() took {}s — timeout was not applied",
             elapsed.as_secs()
+        );
+    }
+
+    /// Issue #1051 — health_check must not reject a pool that is at max size
+    /// but has all connections idle. The old code used `pool.size() >= max`
+    /// which falsely reported a fully-warmed pool as exhausted.
+    #[test]
+    fn health_check_does_not_reject_pool_at_max_idle_size() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let store = PostgresTwoFactorStore::connect(&database_url).unwrap();
+        // A warm pool with idle connections should report Ok(()) not Err.
+        let result = store.health_check();
+        assert!(
+            result.is_ok(),
+            "health_check should succeed on a warm pool: {:?}",
+            result
         );
     }
 }
