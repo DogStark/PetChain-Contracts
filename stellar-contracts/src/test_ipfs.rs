@@ -5,6 +5,28 @@ use soroban_sdk::{
 };
 
 #[test]
+fn test_is_valid_cid_accepts_valid_v0() {
+    let hash = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+    assert!(PetChainContract::is_valid_cid(hash));
+}
+
+#[test]
+fn test_is_valid_cid_accepts_valid_v1() {
+    let hash = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+    assert!(PetChainContract::is_valid_cid(hash));
+}
+
+#[test]
+fn test_is_valid_cid_rejects_empty_string() {
+    assert!(!PetChainContract::is_valid_cid(""));
+}
+
+#[test]
+fn test_is_valid_cid_rejects_random_garbage() {
+    assert!(!PetChainContract::is_valid_cid("not-a-valid-ipfs-hash"));
+}
+
+#[test]
 fn test_validate_ipfs_hash_v0_success() {
     let env = Env::default();
     let valid_v0 = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
@@ -210,6 +232,28 @@ fn test_validate_ipfs_hash_wrong_prefix_not_qm_or_b() {
         PetChainContract::validate_ipfs_hash(&env, &invalid),
         Err(ContractError::InvalidIpfsHash)
     );
+}
+
+#[test]
+fn test_is_valid_cid_rejects_garbage_string() {
+    assert!(!PetChainContract::is_valid_cid("not-a-valid-ipfs-hash"));
+}
+
+#[test]
+fn test_is_valid_cid_rejects_empty_string() {
+    assert!(!PetChainContract::is_valid_cid(""));
+}
+
+#[test]
+fn test_is_valid_cid_accepts_valid_cidv1_bafy_prefix() {
+    let hash = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+    assert!(PetChainContract::is_valid_cid(hash));
+}
+
+#[test]
+fn test_is_valid_cid_accepts_valid_cidv0_qm_prefix() {
+    let hash = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+    assert!(PetChainContract::is_valid_cid(hash));
 }
 
 #[test]

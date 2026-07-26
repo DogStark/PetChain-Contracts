@@ -90,25 +90,43 @@ pub struct FlaggedScoreSubmission {
     pub reason: String,
 }
 
-/// In-memory storage for flagged submissions (for testing/demo purposes)
-pub struct FlaggedScoreStore {
+/// Storage for flagged score submissions. Implemented by
+/// [`InMemoryFlaggedScoreStore`] (default, non-persistent — used in tests and
+/// as the fallback when no database is configured) and
+/// [`crate::db::PostgresFlaggedScoreStore`] (persists across restarts).
+pub trait FlaggedScoreStore: Send + Sync {
+    fn add_flagged(&self, flagged: FlaggedScoreSubmission);
+    fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission>;
+    fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission>;
+
+    /// Remove all flagged submissions. Used to reset state between tests.
+    fn clear(&self);
+}
+
+/// In-memory [`FlaggedScoreStore`] (for testing/demo purposes). Submissions
+/// are lost on process restart — use `PostgresFlaggedScoreStore` for
+/// persistence.
+#[derive(Default)]
+pub struct InMemoryFlaggedScoreStore {
     flagged: std::sync::Mutex<Vec<FlaggedScoreSubmission>>,
 }
 
-impl FlaggedScoreStore {
+impl InMemoryFlaggedScoreStore {
     pub fn new() -> Self {
         Self {
             flagged: std::sync::Mutex::new(Vec::new()),
         }
     }
+}
 
-    pub fn add_flagged(&self, flagged: FlaggedScoreSubmission) {
+impl FlaggedScoreStore for InMemoryFlaggedScoreStore {
+    fn add_flagged(&self, flagged: FlaggedScoreSubmission) {
         if let Ok(mut store) = self.flagged.lock() {
             store.push(flagged);
         }
     }
 
-    pub fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
+    fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
         if let Ok(store) = self.flagged.lock() {
             store
                 .iter()
@@ -120,7 +138,7 @@ impl FlaggedScoreStore {
         }
     }
 
-    pub fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission> {
+    fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission> {
         if let Ok(store) = self.flagged.lock() {
             store.clone()
         } else {
@@ -128,16 +146,10 @@ impl FlaggedScoreStore {
         }
     }
 
-    pub fn clear(&self) {
+    fn clear(&self) {
         if let Ok(mut store) = self.flagged.lock() {
             store.clear();
         }
-    }
-}
-
-impl Default for FlaggedScoreStore {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -732,6 +744,19 @@ mod tests {
         3_000_000
     }
 
+    /// `LEADERBOARD_WS_AUTH_TOKEN` is process-global, and `cargo test` runs
+    /// tests in parallel threads by default, so any test that sets/clears it
+    /// must hold this lock for its whole body to avoid racing with the others.
+    static WS_AUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `metrics().leaderboard_ws_connections_total` is a process-global
+    /// Prometheus gauge shared by every test that calls `hub.connect`. Only
+    /// one test asserts on its exact value, but any test running in
+    /// parallel that increments/decrements it (even without checking it)
+    /// can still corrupt that assertion, so every test touching the gauge
+    /// holds this lock for its whole body.
+    static WS_METRICS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn sales() -> Vec<TicketSale> {
         vec![
             TicketSale {
@@ -803,7 +828,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, None, &config);
+        let result = validate_score_submission(&submission, None, &config, None);
         assert!(result.is_ok());
     }
 
@@ -816,7 +841,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -829,7 +854,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -842,9 +867,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_ok());
     }
 
@@ -857,9 +883,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(1000), &config);
+        let result = validate_score_submission(&submission, Some(1000), &config, None);
         assert!(result.is_err());
 
         if let Err(ScoreSubmissionError::SuspiciousScore {
@@ -885,9 +912,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 1000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(2000), &config);
+        let result = validate_score_submission(&submission, Some(2000), &config, None);
         assert!(result.is_err());
     }
 
@@ -900,7 +928,7 @@ mod tests {
         };
         let config = ScoreValidationConfig::default();
 
-        let result = validate_score_submission(&submission, Some(500), &config);
+        let result = validate_score_submission(&submission, Some(500), &config, None);
         assert!(result.is_ok());
     }
 
@@ -913,9 +941,10 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 10000,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(500), &config);
+        let result = validate_score_submission(&submission, Some(500), &config, None);
         assert!(result.is_ok());
     }
 
@@ -928,15 +957,16 @@ mod tests {
         };
         let config = ScoreValidationConfig {
             max_score_delta: 100,
+            max_z_score: 3.0,
         };
 
-        let result = validate_score_submission(&submission, Some(100), &config);
+        let result = validate_score_submission(&submission, Some(100), &config, None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn flagged_score_store_add_and_retrieve() {
-        let store = FlaggedScoreStore::new();
+        let store = InMemoryFlaggedScoreStore::new();
         let flagged = FlaggedScoreSubmission {
             user_id: "user1".into(),
             attempted_score: 5000,
@@ -954,7 +984,7 @@ mod tests {
 
     #[test]
     fn flagged_score_store_multiple_users() {
-        let store = FlaggedScoreStore::new();
+        let store = InMemoryFlaggedScoreStore::new();
 
         store.add_flagged(FlaggedScoreSubmission {
             user_id: "user1".into(),
@@ -981,7 +1011,7 @@ mod tests {
 
     #[test]
     fn flagged_score_store_get_all() {
-        let store = FlaggedScoreStore::new();
+        let store = InMemoryFlaggedScoreStore::new();
 
         store.add_flagged(FlaggedScoreSubmission {
             user_id: "user1".into(),
@@ -1003,7 +1033,7 @@ mod tests {
 
     #[test]
     fn flagged_score_store_clear() {
-        let store = FlaggedScoreStore::new();
+        let store = InMemoryFlaggedScoreStore::new();
 
         store.add_flagged(FlaggedScoreSubmission {
             user_id: "user1".into(),
@@ -1020,7 +1050,7 @@ mod tests {
 
     #[test]
     fn flagged_score_store_user_not_found() {
-        let store = FlaggedScoreStore::new();
+        let store = InMemoryFlaggedScoreStore::new();
 
         store.add_flagged(FlaggedScoreSubmission {
             user_id: "user1".into(),
@@ -1245,6 +1275,7 @@ mod tests {
 
     #[test]
     fn auth_passes_with_correct_token() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(validate_ws_auth_token(Some("Bearer supersecret")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1252,6 +1283,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_wrong_token() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Bearer wrongtoken")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1259,6 +1291,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_missing_header() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(None));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1266,6 +1299,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_empty_bearer_value() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Bearer ")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1273,6 +1307,7 @@ mod tests {
 
     #[test]
     fn auth_fails_with_non_bearer_scheme() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::set_var("LEADERBOARD_WS_AUTH_TOKEN", "supersecret");
         assert!(!validate_ws_auth_token(Some("Basic supersecret")));
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
@@ -1280,12 +1315,14 @@ mod tests {
 
     #[test]
     fn auth_passes_any_non_empty_token_when_env_unset() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
         assert!(validate_ws_auth_token(Some("Bearer anytoken")));
     }
 
     #[test]
     fn auth_fails_missing_header_even_when_env_unset() {
+        let _guard = WS_AUTH_ENV_LOCK.lock().unwrap();
         std::env::remove_var("LEADERBOARD_WS_AUTH_TOKEN");
         assert!(!validate_ws_auth_token(None));
     }
@@ -1298,6 +1335,7 @@ mod tests {
     fn connect_limit_never_exceeded_under_concurrent_calls() {
         use std::sync::Arc as StdArc;
 
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
@@ -1331,6 +1369,7 @@ mod tests {
     fn custom_max_conn_per_ip_from_env_is_respected() {
         // Construct a hub with a custom limit directly to avoid env-var races
         // between parallel test threads.
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             Arc::new(LeaderboardWsHub {
@@ -1382,6 +1421,7 @@ mod tests {
         use crate::metrics::metrics;
         use std::sync::Arc as StdArc;
 
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let hub = {
             let (broadcaster, _) = broadcast::channel(16);
             StdArc::new(LeaderboardWsHub {
@@ -1411,6 +1451,7 @@ mod tests {
     fn rate_limiter_msg_count_under_limit_does_not_close() {
         // Verify that msg_count < rate_limit does not close the session.
         // We test the logic directly without spinning up a full actix context.
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let mut session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
@@ -1435,6 +1476,7 @@ mod tests {
 
     #[test]
     fn rate_limiter_msg_count_over_limit_triggers_close() {
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let session = {
             let (broadcaster, _) = broadcast::channel(16);
             let hub = Arc::new(LeaderboardWsHub {
@@ -1473,6 +1515,7 @@ mod tests {
 
     #[test]
     fn subscribe_at_limit_succeeds() {
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let mut session = make_session();
         let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
             .map(|i| format!("u{}", i))
@@ -1484,6 +1527,7 @@ mod tests {
 
     #[test]
     fn subscribe_over_limit_rejected() {
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let mut session = make_session();
         let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS + 1)
             .map(|i| format!("u{}", i))
@@ -1499,6 +1543,7 @@ mod tests {
 
     #[test]
     fn replace_at_limit_succeeds() {
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let mut session = make_session();
         let user_ids: Vec<String> = (0..MAX_SUBSCRIPTION_USER_IDS)
             .map(|i| format!("u{}", i))
@@ -1510,6 +1555,7 @@ mod tests {
 
     #[test]
     fn replace_over_limit_rejected() {
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
         let mut session = make_session();
         // Pre-populate subscriptions to verify they are not wiped on rejection.
         session.subscriptions.insert("existing_user".to_string());
@@ -1542,9 +1588,11 @@ mod tests {
     #[test]
     fn test_borderline_score_at_threshold() {
         let config = ScoreValidationConfig::default();
+        // History [100, 105, 98, 102, 101] has mean 101.2, std_dev ~2.315.
+        // 108 sits at z ~= 2.94, just under the default max_z_score of 3.0.
         let submission = ScoreSubmission {
             user_id: "user1".to_string(),
-            score: 200,
+            score: 108,
             timestamp: 1000,
         };
 

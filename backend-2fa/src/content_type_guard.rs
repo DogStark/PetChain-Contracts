@@ -161,12 +161,14 @@ mod tests {
         HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
     }
 
-    fn build_app() -> impl actix_web::dev::ServiceFactory<
-        actix_web::dev::ServiceRequest,
-        Config = (),
-        Response = actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>,
-        Error = actix_web::Error,
-        InitError = (),
+    fn build_app() -> App<
+        impl actix_web::dev::ServiceFactory<
+            actix_web::dev::ServiceRequest,
+            Config = (),
+            Response = actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>,
+            Error = actix_web::Error,
+            InitError = (),
+        >,
     > {
         App::new()
             .wrap(ContentTypeGuard)
