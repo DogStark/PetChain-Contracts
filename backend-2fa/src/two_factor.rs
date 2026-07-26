@@ -1148,8 +1148,63 @@ impl TenantScopedStore {
         self.inner.get(&self.key(user_id))
     }
 
+    /// Delete the 2FA record for `user_id` within this tenant's namespace.
+    ///
+    /// # Dual-key deletion
+    ///
+    /// All data written through `TenantScopedStore` is stored under the key
+    /// `"{tenant_id}::{user_id}"`. If, however, a record was written directly
+    /// through the underlying `InMemoryStore` (or any unscoped `TwoFactorStore`
+    /// implementation) it will be stored under the bare `user_id` key, not the
+    /// prefixed one.
+    ///
+    /// To prevent dangling records in mixed-path deployments this method:
+    ///
+    /// 1. Attempts to delete the prefixed key first.
+    /// 2. If the prefixed key is not found, falls back to the bare `user_id`
+    ///    key and logs a warning — the record was written without a tenant scope,
+    ///    which is a configuration error in a multi-tenant deployment.
+    ///
+    /// # Documentation — exclusive write path requirement
+    ///
+    /// In a multi-tenant deployment `TenantScopedStore` **must** be the exclusive
+    /// write path for every user in the tenant. Mixing scoped and unscoped stores
+    /// against the same backing store is unsupported: data written via the bare
+    /// store cannot be found by tenant-scoped reads (`get`, `update_enabled`, etc.)
+    /// and will only be caught at deletion time via the fallback behaviour above.
     pub fn delete(&self, user_id: &str) -> Result<(), String> {
-        self.inner.delete(&self.key(user_id))
+        let prefixed = self.key(user_id);
+        match self.inner.delete(&prefixed) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // Prefixed key not found — attempt the bare key as a fallback.
+                // This covers the case where data was written directly through
+                // an unscoped store, bypassing TenantScopedStore.
+                match self.inner.delete(user_id) {
+                    Ok(()) => {
+                        // Log a warning: the record existed under the bare key,
+                        // which means it was written without a tenant scope.
+                        // This is a misconfiguration in a multi-tenant deployment.
+                        eprintln!(
+                            "[WARN] TenantScopedStore::delete: record for user '{}' was found \
+                             under bare key (not tenant-prefixed '{}').  Data was written \
+                             without going through TenantScopedStore. In a multi-tenant \
+                             deployment TenantScopedStore must be the exclusive write path.",
+                            user_id, prefixed
+                        );
+                        Ok(())
+                    }
+                    Err(bare_err) => {
+                        // Neither key exists — return the original prefixed-key error.
+                        Err(format!(
+                            "No 2FA data found for user '{}' under prefixed key '{}' \
+                             or bare key: {}",
+                            user_id, prefixed, bare_err
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     pub fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
@@ -1537,5 +1592,114 @@ mod tenant_registry_concurrency_tests {
                 .unwrap_or_else(|| panic!("Tenant '{}' missing from registry", tid));
             assert_eq!(cfg.tenant_id, *tid);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TenantScopedStore::delete — dual-key fallback tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tenant_scoped_store_delete_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn make_tenant_store(tenant_id: &str) -> (Arc<InMemoryStore>, TenantScopedStore) {
+        let inner = Arc::new(InMemoryStore::default());
+        let config = TenantConfig::new(tenant_id);
+        let scoped = TenantScopedStore::new(inner.clone(), config);
+        (inner, scoped)
+    }
+
+    fn dummy_data() -> TwoFactorData {
+        TwoFactorData {
+            secret: "ABCDEFGH".to_string(),
+            backup_codes: vec![],
+            enabled: true,
+            algorithm: HmacAlgorithm::SHA1,
+            last_used_step: None,
+        }
+    }
+
+    /// Normal path: data written through TenantScopedStore is stored under
+    /// the prefixed key and deleted cleanly via the same scoped store.
+    #[test]
+    fn test_delete_prefixed_key_succeeds() {
+        let (_, scoped) = make_tenant_store("acme");
+
+        scoped.save("alice", dummy_data()).unwrap();
+
+        // Delete via the scoped store — should succeed.
+        assert!(scoped.delete("alice").is_ok());
+
+        // Subsequent get returns an error (record is gone).
+        assert!(scoped.get("alice").is_err());
+    }
+
+    /// Mixed-path scenario: data written directly through the inner
+    /// (unscoped) store is stored under the bare user_id key.
+    /// TenantScopedStore::delete must fall back to the bare key and
+    /// still remove the record rather than silently leaving a dangling entry.
+    #[test]
+    fn test_delete_falls_back_to_bare_key_when_written_without_prefix() {
+        let (inner, scoped) = make_tenant_store("acme");
+
+        // Write directly via the inner store — bypasses tenant prefix.
+        inner.save("bob", dummy_data()).unwrap();
+
+        // The scoped store cannot find a prefixed entry for "bob"…
+        assert!(
+            scoped.get("bob").is_err(),
+            "scoped get on bare-key record should return Err"
+        );
+
+        // …but delete should fall back to the bare key and succeed.
+        assert!(
+            scoped.delete("bob").is_ok(),
+            "scoped delete must remove a record stored under the bare key"
+        );
+
+        // The record is gone from the inner store too.
+        assert!(
+            inner.get("bob").is_err(),
+            "bare-key record must have been removed from inner store"
+        );
+    }
+
+    /// Deleting a user that exists under neither the prefixed nor bare key
+    /// must return an error (not silently succeed).
+    #[test]
+    fn test_delete_nonexistent_user_returns_error() {
+        let (_, scoped) = make_tenant_store("acme");
+
+        let result = scoped.delete("no-such-user");
+        assert!(
+            result.is_err(),
+            "deleting a non-existent user must return Err, not silently succeed"
+        );
+    }
+
+    /// Two separate tenants sharing the same inner store must not interfere
+    /// with each other during deletion — deleting tenant A's record for a
+    /// user must not affect tenant B's record for the same bare user_id.
+    #[test]
+    fn test_delete_is_scoped_to_tenant() {
+        let inner = Arc::new(InMemoryStore::default());
+        let scoped_a = TenantScopedStore::new(inner.clone(), TenantConfig::new("tenant-a"));
+        let scoped_b = TenantScopedStore::new(inner.clone(), TenantConfig::new("tenant-b"));
+
+        scoped_a.save("carol", dummy_data()).unwrap();
+        scoped_b.save("carol", dummy_data()).unwrap();
+
+        // Deleting from tenant-a should leave tenant-b's record intact.
+        scoped_a.delete("carol").unwrap();
+
+        assert!(
+            scoped_a.get("carol").is_err(),
+            "tenant-a record should be deleted"
+        );
+        assert!(
+            scoped_b.get("carol").is_ok(),
+            "tenant-b record must not be affected by tenant-a deletion"
+        );
     }
 }
