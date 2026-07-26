@@ -1199,6 +1199,32 @@ impl AdminWebhookHandlers {
         entries.sort_by(|a, b| a.event_type.cmp(&b.event_type));
         entries
     }
+
+    /// GET /admin/webhooks/dead-letter — return all DLQ entries (newest first).
+    ///
+    /// Each entry represents a webhook delivery that exhausted all retry
+    /// attempts. The original payload and failure reason are included so
+    /// operators can diagnose what went wrong.
+    pub fn get_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> Vec<crate::dead_letter::DlqEntry> {
+        self.webhook_manager.get_dead_letter_queue()
+    }
+
+    /// POST /admin/webhooks/dead-letter/replay — retry all DLQ entries.
+    ///
+    /// Each entry is re-delivered through the normal retry path. Entries that
+    /// succeed are removed from the DLQ; entries that still fail remain with
+    /// an incremented `replay_attempts` counter.
+    ///
+    /// Returns `(succeeded, failed)` counts.
+    pub fn replay_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> (usize, usize) {
+        self.webhook_manager.replay_dead_letter_queue()
+    }
 }
 
 #[cfg(test)]
