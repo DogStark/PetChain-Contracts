@@ -245,7 +245,7 @@ where
             );
             headers.insert(
                 actix_web::http::header::PRAGMA,
-                actix_web::http::header::HeaderValue::from_static("no-cache"),
+                actix_web::http::header::HeaderValue::from_static("no-store"),
             );
             headers.insert(
                 actix_web::http::header::X_CONTENT_TYPE_OPTIONS,
