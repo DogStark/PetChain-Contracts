@@ -278,6 +278,20 @@ pub struct TwoFactorHandlers {
     issuer: String,
 }
 
+/// Environment variable used to brand TOTP codes for white-label
+/// deployments (shown in authenticator apps). Falls back to `"PetChain"`
+/// when unset.
+const TOTP_ISSUER_ENV: &str = "TOTP_ISSUER";
+
+/// Resolve the default TOTP issuer from `TOTP_ISSUER`, falling back to
+/// `"PetChain"` when the variable is unset or empty.
+fn default_issuer() -> String {
+    std::env::var(TOTP_ISSUER_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "PetChain".to_string())
+}
+
 impl TwoFactorHandlers {
     const DEFAULT_LOCKOUT_THRESHOLD: u32 = 10;
 
@@ -289,7 +303,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -335,7 +349,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: lim,
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -348,7 +362,7 @@ impl TwoFactorHandlers {
         Self {
             limiter,
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -356,7 +370,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -395,7 +409,7 @@ impl TwoFactorHandlers {
         Self {
             limiter,
             store,
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
