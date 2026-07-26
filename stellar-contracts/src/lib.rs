@@ -188,6 +188,8 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_disputes;
 mod test_book_slot;
+#[cfg(test)]
+mod test_emergency_notify_rate_limit;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -346,6 +348,8 @@ pub enum ContractError {
     ProposalNotFound = 39,
     RollbackWindowExpired = 40,
     NoPreviousUpgrade = 41,
+    QuorumNotMet = 45,
+    RateLimitExceeded = 46,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -599,6 +603,17 @@ pub struct EmergencyContact {
     pub relationship: String,
     pub is_primary: bool,
     pub priority: u32,
+}
+
+/// Per-(caller, pet) rate limit window for emergency contact notifications
+/// (Issue #820).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotifyRateLimit {
+    /// Ledger timestamp the current hour-long window started.
+    pub window_start: u64,
+    /// Number of notifications sent within the current window.
+    pub count: u32,
 }
 
 #[contracttype]
@@ -1039,6 +1054,7 @@ pub enum DataKey {
     EmergencyAccessLogs(u64),
     EmergencyAuditLog(u64),
     EmergencyResponders(u64),
+    EmergencyNotifyRateLimit((Address, u64)), // (caller, pet_id) -> NotifyRateLimit
     BreedMetadata(String),
     SpeciesBreedList(String),
     CallerNonce(Address),
@@ -2899,7 +2915,7 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
 
         // Check threshold
-        if proposal.approvals.len() < proposal.required_approvals as usize {
+        if proposal.approvals.len() < proposal.required_approvals {
             panic_with_error!(&env, ContractError::ThresholdNotMet);
         }
 
@@ -8936,6 +8952,60 @@ impl PetChainContract {
         } else {
             Vec::new(&env)
         }
+    }
+
+    /// Notifies a pet's emergency contacts. Rate-limited to 3 calls per hour
+    /// per (caller, pet_id) pair so a stolen session can't spam every
+    /// emergency contact (Issue #820). Returns the number of contacts
+    /// notified.
+    pub fn notify_emergency_contacts(env: Env, caller: Address, pet_id: u64) -> u32 {
+        const MAX_NOTIFICATIONS_PER_WINDOW: u32 = 3;
+        const RATE_LIMIT_WINDOW_SECONDS: u64 = 3_600;
+
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+
+        if !PetChainContract::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let rate_key = DataKey::EmergencyNotifyRateLimit((caller.clone(), pet_id));
+        let mut rate_limit: NotifyRateLimit = env
+            .storage()
+            .instance()
+            .get(&rate_key)
+            .unwrap_or(NotifyRateLimit {
+                window_start: now,
+                count: 0,
+            });
+
+        // Reset the window once an hour has elapsed since it started.
+        if now >= rate_limit.window_start.saturating_add(RATE_LIMIT_WINDOW_SECONDS) {
+            rate_limit = NotifyRateLimit {
+                window_start: now,
+                count: 0,
+            };
+        }
+
+        if rate_limit.count >= MAX_NOTIFICATIONS_PER_WINDOW {
+            panic_with_error!(&env, ContractError::RateLimitExceeded);
+        }
+
+        rate_limit.count += 1;
+        env.storage().instance().set(&rate_key, &rate_limit);
+
+        let contacts = PetChainContract::get_emergency_contacts(env.clone(), pet_id, caller.clone());
+
+        env.events().publish(
+            (Symbol::new(&env, "EmergencyContactsNotified"), pet_id),
+            (caller, contacts.len() as u32),
+        );
+
+        contacts.len() as u32
     }
 
     pub fn get_contacts_ordered(env: Env, pet_id: u64, owner: Address) -> Vec<EmergencyContact> {
