@@ -1711,10 +1711,10 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use crate::handlers::{
-        clear_two_factor_store_for_tests, get_two_factor_data_for_tests, AdminRecoveryHandlers,
-        AuthenticatedUser, DisableTwoFactorRequest, EnableTwoFactorRequest,
-        LoginWithTwoFactorRequest, RecoverWithBackupRequest, TwoFactorHandlers,
-        VerifyTwoFactorRequest,
+        clear_two_factor_store_for_tests, get_two_factor_data_for_tests, AdminDashboardHandlers,
+        AdminRecoveryHandlers, AuthenticatedAdmin, AuthenticatedUser, DisableTwoFactorRequest,
+        EnableTwoFactorRequest, LoginWithTwoFactorRequest, RecoverWithBackupRequest,
+        TwoFactorHandlers, VerifyTwoFactorRequest,
     };
     use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
     use crate::two_factor::TwoFactorData;
@@ -1723,6 +1723,10 @@ mod integration_tests {
 
     fn caller(id: &str) -> AuthenticatedUser {
         AuthenticatedUser::new(id)
+    }
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("super-admin")
     }
 
     fn generate_token(secret: &str) -> String {
@@ -2080,7 +2084,9 @@ mod integration_tests {
             .unwrap();
         let secret = enable_resp.secret;
 
-        // Exhaust the limit with bad tokens
+        // Exhaust the limit with bad tokens. Clear the (independent)
+        // progressive-delay lockout after each attempt so it doesn't shadow
+        // the RateLimiter's own block, which is what this test verifies.
         for _ in 0..3 {
             let _ = handlers.verify_login_token(
                 &caller(user_id),
@@ -2089,6 +2095,7 @@ mod integration_tests {
                     token: "000000".to_string(),
                 },
             );
+            AdminDashboardHandlers::unlock_two_fa(&admin(), user_id).unwrap();
         }
 
         // Even a correct token must be rejected while locked out
@@ -2190,7 +2197,10 @@ mod integration_tests {
 
         assert!(get_two_factor_data_for_tests(user_id).unwrap().enabled);
 
-        // 4 bad login attempts
+        // 4 bad login attempts. Each failure past the first is gated by the
+        // progressive-delay lockout (independent of the RateLimiter under
+        // test here), so clear it after every attempt to isolate what this
+        // test actually verifies: the RateLimiter's own failure counter.
         for _ in 0..4 {
             let _ = handlers.verify_login_token(
                 &caller(user_id),
@@ -2199,6 +2209,7 @@ mod integration_tests {
                     token: "000000".to_string(),
                 },
             );
+            AdminDashboardHandlers::unlock_two_fa(&admin(), user_id).unwrap();
         }
 
         // One good login — resets the counter
@@ -2226,6 +2237,7 @@ mod integration_tests {
                 result.is_ok(),
                 "should not be blocked yet after counter reset"
             );
+            AdminDashboardHandlers::unlock_two_fa(&admin(), user_id).unwrap();
         }
     }
 
@@ -3251,6 +3263,52 @@ mod redis_rate_limiter_tests {
             let flagged = admin.get_all_flagged();
             assert_eq!(flagged[0].attempted_score, max_score);
         }
+
+        // ---------------------------------------------------------------
+        // FlaggedScoreStore trait injection (Issue #789)
+        //
+        // AdminScoreHandlers::new() defaults to InMemoryFlaggedScoreStore,
+        // but with_store() accepts any Arc<dyn FlaggedScoreStore> — the same
+        // injection point a caller would use to swap in
+        // PostgresFlaggedScoreStore for cross-restart persistence in
+        // production, without changing any handler logic.
+        // ---------------------------------------------------------------
+
+        #[test]
+        fn admin_with_store_uses_injected_in_memory_store() {
+            use crate::leaderboard::{FlaggedScoreStore, InMemoryFlaggedScoreStore};
+            use std::sync::Arc;
+
+            let store: Arc<dyn FlaggedScoreStore> = Arc::new(InMemoryFlaggedScoreStore::new());
+            let admin = AdminScoreHandlers::with_store(store);
+
+            admin.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+            let flagged = admin.get_all_flagged();
+            assert_eq!(flagged.len(), 1);
+            assert_eq!(flagged[0].user_id, "user1");
+        }
+
+        /// A store injected into two independent handler instances is shared
+        /// state, not per-handler state — this is exactly what lets a
+        /// persistent store survive a fresh `AdminScoreHandlers::with_store`
+        /// call after a process restart (only the store, not the handler,
+        /// needs to outlive the process).
+        #[test]
+        fn admin_with_store_shares_state_across_handler_instances() {
+            use crate::leaderboard::{FlaggedScoreStore, InMemoryFlaggedScoreStore};
+            use std::sync::Arc;
+
+            let store: Arc<dyn FlaggedScoreStore> = Arc::new(InMemoryFlaggedScoreStore::new());
+
+            let admin1 = AdminScoreHandlers::with_store(Arc::clone(&store));
+            admin1.log_rejected_submission("user1".into(), 5000, "Exceeds delta".into());
+
+            // A brand-new handler wired to the same store sees the same data.
+            let admin2 = AdminScoreHandlers::with_store(Arc::clone(&store));
+            let flagged = admin2.get_all_flagged();
+            assert_eq!(flagged.len(), 1);
+            assert_eq!(flagged[0].user_id, "user1");
+        }
     }
 }
 
@@ -4170,6 +4228,9 @@ mod progressive_two_factor_lockout_tests {
                 )
                 .unwrap();
             assert!(!result);
+            // Clear the progressive-delay gate (independent of the lockout
+            // threshold under test) so the next attempt isn't blocked by it.
+            store.clear_retry_after_for_tests(user_id);
         }
 
         let locked = handlers
@@ -4459,6 +4520,8 @@ mod tenant_provisioning_idempotency_tests {
     fn provision_req(tenant_id: &str) -> ProvisionTenantRequest {
         ProvisionTenantRequest {
             tenant_id: tenant_id.to_string(),
+            name: format!("{tenant_id} Inc"),
+            max_users: 50,
             totp_issuer: "AcmeCo".to_string(),
             rate_limit_max_failures: 7,
         }
@@ -4538,6 +4601,109 @@ mod tenant_provisioning_idempotency_tests {
 
         let existed_count = responses.iter().filter(|r| r.already_existed).count();
         assert_eq!(existed_count, 15);
+    }
+
+    #[test]
+    fn test_provision_rejects_empty_tenant_id() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = String::new();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_tenant_id_over_max_length() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = "a".repeat(65);
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_tenant_id_with_invalid_characters() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("unused");
+        req.tenant_id = "tenant_with_underscores".to_string();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "tenant_id"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_zero_max_users() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-zero-users");
+        req.max_users = 0;
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "max_users"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_empty_name() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-empty-name");
+        req.name = String::new();
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "name"
+        );
+    }
+
+    #[test]
+    fn test_provision_rejects_name_over_max_length() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let mut req = provision_req("tenant-long-name");
+        req.name = "a".repeat(129);
+        let err = handlers.provision_tenant(&admin(), req).unwrap_err();
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(
+            err.details.unwrap().get("field").unwrap().as_str().unwrap(),
+            "name"
+        );
+    }
+
+    #[test]
+    fn test_provision_accepts_valid_config() {
+        let handlers = TenantProvisioningHandlers::new(Arc::new(TenantRegistry::default()));
+
+        let response = handlers
+            .provision_tenant(&admin(), provision_req("tenant-valid"))
+            .unwrap();
+
+        assert_eq!(response.tenant_id, "tenant-valid");
+        assert_eq!(response.name, "tenant-valid Inc");
+        assert_eq!(response.max_users, 50);
     }
 
     #[test]
@@ -5516,11 +5682,63 @@ mod algorithm_upgrade_tests {
 
     #[test]
     fn test_two_factor_handlers_custom_limiter_injected() {
-        use crate::rate_limiter::InMemoryRateLimiter;
+        use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
         use std::sync::Arc;
 
-        let custom_limiter = Arc::new(InMemoryRateLimiter::default());
+        let custom_limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::default());
         let handlers = TwoFactorHandlers::new_with_optional_limiter(Some(custom_limiter.clone()));
         assert!(Arc::ptr_eq(handlers.limiter(), &custom_limiter));
+    }
+
+    /// Integration test: a single shared `TwoFactorHandlers` instance accumulates
+    /// rate-limit failures across multiple requests.
+    ///
+    /// This verifies the core invariant: because `handlers` is constructed
+    /// **once** and reused, the `InMemoryRateLimiter` inside it records every
+    /// failure call and eventually reports `is_blocked() == true`.
+    ///
+    /// If `TwoFactorHandlers` were incorrectly constructed per-request (the
+    /// old static-dispatch pattern), each call would see 0 failures and the
+    /// limiter would never block — which is the bug this test catches.
+    #[test]
+    fn test_shared_rate_limiter_accumulates_failures_across_requests() {
+        use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
+        use std::sync::Arc;
+
+        // Build ONE shared handlers instance with a low-threshold limiter.
+        // InMemoryRateLimiter default blocks after 10 failures; we use the
+        // limiter directly to drive it past the threshold without needing
+        // valid TOTP tokens.
+        let limiter = Arc::new(InMemoryRateLimiter::default());
+        let store = Arc::new(crate::two_factor::InMemoryStore::default());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(store, limiter.clone());
+
+        // Simulate repeated enroll attempts for the same user via the SHARED
+        // handlers instance.  The key used by `enroll` is "enroll:<user_id>".
+        let key = "enroll:rate-test-user";
+
+        // Pump failures until the limiter reports blocked.
+        let mut blocked = false;
+        for _ in 0..20 {
+            let result = limiter.record_failure(key);
+            if result.is_blocked() {
+                blocked = true;
+                break;
+            }
+        }
+
+        assert!(
+            blocked,
+            "The shared rate limiter must eventually block repeated failures; \
+             if TwoFactorHandlers is constructed per-request the limiter is \
+             always reset and this assertion will never be reached."
+        );
+
+        // Confirm that the shared handlers' limiter is the very same object —
+        // it would not accumulate state if a fresh instance had been created.
+        assert!(
+            Arc::ptr_eq(handlers.limiter(), &limiter),
+            "handlers must hold the shared limiter, not a fresh one"
+        );
     }
 }

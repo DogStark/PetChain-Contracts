@@ -1,9 +1,11 @@
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
-use crate::leaderboard::{leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission};
+use crate::leaderboard::{
+    leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
+};
 use crate::rate_limiter::{
-    InMemoryRateLimiter, RateLimitResult, RateLimiter, UserQuotaStore,
+    InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
 };
 use crate::two_factor::{
     AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
@@ -215,6 +217,61 @@ pub struct RevokeSessionRequest {
     pub revoke_all: bool,
 }
 
+/// HTTP handler collection for all 2FA endpoints.
+///
+/// # IMPORTANT: This struct MUST be constructed once and shared
+///
+/// `TwoFactorHandlers` owns an [`InMemoryRateLimiter`] (or any [`RateLimiter`]
+/// implementation). The rate limiter accumulates failure state over time. If a
+/// **new** `TwoFactorHandlers` is instantiated per request (e.g. by calling
+/// `TwoFactorHandlers::new()` inside a route closure), each request starts with
+/// a **completely empty** failure history — an attacker making thousands of
+/// enrollment or recovery requests per second is never blocked because every
+/// request sees 0 recorded failures.
+///
+/// ## Correct usage (actix-web)
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use actix_web::{web, App, HttpServer};
+/// use backend_2fa::handlers::TwoFactorHandlers;
+///
+/// #[actix_web::main]
+/// async fn main() -> std::io::Result<()> {
+///     // Construct ONCE — the rate-limiter state lives here.
+///     let handlers = web::Data::new(TwoFactorHandlers::new_with_defaults());
+///
+///     HttpServer::new(move || {
+///         App::new()
+///             .app_data(handlers.clone()) // share the same instance
+///             .route("/2fa/enroll", web::post().to(enroll_handler))
+///             .route("/2fa/recover", web::post().to(recover_handler))
+///     })
+///     .bind("0.0.0.0:8080")?
+///     .run()
+///     .await
+/// }
+///
+/// async fn enroll_handler(
+///     data: web::Data<TwoFactorHandlers>,
+///     // ... extract caller and body ...
+/// ) -> impl actix_web::Responder {
+///     // Correct: calls `enroll` on the shared instance.
+///     // data.enroll(&caller, req)
+///     todo!()
+/// }
+/// ```
+///
+/// ## Wrong usage (creates per-request limiter — DO NOT DO THIS)
+///
+/// ```rust,ignore
+/// // ❌ Every request gets a fresh rate limiter with 0 failures.
+/// async fn bad_handler() -> impl actix_web::Responder {
+///     let handlers = TwoFactorHandlers::new();
+///     // handlers.enroll(...)  ← rate limit is always reset
+///     todo!()
+/// }
+/// ```
 pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     store: Arc<dyn TwoFactorStore>,
@@ -391,6 +448,27 @@ impl TwoFactorHandlers {
         Ok(())
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// # Why this is dangerous
+    ///
+    /// This method calls `Self::new()` internally, which constructs a brand-new
+    /// [`TwoFactorHandlers`] with a **fresh, empty** [`InMemoryRateLimiter`] on
+    /// every invocation. When wired into actix-web routes without a shared
+    /// `web::Data<TwoFactorHandlers>`, the rate limiter accumulates zero failures
+    /// across requests — an attacker can make unlimited enrollment attempts with
+    /// no backoff or blocking.
+    ///
+    /// # Migration
+    ///
+    /// Construct `TwoFactorHandlers` **once** (e.g. at server start), wrap it in
+    /// `web::Data::new(...)`, clone the `web::Data` into each route closure, and
+    /// call `handlers.enroll(caller, req)` on the shared instance instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .enroll() instead."
+    )]
     pub fn enable_two_factor(
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
@@ -398,6 +476,12 @@ impl TwoFactorHandlers {
         Self::new().enroll(caller, req)
     }
 
+    /// Enroll a user in 2FA using this shared `TwoFactorHandlers` instance.
+    ///
+    /// Prefer calling this method over the deprecated
+    /// [`TwoFactorHandlers::enable_two_factor`] static dispatch form. The static
+    /// form constructs a fresh rate limiter on every call, making rate limiting
+    /// ineffective.
     pub fn enroll(
         &self,
         caller: &AuthenticatedUser,
@@ -634,6 +718,17 @@ impl TwoFactorHandlers {
         Ok(false)
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// Calls `Self::new()` internally, which creates a fresh [`InMemoryRateLimiter`]
+    /// per call. Rate-limit state for the recovery endpoint is silently discarded
+    /// after every request. Use a shared `TwoFactorHandlers` instance and call
+    /// `.recover()` directly.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .recover() instead."
+    )]
     pub fn recover_with_backup(
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
@@ -641,6 +736,14 @@ impl TwoFactorHandlers {
         Self::new().recover(caller, req, None)
     }
 
+    /// Static dispatch convenience wrapper — **DEPRECATED**.
+    ///
+    /// See [`Self::recover_with_backup`] for why this is dangerous.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Constructs a fresh rate-limiter per call — use a shared TwoFactorHandlers \
+                instance via web::Data<TwoFactorHandlers> and call .recover() instead."
+    )]
     pub fn recover_with_backup_with_ip(
         caller: &AuthenticatedUser,
         req: RecoverWithBackupRequest,
@@ -649,6 +752,12 @@ impl TwoFactorHandlers {
         Self::new().recover(caller, req, ip_address)
     }
 
+    /// Recover 2FA using a backup code via this shared `TwoFactorHandlers` instance.
+    ///
+    /// Prefer calling this method over the deprecated
+    /// [`Self::recover_with_backup`] / [`Self::recover_with_backup_with_ip`]
+    /// static forms. Those static methods construct a fresh rate limiter on every
+    /// call, making rate limiting ineffective.
     pub fn recover(
         &self,
         caller: &AuthenticatedUser,
@@ -858,17 +967,17 @@ impl AdminRecoveryHandlers {
 
 /// Admin handlers for managing flagged leaderboard scores
 pub struct AdminScoreHandlers {
-    flagged_store: Arc<FlaggedScoreStore>,
+    flagged_store: Arc<dyn FlaggedScoreStore>,
 }
 
 impl AdminScoreHandlers {
     pub fn new() -> Self {
         Self {
-            flagged_store: Arc::new(FlaggedScoreStore::new()),
+            flagged_store: Arc::new(InMemoryFlaggedScoreStore::new()),
         }
     }
 
-    pub fn with_store(flagged_store: Arc<FlaggedScoreStore>) -> Self {
+    pub fn with_store(flagged_store: Arc<dyn FlaggedScoreStore>) -> Self {
         Self { flagged_store }
     }
 
@@ -1308,6 +1417,8 @@ pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProvisionTenantRequest {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
 }
@@ -1315,6 +1426,8 @@ pub struct ProvisionTenantRequest {
 #[derive(Debug, Serialize)]
 pub struct ProvisionTenantResponse {
     pub tenant_id: String,
+    pub name: String,
+    pub max_users: u32,
     pub totp_issuer: String,
     pub rate_limit_max_failures: u32,
     /// `true` if `tenant_id` already existed and this call returned the
@@ -1322,6 +1435,61 @@ pub struct ProvisionTenantResponse {
     /// infrastructure automation safely retry `POST /tenant/provision`
     /// without erroring or creating duplicates.
     pub already_existed: bool,
+}
+
+/// Maximum length for `TenantConfig::tenant_id`.
+const MAX_TENANT_ID_LEN: usize = 64;
+/// Maximum length for `TenantConfig::name`.
+const MAX_TENANT_NAME_LEN: usize = 128;
+
+/// Validates a [`TenantConfig`] before it is persisted by `provision_tenant`.
+///
+/// - `tenant_id`: non-empty, at most 64 characters, alphanumeric plus hyphens only.
+/// - `max_users`: must be >= 1.
+/// - `name`: non-empty, at most 128 characters.
+///
+/// On failure, returns a `BAD_REQUEST` [`ApiError`] naming the offending field
+/// in `details.field`.
+fn validate_tenant_config(config: &TenantConfig) -> Result<(), ApiError> {
+    let bad_field = |field: &str, message: String| {
+        ApiError::bad_request(message, Some(serde_json::json!({ "field": field })))
+    };
+
+    if config.tenant_id.is_empty() {
+        return Err(bad_field("tenant_id", "tenant_id must not be empty".into()));
+    }
+    if config.tenant_id.len() > MAX_TENANT_ID_LEN {
+        return Err(bad_field(
+            "tenant_id",
+            format!("tenant_id must be at most {MAX_TENANT_ID_LEN} characters"),
+        ));
+    }
+    if !config
+        .tenant_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(bad_field(
+            "tenant_id",
+            "tenant_id must contain only alphanumeric characters and hyphens".into(),
+        ));
+    }
+
+    if config.max_users < 1 {
+        return Err(bad_field("max_users", "max_users must be >= 1".into()));
+    }
+
+    if config.name.is_empty() {
+        return Err(bad_field("name", "name must not be empty".into()));
+    }
+    if config.name.len() > MAX_TENANT_NAME_LEN {
+        return Err(bad_field(
+            "name",
+            format!("name must be at most {MAX_TENANT_NAME_LEN} characters"),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Handlers that operate within a single tenant's namespace.
@@ -1389,11 +1557,11 @@ impl MultiTenantHandlers {
     ) -> Result<bool, String> {
         caller.authorize(user_id).map_err(|e| e.to_string())?;
 
-        let max_failures = self.store.config.rate_limit_max_failures;
         let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
+        let max_failures = self.store.config.rate_limit_max_failures;
         let tenant_id = self.store.config.tenant_id.clone();
         let key = format!("verify:{user_id}");
         if let RateLimitResult::Blocked { retry_after_secs, .. } =
@@ -1408,7 +1576,6 @@ impl MultiTenantHandlers {
             )
             .to_string());
         }
-        let _ = max_failures; // per-tenant config available for custom limiter wiring
 
         let data = self.store.get(user_id)?;
         let result = TwoFactorAuth::verify_token_with_config(
@@ -1418,7 +1585,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, true)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1435,10 +1602,6 @@ impl MultiTenantHandlers {
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("disable:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
@@ -1461,7 +1624,7 @@ impl MultiTenantHandlers {
         )?;
         if result {
             self.store.update_enabled(user_id, false)?;
-            self.limiter.record(Some(&tenant_id), &key);
+            self.limiter.record_success(key.as_str());
         }
         Ok(result)
     }
@@ -1488,16 +1651,24 @@ impl TenantProvisioningHandlers {
         &self,
         _super_admin: &AuthenticatedAdmin,
         req: ProvisionTenantRequest,
-    ) -> Result<ProvisionTenantResponse, String> {
+    ) -> Result<ProvisionTenantResponse, ApiError> {
         let config = TenantConfig {
             tenant_id: req.tenant_id.clone(),
+            name: req.name.clone(),
+            max_users: req.max_users,
             totp_issuer: req.totp_issuer.clone(),
             rate_limit_max_failures: req.rate_limit_max_failures,
             lockout_threshold: 10,
         };
-        let (existing_or_new, already_existed) = self.registry.provision(config)?;
+        validate_tenant_config(&config)?;
+        let (existing_or_new, already_existed) = self
+            .registry
+            .provision(config)
+            .map_err(|e| ApiError::internal_error(e, None))?;
         Ok(ProvisionTenantResponse {
             tenant_id: existing_or_new.tenant_id,
+            name: existing_or_new.name,
+            max_users: existing_or_new.max_users,
             totp_issuer: existing_or_new.totp_issuer,
             rate_limit_max_failures: existing_or_new.rate_limit_max_failures,
             already_existed,
