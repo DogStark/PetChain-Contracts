@@ -711,6 +711,7 @@ mod test_search_medical_records {
             &String::from_str(&env, "0.0-1.0"),
             &None,
             &None,
+            &soroban_sdk::Map::new(&env),
         );
         assert_eq!(client.get_lab_result_count(&pet_id), 1);
 
@@ -722,6 +723,7 @@ mod test_search_medical_records {
             &String::from_str(&env, "0.0-1.0"),
             &None,
             &None,
+            &soroban_sdk::Map::new(&env),
         );
         assert_eq!(client.get_lab_result_count(&pet_id), 2);
 
@@ -733,6 +735,7 @@ mod test_search_medical_records {
             &String::from_str(&env, "N/A"),
             &None,
             &None,
+            &soroban_sdk::Map::new(&env),
         );
         assert_eq!(client.get_lab_result_count(&pet_id), 3);
     }
