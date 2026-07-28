@@ -180,6 +180,12 @@ mod test_verify_claim_document;
 mod test_vet_pagination;
 #[cfg(test)]
 mod test_upgrade_proposal;
+#[cfg(test)]
+mod test_disputes;
+mod test_book_slot;
+#[cfg(test)]
+mod test_admin_threshold_quorum;
+
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -331,12 +337,14 @@ pub enum ContractError {
     RecordAlreadyDeleted = 161,
     RecordNotFound = 163,
     RetentionPeriodNotMet = 162,
-    ProposalExpired = 164,
-    ProposalNotApproved = 165,
-    ProposalAlreadyExecuted = 166,
-    ProposalNotFound = 167,
-    RollbackWindowExpired = 168,
-    NoPreviousUpgrade = 169,
+    RecordAlreadyDeleted = 163,
+    ProposalExpired = 43,
+    ProposalNotApproved = 44,
+    ProposalAlreadyExecuted = 38,
+    ProposalNotFound = 39,
+    RollbackWindowExpired = 40,
+    NoPreviousUpgrade = 41,
+    QuorumNotMet = 45,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -1176,6 +1184,7 @@ pub enum SystemKey {
     PendingConfig, // Issue #626: Three-phase bootstrap
     Proposal(u64),
     ProposalCount,
+    PendingThresholdChange, // Issue #815: full-quorum threshold changes
 
     // Timelock and veto keys
     AdminTimelockConfig,
@@ -1841,6 +1850,14 @@ pub struct PendingConfig {
     pub threshold: u32,
     pub confirmations: Vec<Address>,
     pub proposed_at: u64,
+}
+
+/// A threshold change awaiting unanimous admin sign-off (Issue #815).
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingThresholdChange {
+    pub new_threshold: u32,
+    pub approvals: Vec<Address>,
 }
 
 /// Multi-signature configuration for a pet.
@@ -2894,7 +2911,7 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
 
         // Check threshold
-        if proposal.approvals.len() < proposal.required_approvals as usize {
+        if proposal.approvals.len() < proposal.required_approvals {
             panic_with_error!(&env, ContractError::ThresholdNotMet);
         }
 
@@ -3791,8 +3808,21 @@ impl PetChainContract {
             .unwrap_or(0u32)
     }
 
-    /// Update the multisig admin threshold via a multisig proposal.
-    /// Requires quorum approval. Rejects if an active proposal exists.
+    /// Propose or approve a change to the multisig admin threshold.
+    ///
+    /// Unlike other admin operations, a threshold change requires approval
+    /// from EVERY current admin, not just the currently configured
+    /// threshold. Otherwise a minimal quorum could lower the threshold to 1
+    /// and let a single compromised admin take over governance afterward.
+    /// This full-quorum rule applies only to threshold changes; regular
+    /// governance proposals keep using the configured threshold.
+    ///
+    /// Each admin calls this with the same `new_threshold`; the change is
+    /// only applied once every current admin has approved it. Until then
+    /// the change remains pending and the threshold is unchanged. Calling
+    /// with a different `new_threshold` than the one currently pending
+    /// discards the old pending change and starts a fresh one.
+    ///
     /// Validates 1 <= new_threshold <= signer_count.
     pub fn set_threshold(env: Env, proposer: Address, new_threshold: u32) {
         PetChainContract::require_admin_auth(&env, &proposer);
@@ -3825,6 +3855,41 @@ impl PetChainContract {
                 }
             }
         }
+
+        let mut pending: PendingThresholdChange = env
+            .storage()
+            .instance()
+            .get(&SystemKey::PendingThresholdChange)
+            .unwrap_or(PendingThresholdChange {
+                new_threshold,
+                approvals: Vec::new(&env),
+            });
+
+        // A differently-valued change supersedes whatever was pending.
+        if pending.new_threshold != new_threshold {
+            pending = PendingThresholdChange {
+                new_threshold,
+                approvals: Vec::new(&env),
+            };
+        }
+
+        if pending.approvals.contains(&proposer) {
+            panic_with_error!(&env, ContractError::AdminAlreadyApproved);
+        }
+        pending.approvals.push_back(proposer);
+
+        if pending.approvals.len() < admins.len() {
+            // Not every current admin has approved yet — remains pending.
+            env.storage()
+                .instance()
+                .set(&SystemKey::PendingThresholdChange, &pending);
+            return;
+        }
+
+        // Every current admin has approved — apply the change.
+        env.storage()
+            .instance()
+            .remove(&SystemKey::PendingThresholdChange);
 
         let old_threshold: u32 = env
             .storage()
