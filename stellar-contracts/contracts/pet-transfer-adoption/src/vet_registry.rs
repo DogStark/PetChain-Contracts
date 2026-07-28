@@ -224,6 +224,12 @@ impl VetRegistryContract {
         vet.verified = false;
         save_vet(&env, &vet);
 
+        // Remove the license-to-address mapping so the license number can be
+        // re-registered after revocation (fixes issue #1019).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::VetByLicense(vet.license_number));
+
         env.events().publish((EVT_REVOKED,), vet_address);
     }
 
@@ -596,10 +602,9 @@ mod tests {
 
     // ---- get_vet_by_license after revocation ----
 
-    // Chosen semantics: `revoke_vet_license` only flips `verified` to false
-    // and does NOT remove the `VetByLicense` mapping, so `get_vet_by_license`
-    // keeps resolving to the revoked vet's record (with `verified == false`)
-    // rather than returning `None`. Callers must check `verified` themselves.
+    // After revocation the VetByLicense mapping is removed, so
+    // get_vet_by_license returns None and the license number is free for
+    // re-registration (fixes issue #1019).
     #[test]
     fn test_get_vet_by_license_after_revocation() {
         let (env, _, _, client) = setup();
@@ -610,10 +615,75 @@ mod tests {
         client.verify_vet(&vet);
         client.revoke_vet_license(&vet);
 
+        // License mapping must be cleared — callers can no longer look it up.
+        let found = client.get_vet_by_license(&license);
+        assert!(found.is_none());
+    }
+
+    // ---- #1019: revoked license can be re-registered ----
+
+    #[test]
+    fn test_revoked_license_can_be_reregistered_by_same_vet() {
+        let (env, _, _, client) = setup();
+
+        let vet = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-REUSE-001");
+        client.register_vet(&vet, &str(&env, "Dr. Same"), &license, &str(&env, "General"));
+        client.revoke_vet_license(&vet);
+
+        // Same vet re-registers with the same license — must succeed.
+        client.register_vet(&vet, &str(&env, "Dr. Same"), &license, &str(&env, "General"));
         let found = client.get_vet_by_license(&license);
         assert!(found.is_some());
-        let record = found.unwrap();
-        assert_eq!(record.address, vet);
-        assert_eq!(record.verified, false);
     }
-}
+
+    #[test]
+    fn test_revoked_license_can_be_claimed_by_new_vet() {
+        let (env, _, _, client) = setup();
+
+        let vet_a = soroban_sdk::Address::generate(&env);
+        let vet_b = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-REISSUED-001");
+
+        client.register_vet(&vet_a, &str(&env, "Dr. A"), &license, &str(&env, "General"));
+        client.revoke_vet_license(&vet_a);
+
+        // A new vet may now claim the freed license number — must not get LicenseAlreadyUsed.
+        client.register_vet(&vet_b, &str(&env, "Dr. B"), &license, &str(&env, "General"));
+        let found = client.get_vet_by_license(&license);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().address, vet_b);
+    }
+
+    // ---- #1023: list_vets with offset >= total vet count returns empty ----
+
+    #[test]
+    fn test_list_vets_offset_equal_to_count_returns_empty() {
+        let (env, _, _, client) = setup();
+
+        let vet = soroban_sdk::Address::generate(&env);
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Solo"),
+            &str(&env, "LIC-SOLO-001"),
+            &str(&env, "General"),
+        );
+
+        // offset == count (1) — guard must return empty Vec without panicking.
+        let vets = client.list_vets(&1, &10);
+        assert!(vets.is_empty());
+    }
+
+    #[test]
+    fn test_list_vets_offset_well_beyond_count_returns_empty() {
+        let (env, _, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+
+        // offset >> count — must not panic or attempt an out-of-bounds index.
+        let vets = client.list_vets(&1000, &10);
+        assert!(vets.is_empty());
+    }
