@@ -1,5 +1,6 @@
 pub mod content_type_guard;
 pub mod db;
+pub mod dead_letter;
 pub mod error;
 pub mod handlers;
 pub mod health;

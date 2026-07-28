@@ -1,3 +1,4 @@
+use crate::dead_letter::{DlqEntry, MAX_DLQ_SIZE};
 use crate::metrics::{record_webhook_delivery, record_webhook_retry};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -558,6 +559,11 @@ pub struct WebhookManager {
     retry_policy: RetryPolicy,
     /// Strategy used to compute the delay between retries. Injectable for tests.
     backoff: Arc<dyn BackoffStrategy>,
+    /// Dead-Letter Queue: entries that exhausted all retry attempts.
+    /// Bounded to [`MAX_DLQ_SIZE`]; oldest entry is evicted when full.
+    dlq: Arc<Mutex<VecDeque<DlqEntry>>>,
+    /// Monotonically-increasing counter for DLQ entry IDs.
+    dlq_next_id: Arc<AtomicUsize>,
 }
 
 impl Default for WebhookManager {
@@ -586,6 +592,8 @@ impl WebhookManager {
             signing_secret,
             retry_policy,
             backoff,
+            dlq: Arc::new(Mutex::new(VecDeque::new())),
+            dlq_next_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -607,6 +615,8 @@ impl WebhookManager {
             signing_secret: String::new(),
             retry_policy: RetryPolicy::default(),
             backoff: Arc::new(ExponentialBackoff::default()),
+            dlq: Arc::new(Mutex::new(VecDeque::new())),
+            dlq_next_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -678,6 +688,8 @@ impl WebhookManager {
         max_log_entries: usize,
         retry_policy: &RetryPolicy,
         backoff: &dyn BackoffStrategy,
+        dlq: &Mutex<VecDeque<DlqEntry>>,
+        dlq_next_id: &AtomicUsize,
     ) {
         let max_attempts = retry_policy.max_attempts.max(1);
         let mut last_error: Option<String> = None;
@@ -735,6 +747,26 @@ impl WebhookManager {
         } else {
             DeliveryStatus::PermanentFailure
         };
+
+        // On permanent failure, push the payload to the Dead-Letter Queue
+        // so it can be inspected and replayed later.
+        if !success {
+            if let Ok(payload) = serde_json::from_str::<crate::webhooks::WebhookPayload>(body) {
+                let dlq_id = dlq_next_id.fetch_add(1, Ordering::Relaxed);
+                let entry = DlqEntry::new(
+                    dlq_id,
+                    url,
+                    payload,
+                    body,
+                    last_error.as_deref().unwrap_or("unknown error"),
+                );
+                let mut dlq_guard = dlq.lock().unwrap();
+                if dlq_guard.len() >= MAX_DLQ_SIZE {
+                    dlq_guard.pop_front();
+                }
+                dlq_guard.push_back(entry);
+            }
+        }
 
         let id = next_log_id.fetch_add(1, Ordering::Relaxed);
         let entry = WebhookDeliveryLog {
@@ -808,6 +840,8 @@ impl WebhookManager {
             let user_str_clone = user_str.clone();
             let retry_policy = self.retry_policy.clone();
             let backoff = self.backoff.clone();
+            let dlq = self.dlq.clone();
+            let dlq_next_id = self.dlq_next_id.clone();
 
             // Spawn the retry loop on a dedicated thread so we never block
             // the caller's async executor (Issue #861).
@@ -825,6 +859,8 @@ impl WebhookManager {
                     max_log_entries,
                     &retry_policy,
                     backoff.as_ref(),
+                    &dlq,
+                    &dlq_next_id,
                 );
             });
         }
@@ -884,6 +920,8 @@ impl WebhookManager {
                 self.max_log_entries,
                 &self.retry_policy,
                 self.backoff.as_ref(),
+                &self.dlq,
+                &self.dlq_next_id,
             );
         }
     }
@@ -928,6 +966,105 @@ impl WebhookManager {
     /// Return the number of entries currently in the delivery log.
     pub fn delivery_log_count(&self) -> usize {
         self.delivery_log.lock().unwrap().len()
+    }
+
+    // -------------------------------------------------------------------------
+    // Dead-Letter Queue admin methods (Issue #1058)
+    // -------------------------------------------------------------------------
+
+    /// Admin: return a snapshot of all current Dead-Letter Queue entries,
+    /// newest-first.
+    ///
+    /// Corresponds to `GET /admin/webhooks/dead-letter`.
+    pub fn get_dead_letter_queue(&self) -> Vec<DlqEntry> {
+        self.dlq
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
+    }
+
+    /// Return the number of entries currently in the DLQ.
+    pub fn dlq_count(&self) -> usize {
+        self.dlq.lock().unwrap().len()
+    }
+
+    /// Admin: attempt to re-deliver every entry currently in the Dead-Letter Queue.
+    ///
+    /// Each entry is retried through the normal `deliver_one` path (with the
+    /// configured retry policy and backoff strategy).  On success the entry is
+    /// removed from the DLQ; on failure it stays and its `replay_attempts`
+    /// counter is incremented.
+    ///
+    /// Corresponds to `POST /admin/webhooks/dead-letter/replay`.
+    ///
+    /// Returns `(succeeded, failed)` counts.
+    pub fn replay_dead_letter_queue(&self) -> (usize, usize) {
+        // Drain the current DLQ snapshot under a brief lock, then release it
+        // before performing any I/O so we do not hold the mutex during the
+        // (potentially slow) HTTP delivery.
+        let entries: Vec<DlqEntry> = self.dlq.lock().unwrap().drain(..).collect();
+
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+
+        for mut entry in entries {
+            entry.replay_attempts += 1;
+
+            // Attempt delivery.  We use a single-attempt policy for replay so
+            // the result is recorded immediately rather than spinning through
+            // exponential backoff again (callers trigger replay explicitly).
+            let single_attempt_policy = RetryPolicy {
+                max_attempts: 1,
+                base_backoff: std::time::Duration::ZERO,
+            };
+
+            // Use a temporary delivery log for replay so we can check success
+            // without polluting the main log with duplicate entries.
+            let temp_log: Mutex<VecDeque<WebhookDeliveryLog>> =
+                Mutex::new(VecDeque::new());
+            let temp_id = AtomicUsize::new(0);
+            let temp_dlq: Mutex<VecDeque<DlqEntry>> = Mutex::new(VecDeque::new());
+            let temp_dlq_id = AtomicUsize::new(0);
+
+            Self::deliver_one(
+                self.http_client.as_ref(),
+                &entry.url,
+                &entry.body,
+                // Re-compute signature over the original body.
+                &sign_webhook_payload(&self.signing_secret, entry.body.as_bytes()),
+                &entry.payload.event_type,
+                &entry.payload.user_id,
+                entry.payload.timestamp,
+                &temp_log,
+                &temp_id,
+                1, // keep only the single replay log entry
+                &single_attempt_policy,
+                self.backoff.as_ref(),
+                &temp_dlq,
+                &temp_dlq_id,
+            );
+
+            let replay_log = temp_log.lock().unwrap();
+            let ok = replay_log.back().map(|e| e.success).unwrap_or(false);
+
+            if ok {
+                succeeded += 1;
+                // Entry is consumed — do not put it back.
+            } else {
+                failed += 1;
+                // Re-queue the updated entry (replay_attempts incremented).
+                let mut dlq = self.dlq.lock().unwrap();
+                if dlq.len() >= MAX_DLQ_SIZE {
+                    dlq.pop_front();
+                }
+                dlq.push_back(entry);
+            }
+        }
+
+        (succeeded, failed)
     }
 }
 
@@ -1680,5 +1817,143 @@ mod tests {
             log[0].success,
             "delivery should still succeed after truncation"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Dead-Letter Queue tests (Issue #1058)
+    // -------------------------------------------------------------------------
+
+    /// After all retries are exhausted, the entry must appear in the DLQ.
+    #[test]
+    fn test_dlq_populated_after_permanent_failure() {
+        // Fail more times than max_attempts (4) to ensure permanent failure.
+        let (manager, mock) = make_manager(100);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "dlq-user", HashMap::new());
+
+        // 4 attempts (initial + 3 retries), then permanent failure.
+        assert_eq!(mock.call_count.load(Ordering::SeqCst), 4);
+
+        // The DLQ must now contain exactly one entry.
+        assert_eq!(manager.dlq_count(), 1);
+        let dlq = manager.get_dead_letter_queue();
+        assert_eq!(dlq.len(), 1);
+        assert_eq!(dlq[0].url, "http://example.com/hook");
+        assert_eq!(dlq[0].payload.user_id, "dlq-user");
+        assert_eq!(dlq[0].replay_attempts, 0);
+        assert!(!dlq[0].failure_reason.is_empty());
+    }
+
+    /// Successful deliveries must NOT appear in the DLQ.
+    #[test]
+    fn test_dlq_not_populated_on_success() {
+        let (manager, _mock) = make_manager(0);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "ok-user", HashMap::new());
+
+        assert_eq!(manager.dlq_count(), 0);
+    }
+
+    /// The DLQ is bounded at MAX_DLQ_SIZE; oldest entries are evicted when full.
+    #[test]
+    fn test_dlq_bounded_at_max_size() {
+        use crate::dead_letter::MAX_DLQ_SIZE;
+
+        // Always-failing client.
+        let (manager, _mock) = make_manager(100);
+
+        for i in 0..MAX_DLQ_SIZE + 5 {
+            // Register a unique URL each time (configure allows duplicates; use
+            // the same event type so fire_sync does not skip).
+            manager
+                .config
+                .lock()
+                .unwrap()
+                .entry("failed_two_fa".to_string())
+                .or_default()
+                .clear();
+            manager
+                .config
+                .lock()
+                .unwrap()
+                .entry("failed_two_fa".to_string())
+                .or_default()
+                .push(format!("http://example.com/hook{}", i));
+
+            manager.fire_sync(SecurityEventType::FailedTwoFa, &format!("u{}", i), HashMap::new());
+        }
+
+        assert_eq!(
+            manager.dlq_count(),
+            MAX_DLQ_SIZE,
+            "DLQ must not exceed MAX_DLQ_SIZE"
+        );
+    }
+
+    /// replay_dead_letter_queue: entries that succeed on replay are removed.
+    #[test]
+    fn test_dlq_replay_succeeds_clears_entry() {
+        // Fail initial delivery then succeed on replay.
+        let client = Arc::new(MockHttpClient::new(100)); // always fail
+        let mut manager = WebhookManager::new_with_http_allowed(client.clone())
+            .with_backoff(Arc::new(NoBackoff));
+        manager.max_log_entries = 100;
+
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        // Exhaust retries → entry lands in DLQ.
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "replay-user", HashMap::new());
+        assert_eq!(manager.dlq_count(), 1);
+
+        // Now allow the next call to succeed.
+        client.fail_times.store(0, Ordering::SeqCst);
+
+        let (succeeded, failed) = manager.replay_dead_letter_queue();
+        assert_eq!(succeeded, 1);
+        assert_eq!(failed, 0);
+        assert_eq!(manager.dlq_count(), 0, "DLQ must be empty after successful replay");
+    }
+
+    /// replay_dead_letter_queue: entries that still fail on replay remain in the DLQ
+    /// with an incremented replay_attempts counter.
+    #[test]
+    fn test_dlq_replay_failure_increments_counter() {
+        // Always-failing client.
+        let (manager, _mock) = make_manager(100);
+        manager
+            .configure(
+                SecurityEventType::FailedTwoFa,
+                "http://example.com/hook".to_string(),
+            )
+            .unwrap();
+
+        manager.fire_sync(SecurityEventType::FailedTwoFa, "replay-fail-user", HashMap::new());
+        assert_eq!(manager.dlq_count(), 1);
+
+        let (succeeded, failed) = manager.replay_dead_letter_queue();
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+
+        // Entry remains in DLQ with replay_attempts = 1.
+        assert_eq!(manager.dlq_count(), 1);
+        let dlq = manager.get_dead_letter_queue();
+        assert_eq!(dlq[0].replay_attempts, 1);
     }
 }
