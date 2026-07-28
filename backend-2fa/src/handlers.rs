@@ -1989,9 +1989,9 @@ mod pool_metrics_tests {
     // Issue #1061 – Unified failure-count key ("2fa:{user_id}")
     // -----------------------------------------------------------------------
 
-    /// Verify that verify_and_activate and verify_login_token both produce
-    /// the same rate-limit key ("2fa:{user_id}"), so that a success on either
-    /// path resets the failure counter for both endpoints.
+    /// Both verify_and_activate and verify_login_token must produce the same
+    /// rate-limit key "2fa:{user_id}" so a success on either path resets the
+    /// failure counter for both endpoints.
     #[test]
     fn test_verify_and_login_share_same_rate_limit_key() {
         let verify_key = TwoFactorHandlers::rate_limit_key("2fa", "alice");
@@ -2003,14 +2003,13 @@ mod pool_metrics_tests {
         assert_eq!(verify_key, "2fa:alice");
     }
 
-    /// Fail verify_and_activate N-1 times, then verify that the failure counter
-    /// key is "2fa:{user_id}" (not "verify:{user_id}") so a successful
-    /// verify_login_token call (which records_success on the same key) would
-    /// clear it.  Uses InMemoryRateLimiter directly to inspect the counter.
+    /// Fail verify_and_activate N-1 times → call record_success on the shared
+    /// "2fa:{user_id}" key (simulating a successful verify_login_token) →
+    /// verify_and_activate must not be rate-limited on the next call.
     #[test]
     fn test_failed_verify_counter_is_reset_by_login_success_key() {
-        use crate::two_factor::InMemoryStore;
         use crate::rate_limiter::InMemoryRateLimiter;
+        use crate::two_factor::InMemoryStore;
         use std::sync::Arc;
 
         let store = Arc::new(InMemoryStore::default());
@@ -2020,7 +2019,6 @@ mod pool_metrics_tests {
             limiter.clone(),
         );
 
-        // Enroll a user (without activating — we just need the limiter state).
         let caller = AuthenticatedUser::new("key-test-user");
         let enroll_req = EnableTwoFactorRequest {
             user_id: "key-test-user".to_string(),
@@ -2029,7 +2027,7 @@ mod pool_metrics_tests {
         };
         let _ = handlers.enroll(&caller, enroll_req);
 
-        // Submit wrong tokens to verify_and_activate to accumulate failures.
+        // Accumulate 2 failures via verify_and_activate.
         let bad_verify = VerifyTwoFactorRequest {
             user_id: "key-test-user".to_string(),
             token: "000000".to_string(),
@@ -2038,22 +2036,13 @@ mod pool_metrics_tests {
             let _ = handlers.verify_and_activate(&caller, bad_verify.clone());
         }
 
-        // record_success on the unified key clears failures for BOTH endpoints.
-        // Confirm the key used is "2fa:{user_id}" and not "verify:" or "login:".
+        // Simulate a successful login by calling record_success on the unified key.
         let key = TwoFactorHandlers::rate_limit_key("2fa", "key-test-user");
-        assert_eq!(key, "2fa:key-test-user",
-            "failure-count key must be 2fa:{{user_id}}, not verify: or login:");
-
-        // Simulate a successful login by calling record_success on the shared key.
+        assert_eq!(key, "2fa:key-test-user");
         limiter.record_success(&key);
 
-        // After success, submitting another bad token via verify_and_activate
-        // should NOT already be in a blocked state from the prior failures
-        // (the counter was reset).  With InMemoryRateLimiter's default threshold
-        // of 10, 2 prior failures cleared by 1 success means we are back to 0.
+        // After reset, verify_and_activate must not return a rate-limit error.
         let result = handlers.verify_and_activate(&caller, bad_verify.clone());
-        // The result is Ok(false) (wrong token) or Err (no 2FA data) — either
-        // way it must NOT be a rate-limit error, proving the counter was reset.
         match result {
             Err(e) => {
                 let msg = format!("{:?}", e);
@@ -2062,7 +2051,7 @@ mod pool_metrics_tests {
                     "verify_and_activate must not be rate-limited after login success reset; got: {msg}"
                 );
             }
-            Ok(_) => {} // success or false — fine
+            Ok(_) => {}
         }
     }
 }
