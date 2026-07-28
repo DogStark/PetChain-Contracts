@@ -73,9 +73,56 @@ pub fn verify_webhook_signature(secret: &str, body: &[u8], header_value: &str) -
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityEventType {
+    /// Emitted when a user fails to provide a valid TOTP token during 2FA verification.
+    ///
+    /// **Trigger condition**: A TOTP token verification fails (wrong token, expired token, etc.).
+    ///
+    /// **Payload fields**:
+    /// - `event_type`: "failed_two_fa"
+    /// - `user_id`: The user ID for which verification failed
+    /// - `timestamp`: Unix timestamp of the failed attempt
+    /// - `metadata`: May include `ip_address`, `user_agent`, and other context
+    ///
+    /// **Currently emitted**: Yes - emitted on every failed TOTP verification attempt.
     FailedTwoFa,
+
+    /// Emitted when a user account is locked due to excessive failed 2FA attempts.
+    ///
+    /// **Trigger condition**: The number of failed 2FA attempts exceeds the configured threshold (default: 10).
+    ///
+    /// **Payload fields**:
+    /// - `event_type`: "account_lockout"
+    /// - `user_id`: The user ID that was locked
+    /// - `timestamp`: Unix timestamp of the lockout event
+    /// - `metadata`: May include `failed_attempts_count`, `lockout_threshold`, `ip_address`
+    ///
+    /// **Currently emitted**: Yes - emitted when the lockout threshold is reached.
     AccountLockout,
+
+    /// Emitted when a user successfully authenticates using a backup/recovery code.
+    ///
+    /// **Trigger condition**: A user uses a backup code to recover 2FA access after losing their TOTP device.
+    ///
+    /// **Payload fields**:
+    /// - `event_type`: "recovery_code_used"
+    /// - `user_id`: The user ID that used a recovery code
+    /// - `timestamp`: Unix timestamp of the recovery event
+    /// - `metadata`: May include `ip_address`, `code_index`, `remaining_backup_codes`
+    ///
+    /// **Currently emitted**: Yes - emitted on successful backup code authentication.
     RecoveryCodeUsed,
+
+    /// Emitted when a canary/honeypot account is used for authentication attempts.
+    ///
+    /// **Trigger condition**: An authentication attempt is made using a known canary account (designed to detect credential stuffing or automated attacks).
+    ///
+    /// **Payload fields**:
+    /// - `event_type`: "canary_triggered"
+    /// - `user_id`: The canary user ID that was targeted
+    /// - `timestamp`: Unix timestamp of the canary trigger
+    /// - `metadata`: May include `ip_address`, `user_agent`, `attempted_token`
+    ///
+    /// **Currently emitted**: Yes - emitted when canary account authentication is attempted.
     CanaryTriggered,
 }
 
