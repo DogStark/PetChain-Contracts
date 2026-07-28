@@ -217,36 +217,36 @@ pub struct RevokeSessionRequest {
     pub revoke_all: bool,
 }
 
-/// Caller identity for `GET /2fa/{user_id}/audit-log` — reachable by
+/// Caller identity for `GET /2fa/{user_id}/recovery-log` — reachable by
 /// either the account owner or an admin.
-pub enum AuditLogCaller<'a> {
+pub enum RecoveryLogCaller<'a> {
     Owner(&'a AuthenticatedUser),
     Admin(&'a AuthenticatedAdmin),
 }
 
-impl AuditLogCaller<'_> {
+impl RecoveryLogCaller<'_> {
     fn authorize(&self, user_id: &str) -> Result<(), ApiError> {
         match self {
-            AuditLogCaller::Admin(_) => Ok(()),
-            AuditLogCaller::Owner(caller) => caller.authorize(user_id),
+            RecoveryLogCaller::Admin(_) => Ok(()),
+            RecoveryLogCaller::Owner(caller) => caller.authorize(user_id),
         }
     }
 }
 
-fn default_audit_log_page() -> u32 {
+fn default_recovery_log_page() -> u32 {
     1
 }
 
-fn default_audit_log_page_size() -> u32 {
-    50
+fn default_recovery_log_page_size() -> u32 {
+    20
 }
 
-/// Query params for `GET /2fa/{user_id}/audit-log`.
+/// Query params for `GET /2fa/{user_id}/recovery-log`.
 #[derive(Debug, Deserialize, Clone, Copy)]
-pub struct GetAuditLogQuery {
-    #[serde(default = "default_audit_log_page")]
+pub struct GetRecoveryLogQuery {
+    #[serde(default = "default_recovery_log_page")]
     pub page: u32,
-    #[serde(default = "default_audit_log_page_size")]
+    #[serde(default = "default_recovery_log_page_size")]
     pub page_size: u32,
 }
 
@@ -462,22 +462,33 @@ impl TwoFactorHandlers {
         }
     }
 
-    /// GET /2fa/{user_id}/audit-log?page=1&page_size=50
+    /// GET /2fa/{user_id}/recovery-log?page=1&page_size=20
     ///
-    /// Returns the security audit log (2FA enable/disable, admin unlocks,
-    /// etc.) for `user_id`. Callable by the user themselves
-    /// ([`AuditLogCaller::Owner`]) or by an admin querying any user's log
-    /// ([`AuditLogCaller::Admin`]).
-    pub fn get_audit_log(
+    /// Returns recovery-code usage log entries for `user_id`. Callable by
+    /// the user themselves ([`RecoveryLogCaller::Owner`]) or by an admin
+    /// querying any user's log ([`RecoveryLogCaller::Admin`]).
+    pub fn get_recovery_log(
         &self,
-        caller: &AuditLogCaller,
+        caller: &RecoveryLogCaller,
         user_id: &str,
-        query: GetAuditLogQuery,
-    ) -> Result<Vec<AuditLogEntry>, ApiError> {
+        query: GetRecoveryLogQuery,
+    ) -> Result<Vec<RecoveryUsageLogEntry>, ApiError> {
         caller.authorize(user_id)?;
-        self.store
-            .get_audit_log(user_id, query.page, query.page_size)
-            .map_err(|e| ApiError::internal_error(e, None))
+        let entries = self
+            .store
+            .get_recovery_usage_log(query.page, query.page_size)
+            .map_err(|e| ApiError::internal_error(e, None))?
+            .into_iter()
+            .filter(|entry| entry.user_id == user_id)
+            .map(|entry| RecoveryUsageLogEntry {
+                id: entry.id as i32,
+                user_id: entry.user_id,
+                code_index: entry.code_index,
+                used_at: entry.used_at,
+                ip_address: entry.ip_address,
+            })
+            .collect();
+        Ok(entries)
     }
 
     fn rate_limit_key(prefix: &str, user_id: &str) -> String {
