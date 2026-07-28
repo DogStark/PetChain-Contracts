@@ -6059,4 +6059,305 @@ mod algorithm_upgrade_tests {
             assert_ne!(err.code, "BAD_REQUEST");
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Cross-tenant isolation tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_for_tenant_constructor_creates_tenant_scoped_store() {
+        clear_two_factor_store_for_tests();
+        let handlers_a = TwoFactorHandlers::for_tenant("tenant-a");
+        let handlers_b = TwoFactorHandlers::for_tenant("tenant-b");
+
+        // Both handlers should have different stores (different tenant configs)
+        // Enroll the same user in both tenants
+        let resp_a = handlers_a
+            .enroll(
+                &caller("alice"),
+                EnableTwoFactorRequest {
+                    user_id: "alice".to_string(),
+                    email: "alice@tenant-a.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let resp_b = handlers_b
+            .enroll(
+                &caller("alice"),
+                EnableTwoFactorRequest {
+                    user_id: "alice".to_string(),
+                    email: "alice@tenant-b.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        // Secrets should be different (different enrollments)
+        assert_ne!(resp_a.secret, resp_b.secret);
+    }
+
+    #[test]
+    fn test_cross_tenant_user_data_isolation() {
+        clear_two_factor_store_for_tests();
+        let handlers_a = TwoFactorHandlers::for_tenant("tenant-a");
+        let handlers_b = TwoFactorHandlers::for_tenant("tenant-b");
+
+        // Enroll user "alice" in tenant-a
+        let resp_a = handlers_a
+            .enroll(
+                &caller("alice"),
+                EnableTwoFactorRequest {
+                    user_id: "alice".to_string(),
+                    email: "alice@tenant-a.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_a = generate_token(&resp_a.secret);
+
+        // Activate 2FA for alice in tenant-a
+        handlers_a
+            .verify_and_activate(
+                &caller("alice"),
+                VerifyTwoFactorRequest {
+                    user_id: "alice".to_string(),
+                    token: token_a.clone(),
+                },
+            )
+            .unwrap();
+
+        // Try to login as alice from tenant-b using tenant-a's token
+        // This should fail because tenant-b's alice doesn't exist
+        let login_result = handlers_b.verify_login_token(
+            &caller("alice"),
+            LoginWithTwoFactorRequest {
+                user_id: "alice".to_string(),
+                token: token_a,
+            },
+        );
+
+        // Should return false (user not found in tenant-b)
+        assert!(login_result.is_ok());
+        assert!(!login_result.unwrap());
+    }
+
+    #[test]
+    fn test_same_user_id_different_tenants_have_separate_data() {
+        clear_two_factor_store_for_tests();
+        let handlers_a = TwoFactorHandlers::for_tenant("tenant-a");
+        let handlers_b = TwoFactorHandlers::for_tenant("tenant-b");
+
+        // Enroll and activate user "bob" in tenant-a
+        let resp_a = handlers_a
+            .enroll(
+                &caller("bob"),
+                EnableTwoFactorRequest {
+                    user_id: "bob".to_string(),
+                    email: "bob@tenant-a.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_a = generate_token(&resp_a.secret);
+        handlers_a
+            .verify_and_activate(
+                &caller("bob"),
+                VerifyTwoFactorRequest {
+                    user_id: "bob".to_string(),
+                    token: token_a,
+                },
+            )
+            .unwrap();
+
+        // Enroll and activate user "bob" in tenant-b
+        let resp_b = handlers_b
+            .enroll(
+                &caller("bob"),
+                EnableTwoFactorRequest {
+                    user_id: "bob".to_string(),
+                    email: "bob@tenant-b.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_b = generate_token(&resp_b.secret);
+        handlers_b
+            .verify_and_activate(
+                &caller("bob"),
+                VerifyTwoFactorRequest {
+                    user_id: "bob".to_string(),
+                    token: token_b,
+                },
+            )
+            .unwrap();
+
+        // Both tenants should have enabled 2FA for "bob"
+        let data_a = get_two_factor_data_for_tests("tenant-a::bob").unwrap();
+        let data_b = get_two_factor_data_for_tests("tenant-b::bob").unwrap();
+
+        assert!(data_a.enabled);
+        assert!(data_b.enabled);
+
+        // Secrets should be different
+        assert_ne!(data_a.secret, data_b.secret);
+    }
+
+    #[test]
+    fn test_tenant_scoped_disable_does_not_affect_other_tenant() {
+        clear_two_factor_store_for_tests();
+        let handlers_a = TwoFactorHandlers::for_tenant("tenant-a");
+        let handlers_b = TwoFactorHandlers::for_tenant("tenant-b");
+
+        // Enroll and activate user "charlie" in both tenants
+        let resp_a = handlers_a
+            .enroll(
+                &caller("charlie"),
+                EnableTwoFactorRequest {
+                    user_id: "charlie".to_string(),
+                    email: "charlie@tenant-a.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_a = generate_token(&resp_a.secret);
+        handlers_a
+            .verify_and_activate(
+                &caller("charlie"),
+                VerifyTwoFactorRequest {
+                    user_id: "charlie".to_string(),
+                    token: token_a,
+                },
+            )
+            .unwrap();
+
+        let resp_b = handlers_b
+            .enroll(
+                &caller("charlie"),
+                EnableTwoFactorRequest {
+                    user_id: "charlie".to_string(),
+                    email: "charlie@tenant-b.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_b = generate_token(&resp_b.secret);
+        handlers_b
+            .verify_and_activate(
+                &caller("charlie"),
+                VerifyTwoFactorRequest {
+                    user_id: "charlie".to_string(),
+                    token: token_b,
+                },
+            )
+            .unwrap();
+
+        // Disable 2FA for charlie in tenant-a
+        let disable_result = handlers_a.disable_two_factor(
+            &caller("charlie"),
+            DisableTwoFactorRequest {
+                user_id: "charlie".to_string(),
+                token: token_a,
+            },
+        );
+        assert!(disable_result.is_ok());
+        assert!(disable_result.unwrap());
+
+        // charlie in tenant-b should still have 2FA enabled
+        let data_b = get_two_factor_data_for_tests("tenant-b::charlie").unwrap();
+        assert!(data_b.enabled);
+
+        // charlie in tenant-a should have 2FA disabled
+        let data_a = get_two_factor_data_for_tests("tenant-a::charlie").unwrap();
+        assert!(!data_a.enabled);
+    }
+
+    #[test]
+    fn test_tenant_scoped_recovery_isolation() {
+        clear_two_factor_store_for_tests();
+        let handlers_a = TwoFactorHandlers::for_tenant("tenant-a");
+        let handlers_b = TwoFactorHandlers::for_tenant("tenant-b");
+
+        // Enroll and activate user "dave" in tenant-a
+        let resp_a = handlers_a
+            .enroll(
+                &caller("dave"),
+                EnableTwoFactorRequest {
+                    user_id: "dave".to_string(),
+                    email: "dave@tenant-a.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        let token_a = generate_token(&resp_a.secret);
+        handlers_a
+            .verify_and_activate(
+                &caller("dave"),
+                VerifyTwoFactorRequest {
+                    user_id: "dave".to_string(),
+                    token: token_a,
+                },
+            )
+            .unwrap();
+
+        let backup_code_a = resp_a.backup_codes[0].clone();
+
+        // Try to recover using tenant-b handler with tenant-a's backup code
+        let recover_result = handlers_b.recover(
+            &caller("dave"),
+            RecoverWithBackupRequest {
+                user_id: "dave".to_string(),
+                backup_code: backup_code_a,
+            },
+            None,
+        );
+
+        // Should fail because dave doesn't exist in tenant-b
+        assert!(recover_result.is_err());
+    }
+
+    #[test]
+    fn test_for_tenant_with_custom_limiter() {
+        use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
+        use std::sync::Arc;
+
+        clear_two_factor_store_for_tests();
+        let custom_limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::default());
+        let config = crate::two_factor::TenantConfig::new("tenant-custom");
+        let scoped_store = crate::two_factor::TenantScopedStore::new(
+            test_two_factor_store(),
+            config,
+        );
+
+        let handlers = TwoFactorHandlers::with_store_and_limiter(
+            Arc::new(scoped_store),
+            custom_limiter.clone(),
+        );
+
+        // Verify the handler uses the custom limiter
+        assert!(Arc::ptr_eq(handlers.limiter(), &custom_limiter));
+
+        // Verify it's tenant-scoped by enrolling a user
+        let resp = handlers
+            .enroll(
+                &caller("test-user"),
+                EnableTwoFactorRequest {
+                    user_id: "test-user".to_string(),
+                    email: "test@example.com".to_string(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+
+        // Data should be stored with tenant prefix
+        let data = get_two_factor_data_for_tests("tenant-custom::test-user").unwrap();
+        assert_eq!(data.secret, resp.secret);
+    }
 }
