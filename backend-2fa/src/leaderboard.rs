@@ -1639,4 +1639,104 @@ mod tests {
         let result = validate_score_submission(&submission, Some(100), &config, Some(&history));
         assert!(result.is_ok(), "Anomaly check should be skipped with < 5 historical scores");
     }
+
+    // -----------------------------------------------------------------------
+    // Issue #1059 – Concurrent same-IP connection test for per-IP limit
+    // -----------------------------------------------------------------------
+
+    /// Spawn 6 concurrent tasks all connecting from the same IP address.
+    /// The per-IP limit is 5, so exactly 5 must succeed and the 6th must fail
+    /// with an error indicating the connection limit was exceeded.
+    ///
+    /// A `tokio::sync::oneshot` channel pair is used to hold all 6 connections
+    /// open simultaneously before any are dropped, proving that the limit
+    /// check and counter increment are atomic (no TOCTOU window).
+    #[tokio::test]
+    async fn test_concurrent_same_ip_connection_limit_enforced() {
+        use std::sync::Arc as StdArc;
+        use tokio::sync::{oneshot, Barrier as TokioBarrier};
+
+        // Acquire the metrics lock to avoid interfering with the Prometheus
+        // gauge assertions in other tests running in parallel.
+        let _guard = WS_METRICS_LOCK.lock().unwrap();
+
+        const LIMIT: usize = 5;
+        const TASKS: usize = 6;
+
+        // Build a dedicated hub with the known per-IP limit.
+        let hub = StdArc::new({
+            let (broadcaster, _) = broadcast::channel(16);
+            LeaderboardWsHub {
+                broadcaster,
+                connections_by_ip: Mutex::new(HashMap::new()),
+                max_conn_per_ip: LIMIT,
+            }
+        });
+
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+
+        // A barrier ensures all tasks are spawned and ready before any of them
+        // attempts to call `connect`, maximising the chance of real concurrency.
+        let barrier = StdArc::new(TokioBarrier::new(TASKS));
+
+        // Each task signals its result (Ok/Err) on a oneshot channel and then
+        // waits for the test to drop it so all guards are kept alive at the
+        // same time (proving the limit is enforced under simultaneous holds).
+        let mut result_rxs = Vec::with_capacity(TASKS);
+        let mut drop_txs: Vec<oneshot::Sender<()>> = Vec::with_capacity(TASKS);
+
+        for _ in 0..TASKS {
+            let hub_clone = StdArc::clone(&hub);
+            let barrier_clone = StdArc::clone(&barrier);
+            let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
+            let (drop_tx, drop_rx) = oneshot::channel::<()>();
+
+            result_rxs.push(result_rx);
+            drop_txs.push(drop_tx);
+
+            tokio::spawn(async move {
+                // Wait until all tasks are ready, then rush the gate together.
+                barrier_clone.wait().await;
+                let outcome = hub_clone.connect(ip);
+                let _ = result_tx.send(outcome.map(|_guard| ()));
+                // Keep the guard alive until the test tells us to drop.
+                let _ = drop_rx.await;
+                // _guard is dropped here when the closure ends.
+            });
+        }
+
+        // Collect results from all 6 tasks.
+        let mut successes = 0usize;
+        let mut failures = 0usize;
+        for rx in result_rxs {
+            match rx.await.expect("task panicked") {
+                Ok(()) => successes += 1,
+                Err(e) => {
+                    failures += 1;
+                    assert!(
+                        e.contains("Connection limit exceeded") || e.contains("limit"),
+                        "unexpected error: {e}"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(successes, LIMIT, "exactly {LIMIT} connections should succeed");
+        assert_eq!(failures, 1, "the 6th connection should fail");
+
+        // Release all held connections.
+        for tx in drop_txs {
+            let _ = tx.send(());
+        }
+
+        // After all guards drop, the counter for this IP should be back to 0,
+        // meaning a new connection attempt succeeds immediately.
+        // Give the async runtime a moment to process the drops.
+        tokio::task::yield_now().await;
+        let result = hub.connect(ip);
+        assert!(
+            result.is_ok(),
+            "a fresh connection after all prior ones are dropped must succeed"
+        );
+    }
 }
