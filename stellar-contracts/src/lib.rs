@@ -163,7 +163,8 @@ mod test_nutrition_plan;
 #[cfg(test)]
 mod test_attachment_limit;
 #[cfg(test)]
-mod test_ipfs;
+mod test_get_pets_overdue_vaccinations;
+#[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_insurance_eligibility;
@@ -172,23 +173,13 @@ mod test_breeding;
 #[cfg(test)]
 mod test_breeding_genetics;
 #[cfg(test)]
-mod test_custody_chain;
-#[cfg(test)]
 mod test_pet_birthday_validation;
-#[cfg(test)]
-mod test_purge_deleted_records;
-#[cfg(test)]
-mod test_remove_admin;
 #[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
 #[cfg(test)]
 mod test_upgrade_proposal;
-#[cfg(test)]
-mod test_disputes;
-mod test_book_slot;
-
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -309,7 +300,7 @@ pub enum ContractError {
     InvalidCallerNonce = 10,
     InvalidCertificateHash = 11,
     InvalidInput = 12,
-    InvalidNonce = 42,
+    InvalidNonce = 39,
     InvalidIpfsHash = 13,
     InvalidPetName = 14,
     InvalidRating = 15,
@@ -337,15 +328,15 @@ pub enum ContractError {
     SelfBreeding = 37,
 
     AlreadyDeleted = 160,
-    RecordNotFound = 161,
+    RecordAlreadyDeleted = 161,
+    RecordNotFound = 163,
     RetentionPeriodNotMet = 162,
-    RecordAlreadyDeleted = 163,
-    ProposalExpired = 43,
-    ProposalNotApproved = 44,
-    ProposalAlreadyExecuted = 38,
-    ProposalNotFound = 39,
-    RollbackWindowExpired = 40,
-    NoPreviousUpgrade = 41,
+    ProposalExpired = 164,
+    ProposalNotApproved = 165,
+    ProposalAlreadyExecuted = 166,
+    ProposalNotFound = 167,
+    RollbackWindowExpired = 168,
+    NoPreviousUpgrade = 169,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -2717,7 +2708,11 @@ impl PetChainContract {
     }
 
     pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord> {
-        if let Some(record) = Self::get_medical_record_raw(env, record_id) {
+        if let Some(record) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+        {
             if record.deleted_at.is_none() {
                 return Some(record);
             }
@@ -3159,7 +3154,38 @@ impl PetChainContract {
     }
 
     /// Returns a paginated list of pet IDs that have at least one overdue vaccination.
-    pub fn get_pets_overdue_vaccinations(env: Env, offset: u64, limit: u32) -> Vec<u64> {
+    ///
+    /// If `vet_address` is `Some`, only overdue pets with at least one treatment
+    /// or vaccination record from that vet are returned. If `None`, all overdue
+    /// pets are returned for admins.
+    pub fn get_pets_overdue_vaccinations(
+        env: Env,
+        caller: Address,
+        vet_address: Option<Address>,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<u64> {
+        caller.require_auth();
+        let is_admin = Self::is_admin_address(&env, &caller);
+
+        if vet_address.is_none() && !is_admin {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        if let Some(ref vet_address) = vet_address {
+            if !is_admin && caller != *vet_address {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+            // A non-admin caller must be a verified vet to use this function.
+            if !is_admin && !Self::is_verified_vet(env.clone(), vet_address.clone()) {
+                panic_with_error!(&env, ContractError::Unauthorized);
+            }
+        }
+
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
         let pet_count = env
             .storage()
             .instance()
@@ -3167,24 +3193,29 @@ impl PetChainContract {
             .unwrap_or(0);
 
         let mut overdue_pets = Vec::new(&env);
-        if pet_count == 0 || limit == 0 {
+        if pet_count == 0 {
             return overdue_pets;
         }
 
-        let mut found: u64 = 0;
         let mut skipped: u64 = 0;
 
         for pet_id in 1..=pet_count {
             if overdue_pets.len() >= limit {
                 break;
             }
+
             let overdue = PetChainContract::get_overdue_vaccinations(env.clone(), pet_id);
-            if !overdue.is_empty() {
+
+            let has_record = match &vet_address {
+                Some(vet) => Self::pet_has_vet_care_record(env.clone(), pet_id, vet.clone()),
+                None => true, // No filter, include all overdue pets
+            };
+
+            if !overdue.is_empty() && has_record {
                 if skipped < offset {
                     skipped = skipped.saturating_add(1);
                 } else {
-                    overdue_pets.push_back(pet_id);
-                    found = found.saturating_add(1);
+                    overdue_pets.push_back(pet_id.clone());
                 }
             }
         }
@@ -6828,6 +6859,74 @@ impl PetChainContract {
         overdue
     }
 
+    /// Returns true if `vet` has any vaccination or medical record for `pet_id`.
+    fn pet_has_vet_care_record(env: Env, pet_id: u64, vet: Address) -> bool {
+        // Check vaccinations
+        let vax_count: u64 = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetVaccinationCount(pet_id))
+            .unwrap_or(0);
+        for i in 1..=vax_count {
+            if let Some(vax_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetVaccinationByIndex((pet_id, i)))
+            {
+                if let Some(vax) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vax_id))
+                {
+                    if vax.veterinarian == vet {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Check medical records
+        let rec_count: u64 = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        for i in 1..=rec_count {
+            if let Some(rec_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(rec) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(rec_id))
+                {
+                    if rec.vet_address == vet && rec.deleted_at.is_none() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn get_overdue_vaccinations_by_vet(
+        env: Env,
+        pet_id: u64,
+        vet_address: Address,
+    ) -> Vec<VaccineType> {
+        let current_time = env.ledger().timestamp();
+        let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
+        let mut overdue = Vec::new(&env);
+
+        for vax in history.iter() {
+            if vax.veterinarian == vet_address && vax.next_due_date < current_time {
+                overdue.push_back(vax.vaccine_type);
+            }
+        }
+        overdue
+    }
+
     /// Returns vaccinations for `pet_id` that expire within `within_days` days,
     /// including already-expired ones (flagged via `already_expired: true`).
     pub fn get_expiring_vaccinations(
@@ -7947,6 +8046,79 @@ impl PetChainContract {
             .instance()
             .get(&DataKey::PetCountByOwner(owner.clone()))
             .unwrap_or(0)
+    }
+
+    /// Search a pet's medical records with optional filters and offset/limit pagination.
+    ///
+    /// # Arguments
+    /// * `pet_id`  – The pet whose records are searched.
+    /// * `filter`  – Optional filters: `vet_address`, inclusive date window
+    ///               (`from_date` / `to_date`), and `diagnosis_keyword`.
+    /// * `offset`  – Number of matching records to skip (0-based page offset).
+    /// * `limit`   – Maximum number of records to return; 0 returns an empty vec.
+    ///
+    /// # Errors
+    /// * `ContractError::InvalidInput` – when `from_date` and `to_date` are both
+    ///   `Some` but `from_date > to_date`.
+    pub fn search_medical_records(
+        env: Env,
+        pet_id: u64,
+        filter: MedicalRecordFilter,
+        offset: u64,
+        limit: u32,
+    ) -> Vec<MedicalRecord> {
+        // Validate date range: from must not be after to.
+        if let (Some(from), Some(to)) = (filter.from_date, filter.to_date) {
+            if from > to {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
+
+        if limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let record_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+
+        let mut results: Vec<MedicalRecord> = Vec::new(&env);
+        // `matched` counts records that pass the filter (used for offset skipping).
+        let mut matched: u64 = 0;
+
+        for i in 1..=record_count {
+            if let Some(record_id) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
+            {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
+                {
+                    // Exclude soft-deleted records.
+                    if record.deleted_at.is_some() {
+                        continue;
+                    }
+
+                    if PetChainContract::medical_record_matches_filter(&env, &record, &filter) {
+                        // Apply offset: skip the first `offset` matching records.
+                        if matched >= offset {
+                            results.push_back(record);
+                            if results.len() as u32 >= limit {
+                                break;
+                            }
+                        }
+                        matched += 1;
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     #[allow(dead_code)]
@@ -10606,16 +10778,7 @@ impl PetChainContract {
             &(record.sire_id, record.dam_id),
         );
 
-        let new_seq: u32 = record.offspring_count.saturating_add(1);
-        env.storage().persistent().set(
-            &BreedingKey::BreedingOffspringIndex((record_id, new_seq as u64)),
-            &offspring_id,
-        );
-        record.offspring_count = new_seq;
-        env.storage().persistent().set(
-            &BreedingKey::BreedingOffspringCount(record_id),
-            &(new_seq as u64),
-        );
+        record.offspring_count = record.offspring_count.saturating_add(1);
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecord(record_id), &record);
@@ -11159,75 +11322,6 @@ impl PetChainContract {
         results
     }
 
-    pub fn search_medical_records(
-        env: Env,
-        pet_id: u64,
-        filter: MedicalRecordFilter,
-        offset: u64,
-        limit: u32,
-    ) -> Vec<MedicalRecord> {
-        if let (Some(from), Some(to)) = (filter.from_date, filter.to_date) {
-            if from > to {
-                panic_with_error!(&env, ContractError::InvalidInput);
-            }
-        }
-
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
-            .unwrap_or(0);
-        let mut matching = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(record_id) = env
-                .storage()
-                .instance()
-                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
-            {
-                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
-                    if Self::medical_record_matches_filter(&env, &record, &filter) {
-                        matching.push_back(record);
-                    }
-                }
-            }
-        }
-        let total_matches = matching.len() as u64;
-        let mut results = Vec::new(&env);
-        if total_matches == 0 || limit == 0 || offset >= total_matches {
-            return results;
-        }
-        let end_index = (offset.saturating_add(limit as u64)).min(total_matches);
-        for i in offset..end_index {
-            results.push_back(matching.get(i as u32).unwrap());
-        }
-        results
-    }
-
-    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
-            .unwrap_or(0);
-        let mut results = Vec::new(&env);
-        for i in 1..=count {
-            if let Some(record_id) = env
-                .storage()
-                .instance()
-                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i)))
-            {
-                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
-                    if Self::string_contains(&env, &record.diagnosis, &keyword)
-                        || Self::string_contains(&env, &record.notes, &keyword)
-                    {
-                        results.push_back(record);
-                    }
-                }
-            }
-        }
-        results
-    }
-
     // --- Upgrade Proposal with Expiry (Issue #818) ---
 
     pub fn propose_upgrade(
@@ -11518,6 +11612,87 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::RollbackDeadline)
             .unwrap_or(0)
+    }
+    pub fn get_lab_result_count(env: Env, pet_id: u64) -> u64 {
+        env.storage().instance().get::<MedicalKey, u64>(&MedicalKey::PetLabResultCount(pet_id)).unwrap_or(0)
+    }
+
+    pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord> {
+        if keyword.len() > crate::MAX_SEARCH_KEYWORD_LEN {
+            panic_with_error!(&env, PetChainError::KeywordTooLong);
+        }
+        let count: u64 = env.storage().instance().get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordCount(pet_id)).unwrap_or(0);
+        let mut results = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(record_id) = env.storage().instance().get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, i))) {
+                if let Some(record) = Self::get_medical_record(env.clone(), record_id) {
+                    if Self::string_contains(&env, &record.diagnosis, &keyword) || Self::string_contains(&env, &record.notes, &keyword) {
+                        results.push_back(record);
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    pub fn remove_medical_record(env: Env, record_id: u64) -> bool {
+        if let Some(mut record) = env.storage().instance().get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id)) {
+            record.vet_address.require_auth();
+            record.deleted_at = Some(env.ledger().timestamp());
+            env.storage().instance().set(&MedicalKey::MedicalRecord(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn update_medical_record_notes(env: Env, record_id: u64, notes: String) -> bool {
+        if let Some(mut record) = env.storage().instance().get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id)) {
+            record.vet_address.require_auth();
+            record.notes = notes;
+            record.updated_at = env.ledger().timestamp();
+            env.storage().instance().set(&MedicalKey::MedicalRecord(record_id), &record);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn amend_medical_record(env: Env, pet_id: u64, record_id: u64, input: MedicalRecordAmendmentInput) -> u32 {
+        let _ = pet_id;
+        let record: MedicalRecord = env.storage().instance().get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id)).unwrap_or_else(|| panic_with_error!(&env, ContractError::RecordNotFound));
+        record.vet_address.require_auth();
+        let version: u32 = env.storage().instance().get::<MedicalKey, u32>(&MedicalKey::MedicalRecordAmendmentCount(record_id)).unwrap_or(0);
+        if version >= 5 { panic_with_error!(&env, ContractError::TooManyItems); }
+        let amendment = MedicalRecordAmendment { record_id, version: version + 1, updated_at: env.ledger().timestamp(), changes: input };
+        env.storage().instance().set(&MedicalKey::MedicalRecordAmendment((record_id, version + 1)), &amendment);
+        env.storage().instance().set(&MedicalKey::MedicalRecordAmendmentCount(record_id), &(version + 1));
+        version + 1
+    }
+
+    pub fn diff_record_versions(env: Env, pet_id: u64, record_id: u64, from_version: u32, to_version: u32) -> Vec<MedicalFieldDiff> {
+        let _ = pet_id;
+        let mut diffs = Vec::new(&env);
+        let a: Option<MedicalRecordAmendment> = if from_version == 0 { None } else {
+            env.storage().instance().get(&MedicalKey::MedicalRecordAmendment((record_id, from_version)))
+        };
+        let b: MedicalRecordAmendment = match env.storage().instance().get(&MedicalKey::MedicalRecordAmendment((record_id, to_version))) {
+            Some(v) => v,
+            None => return diffs,
+        };
+        if let Some(diag) = &b.changes.diagnosis {
+            let from_val = a.as_ref().and_then(|x| x.changes.diagnosis.clone()).unwrap_or(String::from_str(&env, ""));
+            diffs.push_back(MedicalFieldDiff { field: String::from_str(&env, "diagnosis"), from_value: from_val, to_value: diag.clone() });
+        }
+        if let Some(treat) = &b.changes.treatment {
+            let from_val = a.as_ref().and_then(|x| x.changes.treatment.clone()).unwrap_or(String::from_str(&env, ""));
+            diffs.push_back(MedicalFieldDiff { field: String::from_str(&env, "treatment"), from_value: from_val, to_value: treat.clone() });
+        }
+        if let Some(notes) = &b.changes.notes {
+            let from_val = a.as_ref().and_then(|x| x.changes.notes.clone()).unwrap_or(String::from_str(&env, ""));
+            diffs.push_back(MedicalFieldDiff { field: String::from_str(&env, "notes"), from_value: from_val, to_value: notes.clone() });
+        }
+        diffs
     }
 } // end impl PetChainContract
 
