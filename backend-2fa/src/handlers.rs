@@ -114,6 +114,31 @@ pub(crate) fn clear_idempotency_store_for_tests() {
     test_idempotency_store().lock().unwrap().clear();
 }
 
+/// Tracks which recovery secrets have already been delivered to a caller, keyed
+/// by `"{user_id}:{code_index}"`. A recovery secret must only ever appear in
+/// plaintext in the single HTTP response that follows its generation; any
+/// repeat delivery attempt for the same backup-code usage (e.g. a retried
+/// request racing the original) must receive a masked value instead.
+#[cfg(test)]
+fn recovery_secret_delivered_store() -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+    std::thread_local! {
+        static STORE: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    }
+    STORE.with(|store| store.clone())
+}
+
+#[cfg(not(test))]
+fn recovery_secret_delivered_store() -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+    static STORE: OnceLock<Arc<std::sync::Mutex<std::collections::HashSet<String>>>> =
+        OnceLock::new();
+    STORE
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
+        .clone()
+}
+
+const RECOVERY_SECRET_MASK: &str = "***already-returned***";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -183,6 +208,14 @@ pub struct UpgradeAlgorithmRequest {
     pub token: String,
 }
 
+/// # Security: caller must disable caching for this response
+///
+/// `new_secret` is a raw TOTP secret and must appear in plaintext at most
+/// once (see [`TwoFactorHandlers::recover`]). Route handlers that serialize
+/// this struct into an HTTP response **must** set
+/// `Cache-Control: no-store` and `Pragma: no-store` on that response (see
+/// [`crate::error::NoCacheMiddleware`]) so intermediaries and response
+/// caches never persist it.
 #[derive(Debug, Serialize)]
 pub struct RecoverWithBackupResponse {
     pub new_secret: String,
@@ -908,8 +941,25 @@ impl TwoFactorHandlers {
             .map_err(|e| ApiError::internal_error(e, None))?;
 
         let new_codes = setup.backup_codes.clone();
+
+        // The plaintext secret must be delivered at most once. Mark this
+        // backup-code usage as having had its secret returned; if this same
+        // usage somehow produces a second response (e.g. a racing retry),
+        // callers get a masked secret instead of the real one appearing a
+        // second time in an HTTP response body, log, or cache.
+        let delivery_key = format!("{}:{}", req.user_id, code_index);
+        let already_delivered = {
+            let store = recovery_secret_delivered_store();
+            let mut guard = store.lock().unwrap();
+            !guard.insert(delivery_key)
+        };
+
         Ok(RecoverWithBackupResponse {
-            new_secret: setup.secret,
+            new_secret: if already_delivered {
+                RECOVERY_SECRET_MASK.to_string()
+            } else {
+                setup.secret
+            },
             new_otpauth_uri: setup.otpauth_uri,
             new_backup_codes: new_codes.clone(),
             new_recovery_codes: new_codes,
