@@ -401,4 +401,46 @@ mod test_search_medical_records {
         );
     }
 
+    #[test]
+    fn test_get_lab_result_count_increments_on_add() {
+        let (env, client, _admin, _owner, vet, pet_id) = setup();
+
+        assert_eq!(client.get_lab_result_count(&pet_id), 0);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Blood Test"),
+            &String::from_str(&env, "Normal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None,
+            &None,
+            &soroban_sdk::Map::new(&env),
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 1);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "Urinalysis"),
+            &String::from_str(&env, "Abnormal"),
+            &String::from_str(&env, "0.0-1.0"),
+            &None,
+            &None,
+            &soroban_sdk::Map::new(&env),
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 2);
+
+        client.add_lab_result(
+            &pet_id,
+            &vet,
+            &String::from_str(&env, "X-Ray"),
+            &String::from_str(&env, "Clear"),
+            &String::from_str(&env, "N/A"),
+            &None,
+            &None,
+            &soroban_sdk::Map::new(&env),
+        );
+        assert_eq!(client.get_lab_result_count(&pet_id), 3);
+    }
 }

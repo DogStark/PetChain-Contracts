@@ -273,7 +273,9 @@ impl TwoFactorAuth {
                 rng.gen_range(0..10000)
             ));
         }
-        codes.into_iter().collect()
+        let mut codes: Vec<String> = codes.into_iter().collect();
+        codes.sort();
+        codes
     }
 
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
@@ -808,6 +810,19 @@ impl TwoFactorStore for InMemoryStore {
             .unwrap()
             .remove(user_id)
             .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
+
+        // Clean up all other per-user state so nothing lingers after deletion.
+        self.recovery_log
+            .lock()
+            .unwrap()
+            .retain(|entry| entry.user_id != user_id);
+        self.audit_log
+            .lock()
+            .unwrap()
+            .retain(|entry| entry.user_id != user_id);
+        self.lockouts.lock().unwrap().remove(user_id);
+        self.recovery_log_reset_at.lock().unwrap().remove(user_id);
+
         Ok(())
     }
 
