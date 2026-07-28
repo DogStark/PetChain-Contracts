@@ -16,7 +16,7 @@ use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
@@ -276,6 +276,10 @@ pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     store: Arc<dyn TwoFactorStore>,
     issuer: String,
+    /// Serialises the check-then-act read/save sequence in `enroll()` so
+    /// that two concurrent enrollment requests for the same user cannot
+    /// both observe "not enabled" and both proceed to `save()`.
+    enroll_lock: Arc<Mutex<()>>,
 }
 
 /// Environment variable used to brand TOTP codes for white-label
@@ -421,6 +425,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
             issuer: issuer.into(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -526,6 +531,12 @@ impl TwoFactorHandlers {
                 }
             }
         }
+
+        // Serialise the read-check-save sequence below: without this lock, two
+        // concurrent enroll() calls for the same user could both observe
+        // "not enabled" and both proceed to save(), with the second save
+        // silently overwriting the first (see issue #1050).
+        let _enroll_guard = self.enroll_lock.lock().unwrap();
 
         if let Ok(existing) = self.store_get(&req.user_id) {
             if existing.enabled {
