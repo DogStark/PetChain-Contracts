@@ -16,7 +16,7 @@ use crate::webhooks::{SecurityEventType, WebhookManager};
 use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
@@ -114,6 +114,31 @@ pub(crate) fn clear_idempotency_store_for_tests() {
     test_idempotency_store().lock().unwrap().clear();
 }
 
+/// Tracks which recovery secrets have already been delivered to a caller, keyed
+/// by `"{user_id}:{code_index}"`. A recovery secret must only ever appear in
+/// plaintext in the single HTTP response that follows its generation; any
+/// repeat delivery attempt for the same backup-code usage (e.g. a retried
+/// request racing the original) must receive a masked value instead.
+#[cfg(test)]
+fn recovery_secret_delivered_store() -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+    std::thread_local! {
+        static STORE: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    }
+    STORE.with(|store| store.clone())
+}
+
+#[cfg(not(test))]
+fn recovery_secret_delivered_store() -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+    static STORE: OnceLock<Arc<std::sync::Mutex<std::collections::HashSet<String>>>> =
+        OnceLock::new();
+    STORE
+        .get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())))
+        .clone()
+}
+
+const RECOVERY_SECRET_MASK: &str = "***already-returned***";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
     pub user_id: String,
@@ -183,6 +208,14 @@ pub struct UpgradeAlgorithmRequest {
     pub token: String,
 }
 
+/// # Security: caller must disable caching for this response
+///
+/// `new_secret` is a raw TOTP secret and must appear in plaintext at most
+/// once (see [`TwoFactorHandlers::recover`]). Route handlers that serialize
+/// this struct into an HTTP response **must** set
+/// `Cache-Control: no-store` and `Pragma: no-store` on that response (see
+/// [`crate::error::NoCacheMiddleware`]) so intermediaries and response
+/// caches never persist it.
 #[derive(Debug, Serialize)]
 pub struct RecoverWithBackupResponse {
     pub new_secret: String,
@@ -215,6 +248,39 @@ pub struct RevokeSessionRequest {
     pub session_id: Option<String>,
     #[serde(default)]
     pub revoke_all: bool,
+}
+
+/// Caller identity for `GET /2fa/{user_id}/recovery-log` — reachable by
+/// either the account owner or an admin.
+pub enum RecoveryLogCaller<'a> {
+    Owner(&'a AuthenticatedUser),
+    Admin(&'a AuthenticatedAdmin),
+}
+
+impl RecoveryLogCaller<'_> {
+    fn authorize(&self, user_id: &str) -> Result<(), ApiError> {
+        match self {
+            RecoveryLogCaller::Admin(_) => Ok(()),
+            RecoveryLogCaller::Owner(caller) => caller.authorize(user_id),
+        }
+    }
+}
+
+fn default_recovery_log_page() -> u32 {
+    1
+}
+
+fn default_recovery_log_page_size() -> u32 {
+    20
+}
+
+/// Query params for `GET /2fa/{user_id}/recovery-log`.
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub struct GetRecoveryLogQuery {
+    #[serde(default = "default_recovery_log_page")]
+    pub page: u32,
+    #[serde(default = "default_recovery_log_page_size")]
+    pub page_size: u32,
 }
 
 /// HTTP handler collection for all 2FA endpoints.
@@ -276,6 +342,24 @@ pub struct TwoFactorHandlers {
     limiter: Arc<dyn RateLimiter>,
     store: Arc<dyn TwoFactorStore>,
     issuer: String,
+    /// Serialises the check-then-act read/save sequence in `enroll()` so
+    /// that two concurrent enrollment requests for the same user cannot
+    /// both observe "not enabled" and both proceed to `save()`.
+    enroll_lock: Arc<Mutex<()>>,
+}
+
+/// Environment variable used to brand TOTP codes for white-label
+/// deployments (shown in authenticator apps). Falls back to `"PetChain"`
+/// when unset.
+const TOTP_ISSUER_ENV: &str = "TOTP_ISSUER";
+
+/// Resolve the default TOTP issuer from `TOTP_ISSUER`, falling back to
+/// `"PetChain"` when the variable is unset or empty.
+fn default_issuer() -> String {
+    std::env::var(TOTP_ISSUER_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "PetChain".to_string())
 }
 
 impl TwoFactorHandlers {
@@ -289,7 +373,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -335,7 +419,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: lim,
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -348,7 +432,7 @@ impl TwoFactorHandlers {
         Self {
             limiter,
             store: two_factor_store(),
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -356,7 +440,7 @@ impl TwoFactorHandlers {
         Self {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -395,7 +479,7 @@ impl TwoFactorHandlers {
         Self {
             limiter,
             store,
-            issuer: "PetChain".to_string(),
+            issuer: default_issuer(),
         }
     }
 
@@ -407,10 +491,11 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
             issuer: issuer.into(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
-    fn rate_limit_key(prefix: &str, user_id: &str) -> String {
+    pub(crate) fn rate_limit_key(prefix: &str, user_id: &str) -> String {
         format!("{}:{}", prefix, user_id)
     }
 
@@ -513,6 +598,12 @@ impl TwoFactorHandlers {
             }
         }
 
+        // Serialise the read-check-save sequence below: without this lock, two
+        // concurrent enroll() calls for the same user could both observe
+        // "not enabled" and both proceed to save(), with the second save
+        // silently overwriting the first (see issue #1050).
+        let _enroll_guard = self.enroll_lock.lock().unwrap();
+
         if let Ok(existing) = self.store_get(&req.user_id) {
             if existing.enabled {
                 return Err(ApiError::conflict(
@@ -570,7 +661,9 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
-        let key = Self::rate_limit_key("verify", &req.user_id);
+        // Key scheme: "2fa:{user_id}" — shared with verify_login_token so that
+        // a success on either path resets the failure counter for both (Issue #1061).
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -624,7 +717,7 @@ impl TwoFactorHandlers {
             return Err(ApiError::internal_error(e, None));
         }
 
-        let key = Self::rate_limit_key("login", &req.user_id);
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -821,8 +914,25 @@ impl TwoFactorHandlers {
             .map_err(|e| ApiError::internal_error(e, None))?;
 
         let new_codes = setup.backup_codes.clone();
+
+        // The plaintext secret must be delivered at most once. Mark this
+        // backup-code usage as having had its secret returned; if this same
+        // usage somehow produces a second response (e.g. a racing retry),
+        // callers get a masked secret instead of the real one appearing a
+        // second time in an HTTP response body, log, or cache.
+        let delivery_key = format!("{}:{}", req.user_id, code_index);
+        let already_delivered = {
+            let store = recovery_secret_delivered_store();
+            let mut guard = store.lock().unwrap();
+            !guard.insert(delivery_key)
+        };
+
         Ok(RecoverWithBackupResponse {
-            new_secret: setup.secret,
+            new_secret: if already_delivered {
+                RECOVERY_SECRET_MASK.to_string()
+            } else {
+                setup.secret
+            },
             new_otpauth_uri: setup.otpauth_uri,
             new_backup_codes: new_codes.clone(),
             new_recovery_codes: new_codes,
@@ -1198,6 +1308,32 @@ impl AdminWebhookHandlers {
             .collect();
         entries.sort_by(|a, b| a.event_type.cmp(&b.event_type));
         entries
+    }
+
+    /// GET /admin/webhooks/dead-letter — return all DLQ entries (newest first).
+    ///
+    /// Each entry represents a webhook delivery that exhausted all retry
+    /// attempts. The original payload and failure reason are included so
+    /// operators can diagnose what went wrong.
+    pub fn get_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> Vec<crate::dead_letter::DlqEntry> {
+        self.webhook_manager.get_dead_letter_queue()
+    }
+
+    /// POST /admin/webhooks/dead-letter/replay — retry all DLQ entries.
+    ///
+    /// Each entry is re-delivered through the normal retry path. Entries that
+    /// succeed are removed from the DLQ; entries that still fail remain with
+    /// an incremented `replay_attempts` counter.
+    ///
+    /// Returns `(succeeded, failed)` counts.
+    pub fn replay_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> (usize, usize) {
+        self.webhook_manager.replay_dead_letter_queue()
     }
 }
 
@@ -1847,5 +1983,75 @@ mod pool_metrics_tests {
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1061 – Unified failure-count key ("2fa:{user_id}")
+    // -----------------------------------------------------------------------
+
+    /// Both verify_and_activate and verify_login_token must produce the same
+    /// rate-limit key "2fa:{user_id}" so a success on either path resets the
+    /// failure counter for both endpoints.
+    #[test]
+    fn test_verify_and_login_share_same_rate_limit_key() {
+        let verify_key = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        let login_key  = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        assert_eq!(
+            verify_key, login_key,
+            "verify_and_activate and verify_login_token must share the same 2fa:{{user_id}} key"
+        );
+        assert_eq!(verify_key, "2fa:alice");
+    }
+
+    /// Fail verify_and_activate N-1 times → call record_success on the shared
+    /// "2fa:{user_id}" key (simulating a successful verify_login_token) →
+    /// verify_and_activate must not be rate-limited on the next call.
+    #[test]
+    fn test_failed_verify_counter_is_reset_by_login_success_key() {
+        use crate::rate_limiter::InMemoryRateLimiter;
+        use crate::two_factor::InMemoryStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryStore::default());
+        let limiter = Arc::new(InMemoryRateLimiter::default());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(
+            store.clone() as Arc<dyn crate::two_factor::TwoFactorStore>,
+            limiter.clone(),
+        );
+
+        let caller = AuthenticatedUser::new("key-test-user");
+        let enroll_req = EnableTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            email: "key@example.com".to_string(),
+            idempotency_key: None,
+        };
+        let _ = handlers.enroll(&caller, enroll_req);
+
+        // Accumulate 2 failures via verify_and_activate.
+        let bad_verify = VerifyTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            token: "000000".to_string(),
+        };
+        for _ in 0..2 {
+            let _ = handlers.verify_and_activate(&caller, bad_verify.clone());
+        }
+
+        // Simulate a successful login by calling record_success on the unified key.
+        let key = TwoFactorHandlers::rate_limit_key("2fa", "key-test-user");
+        assert_eq!(key, "2fa:key-test-user");
+        limiter.record_success(&key);
+
+        // After reset, verify_and_activate must not return a rate-limit error.
+        let result = handlers.verify_and_activate(&caller, bad_verify.clone());
+        match result {
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                assert!(
+                    !msg.contains("Too many") && !msg.contains("rate"),
+                    "verify_and_activate must not be rate-limited after login success reset; got: {msg}"
+                );
+            }
+            Ok(_) => {}
+        }
     }
 }

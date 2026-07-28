@@ -189,11 +189,16 @@ async fn disable_2fa(
 async fn recover_2fa(req: web::Json<RecoverWithBackupRequest>) -> Result<HttpResponse, ApiError> {
     let caller = AuthenticatedUser::new(&req.user_id);
     match TwoFactorHandlers::recover_with_backup(&caller, req.into_inner()) {
-        Ok(response) => Ok(HttpResponse::Ok().json(serde_json::json!({
-            "success": true,
-            "new_secret": response.new_secret,
-            "new_backup_codes": response.new_backup_codes,
-        }))),
+        // The response carries a one-time plaintext TOTP secret: it must
+        // never be cached by a proxy, browser, or logging middleware.
+        Ok(response) => Ok(HttpResponse::Ok()
+            .insert_header((http::header::CACHE_CONTROL, "no-store"))
+            .insert_header((http::header::PRAGMA, "no-store"))
+            .json(serde_json::json!({
+                "success": true,
+                "new_secret": response.new_secret,
+                "new_backup_codes": response.new_backup_codes,
+            }))),
         Err(e) => Err(ApiError::bad_request(
             "Failed to recover two-factor authentication",
             Some(json!({ "error": e })),
