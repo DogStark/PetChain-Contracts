@@ -68,6 +68,41 @@ fn two_factor_store() -> Arc<dyn TwoFactorStore> {
 }
 
 const IDEMPOTENCY_TTL_SECS: u64 = 300; // 5 minutes
+const MAX_FIELD_LENGTH: usize = 255;
+
+/// Validate that a string is non-empty and within max length
+fn validate_non_empty_max_length(field_name: &str, value: &str) -> Result<(), ApiError> {
+    if value.is_empty() {
+        return Err(ApiError::bad_request(
+            format!("{} must not be empty", field_name),
+            None,
+        ));
+    }
+    if value.len() > MAX_FIELD_LENGTH {
+        return Err(ApiError::bad_request(
+            format!("{} must not exceed {} characters", field_name, MAX_FIELD_LENGTH),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that a token is exactly 6-8 decimal digits
+fn validate_token(token: &str) -> Result<(), ApiError> {
+    if token.len() < 6 || token.len() > 8 {
+        return Err(ApiError::bad_request(
+            "token must be exactly 6-8 decimal digits",
+            None,
+        ));
+    }
+    if !token.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ApiError::bad_request(
+            "token must contain only decimal digits",
+            None,
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 struct IdempotencyEntry {
@@ -589,6 +624,8 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: EnableTwoFactorRequest,
     ) -> Result<EnableTwoFactorResponse, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
+        validate_non_empty_max_length("email", &req.email)?;
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
@@ -675,6 +712,8 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: VerifyTwoFactorRequest,
     ) -> Result<bool, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
+        validate_token(&req.token)?;
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
@@ -719,6 +758,8 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: LoginWithTwoFactorRequest,
     ) -> Result<bool, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
+        validate_token(&req.token)?;
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
@@ -775,6 +816,8 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: DisableTwoFactorRequest,
     ) -> Result<bool, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
+        validate_token(&req.token)?;
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
@@ -874,6 +917,7 @@ impl TwoFactorHandlers {
         req: RecoverWithBackupRequest,
         ip_address: Option<&str>,
     ) -> Result<RecoverWithBackupResponse, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
         caller.authorize(&req.user_id)?;
 
         let data = self.store_get(&req.user_id)?;
@@ -965,6 +1009,8 @@ impl TwoFactorHandlers {
         caller: &AuthenticatedUser,
         req: UpgradeAlgorithmRequest,
     ) -> Result<UpgradeAlgorithmResponse, ApiError> {
+        validate_non_empty_max_length("user_id", &req.user_id)?;
+        validate_token(&req.token)?;
         caller.authorize(&req.user_id)?;
 
         // Get current 2FA data

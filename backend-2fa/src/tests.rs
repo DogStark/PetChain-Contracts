@@ -5742,4 +5742,321 @@ mod algorithm_upgrade_tests {
             "handlers must hold the shared limiter, not a fresh one"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Input validation tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_enroll_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.enroll(
+            &caller(""),
+            EnableTwoFactorRequest {
+                user_id: "".to_string(),
+                email: "test@example.com".to_string(),
+                idempotency_key: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_enroll_empty_email_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.enroll(
+            &caller("test-user"),
+            EnableTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                email: "".to_string(),
+                idempotency_key: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("email must not be empty"));
+    }
+
+    #[test]
+    fn test_enroll_overlong_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let overlong_user_id = "a".repeat(256);
+        let result = handlers.enroll(
+            &caller(&overlong_user_id),
+            EnableTwoFactorRequest {
+                user_id: overlong_user_id.clone(),
+                email: "test@example.com".to_string(),
+                idempotency_key: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not exceed 255 characters"));
+    }
+
+    #[test]
+    fn test_enroll_overlong_email_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let overlong_email = format!("{}@example.com", "a".repeat(300));
+        let result = handlers.enroll(
+            &caller("test-user"),
+            EnableTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                email: overlong_email,
+                idempotency_key: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("email must not exceed 255 characters"));
+    }
+
+    #[test]
+    fn test_verify_and_activate_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_and_activate(
+            &caller(""),
+            VerifyTwoFactorRequest {
+                user_id: "".to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_verify_and_activate_token_too_short_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_and_activate(
+            &caller("test-user"),
+            VerifyTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "12345".to_string(), // 5 digits
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("token must be exactly 6-8 decimal digits"));
+    }
+
+    #[test]
+    fn test_verify_and_activate_token_too_long_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_and_activate(
+            &caller("test-user"),
+            VerifyTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "123456789".to_string(), // 9 digits
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("token must be exactly 6-8 decimal digits"));
+    }
+
+    #[test]
+    fn test_verify_and_activate_token_non_digits_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_and_activate(
+            &caller("test-user"),
+            VerifyTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "abcdef".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("token must contain only decimal digits"));
+    }
+
+    #[test]
+    fn test_verify_login_token_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_login_token(
+            &caller(""),
+            LoginWithTwoFactorRequest {
+                user_id: "".to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_verify_login_token_invalid_token_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.verify_login_token(
+            &caller("test-user"),
+            LoginWithTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "abc123".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("token must contain only decimal digits"));
+    }
+
+    #[test]
+    fn test_disable_two_factor_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.disable_two_factor(
+            &caller(""),
+            DisableTwoFactorRequest {
+                user_id: "".to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_recover_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.recover(
+            &caller(""),
+            RecoverWithBackupRequest {
+                user_id: "".to_string(),
+                backup_code: "12345678".to_string(),
+            },
+            None,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_empty_user_id_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.upgrade_algorithm(
+            &caller(""),
+            UpgradeAlgorithmRequest {
+                user_id: "".to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("user_id must not be empty"));
+    }
+
+    #[test]
+    fn test_upgrade_algorithm_invalid_token_returns_bad_request() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        let result = handlers.upgrade_algorithm(
+            &caller("test-user"),
+            UpgradeAlgorithmRequest {
+                user_id: "test-user".to_string(),
+                token: "12a456".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert!(err.message.contains("token must contain only decimal digits"));
+    }
+
+    #[test]
+    fn test_valid_6_digit_token_passes_validation() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        // This should pass validation (though it may fail for other reasons)
+        let result = handlers.verify_and_activate(
+            &caller("test-user"),
+            VerifyTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "123456".to_string(),
+            },
+        );
+
+        // Should not be a validation error
+        if let Err(err) = result {
+            assert_ne!(err.code, "BAD_REQUEST");
+        }
+    }
+
+    #[test]
+    fn test_valid_8_digit_token_passes_validation() {
+        clear_two_factor_store_for_tests();
+        let handlers = TwoFactorHandlers::new();
+
+        // This should pass validation (though it may fail for other reasons)
+        let result = handlers.verify_and_activate(
+            &caller("test-user"),
+            VerifyTwoFactorRequest {
+                user_id: "test-user".to_string(),
+                token: "12345678".to_string(),
+            },
+        );
+
+        // Should not be a validation error
+        if let Err(err) = result {
+            assert_ne!(err.code, "BAD_REQUEST");
+        }
+    }
 }
