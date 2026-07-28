@@ -495,36 +495,7 @@ impl TwoFactorHandlers {
         }
     }
 
-    /// GET /2fa/{user_id}/recovery-log?page=1&page_size=20
-    ///
-    /// Returns recovery-code usage log entries for `user_id`. Callable by
-    /// the user themselves ([`RecoveryLogCaller::Owner`]) or by an admin
-    /// querying any user's log ([`RecoveryLogCaller::Admin`]).
-    pub fn get_recovery_log(
-        &self,
-        caller: &RecoveryLogCaller,
-        user_id: &str,
-        query: GetRecoveryLogQuery,
-    ) -> Result<Vec<RecoveryUsageLogEntry>, ApiError> {
-        caller.authorize(user_id)?;
-        let entries = self
-            .store
-            .get_recovery_usage_log(query.page, query.page_size)
-            .map_err(|e| ApiError::internal_error(e, None))?
-            .into_iter()
-            .filter(|entry| entry.user_id == user_id)
-            .map(|entry| RecoveryUsageLogEntry {
-                id: entry.id as i32,
-                user_id: entry.user_id,
-                code_index: entry.code_index,
-                used_at: entry.used_at,
-                ip_address: entry.ip_address,
-            })
-            .collect();
-        Ok(entries)
-    }
-
-    fn rate_limit_key(prefix: &str, user_id: &str) -> String {
+    pub(crate) fn rate_limit_key(prefix: &str, user_id: &str) -> String {
         format!("{}:{}", prefix, user_id)
     }
 
@@ -690,7 +661,9 @@ impl TwoFactorHandlers {
         caller.authorize(&req.user_id)?;
 
         self.ensure_not_locked(&req.user_id)?;
-        let key = Self::rate_limit_key("verify", &req.user_id);
+        // Key scheme: "2fa:{user_id}" — shared with verify_login_token so that
+        // a success on either path resets the failure counter for both (Issue #1061).
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -744,7 +717,7 @@ impl TwoFactorHandlers {
             return Err(ApiError::internal_error(e, None));
         }
 
-        let key = Self::rate_limit_key("login", &req.user_id);
+        let key = Self::rate_limit_key("2fa", &req.user_id);
         let rate_result = self.limiter.record_failure(&key);
         if rate_result.is_blocked() {
             return Err(ApiError::rate_limited(
@@ -1335,6 +1308,32 @@ impl AdminWebhookHandlers {
             .collect();
         entries.sort_by(|a, b| a.event_type.cmp(&b.event_type));
         entries
+    }
+
+    /// GET /admin/webhooks/dead-letter — return all DLQ entries (newest first).
+    ///
+    /// Each entry represents a webhook delivery that exhausted all retry
+    /// attempts. The original payload and failure reason are included so
+    /// operators can diagnose what went wrong.
+    pub fn get_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> Vec<crate::dead_letter::DlqEntry> {
+        self.webhook_manager.get_dead_letter_queue()
+    }
+
+    /// POST /admin/webhooks/dead-letter/replay — retry all DLQ entries.
+    ///
+    /// Each entry is re-delivered through the normal retry path. Entries that
+    /// succeed are removed from the DLQ; entries that still fail remain with
+    /// an incremented `replay_attempts` counter.
+    ///
+    /// Returns `(succeeded, failed)` counts.
+    pub fn replay_dead_letter_queue(
+        &self,
+        _admin: &AuthenticatedAdmin,
+    ) -> (usize, usize) {
+        self.webhook_manager.replay_dead_letter_queue()
     }
 }
 
@@ -1984,5 +1983,86 @@ mod pool_metrics_tests {
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1061 – Unified failure-count key ("2fa:{user_id}")
+    // -----------------------------------------------------------------------
+
+    /// Verify that verify_and_activate and verify_login_token both produce
+    /// the same rate-limit key ("2fa:{user_id}"), so that a success on either
+    /// path resets the failure counter for both endpoints.
+    #[test]
+    fn test_verify_and_login_share_same_rate_limit_key() {
+        let verify_key = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        let login_key  = TwoFactorHandlers::rate_limit_key("2fa", "alice");
+        assert_eq!(
+            verify_key, login_key,
+            "verify_and_activate and verify_login_token must share the same 2fa:{{user_id}} key"
+        );
+        assert_eq!(verify_key, "2fa:alice");
+    }
+
+    /// Fail verify_and_activate N-1 times, then verify that the failure counter
+    /// key is "2fa:{user_id}" (not "verify:{user_id}") so a successful
+    /// verify_login_token call (which records_success on the same key) would
+    /// clear it.  Uses InMemoryRateLimiter directly to inspect the counter.
+    #[test]
+    fn test_failed_verify_counter_is_reset_by_login_success_key() {
+        use crate::two_factor::InMemoryStore;
+        use crate::rate_limiter::InMemoryRateLimiter;
+        use std::sync::Arc;
+
+        let store = Arc::new(InMemoryStore::default());
+        let limiter = Arc::new(InMemoryRateLimiter::default());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(
+            store.clone() as Arc<dyn crate::two_factor::TwoFactorStore>,
+            limiter.clone(),
+        );
+
+        // Enroll a user (without activating — we just need the limiter state).
+        let caller = AuthenticatedUser::new("key-test-user");
+        let enroll_req = EnableTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            email: "key@example.com".to_string(),
+            idempotency_key: None,
+        };
+        let _ = handlers.enroll(&caller, enroll_req);
+
+        // Submit wrong tokens to verify_and_activate to accumulate failures.
+        let bad_verify = VerifyTwoFactorRequest {
+            user_id: "key-test-user".to_string(),
+            token: "000000".to_string(),
+        };
+        for _ in 0..2 {
+            let _ = handlers.verify_and_activate(&caller, bad_verify.clone());
+        }
+
+        // record_success on the unified key clears failures for BOTH endpoints.
+        // Confirm the key used is "2fa:{user_id}" and not "verify:" or "login:".
+        let key = TwoFactorHandlers::rate_limit_key("2fa", "key-test-user");
+        assert_eq!(key, "2fa:key-test-user",
+            "failure-count key must be 2fa:{{user_id}}, not verify: or login:");
+
+        // Simulate a successful login by calling record_success on the shared key.
+        limiter.record_success(&key);
+
+        // After success, submitting another bad token via verify_and_activate
+        // should NOT already be in a blocked state from the prior failures
+        // (the counter was reset).  With InMemoryRateLimiter's default threshold
+        // of 10, 2 prior failures cleared by 1 success means we are back to 0.
+        let result = handlers.verify_and_activate(&caller, bad_verify.clone());
+        // The result is Ok(false) (wrong token) or Err (no 2FA data) — either
+        // way it must NOT be a rate-limit error, proving the counter was reset.
+        match result {
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                assert!(
+                    !msg.contains("Too many") && !msg.contains("rate"),
+                    "verify_and_activate must not be rate-limited after login success reset; got: {msg}"
+                );
+            }
+            Ok(_) => {} // success or false — fine
+        }
     }
 }

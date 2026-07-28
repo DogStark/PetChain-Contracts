@@ -271,6 +271,33 @@ impl PostgresTwoFactorStore {
         let active = size.saturating_sub(idle);
         PoolStats { active, idle, max }
     }
+
+    // -------------------------------------------------------------------------
+    // Canary-account convenience methods (Issue #1060)
+    // -------------------------------------------------------------------------
+    //
+    // The `TwoFactorStore` trait already exposes `is_canary` and
+    // `get_canary_accounts` as trait methods and `PostgresTwoFactorStore`
+    // provides a full Postgres-backed implementation for both.  These public
+    // wrappers make the methods callable directly on a
+    // `PostgresTwoFactorStore` value without going through the trait object,
+    // matching the naming and access pattern of `InMemoryStore`.
+
+    /// Check whether `user_id` is registered as a canary account.
+    ///
+    /// Queries `SELECT COUNT(*) FROM canary_accounts WHERE user_id = $1`.
+    /// Returns `false` on any database error so callers do not need to handle
+    /// errors in hot-path canary checks.
+    pub fn is_canary_account(&self, user_id: &str) -> bool {
+        <Self as TwoFactorStore>::is_canary(self, user_id)
+    }
+
+    /// Return every user ID currently registered as a canary account.
+    ///
+    /// Queries `SELECT user_id FROM canary_accounts ORDER BY user_id`.
+    pub fn list_canary_accounts(&self) -> Result<Vec<String>, String> {
+        <Self as TwoFactorStore>::get_canary_accounts(self)
+    }
 }
 
 pub(crate) fn is_connection_error(err: &sqlx::Error) -> bool {
