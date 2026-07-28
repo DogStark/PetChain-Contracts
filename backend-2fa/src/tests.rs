@@ -5710,8 +5710,9 @@ mod algorithm_upgrade_tests {
         // limiter directly to drive it past the threshold without needing
         // valid TOTP tokens.
         let limiter = Arc::new(InMemoryRateLimiter::default());
+        let limiter_dyn: Arc<dyn RateLimiter> = limiter.clone();
         let store = Arc::new(crate::two_factor::InMemoryStore::default());
-        let handlers = TwoFactorHandlers::with_store_and_limiter(store, limiter.clone());
+        let handlers = TwoFactorHandlers::with_store_and_limiter(store, limiter_dyn.clone());
 
         // Simulate repeated enroll attempts for the same user via the SHARED
         // handlers instance.  The key used by `enroll` is "enroll:<user_id>".
@@ -5737,7 +5738,7 @@ mod algorithm_upgrade_tests {
         // Confirm that the shared handlers' limiter is the very same object —
         // it would not accumulate state if a fresh instance had been created.
         assert!(
-            Arc::ptr_eq(handlers.limiter(), &limiter),
+            Arc::ptr_eq(handlers.limiter(), &limiter_dyn),
             "handlers must hold the shared limiter, not a fresh one"
         );
     }

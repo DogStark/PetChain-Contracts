@@ -150,11 +150,10 @@ impl PostgresTwoFactorStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
-
-        // sqlx's pool has a single `acquire_timeout` covering both "wait for
-        // a free slot" and "make the initial TCP connection" — apply the
-        // tighter of the two configured bounds so either one is honored.
-        let effective_timeout_secs = acquire_timeout_secs.min(connect_timeout_secs);
+        let connect_timeout_secs: u64 = std::env::var("DB_POOL_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
 
         // sqlx's pool has a single `acquire_timeout` covering both "wait for
         // a free slot" and "make the initial TCP connection" — apply the
@@ -167,7 +166,6 @@ impl PostgresTwoFactorStore {
                     .min_connections(min_conns)
                     .max_connections(max_conns)
                     .acquire_timeout(Duration::from_secs(effective_timeout_secs))
-                    .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
                     .connect(database_url),
             )
             .map_err(|e| format!(
@@ -1480,7 +1478,7 @@ mod tests {
     /// rather than hanging the process indefinitely.
     ///
     /// We use a non-routable IP address (RFC 5737 TEST-NET-1: 192.0.2.1) and
-    /// set `DB_ACQUIRE_TIMEOUT_SECS` to 1 so the test completes within the
+    /// set `DB_POOL_ACQUIRE_TIMEOUT_SECS` to 1 so the test completes within the
     /// default test runner timeout.  A successful `Err` return with a
     /// descriptive message proves the timeout fired.
     #[test]
@@ -1488,13 +1486,13 @@ mod tests {
         let unreachable_url = "postgres://user:pass@192.0.2.1:5432/db";
 
         // Override acquire timeout to 1 second so the test is fast.
-        std::env::set_var("DB_ACQUIRE_TIMEOUT_SECS", "1");
+        std::env::set_var("DB_POOL_ACQUIRE_TIMEOUT_SECS", "1");
 
         let start = std::time::Instant::now();
         let result = PostgresTwoFactorStore::connect(unreachable_url);
         let elapsed = start.elapsed();
 
-        std::env::remove_var("DB_ACQUIRE_TIMEOUT_SECS");
+        std::env::remove_var("DB_POOL_ACQUIRE_TIMEOUT_SECS");
 
         assert!(
             result.is_err(),

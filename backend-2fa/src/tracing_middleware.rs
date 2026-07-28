@@ -18,6 +18,11 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
+/// Maximum accepted length for an incoming `x-request-id`. Longer values are
+/// discarded in favor of a freshly generated UUID to prevent a client from
+/// injecting oversized or malicious content into every log line for the
+/// request.
+pub const MAX_REQUEST_ID_LEN: usize = 128;
 pub const TRACEPARENT_HEADER: &str = "traceparent";
 
 /// Represents a parsed W3C Trace Context traceparent header
@@ -155,11 +160,14 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // Reuse incoming request-id or generate a new one.
+        // Reuse incoming request-id or generate a new one. Reject oversized
+        // values instead of trusting them, since they end up in every log
+        // line for the request.
         let request_id = req
             .headers()
             .get(REQUEST_ID_HEADER)
             .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= MAX_REQUEST_ID_LEN)
             .map(|s| s.to_owned())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -530,5 +538,85 @@ mod tests {
         );
 
         std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
+    }
+
+    // ── Issue #817: X-Request-ID propagation ───────────────────────────────
+
+    async fn ok_handler() -> actix_web::HttpResponse {
+        actix_web::HttpResponse::Ok().finish()
+    }
+
+    #[actix_web::test]
+    async fn request_id_is_echoed_back_when_provided() {
+        let app = actix_web::test::init_service(
+            actix_web::App::new()
+                .wrap(RequestIdMiddleware)
+                .route("/", actix_web::web::get().to(ok_handler)),
+        )
+        .await;
+
+        let req = actix_web::test::TestRequest::get()
+            .uri("/")
+            .insert_header((REQUEST_ID_HEADER, "my-custom-request-id"))
+            .to_request();
+        let res = actix_web::test::call_service(&app, req).await;
+
+        let echoed = res
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(echoed, "my-custom-request-id");
+    }
+
+    #[actix_web::test]
+    async fn absent_request_id_generates_a_valid_uuid() {
+        let app = actix_web::test::init_service(
+            actix_web::App::new()
+                .wrap(RequestIdMiddleware)
+                .route("/", actix_web::web::get().to(ok_handler)),
+        )
+        .await;
+
+        let req = actix_web::test::TestRequest::get().uri("/").to_request();
+        let res = actix_web::test::call_service(&app, req).await;
+
+        let generated = res
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(
+            Uuid::parse_str(generated).is_ok(),
+            "expected a valid UUID, got {generated}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn oversized_request_id_is_replaced_with_a_generated_uuid() {
+        let app = actix_web::test::init_service(
+            actix_web::App::new()
+                .wrap(RequestIdMiddleware)
+                .route("/", actix_web::web::get().to(ok_handler)),
+        )
+        .await;
+
+        let oversized = "a".repeat(MAX_REQUEST_ID_LEN + 1);
+        let req = actix_web::test::TestRequest::get()
+            .uri("/")
+            .insert_header((REQUEST_ID_HEADER, oversized.clone()))
+            .to_request();
+        let res = actix_web::test::call_service(&app, req).await;
+
+        let returned = res
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_ne!(returned, oversized, "oversized request id must be rejected");
+        assert!(
+            Uuid::parse_str(returned).is_ok(),
+            "expected a generated UUID, got {returned}"
+        );
     }
 }
