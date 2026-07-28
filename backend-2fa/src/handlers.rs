@@ -483,6 +483,23 @@ impl TwoFactorHandlers {
         }
     }
 
+    /// Create a `TwoFactorHandlers` instance with both a custom [`RateLimiter`]
+    /// and a custom [`TwoFactorStore`], without requiring a custom issuer.
+    ///
+    /// Intended for integration tests that need to inject a mock store and a
+    /// mock limiter simultaneously (e.g. asserting rate-limit behavior against
+    /// a controlled store), which previously required chaining workarounds.
+    pub fn with_limiter_and_store(
+        limiter: Arc<dyn RateLimiter>,
+        store: Arc<dyn TwoFactorStore>,
+    ) -> Self {
+        Self {
+            limiter,
+            store,
+            issuer: "PetChain".to_string(),
+        }
+    }
+
     pub fn with_store_and_issuer(
         store: Arc<dyn TwoFactorStore>,
         issuer: impl Into<String>,
@@ -1697,11 +1714,6 @@ impl MultiTenantHandlers {
         if let RateLimitResult::Blocked {
             retry_after_secs, ..
         } = self.limiter.record_failure(key.as_str())
-        let max_failures = self.store.config.rate_limit_max_failures;
-        let tenant_id = self.store.config.tenant_id.clone();
-        let key = format!("verify:{user_id}");
-        if let RateLimitResult::Blocked { retry_after_secs, .. } =
-            self.limiter.check(Some(&tenant_id), &key)
         {
             return Err(ApiError::rate_limited(
                 format!(
