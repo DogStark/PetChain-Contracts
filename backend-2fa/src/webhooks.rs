@@ -870,7 +870,40 @@ impl WebhookManager {
             metadata,
         };
 
-        let body = serde_json::to_string(&payload).unwrap_or_default();
+        let body = match serde_json::to_string(&payload) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(
+                    event_type = %event_type,
+                    user_id = %user_id,
+                    error = %e,
+                    "webhook payload serialisation failed — webhook not fired"
+                );
+                // Record a PermanentFailure log entry for every registered URL
+                // so operators know the event was lost rather than silently dropped.
+                let id_base = self.next_log_id.fetch_add(urls.len(), Ordering::Relaxed);
+                let mut log = self.delivery_log.lock().unwrap();
+                for (i, url) in urls.iter().enumerate() {
+                    let entry = WebhookDeliveryLog {
+                        id: id_base + i,
+                        event_type: event_type.to_string(),
+                        user_id: user_id.to_string(),
+                        timestamp,
+                        url: url.clone(),
+                        attempts: 0,
+                        success: false,
+                        last_error: Some(format!("serialisation failed: {e}")),
+                        status: DeliveryStatus::PermanentFailure,
+                        attempt_history: vec![],
+                    };
+                    if self.max_log_entries > 0 && log.len() >= self.max_log_entries {
+                        log.pop_front();
+                    }
+                    log.push_back(entry);
+                }
+                return;
+            }
+        };
         let signature = sign_webhook_payload(&self.signing_secret, body.as_bytes());
         let event_str = event_type.to_string();
         let user_str = user_id.to_string();
@@ -948,7 +981,40 @@ impl WebhookManager {
             metadata,
         };
 
-        let body = serde_json::to_string(&payload).unwrap_or_default();
+        let body = match serde_json::to_string(&payload) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(
+                    event_type = %event_type,
+                    user_id = %user_id,
+                    error = %e,
+                    "webhook payload serialisation failed — webhook not fired"
+                );
+                // Record a PermanentFailure log entry for every registered URL
+                // so operators know the event was lost rather than silently dropped.
+                let id_base = self.next_log_id.fetch_add(urls.len(), Ordering::Relaxed);
+                let mut log = self.delivery_log.lock().unwrap();
+                for (i, url) in urls.iter().enumerate() {
+                    let entry = WebhookDeliveryLog {
+                        id: id_base + i,
+                        event_type: event_type.to_string(),
+                        user_id: user_id.to_string(),
+                        timestamp,
+                        url: url.clone(),
+                        attempts: 0,
+                        success: false,
+                        last_error: Some(format!("serialisation failed: {e}")),
+                        status: DeliveryStatus::PermanentFailure,
+                        attempt_history: vec![],
+                    };
+                    if self.max_log_entries > 0 && log.len() >= self.max_log_entries {
+                        log.pop_front();
+                    }
+                    log.push_back(entry);
+                }
+                return;
+            }
+        };
         let signature_header = sign_webhook_payload(&self.signing_secret, body.as_bytes());
         let event_str = event_type.to_string();
         let user_str = user_id.to_string();
