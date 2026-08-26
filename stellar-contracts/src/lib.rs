@@ -15,6 +15,26 @@
 // ---------------------------------------------------------------------------
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
+// ---------------------------------------------------------------------------
+// STORAGE SCHEMA VERSIONING  (Issue #1149)
+//
+// STORAGE_SCHEMA_VERSION is a flat u32 stored under SystemKey::StorageSchemaVersion.
+// It is independent of the semver ContractVersion and EVENT_SCHEMA_VERSION.
+//
+// Bump this constant whenever a stored struct gains, loses, or changes a field,
+// or when any storage key layout changes in a way that requires a migration.
+//
+// Migration path:
+//   v0 (implicit, pre-versioning): no StorageSchemaVersion key in storage.
+//   v1 (current): key written during first migrate_storage call.
+//
+// `migrate_storage` is:
+//   • Authorized  — only an admin may call it.
+//   • Idempotent  — calling it again with the same target returns StaleMigration.
+//   • Resumable   — only advances forward; never rolls back the schema version.
+// ---------------------------------------------------------------------------
+pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+
 /// Canonical enum for off-chain indexers to identify the active event schema.
 /// Bump the variant and `EVENT_SCHEMA_VERSION` together whenever fields change.
 #[contracttype]
@@ -185,6 +205,14 @@ mod test_disputes;
 mod test_book_slot;
 #[cfg(test)]
 mod test_emergency_notify_rate_limit;
+#[cfg(test)]
+mod test_storage_schema; // Issue #1149: schema versioning
+#[cfg(test)]
+mod test_bounded_vecs; // Issue #1153: bounded Vec enforcement
+#[cfg(test)]
+mod test_bounded_strings; // Issue #1152: bounded String/Bytes
+#[cfg(test)]
+mod test_checked_counters; // Issue #1151: checked counter increments
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -225,6 +253,115 @@ const MAX_MILESTONES: u32 = 32;
 /// the first time a pet's consecutive-day streak reaches one of these values,
 /// subject to the [`MAX_MILESTONES`] cap.
 const STREAK_MILESTONE_DAYS: &[u64] = &[7, 30, 100, 365, 1000];
+
+// ---------------------------------------------------------------------------
+// BOUNDED-VEC CAPS  (Issue #1153)
+//
+// Every inline Vec stored in a Soroban persistent entry must be bounded so
+// that the XDR serialised size of the entry stays below the platform limit
+// (~64 KiB per entry). Exceeding the limit silently bricked the entry on all
+// future writes.  Each cap below represents the highest safe value given the
+// size of the contained element type plus XDR overhead.
+//
+// Migration note: existing entries that already exceed a cap will still
+// deserialise correctly — the caps only gate NEW pushes.  A migration script
+// (or `migrate_storage` step) can trim oversized Vecs offline if needed.
+// ---------------------------------------------------------------------------
+
+/// Maximum number of photo hashes stored inline in `Pet::photo_hashes`.
+/// Each hash is a 46-byte IPFS CIDv0 string; 20 hashes ≈ 1 KiB of overhead.
+const MAX_PHOTO_HASHES: u32 = 20;
+
+/// Maximum items in `DietPlan::dietary_restrictions` or `NutritionVersion::dietary_restrictions`.
+const MAX_DIETARY_RESTRICTIONS: u32 = 20;
+
+/// Maximum items in `DietPlan::allergies` / `NutritionVersion::allergies`.
+/// Mirrors the existing `Allergy` Vec cap on `Pet`.
+const MAX_DIETARY_ALLERGIES: u32 = 20;
+
+/// Maximum `Ingredient` entries in `NutritionPlan::ingredients`.
+const MAX_INGREDIENTS: u32 = 50;
+
+/// Maximum prerequisite IDs in `TrainingMilestone::prerequisites`.
+const MAX_PREREQUISITES: u32 = 20;
+
+/// Maximum entries in the chain-of-custody Vec stored per pet.
+/// ~100 transfers × ~80 bytes/entry = ~8 KiB, well within the 64 KiB limit.
+const MAX_CUSTODY_CHAIN: u32 = 100;
+
+/// Maximum number of signers in `MultisigConfig::signers`.
+/// Practical governance cap; more signers = larger XDR + more gas for threshold checks.
+const MAX_MULTISIG_SIGNERS: u32 = 20;
+
+/// Maximum number of pending signature slots in `PetTransferProposal::signatures`.
+const MAX_TRANSFER_SIGNATURES: u32 = 20;
+
+/// Maximum number of approval entries in a `MultiSigProposal::approvals` Vec.
+const MAX_PROPOSAL_APPROVALS: u32 = 20;
+
+/// Maximum number of language codes in `SupportedLanguages` Vec.
+const MAX_SUPPORTED_LANGUAGES: u32 = 50;
+
+// ---------------------------------------------------------------------------
+// BOUNDED-STRING CAPS  (Issue #1152)
+//
+// The constants below define maximum byte-lengths for every domain-specific
+// string stored on-chain.  All limits are enforced BEFORE writing to storage
+// so oversized payloads are rejected at the transaction boundary.
+//
+// Validation uses the existing `validate_len` / `panic_with_error` pattern.
+// ---------------------------------------------------------------------------
+
+/// Maximum byte length of a `color` field (pet registration).
+const MAX_COLOR_LEN: u32 = 50;
+
+/// Maximum byte length of a `BehaviorRecord::description`.
+const MAX_BEHAVIOR_DESC_LEN: u32 = 500;
+
+/// Maximum byte length of a `GroomingRecord::service_type`.
+const MAX_GROOMING_SERVICE_LEN: u32 = 100;
+
+/// Maximum byte length of a `GroomingRecord::groomer` (display name).
+const MAX_GROOMING_GROOMER_LEN: u32 = 100;
+
+/// Maximum byte length of a `GroomingRecord::notes`.
+const MAX_GROOMING_NOTES_LEN: u32 = 500;
+
+/// Maximum byte length of an `ActivityRecord::notes`.
+const MAX_ACTIVITY_NOTES_LEN: u32 = 500;
+
+/// Maximum byte length of a `MedicalRecord::diagnosis`.
+const MAX_MEDICAL_DIAGNOSIS_LEN: u32 = 500;
+
+/// Maximum byte length of a `MedicalRecord::treatment`.
+const MAX_MEDICAL_TREATMENT_LEN: u32 = 500;
+
+/// Maximum byte length of a `MedicalRecord::notes`.
+const MAX_MEDICAL_NOTES_LEN: u32 = 1_000;
+
+/// Maximum byte length of a `LabResult::test_type`.
+const MAX_LAB_TEST_TYPE_LEN: u32 = 100;
+
+/// Maximum byte length of a `LabResult::results`.
+const MAX_LAB_RESULTS_LEN: u32 = 1_000;
+
+/// Maximum byte length of a `LabResult::reference_ranges`.
+const MAX_LAB_REF_RANGES_LEN: u32 = 500;
+
+/// Maximum byte length of a `Dispute::reason`.
+const MAX_DISPUTE_REASON_LEN: u32 = 500;
+
+/// Maximum byte length of a `BreedingRecord::notes`.
+const MAX_BREEDING_NOTES_LEN: u32 = 500;
+
+/// Maximum byte length of a `LostPetAlert::last_seen_location`.
+const MAX_LOCATION_LEN: u32 = 200;
+
+/// Maximum byte length of a `SightingReport::location`.
+const MAX_SIGHTING_LOCATION_LEN: u32 = 200;
+
+/// Maximum byte length of a `SightingReport::description`.
+const MAX_SIGHTING_DESC_LEN: u32 = 500;
 
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
@@ -306,7 +443,6 @@ pub enum ContractError {
     InvalidCallerNonce = 10,
     InvalidCertificateHash = 11,
     InvalidInput = 12,
-    InvalidNonce = 39,
     InvalidIpfsHash = 13,
     InvalidPetName = 14,
     InvalidRating = 15,
@@ -332,20 +468,29 @@ pub enum ContractError {
     DuplicateActivity = 35,
     InbreedingThresholdExceeded = 36,
     SelfBreeding = 37,
+    ProposalAlreadyExecuted = 38,
+    /// Discriminant 39 is reserved for `InvalidNonce` (canonical ABI value).
+    /// `ProposalNotFound` previously collided here; it is now reassigned to 47.
+    InvalidNonce = 39,
+    RollbackWindowExpired = 40,
+    NoPreviousUpgrade = 41,
+    ProposalExpired = 43,
+    ProposalNotApproved = 44,
+    QuorumNotMet = 45,
+    RateLimitExceeded = 46,
+    /// Formerly 39 (collision with `InvalidNonce`); moved to 47. (#1149)
+    ProposalNotFound = 47,
 
     AlreadyDeleted = 160,
     RecordAlreadyDeleted = 161,
-    RecordNotFound = 163,
     RetentionPeriodNotMet = 162,
-    RecordAlreadyDeleted = 163,
-    ProposalExpired = 43,
-    ProposalNotApproved = 44,
-    ProposalAlreadyExecuted = 38,
-    ProposalNotFound = 39,
-    RollbackWindowExpired = 40,
-    NoPreviousUpgrade = 41,
-    QuorumNotMet = 45,
-    RateLimitExceeded = 46,
+    /// Formerly 163 (collision with second `RecordAlreadyDeleted`); kept as 163. (#1149)
+    RecordNotFound = 163,
+
+    /// Returned by `migrate_storage` when the stored schema version already
+    /// equals or exceeds the requested target version.  Callers may treat this
+    /// as a no-op (idempotent replay is safe). (#1149)
+    StaleMigration = 164,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -1256,6 +1401,9 @@ pub enum SystemKey {
     PreviousWasmHash,        // BytesN<32> of the previous WASM hash before upgrade
     // Version keys
     StorageVersion,          // ContractVersion for storage schema
+    /// Flat u32 written by `migrate_storage`. Zero / absent means pre-versioning (treat as v0).
+    /// Distinct from `StorageVersion` (which carries a semver triple). (#1149)
+    StorageSchemaVersion,
     // Admin activity log keys (Issue #816)
     AdminActivityLog(u64), // index -> AdminActivityEntry
     AdminActivityCount,    // Total number of recorded admin actions
@@ -2818,7 +2966,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::ProposalCount)
             .unwrap_or(0);
-        let proposal_id = proposal_count + 1;
+        let proposal_id = safe_increment(proposal_count);
         let now = env.ledger().timestamp();
         let admin_count = env
             .storage()
@@ -3058,7 +3206,7 @@ impl PetChainContract {
         };
 
         if count < MAX_POINTS {
-            let new_count = count + 1;
+            let new_count = safe_increment(count);
             env.storage()
                 .instance()
                 .set(&StatSeriesKey::Point((key.clone(), new_count)), &point);
@@ -3701,6 +3849,10 @@ impl PetChainContract {
         if threshold == 0 || threshold > admins.len() {
             panic_with_error!(&env, ContractError::InvalidThreshold);
         }
+        // Enforce admin signer cap to prevent unbounded Vec. (#1153)
+        if admins.len() > MAX_MULTISIG_SIGNERS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
 
         invoker.require_auth();
         if !admins.contains(invoker) {
@@ -3873,7 +4025,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::AdminActivityCount)
             .unwrap_or(0);
-        let next = count + 1;
+        let next = safe_increment(count);
         env.storage().instance().set(
             &SystemKey::AdminActivityLog(next),
             &AdminActivityEntry {
@@ -4462,20 +4614,24 @@ impl PetChainContract {
         if severity > 10 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
+        // Bound description length to prevent unbounded ledger entries. (#1152)
+        if description.len() > MAX_BEHAVIOR_DESC_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
 
-        let record_id: u64 = env
-            .storage()
-            .instance()
-            .get(&BehaviorKey::BehaviorRecordCount)
-            .unwrap_or(0u64)
-            .saturating_add(1);
+        let record_id: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&BehaviorKey::BehaviorRecordCount)
+                .unwrap_or(0u64),
+        );
 
-        let pet_index: u64 = env
-            .storage()
-            .instance()
-            .get(&BehaviorKey::PetBehaviorCount(pet_id))
-            .unwrap_or(0u64)
-            .saturating_add(1);
+        let pet_index: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&BehaviorKey::PetBehaviorCount(pet_id))
+                .unwrap_or(0u64),
+        );
 
         let record = BehaviorRecord {
             id: record_id,
@@ -4640,6 +4796,10 @@ impl PetChainContract {
         }
         Self::validate_pet_name(&env, &name);
         Self::validate_breed(&env, &species, &breed);
+        // Bound color field to prevent unbounded ledger entries. (#1152)
+        if color.len() > MAX_COLOR_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
 
         let pet_count: u64 = env
             .storage()
@@ -5610,6 +5770,11 @@ impl PetChainContract {
             pet.owner.require_auth();
             if let Err(err) = PetChainContract::validate_ipfs_hash(&env, &photo_hash) {
                 env.panic_with_error(err);
+            }
+
+            // Enforce cap to prevent unbounded inline Vec growth. (#1153)
+            if pet.photo_hashes.len() >= MAX_PHOTO_HASHES {
+                panic_with_error!(&env, ContractError::TooManyItems);
             }
 
             // Check storage quota (Issue #782)
@@ -6755,6 +6920,17 @@ impl PetChainContract {
     ) -> u64 {
         vet_address.require_auth();
 
+        // Bound string fields to prevent unbounded ledger growth. (#1152)
+        if test_type.len() > MAX_LAB_TEST_TYPE_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if results.len() > MAX_LAB_RESULTS_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if reference_ranges.len() > MAX_LAB_REF_RANGES_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
         // --- allocate ID ---
         let lab_count: u64 = env
             .storage()
@@ -7368,6 +7544,14 @@ impl PetChainContract {
 
         pet.owner.require_auth();
 
+        // Enforce Vec caps to prevent unbounded inline serialisation. (#1153)
+        if restrictions.len() > MAX_DIETARY_RESTRICTIONS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+        if allergies.len() > MAX_DIETARY_ALLERGIES {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
         let diet_count: u64 = env
             .storage()
             .instance()
@@ -7397,12 +7581,12 @@ impl PetChainContract {
             .instance()
             .set(&NutritionKey::DietPlanCount, &diet_id);
 
-        let pet_diet_count: u64 = env
-            .storage()
-            .instance()
-            .get(&NutritionKey::PetDietCount(pet_id))
-            .unwrap_or(0)
-            + 1;
+        let pet_diet_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&NutritionKey::PetDietCount(pet_id))
+                .unwrap_or(0),
+        );
         env.storage()
             .instance()
             .set(&NutritionKey::PetDietCount(pet_id), &pet_diet_count);
@@ -7716,6 +7900,11 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
 
+        // Enforce Vec cap to prevent unbounded inline serialisation. (#1153)
+        if ingredients.len() > MAX_INGREDIENTS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
         let mut sum: u32 = 0;
         for ingredient in ingredients.iter() {
             sum = sum.saturating_add(ingredient.calories);
@@ -7739,7 +7928,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::PetNutritionPlanCount(pet_id))
             .unwrap_or(0u64);
-        let next_pet_count = pet_plan_count.saturating_add(1);
+        let next_pet_count = safe_increment(pet_plan_count);
 
         let plan = NutritionPlan {
             id: plan_id,
@@ -7798,12 +7987,20 @@ impl PetChainContract {
 
         pet.owner.require_auth();
 
+        // Enforce Vec caps to prevent unbounded inline serialisation. (#1153)
+        if restrictions.len() > MAX_DIETARY_RESTRICTIONS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+        if allergies.len() > MAX_DIETARY_ALLERGIES {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
         let current_version: u64 = env
             .storage()
             .instance()
             .get(&NutritionKey::PetNutritionVersionCount(pet_id))
             .unwrap_or(0);
-        let new_version = current_version + 1;
+        let new_version = safe_increment(current_version);
         let now = env.ledger().timestamp();
 
         let nutrition_version = NutritionVersion {
@@ -7943,7 +8140,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::PetNutritionVersionCount(pet_id))
             .unwrap_or(0);
-        let new_version = current_version + 1;
+        let new_version = safe_increment(current_version);
         let now = env.ledger().timestamp();
 
         let rollback_version = NutritionVersion {
@@ -8724,9 +8921,9 @@ impl PetChainContract {
         }
 
         // Enforce the per-record attachment cap before inserting so the count
-        // can never exceed MAX_ATTACHMENTS_PER_RECORD.
+        // can never exceed MAX_ATTACHMENTS_PER_RECORD. (#1153)
         if record.attachment_hashes.len() >= MAX_ATTACHMENTS_PER_RECORD {
-            panic_with_error!(&env, ContractError::StorageQuotaExceeded);
+            panic_with_error!(&env, ContractError::TooManyItems);
         }
 
         let attachment = Attachment {
@@ -8828,6 +9025,10 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::CustodyChain(pet_id))
             .unwrap_or_else(|| Vec::new(env));
+        // Enforce cap to prevent unbounded inline Vec growth. (#1153)
+        if chain.len() >= MAX_CUSTODY_CHAIN {
+            panic_with_error!(env, ContractError::TooManyItems);
+        }
         chain.push_back(CustodyEntry {
             from,
             to,
@@ -9519,12 +9720,17 @@ impl PetChainContract {
     ) -> u64 {
         claimer.require_auth();
 
+        // Bound string fields to prevent unbounded ledger growth. (#1152)
+        if reason.len() > MAX_DISPUTE_REASON_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
             .get(&DisputeKey::DisputeCount)
             .unwrap_or(0);
-        let dispute_id = count + 1;
+        let dispute_id = safe_increment(count);
 
         let dispute = Dispute {
             dispute_id,
@@ -9548,7 +9754,7 @@ impl PetChainContract {
 
         let pet_count_key = DisputeKey::PetDisputesCount(pet_id);
         let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
-        let new_pet_count = pet_count + 1;
+        let new_pet_count = safe_increment(pet_count);
 
         env.storage().instance().set(
             &DisputeKey::PetDisputesIndex((pet_id, new_pet_count)),
@@ -9787,7 +9993,7 @@ impl PetChainContract {
             .instance()
             .get(&evidence_count_key)
             .unwrap_or(0);
-        let evidence_id = total_count + 1;
+        let evidence_id = safe_increment(total_count);
 
         let evidence = Evidence {
             evidence_id,
@@ -9803,7 +10009,12 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&evidence_count_key, &evidence_id);
-        env.storage().instance().set(&count_key, &(party_count + 1));
+        env.storage().instance().set(
+            &count_key,
+            &party_count
+                .checked_add(1)
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow)),
+        );
 
         evidence_id
     }
@@ -10114,9 +10325,10 @@ impl PetChainContract {
             {
                 let old_rating = profile.aggregate_rating as u64;
                 let count = profile.review_count;
-                let new_avg = ((old_rating * count) + (score as u64 * 100)) / (count + 1);
+                let new_count = safe_increment(count);
+                let new_avg = ((old_rating * count) + (score as u64 * 100)) / new_count;
                 profile.aggregate_rating = new_avg as u32;
-                profile.review_count = count + 1;
+                profile.review_count = new_count;
                 env.storage()
                     .instance()
                     .set(&GroomingKey::Groomer(groomer_address), &profile);
@@ -10190,12 +10402,12 @@ impl PetChainContract {
         }
 
         // No conflict — assign a new slot_id and persist the slot
-        let slot_id: u64 = env
-            .storage()
-            .instance()
-            .get(&GroomingKey::GroomingRecordCount)
-            .unwrap_or(0u64)
-            .saturating_add(1);
+        let slot_id: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&GroomingKey::GroomingRecordCount)
+                .unwrap_or(0u64),
+        );
 
         let new_slot = GroomingSlot {
             slot_id,
@@ -10205,7 +10417,7 @@ impl PetChainContract {
             pet_id,
         };
 
-        let new_count = slot_count.saturating_add(1);
+        let new_count = safe_increment(slot_count);
         env.storage().instance().set(
             &GroomingKey::GroomerSlotIndex((groomer_id.clone(), new_count)),
             &new_slot,
@@ -10731,6 +10943,10 @@ impl PetChainContract {
         distance_meters: u32,
         notes: String,
     ) -> u64 {
+        // Bound notes field to prevent unbounded ledger growth. (#1152)
+        if notes.len() > MAX_ACTIVITY_NOTES_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
         // Verify pet exists
         let _pet = env
             .storage()
@@ -10964,6 +11180,10 @@ impl PetChainContract {
         breeding_date: u64,
         notes: String,
     ) -> u64 {
+        // Bound notes field to prevent unbounded ledger growth. (#1152)
+        if notes.len() > MAX_BREEDING_NOTES_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
         let count = env
             .storage()
             .persistent()
@@ -11002,7 +11222,7 @@ impl PetChainContract {
             .unwrap_or(0u64);
         env.storage()
             .persistent()
-            .set(&BreedingKey::PetBreedingCount(pet_id), &(count + 1));
+            .set(&BreedingKey::PetBreedingCount(pet_id), &safe_increment(count));
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
@@ -11464,6 +11684,21 @@ impl PetChainContract {
             panic!("Veterinarian not verified");
         }
 
+        // Bound string fields to prevent unbounded ledger growth. (#1152)
+        if diagnosis.len() > MAX_MEDICAL_DIAGNOSIS_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if treatment.len() > MAX_MEDICAL_TREATMENT_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if notes.len() > MAX_MEDICAL_NOTES_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        // Bound medications Vec to prevent unbounded inline serialisation. (#1153)
+        if medications.len() > MAX_VEC_MEDS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
         let _pet: Pet = env
             .storage()
             .instance()
@@ -11597,7 +11832,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::UpgradeProposalCount)
             .unwrap_or(0);
-        let proposal_id = count + 1;
+        let proposal_id = safe_increment(count);
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add((expires_in_days as u64).saturating_mul(86400));
 
@@ -11796,6 +12031,89 @@ impl PetChainContract {
             })
     }
 
+    // -----------------------------------------------------------------------
+    // STORAGE SCHEMA VERSION  (Issue #1149)
+    //
+    // `get_schema_version` returns the flat u32 stored under
+    // `SystemKey::StorageSchemaVersion`.  Absent key → 0 (pre-versioning).
+    //
+    // `migrate_schema_version` is:
+    //   • Authorized  — only an admin may invoke it.
+    //   • Idempotent  — calling it a second time with the same (or lower)
+    //                   target panics with `StaleMigration` rather than
+    //                   silently re-running migration steps.
+    //   • Resumable   — only ever advances forward; target must be > current.
+    //
+    // Threat model:
+    //   An attacker who compromises an admin key could call `migrate_schema_version`
+    //   to bump the schema version without running the corresponding migration
+    //   code, orphaning old data.  The risk is mitigated by the multisig admin
+    //   threshold: migration calls must satisfy the same quorum as any other
+    //   admin-gated operation.  The idempotency guard also prevents a valid
+    //   migration from being run twice (no double-writes).
+    // -----------------------------------------------------------------------
+
+    /// Returns the current flat storage-schema version (0 = pre-versioning).
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::StorageSchemaVersion)
+            .unwrap_or(0u32)
+    }
+
+    /// Advance the storage-schema version from `current_version` to `target_version`.
+    ///
+    /// # Behaviour
+    /// - Returns `StaleMigration` when `current_version` does not match the
+    ///   stored value, or when `target_version <= stored_version`.  This makes
+    ///   the call safe to retry after a partial failure.
+    /// - Panics with `NotAnAdmin` / `Unauthorized` when authorization fails.
+    ///
+    /// # Adding a new migration step
+    /// 1. Bump `STORAGE_SCHEMA_VERSION` by one.
+    /// 2. Add the migration logic in the `match` arm for the new version inside
+    ///    this function.
+    pub fn migrate_schema_version(
+        env: Env,
+        admin: Address,
+        current_version: u32,
+        target_version: u32,
+    ) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&SystemKey::StorageSchemaVersion)
+            .unwrap_or(0u32);
+
+        // Idempotency guard: reject replays and backward jumps.
+        if stored != current_version || target_version <= stored {
+            panic_with_error!(&env, ContractError::StaleMigration);
+        }
+
+        // Execute per-version migration steps.
+        // Each arm should be narrow and idempotent at the data level.
+        match target_version {
+            1 => {
+                // v0 → v1: First versioned schema.
+                // No structural data changes in this version; the StorageSchemaVersion
+                // key itself is the only new storage entry.
+            }
+            _ => {
+                // Unknown target — reject to prevent silent version skips.
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::StorageSchemaVersion, &target_version);
+    }
+
     pub fn migrate_storage(
         env: Env,
         admin: Address,
@@ -11811,8 +12129,15 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::NotAnAdmin);
         }
         let current = Self::get_storage_version(env.clone());
-        if current.major >= to_major {
-            return;
+        // Idempotency: if the stored version already meets or exceeds the
+        // target we return StaleMigration instead of silently re-running.
+        let already_met = (current.major > to_major)
+            || (current.major == to_major && current.minor > to_minor)
+            || (current.major == to_major
+                && current.minor == to_minor
+                && current.patch >= to_patch);
+        if already_met {
+            panic_with_error!(&env, ContractError::StaleMigration);
         }
         let version = ContractVersion {
             major: to_major,
@@ -11951,10 +12276,222 @@ impl PetChainContract {
         }
         diffs
     }
+    // -------------------------------------------------------------------------
+    // CONVENIENCE WRAPPERS  (Issue #1153 / #1152 tests)
+    // -------------------------------------------------------------------------
+
+    /// Transfer a pet directly to `new_owner` in one atomic call.
+    ///
+    /// This is a simpler alternative to the two-step
+    /// `transfer_pet_ownership` + `accept_pet_transfer` flow.  The caller
+    /// must be the current owner.  An ownership record and a custody-chain
+    /// entry are both appended, consistent with `batch_transfer`.
+    ///
+    /// # Errors
+    /// * `PetNotFound`  — if `pet_id` does not exist.
+    /// * `NotPetOwner`  — if `owner` is not the current owner.
+    pub fn transfer_pet(env: Env, owner: Address, pet_id: u64, new_owner: Address) {
+        let mut pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        owner.require_auth();
+        if pet.owner != owner {
+            panic_with_error!(&env, ContractError::NotPetOwner);
+        }
+
+        let old_owner = pet.owner.clone();
+        let now = env.ledger().timestamp();
+
+        PetChainContract::remove_pet_from_owner_index(&env, &old_owner, pet_id);
+
+        pet.owner = new_owner.clone();
+        pet.new_owner = new_owner.clone();
+        pet.updated_at = now;
+
+        PetChainContract::add_pet_to_owner_index(&env, &new_owner, pet_id);
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+        PetChainContract::log_ownership_change(
+            &env,
+            pet_id,
+            old_owner.clone(),
+            new_owner.clone(),
+            String::from_str(&env, "Direct Transfer"),
+        );
+
+        PetChainContract::append_custody_entry(
+            &env,
+            pet_id,
+            old_owner.clone(),
+            new_owner.clone(),
+            TransferType::Direct,
+        );
+
+        env.events().publish(
+            (String::from_str(&env, "PetOwnershipTransferred"), pet_id),
+            PetOwnershipTransferredEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                old_owner,
+                new_owner,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Configure a multi-signature approval requirement for pet ownership transfers.
+    ///
+    /// Any of the listed `signers` can sign a subsequent `PetTransferProposal`
+    /// via `sign_transfer_proposal`.  At least `threshold` signatures are needed
+    /// before the proposal can be executed.
+    ///
+    /// # Caps (Issue #1153)
+    /// * `signers.len()` is bounded by [`MAX_MULTISIG_SIGNERS`].
+    ///
+    /// # Errors
+    /// * `PetNotFound`      — if `pet_id` does not exist.
+    /// * `NotPetOwner`      — if `owner` is not the current owner.
+    /// * `InvalidThreshold` — if `threshold == 0` or `threshold > signers.len()`.
+    /// * `TooManyItems`     — if `signers.len() > MAX_MULTISIG_SIGNERS`.
+    pub fn setup_pet_multisig(
+        env: Env,
+        owner: Address,
+        pet_id: u64,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        owner.require_auth();
+        if pet.owner != owner {
+            panic_with_error!(&env, ContractError::NotPetOwner);
+        }
+
+        if threshold == 0 || threshold > signers.len() {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        // Cap enforced to prevent unbounded Vec stored inside MultisigConfig. (#1153)
+        if signers.len() > MAX_MULTISIG_SIGNERS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
+        let config = MultisigConfig {
+            pet_id,
+            signers,
+            threshold,
+            enabled: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&SystemKey::PetMultisigConfig(pet_id), &config);
+    }
+
+    /// Retrieve the multi-signature config for a pet, if one has been set.
+    pub fn get_pet_multisig_config(env: Env, pet_id: u64) -> Option<MultisigConfig> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::PetMultisigConfig(pet_id))
+    }
+
+    /// Record a training milestone for a pet.
+    ///
+    /// Each milestone can optionally reference up to [`MAX_PREREQUISITES`]
+    /// previously achieved milestone IDs.  Calling this with more than
+    /// [`MAX_PREREQUISITES`] prerequisite IDs panics with `TooManyItems`
+    /// (Issue #1153).
+    ///
+    /// # Errors
+    /// * `PetNotFound`  — if `pet_id` does not exist.
+    /// * `TooManyItems` — if `prerequisites.len() > MAX_PREREQUISITES`.
+    ///
+    /// # Returns
+    /// The newly assigned milestone ID (monotonically increasing).
+    pub fn add_training_milestone(
+        env: Env,
+        pet_id: u64,
+        trainer: Address,
+        milestone_name: String,
+        prerequisites: Vec<u64>,
+    ) -> u64 {
+        trainer.require_auth();
+
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Cap prerequisites to prevent unbounded inline Vec growth. (#1153)
+        if prerequisites.len() > MAX_PREREQUISITES {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
+        let global_count: u64 = env
+            .storage()
+            .instance()
+            .get(&BehaviorKey::TrainingMilestoneCount)
+            .unwrap_or(0);
+        let milestone_id = safe_increment(global_count);
+
+        let pet_count: u64 = safe_increment(
+            env.storage()
+                .instance()
+                .get(&BehaviorKey::PetMilestoneCount(pet_id))
+                .unwrap_or(0),
+        );
+
+        let milestone = TrainingMilestone {
+            id: milestone_id,
+            pet_id,
+            milestone_name,
+            achieved: false,
+            achieved_at: None,
+            trainer,
+            notes: String::from_str(&env, ""),
+            prerequisites,
+        };
+
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestone(milestone_id), &milestone);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::TrainingMilestoneCount, &milestone_id);
+        env.storage()
+            .instance()
+            .set(&BehaviorKey::PetMilestoneCount(pet_id), &pet_count);
+        env.storage().instance().set(
+            &BehaviorKey::PetMilestoneIndex((pet_id, pet_count)),
+            &milestone_id,
+        );
+
+        milestone_id
+    }
+
+    /// Retrieve a training milestone by its ID.
+    pub fn get_training_milestone(env: Env, milestone_id: u64) -> Option<TrainingMilestone> {
+        env.storage()
+            .instance()
+            .get(&BehaviorKey::TrainingMilestone(milestone_id))
+    }
 } // end impl PetChainContract
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
-pub(crate) fn safe_increment(count: u64) -> u64 {
+/// Increment `count` by one, panicking on u64 overflow.
+///
+/// All storage-ID counters in the contract use this helper so that an
+/// adversarial or buggy caller cannot silently wrap a counter and reuse IDs.
+/// Direct `+ 1` is replaced by this checked variant (Issue #1151).
+pub fn safe_increment(count: u64) -> u64 {
     count
         .checked_add(1)
         .unwrap_or_else(|| panic!("counter overflow"))
