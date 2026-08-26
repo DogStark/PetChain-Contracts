@@ -10084,6 +10084,20 @@ impl PetChainContract {
         true
     }
 
+    fn validate_groomer_identity(env: &Env, record: &GroomingRecord) {
+        if let Some(groomer_address) = record.groomer_address.clone() {
+            if let Some(profile) = env
+                .storage()
+                .instance()
+                .get::<GroomingKey, GroomerProfile>(&GroomingKey::Groomer(groomer_address))
+            {
+                if profile.name != record.groomer {
+                    panic_with_error!(env, ContractError::InvalidInput);
+                }
+            }
+        }
+    }
+
     pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u32) -> bool {
         if !(1..=5).contains(&score) {
             panic_with_error!(env, ContractError::InvalidRating);
@@ -10105,6 +10119,8 @@ impl PetChainContract {
         if record.pet_id != pet_id {
             panic_with_error!(env, ContractError::InvalidInput);
         }
+
+        Self::validate_groomer_identity(&env, &record);
 
         if let Some(groomer_address) = record.groomer_address.clone() {
             if let Some(mut profile) = env
