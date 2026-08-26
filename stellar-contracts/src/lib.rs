@@ -185,6 +185,12 @@ mod test_disputes;
 mod test_book_slot;
 #[cfg(test)]
 mod test_emergency_notify_rate_limit;
+#[cfg(test)]
+mod test_pet_index_invariants;
+#[cfg(test)]
+mod test_multi_key_atomicity;
+#[cfg(test)]
+mod test_storage_tier_policy;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
