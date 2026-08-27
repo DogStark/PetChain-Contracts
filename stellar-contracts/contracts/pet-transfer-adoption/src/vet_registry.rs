@@ -259,6 +259,13 @@ impl VetRegistryContract {
         vet.verified
     }
 
+    pub fn get_vet_count(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VetCount)
+            .unwrap_or(0)
+    }
+
     /// List all registered vets with pagination support.
     ///
     /// # Arguments
@@ -686,4 +693,22 @@ mod tests {
         // offset >> count — must not panic or attempt an out-of-bounds index.
         let vets = client.list_vets(&1000, &10);
         assert!(vets.is_empty());
+    }
+
+    #[test]
+    fn test_get_vet_count() {
+        let (env, _, _, client) = setup();
+
+        // Initially zero vets
+        assert_eq!(client.get_vet_count(), 0);
+
+        // Register one vet
+        let vet1 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        assert_eq!(client.get_vet_count(), 1);
+
+        // Register second vet
+        let vet2 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        assert_eq!(client.get_vet_count(), 2);
     }

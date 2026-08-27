@@ -45,7 +45,7 @@ pub struct TreatmentHistoryPage {
 
 #[contracttype]
 pub enum InsuranceKey {
-    Policy(u64),               // (pet_id) -> InsurancePolicy [deprecated, kept for migration]
+    Policy(u64),               // (pet_id) -> InsurancePolicy [deprecated, never used in production, safe to remove]
     Claim(u64),                // claim_id -> InsuranceClaim
     ClaimCount,                // Global count of claims
     PetClaimCount(u64),        // pet_id -> count of claims
@@ -75,6 +75,7 @@ pub enum BehaviorKey {
     TrainingMilestoneCount,
     PetMilestoneCount(u64),
     PetMilestoneIndex((u64, u64)),
+    MilestonePrerequisite((u64, u64)), // (milestone_id, seq) -> prerequisite_id
 }
 
 #[contracttype]
@@ -219,6 +220,8 @@ const MAX_ATTACHMENTS_PER_RECORD: u32 = 20;
 /// 32 slots is far more than the current milestone set (7, 30, 100 days) and
 /// leaves ample room for future milestones while keeping the entry size bounded.
 const MAX_MILESTONES: u32 = 32;
+
+const MAX_PREREQUISITES: u32 = 16;
 
 /// Standard activity-streak milestones (in streak-days).
 /// A new milestone entry is recorded in `ActivityStreak::milestones_reached`
@@ -522,7 +525,6 @@ pub struct TrainingMilestone {
     pub achieved_at: Option<u64>,
     pub trainer: Address,
     pub notes: String,
-    pub prerequisites: Vec<u64>,
 }
 
 #[contracttype]
