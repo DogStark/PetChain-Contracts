@@ -213,6 +213,8 @@ mod test_access_revocation_cascade;
 #[cfg(test)]
 mod test_decryption_token_key_version;
 #[cfg(test)]
+mod test_domain_separated_hashes;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 // NOTE: test_disputes.rs and test_book_slot.rs were wired but reference
@@ -693,6 +695,23 @@ pub enum Gender {
     Male,
     Female,
     Unknown,
+}
+
+/// Domains that get a distinct, versioned prefix before hashing (Issue
+/// #1168). Two canonical encodings that would otherwise collide (e.g. an
+/// evidence blob and an attachment blob that happen to serialize to the
+/// same bytes) hash to different values once tagged with their domain, so
+/// a hash stored for one purpose can never be replayed as if it were a
+/// hash for another.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HashDomain {
+    Evidence,
+    Attachment,
+    ClaimDocument,
+    Certificate,
+    MedicalRecord,
+    TagId,
 }
 
 #[contracttype]
@@ -8463,7 +8482,10 @@ impl PetChainContract {
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
 
-        let mut preimage = Bytes::new(env);
+        // Domain-separated so a tag ID can never collide with a hash
+        // computed for another stored-hash domain (evidence, attachments,
+        // claim documents, certificates, medical records). (#1168)
+        let mut preimage = Bytes::from_slice(env, Self::hash_domain_tag(&HashDomain::TagId));
         for byte in pet_id.to_be_bytes() {
             preimage.push_back(byte);
         }
@@ -9045,6 +9067,39 @@ impl PetChainContract {
             }
         }
 
+        env.crypto().sha256(&preimage).into()
+    }
+
+    /// Versioned tag prefixed to a domain's canonical encoding before
+    /// hashing (Issue #1168). Bumping the trailing version segment for a
+    /// domain (e.g. to `v2`) is itself a deliberate, published breaking
+    /// change to that domain's hash space, distinct from every other
+    /// domain and every earlier version of the same domain.
+    fn hash_domain_tag(domain: &HashDomain) -> &'static [u8] {
+        match domain {
+            HashDomain::Evidence => b"petchain:hash:evidence:v1",
+            HashDomain::Attachment => b"petchain:hash:attachment:v1",
+            HashDomain::ClaimDocument => b"petchain:hash:claim-document:v1",
+            HashDomain::Certificate => b"petchain:hash:certificate:v1",
+            HashDomain::MedicalRecord => b"petchain:hash:medical-record:v1",
+            HashDomain::TagId => b"petchain:hash:tag-id:v1",
+        }
+    }
+
+    /// Compute a domain-separated SHA-256 hash: `sha256(tag || content)`,
+    /// where `tag` is a versioned, domain-specific ASCII prefix. (#1168)
+    ///
+    /// This is the canonical way to hash content that will be stored or
+    /// compared as a `BytesN<32>` anywhere in this contract (evidence,
+    /// attachments, claim documents, certificates, medical records, tag
+    /// IDs). Off-chain callers computing a hash to submit to
+    /// `submit_evidence`, `add_attachment`, or similar must reproduce this
+    /// same prefixing so that a value hashed for one domain can never
+    /// collide with, or be replayed as, a value from another domain -- see
+    /// `test_domain_separated_hashes.rs` for published test vectors.
+    pub fn compute_domain_hash(env: Env, domain: HashDomain, content: Bytes) -> BytesN<32> {
+        let mut preimage = Bytes::from_slice(&env, Self::hash_domain_tag(&domain));
+        preimage.append(&content);
         env.crypto().sha256(&preimage).into()
     }
 
