@@ -655,6 +655,40 @@ mod tests {
         assert_eq!(found.unwrap().address, vet_b);
     }
 
+    // ---- #1180: duplicate license prevention (register, revoke, reissue) ----
+
+    #[test]
+    fn test_duplicate_license_on_active_vet_is_rejected() {
+        let (env, _, _, client) = setup();
+        let vet_a = soroban_sdk::Address::generate(&env);
+        let vet_b = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-DUP-001");
+        client.register_vet(&vet_a, &str(&env, "Dr. A"), &license, &str(&env, "General"));
+        // Same license while vet_a is still active must fail
+        let result = client.try_register_vet(&vet_b, &str(&env, "Dr. B"), &license, &str(&env, "General"));
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::LicenseAlreadyUsed as u32,
+            )))
+        );
+    }
+
+    #[test]
+    fn test_license_freed_after_revoke_allows_reissue() {
+        let (env, _, _, client) = setup();
+        let vet_a = soroban_sdk::Address::generate(&env);
+        let vet_b = soroban_sdk::Address::generate(&env);
+        let license = str(&env, "LIC-REISSUE-002");
+        client.register_vet(&vet_a, &str(&env, "Dr. A"), &license, &str(&env, "General"));
+        client.revoke_vet_license(&vet_a);
+        // License is now free — new vet may claim it
+        client.register_vet(&vet_b, &str(&env, "Dr. B"), &license, &str(&env, "General"));
+        let found = client.get_vet_by_license(&license);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().address, vet_b);
+    }
+
     // ---- #1023: list_vets with offset >= total vet count returns empty ----
 
     #[test]
