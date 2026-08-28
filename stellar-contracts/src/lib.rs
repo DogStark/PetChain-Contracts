@@ -211,6 +211,8 @@ mod test_access_grant_pagination;
 #[cfg(test)]
 mod test_access_revocation_cascade;
 #[cfg(test)]
+mod test_decryption_token_key_version;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 // NOTE: test_disputes.rs and test_book_slot.rs were wired but reference
@@ -1225,6 +1227,10 @@ pub enum DataKey {
     AccessGrantIndex((u64, u64)),
     PetDelegationCount(u64),
     DecryptionToken((u64, Address)),
+    /// Current encryption key version for a pet (Issue #1163). Absent means
+    /// version 1, matching [`PetChainContract::derive_versioned_key`]'s
+    /// treatment of versions `<= 1` as the base key.
+    PetKeyVersion(u64),
     EmergencyAccessLogs(u64),
     EmergencyAuditLog(u64),
     EmergencyResponders(u64),
@@ -1810,6 +1816,21 @@ pub struct AccessGrantPage {
     /// Total number of grant slots for the pet (stable upper bound on live
     /// rows; some slots may be filtered out when `active_only` is set).
     pub total_slots: u64,
+}
+
+/// A decryption delegation token bound to the encryption key version that
+/// was active when it was issued (Issue #1163). Rotating a pet's key
+/// version deterministically invalidates every outstanding token, since
+/// [`PetChainContract::verify_decryption_token`] requires an exact version
+/// match rather than trusting a possibly-stale expiry alone.
+#[contracttype]
+#[derive(Clone)]
+pub struct DecryptionDelegation {
+    pub pet_id: u64,
+    pub delegate: Address,
+    pub key_version: u32,
+    pub issued_at: u64,
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -11149,12 +11170,18 @@ impl PetChainContract {
         }
 
         let now = env.ledger().timestamp();
+        let current_version = Self::get_pet_key_version(env.clone(), pet_id);
         let mut removed: u32 = 0;
 
         for delegate in delegates.iter() {
             let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
-            if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
-                if now >= expires_at {
+            if let Some(token) = env
+                .storage()
+                .instance()
+                .get::<DataKey, DecryptionDelegation>(&key)
+            {
+                let stale = now >= token.expires_at || token.key_version != current_version;
+                if stale {
                     env.storage().instance().remove(&key);
                     removed += 1;
 
@@ -11174,6 +11201,156 @@ impl PetChainContract {
         }
 
         removed
+    }
+
+    /// The encryption key version currently active for a pet. Defaults to
+    /// `1` when the pet has never had its key rotated. (Issue #1163)
+    pub fn get_pet_key_version(env: Env, pet_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::PetKeyVersion(pet_id))
+            .unwrap_or(1)
+    }
+
+    /// Rotate a pet's encryption key version. Owner-authorized and
+    /// nonce-protected for replay safety, matching [`Self::grant_access`].
+    ///
+    /// Because every decryption token records the key version active when
+    /// it was issued, bumping the version here deterministically and
+    /// immediately invalidates every outstanding delegated token: the next
+    /// call to [`Self::verify_decryption_token`] for any prior delegate
+    /// will observe a version mismatch and fail, with no separate sweep or
+    /// storage write required per delegate. (#1163)
+    pub fn rotate_pet_key_version(env: Env, pet_id: u64, nonce: u64) -> u32 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        let new_version = Self::get_pet_key_version(env.clone(), pet_id)
+            .checked_add(1)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::PetKeyVersion(pet_id), &new_version);
+
+        env.events().publish(
+            (String::from_str(&env, "PetKeyRotated"), pet_id),
+            (pet_id, new_version, env.ledger().timestamp()),
+        );
+
+        new_version
+    }
+
+    /// Issue a time-boxed decryption delegation token bound to the pet's
+    /// current key version. Owner-authorized and nonce-protected. (#1163)
+    pub fn delegate_decryption_access(
+        env: Env,
+        pet_id: u64,
+        delegate: Address,
+        ttl_seconds: u64,
+        nonce: u64,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        if ttl_seconds == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+        let is_new = env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none();
+
+        let now = env.ledger().timestamp();
+        let token = DecryptionDelegation {
+            pet_id,
+            delegate: delegate.clone(),
+            key_version: Self::get_pet_key_version(env.clone(), pet_id),
+            issued_at: now,
+            expires_at: now.saturating_add(ttl_seconds),
+        };
+        env.storage().instance().set(&key, &token);
+
+        if is_new {
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &safe_increment(&env, count));
+        }
+
+        true
+    }
+
+    /// Revoke a delegate's decryption token before it expires.
+    /// Owner-authorized. (#1163)
+    pub fn revoke_decryption_delegation(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none()
+        {
+            return false;
+        }
+        env.storage().instance().remove(&key);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetDelegationCount(pet_id))
+            .unwrap_or(0);
+        if count > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &(count - 1));
+        }
+        true
+    }
+
+    /// Verify whether `delegate` currently holds a valid decryption token
+    /// for `pet_id`: the token must exist, be unexpired, and be bound to
+    /// the pet's *current* key version. A rotation, expiry, or explicit
+    /// revocation all cause this to deterministically return `false`.
+    /// (#1163)
+    pub fn verify_decryption_token(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let token = match env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&DataKey::DecryptionToken((pet_id, delegate)))
+        {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if env.ledger().timestamp() >= token.expires_at {
+            return false;
+        }
+
+        token.key_version == Self::get_pet_key_version(env, pet_id)
     }
 
     /// Verify that a stored claim document hash matches `content_hash`.
