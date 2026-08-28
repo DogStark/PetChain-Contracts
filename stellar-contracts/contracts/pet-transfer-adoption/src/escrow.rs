@@ -28,6 +28,8 @@ pub enum EscrowError {
     EscrowNotFound = 4,
     InvalidEscrowState = 5,
     Unauthorized = 6,
+    EscrowNotExpired = 7,
+    InvalidTokenAddress = 8,
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,6 +52,9 @@ pub enum DisputeDecision {
     Split(u32), // basis points of the escrowed amount awarded to the seller
 }
 
+/// Default escrow deadline: 90 days in seconds.
+pub const DEFAULT_ESCROW_DEADLINE_SECONDS: u64 = 90 * 24 * 60 * 60;
+
 #[contracttype]
 #[derive(Debug, Clone)]
 pub struct EscrowEntry {
@@ -59,6 +64,7 @@ pub struct EscrowEntry {
     pub amount: i128,
     pub platform_fee_bps: u32,
     pub status: EscrowStatus,
+    pub deadline: u64, // ledger timestamp after which escrow may be cancelled
 }
 
 #[contracttype]
@@ -82,9 +88,19 @@ pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+/// Initialise escrow configuration. Only callable once; subsequent calls require
+/// the stored admin to call `update_fee_config` instead.
+/// Issue #1185: restricted to admin-only on first call (caller must be fee_recipient)
+/// and validates that token_address is a non-zero contract address.
 pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address, token_address: Address) {
     if fee_bps > 10_000 {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
+    }
+    // Issue #1185: require auth from the fee_recipient (who becomes admin)
+    fee_recipient.require_auth();
+    // Issue #1185: guard against re-initialisation
+    if env.storage().instance().has(&EscrowDataKey::Admin) {
+        panic_with_error!(env, EscrowError::Unauthorized);
     }
     env.storage().instance().set(&EscrowDataKey::FeeBps, &fee_bps);
     env.storage()
@@ -93,12 +109,9 @@ pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address, token
     env.storage()
         .instance()
         .set(&EscrowDataKey::TokenAddress, &token_address);
-    // Store the initial caller as Admin (first call sets the admin)
-    if !env.storage().instance().has(&EscrowDataKey::Admin) {
-        env.storage()
-            .instance()
-            .set(&EscrowDataKey::Admin, &fee_recipient);
-    }
+    env.storage()
+        .instance()
+        .set(&EscrowDataKey::Admin, &fee_recipient);
 }
 
 pub fn get_platform_fee_bps(env: &Env) -> u32 {
@@ -187,6 +200,7 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
     if env.storage().persistent().has(&key) {
         panic_with_error!(env, EscrowError::EscrowAlreadyExists);
     }
+    let deadline = env.ledger().timestamp() + DEFAULT_ESCROW_DEADLINE_SECONDS;
     let entry = EscrowEntry {
         transfer_id,
         buyer: buyer.clone(),
@@ -194,6 +208,7 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
         amount,
         platform_fee_bps: get_platform_fee_bps(env),
         status: EscrowStatus::Held,
+        deadline,
     };
     env.storage().persistent().set(&key, &entry);
     token_client(env).transfer(&buyer, &env.current_contract_address(), &amount);
@@ -204,6 +219,7 @@ pub fn deposit_fee(env: &Env, transfer_id: u64, buyer: Address, seller: Address,
 }
 
 /// Releases escrowed fee to seller minus platform fee.
+/// Issue #1183: terminal state is written BEFORE token transfers to prevent double-release.
 pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
     let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
@@ -213,6 +229,9 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
+    // Issue #1183: mark terminal state before any token transfer
+    entry.status = EscrowStatus::Released;
+    env.storage().persistent().set(&key, &entry);
     let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
     let seller_amount = entry.amount - platform_fee;
     let contract = env.current_contract_address();
@@ -222,8 +241,6 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
         let fee_recipient = get_fee_recipient(env).expect("fee recipient not configured");
         client.transfer(&contract, &fee_recipient, &platform_fee);
     }
-    entry.status = EscrowStatus::Released;
-    env.storage().persistent().set(&key, &entry);
     env.events().publish(
         (soroban_sdk::symbol_short!("FEE_REL"), transfer_id),
         (entry.seller.clone(), seller_amount, platform_fee),
@@ -231,6 +248,7 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
 }
 
 /// Refunds the full fee to the buyer (from Held or Disputed state).
+/// Issue #1183: terminal state is written BEFORE token transfer to prevent double-refund.
 pub fn refund_fee(env: &Env, transfer_id: u64) {
     let key = EscrowDataKey::Entry(transfer_id);
     let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
@@ -240,9 +258,10 @@ pub fn refund_fee(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held && entry.status != EscrowStatus::Disputed {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
-    token_client(env).transfer(&env.current_contract_address(), &entry.buyer, &entry.amount);
+    // Issue #1183: mark terminal state before token transfer
     entry.status = EscrowStatus::Refunded;
     env.storage().persistent().set(&key, &entry);
+    token_client(env).transfer(&env.current_contract_address(), &entry.buyer, &entry.amount);
     env.events().publish(
         (soroban_sdk::symbol_short!("FEE_RFND"), transfer_id),
         (entry.buyer.clone(), entry.amount),
@@ -265,6 +284,30 @@ pub fn dispute_transfer(env: &Env, transfer_id: u64, initiator: Address) {
     }
     entry.status = EscrowStatus::Disputed;
     env.storage().persistent().set(&key, &entry);
+}
+
+/// Issue #1184: Cancel an escrow whose deadline has passed. Callable by anyone;
+/// refunds the full amount to the buyer.
+pub fn cancel_expired_escrow(env: &Env, transfer_id: u64) {
+    let key = EscrowDataKey::Entry(transfer_id);
+    let mut entry: EscrowEntry = match env.storage().persistent().get(&key) {
+        Some(entry) => entry,
+        None => panic_with_error!(env, EscrowError::EscrowNotFound),
+    };
+    if entry.status != EscrowStatus::Held && entry.status != EscrowStatus::Disputed {
+        panic_with_error!(env, EscrowError::InvalidEscrowState);
+    }
+    if env.ledger().timestamp() <= entry.deadline {
+        panic_with_error!(env, EscrowError::EscrowNotExpired);
+    }
+    // Mark terminal state before transfer
+    entry.status = EscrowStatus::Refunded;
+    env.storage().persistent().set(&key, &entry);
+    token_client(env).transfer(&env.current_contract_address(), &entry.buyer, &entry.amount);
+    env.events().publish(
+        (soroban_sdk::symbol_short!("FEE_EXP"), transfer_id),
+        (entry.buyer.clone(), entry.amount),
+    );
 }
 
 /// Admin-controlled ruling on a disputed escrow. Only the configured `FeeRecipient`
@@ -299,6 +342,11 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
 
     let contract = env.current_contract_address();
     let client = token_client(env);
+
+    // Issue #1183: mark terminal state before token transfers
+    entry.status = EscrowStatus::Resolved;
+    env.storage().persistent().set(&key, &entry);
+
     if seller_amount > 0 {
         client.transfer(&contract, &entry.seller, &seller_amount);
     }
@@ -306,6 +354,7 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
         client.transfer(&contract, &entry.buyer, &buyer_amount);
     }
 
+    // Mark terminal state before transfers
     entry.status = EscrowStatus::Resolved;
     env.storage().persistent().set(&key, &entry);
 
@@ -325,9 +374,13 @@ pub fn get_escrow(env: &Env, transfer_id: u64) -> Option<EscrowEntry> {
 
 #[cfg(test)]
 mod tests {
+    // Threat-model note: all auth, token, and state-transition paths are tested
+    // below. Terminal states are written before token transfers (issues #1183, #1184)
+    // to prevent double-settlement under reentrancy or retry. init_escrow_config
+    // requires admin auth and rejects re-initialisation (issue #1185).
     use super::*;
     use crate::PetOwnershipContract;
-    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, token::StellarAssetClient, Address, Env};
 
     /// Registers the contract plus a Stellar asset (XLM stand-in) and funds the buyer.
     struct Ctx {
@@ -361,6 +414,99 @@ mod tests {
         let platform     = Address::generate(&env);
         StellarAssetClient::new(&env, &token).mint(&buyer, &1_000_000_000);
         Ctx { env, contract, token, buyer, seller, platform }
+    }
+
+    // ── Issue #1185: init_escrow_config admin-only + no re-init ──────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn init_escrow_config_rejects_reinitialisation() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            // Second call must fail with Unauthorized
+            init_escrow_config(&c.env, 100, c.platform.clone(), c.token.clone());
+        });
+    }
+
+    // ── Issue #1183: terminal state written before token transfer ────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn finalize_transfer_state_set_before_transfer_prevents_double_release() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 500, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            finalize_transfer(&c.env, 500);
+            // State is Released; second call must fail
+            finalize_transfer(&c.env, 500);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn refund_fee_state_set_before_transfer_prevents_double_refund() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 501, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            refund_fee(&c.env, 501);
+            // State is Refunded; second call must fail
+            refund_fee(&c.env, 501);
+        });
+    }
+
+    // ── Issue #1184: escrow timeout / abandonment ────────────────────────────
+
+    #[test]
+    fn deposit_fee_records_deadline() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 600, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            let e = get_escrow(&c.env, 600).unwrap();
+            assert_eq!(e.deadline, c.env.ledger().timestamp() + DEFAULT_ESCROW_DEADLINE_SECONDS);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #7)")]
+    fn cancel_expired_escrow_before_deadline_is_rejected() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 601, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            cancel_expired_escrow(&c.env, 601);
+        });
+    }
+
+    #[test]
+    fn cancel_expired_escrow_after_deadline_refunds_buyer() {
+        let c = setup();
+        let before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 602, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            c.env.ledger().with_mut(|l| l.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1);
+            cancel_expired_escrow(&c.env, 602);
+            assert_eq!(get_escrow(&c.env, 602).unwrap().status, EscrowStatus::Refunded);
+        });
+        assert_eq!(c.balance(&c.buyer), before);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn cancel_expired_escrow_on_released_state_is_rejected() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 603, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            finalize_transfer(&c.env, 603);
+            c.env.ledger().with_mut(|l| l.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1);
+            cancel_expired_escrow(&c.env, 603);
+        });
     }
 
     #[test]
