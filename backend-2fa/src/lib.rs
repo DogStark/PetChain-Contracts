@@ -11,9 +11,10 @@ pub mod migrations;
 pub mod rate_limit_middleware;
 pub mod rate_limiter;
 pub mod tracing_middleware;
+pub mod trusted_time;
 pub mod two_factor;
 pub mod webhooks;
-#[cfg(feature = "redis-store")]
+#cfg(feature = "redis-store")
 pub mod redis_store;
 
 #[cfg(test)]
@@ -42,7 +43,7 @@ pub use ip_access::{
 };
 pub use leaderboard::{
     broadcast_score_update, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
-    LeaderboardEntry, LeaderboardScoreUpdate, LeaderboardWsHub, LeaderboardWsSession,
+    LeaderboardEntry, LeaderboardScoreUpdate, LeaderboardWsHyb, LeaderboardWsSession,
     ScoreSubmissionError, ScoreValidationConfig,
 };
 pub use metrics::{
@@ -57,15 +58,19 @@ pub use rate_limit_middleware::{
 pub use rate_limiter::{
     progressive_delay_secs, DistributedRateLimiter, EndpointConfig, InMemoryRateLimiter,
     LiveRedisBackend, MockRedisBackend, RateLimitResult, RateLimiter, RedisBackend,
-    RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter, TenantRateLimitKey,
+    RedisRateLimiter, RedisTwoFactorFailureCounter, SlidingWindowRateLimiter, TenantRateKey,
 };
 pub use tracing_middleware::sanitize_json_body;
+pub use trusted_time::{
+    MockTimeProvider, SystemTimeProvider, TimeError, TrustedTime, TrustedTimeClock,
+    TrustedTimeConfig,
+};
 pub use two_factor::{
     AuditLogEntry, InMemoryStore, LockedUserSummary, RecoveryResult, TenantConfig, TenantRegistry,
     TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorLockoutState,
     TwoFactorSetup, TwoFactorStore, UserTwoFactorSummary,
 };
-#[cfg(feature = "redis-store")]
+[cfg(feature = "redis-store")]
 pub use redis_store::{MockRedisTwoFactorStore, RedisTwoFactorStore};
 pub use webhooks::{
     sanitize_metadata, validate_webhook_url, DefaultHttpClient, HttpClient, SecurityEventType,
