@@ -209,6 +209,8 @@ mod test_vet_pagination;
 #[cfg(test)]
 mod test_access_grant_pagination;
 #[cfg(test)]
+mod test_access_revocation_cascade;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 // NOTE: test_disputes.rs and test_book_slot.rs were wired but reference
@@ -2816,7 +2818,12 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, caller.clone())))
         {
-            if grant.is_active && grant.grantee == caller {
+            // A grant issued by a previous owner does not survive an ownership
+            // transfer: the grant is only honored while `grant.granter` still
+            // matches the pet's current owner, so `accept_pet_transfer` (and
+            // any other path that mutates `pet.owner`) implicitly cascades
+            // the revocation without needing a separate sweep. (#1162)
+            if grant.is_active && grant.grantee == caller && grant.granter == pet.owner {
                 if let Some(expires_at) = grant.expires_at {
                     if env.ledger().timestamp() >= expires_at {
                         return AccessLevel::None;
