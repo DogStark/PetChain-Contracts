@@ -750,6 +750,14 @@ pub struct EmergencyAccessLog {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct EmergencyOverride {
+    pub responder: Address,
+    pub expires_at: u64,
+    pub total_duration: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuditEntry {
     pub actor: Address,
@@ -1242,6 +1250,8 @@ pub enum SystemKey {
     PetTransferProposal(u64),
     PetTransferProposalCount,
     PetActiveProposals(u64), // pet_id -> Vec<u64> of active proposal IDs
+    PetTransferOffer(u64),
+    EmergencyOverride((u64, Address)),
     EncryptionNonceCounter,
 
     // Statistics caching keys
@@ -5731,6 +5741,10 @@ impl PetChainContract {
             pet.new_owner = to;
             pet.updated_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::Pet(id), &pet);
+            env.storage().instance().set(
+                &SystemKey::PetTransferOffer(id),
+                &env.ledger().timestamp().saturating_add(86_400),
+            );
         }
     }
 
@@ -5948,6 +5962,11 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, Pet>(&DataKey::Pet(id))
         {
+            let expires_at: u64 = env.storage().instance().get(&SystemKey::PetTransferOffer(id))
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+            if env.ledger().timestamp() > expires_at {
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
             pet.new_owner.require_auth();
 
             let old_owner = pet.owner.clone();
@@ -5986,7 +6005,142 @@ impl PetChainContract {
                     timestamp: pet.updated_at,
                 },
             );
+            env.storage().instance().remove(&SystemKey::PetTransferOffer(id));
         }
+    }
+
+    pub fn cancel_pet_transfer(env: Env, id: u64) {
+        let mut pet: Pet = env.storage().instance().get(&DataKey::Pet(id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        pet.new_owner = pet.owner.clone();
+        env.storage().instance().set(&DataKey::Pet(id), &pet);
+        env.storage().instance().remove(&SystemKey::PetTransferOffer(id));
+    }
+
+    pub fn configure_multisig(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32) -> bool {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::validate_multisig(&env, &pet.owner, &signers, threshold);
+        env.storage().instance().set(&SystemKey::PetMultisigConfig(pet_id), &MultisigConfig { pet_id, signers, threshold, enabled: true });
+        true
+    }
+
+    pub fn update_multisig_signers(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32) -> bool {
+        Self::configure_multisig(env, pet_id, signers, threshold)
+    }
+
+    pub fn get_multisig_config(env: Env, pet_id: u64) -> Option<MultisigConfig> {
+        env.storage().instance().get(&SystemKey::PetMultisigConfig(pet_id))
+    }
+
+    pub fn disable_multisig(env: Env, pet_id: u64) -> bool {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        if let Some(mut config) = Self::get_multisig_config(env.clone(), pet_id) {
+            config.enabled = false;
+            env.storage().instance().set(&SystemKey::PetMultisigConfig(pet_id), &config);
+            return true;
+        }
+        false
+    }
+
+    fn validate_multisig(env: &Env, owner: &Address, signers: &Vec<Address>, threshold: u32) {
+        if signers.is_empty() || threshold == 0 || threshold > signers.len() as u32 || !signers.contains(owner) {
+            panic_with_error!(env, ContractError::InvalidThreshold);
+        }
+        for i in 0..signers.len() {
+            for j in (i + 1)..signers.len() {
+                if signers.get(i) == signers.get(j) { panic_with_error!(env, ContractError::InvalidInput); }
+            }
+        }
+    }
+
+    pub fn require_multisig_for_transfer(env: Env, pet_id: u64, to: Address) -> u64 {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        let config = Self::get_multisig_config(env.clone(), pet_id)
+            .filter(|config| config.enabled)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        let count: u64 = env.storage().instance().get(&SystemKey::PetTransferProposalCount).unwrap_or(0);
+        let id = safe_increment(count);
+        let mut signatures = Vec::new(&env);
+        signatures.push_back(pet.owner);
+        let now = env.ledger().timestamp();
+        let proposal = PetTransferProposal { id, pet_id, to, signatures, created_at: now, expires_at: now.saturating_add(86_400), executed: false };
+        env.storage().instance().set(&SystemKey::PetTransferProposal(id), &proposal);
+        env.storage().instance().set(&SystemKey::PetTransferProposalCount, &id);
+        let mut active: Vec<u64> = env.storage().instance().get(&SystemKey::PetActiveProposals(pet_id)).unwrap_or(Vec::new(&env));
+        active.push_back(id);
+        env.storage().instance().set(&SystemKey::PetActiveProposals(pet_id), &active);
+        let _ = config;
+        id
+    }
+
+    pub fn get_transfer_proposal(env: Env, proposal_id: u64) -> Option<PetTransferProposal> {
+        env.storage().instance().get(&SystemKey::PetTransferProposal(proposal_id))
+    }
+
+    pub fn sign_transfer_proposal(env: Env, proposal_id: u64, signer: Address) -> bool {
+        signer.require_auth();
+        let mut proposal = Self::get_transfer_proposal(env.clone(), proposal_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        let config = Self::get_multisig_config(env.clone(), proposal.pet_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        if !config.enabled || !config.signers.contains(&signer) || proposal.executed { panic_with_error!(&env, ContractError::Unauthorized); }
+        if env.ledger().timestamp() > proposal.expires_at || proposal.signatures.contains(&signer) { panic_with_error!(&env, ContractError::InvalidState); }
+        proposal.signatures.push_back(signer);
+        env.storage().instance().set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+        true
+    }
+
+    pub fn multisig_transfer_pet(env: Env, proposal_id: u64) -> bool {
+        let mut proposal = Self::get_transfer_proposal(env.clone(), proposal_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        let config = Self::get_multisig_config(env.clone(), proposal.pet_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        if proposal.executed || env.ledger().timestamp() > proposal.expires_at { panic_with_error!(&env, ContractError::InvalidState); }
+        if proposal.signatures.len() < config.threshold { panic_with_error!(&env, ContractError::ThresholdNotMet); }
+        let mut pet: Pet = env.storage().instance().get(&DataKey::Pet(proposal.pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        let old_owner = pet.owner.clone();
+        Self::remove_pet_from_owner_index(&env, &old_owner, pet.id);
+        pet.owner = proposal.to.clone();
+        pet.new_owner = proposal.to.clone();
+        pet.updated_at = env.ledger().timestamp();
+        Self::add_pet_to_owner_index(&env, &pet.owner, pet.id);
+        env.storage().instance().set(&DataKey::Pet(pet.id), &pet);
+        Self::log_ownership_change(&env, pet.id, old_owner.clone(), pet.owner.clone(), String::from_str(&env, "Multisig Transfer"));
+        Self::append_custody_entry(&env, pet.id, old_owner.clone(), pet.owner.clone(), TransferType::Multisig);
+        env.events().publish((String::from_str(&env, "PetOwnershipTransferred"), pet.id), PetOwnershipTransferredEvent { version: EVENT_SCHEMA_VERSION, pet_id: pet.id, old_owner, new_owner: pet.owner.clone(), timestamp: pet.updated_at });
+        proposal.executed = true;
+        env.storage().instance().set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+        true
+    }
+
+    pub fn cancel_transfer_proposal(env: Env, proposal_id: u64) {
+        let mut proposal = Self::get_transfer_proposal(env.clone(), proposal_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(proposal.pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+        if proposal.executed { panic_with_error!(&env, ContractError::InvalidState); }
+        proposal.executed = true;
+        env.storage().instance().set(&SystemKey::PetTransferProposal(proposal_id), &proposal);
+    }
+
+    pub fn get_active_transfer_proposals(env: Env, pet_id: u64) -> Vec<PetTransferProposal> {
+        let ids: Vec<u64> = env.storage().instance().get(&SystemKey::PetActiveProposals(pet_id)).unwrap_or(Vec::new(&env));
+        let mut result = Vec::new(&env);
+        for id in ids.iter() {
+            if let Some(proposal) = Self::get_transfer_proposal(env.clone(), id) {
+                if !proposal.executed && env.ledger().timestamp() <= proposal.expires_at { result.push_back(proposal); }
+            }
+        }
+        result
     }
 
     // --- HELPER FOR INDEX MAINTENANCE ---
@@ -9027,12 +9181,59 @@ impl PetChainContract {
         if caller == owner {
             return true;
         }
+        if let Some(access) = env.storage().instance().get::<SystemKey, EmergencyOverride>(
+            &SystemKey::EmergencyOverride((pet_id, caller.clone())),
+        ) {
+            if env.ledger().timestamp() <= access.expires_at {
+                return true;
+            }
+        }
         let responders: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::EmergencyResponders(pet_id))
             .unwrap_or(Vec::new(env));
         responders.contains(caller)
+    }
+
+    pub fn grant_emergency_override(
+        env: Env, pet_id: u64, responder: Address, reason_code: u32, duration: u64,
+    ) {
+        Self::set_emergency_override(&env, pet_id, responder, reason_code, duration, false);
+    }
+
+    pub fn renew_emergency_override(
+        env: Env, pet_id: u64, responder: Address, reason_code: u32, duration: u64,
+    ) {
+        Self::set_emergency_override(&env, pet_id, responder, reason_code, duration, true);
+    }
+
+    fn set_emergency_override(
+        env: &Env, pet_id: u64, responder: Address, reason_code: u32, duration: u64, renewal: bool,
+    ) {
+        let pet: Pet = env.storage().instance().get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        if reason_code == 0 || duration == 0 || duration > 86_400 {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let key = SystemKey::EmergencyOverride((pet_id, responder.clone()));
+        let previous: Option<EmergencyOverride> = env.storage().instance().get(&key);
+        if renewal && previous.is_none() {
+            panic_with_error!(env, ContractError::InvalidState);
+        }
+        let total = previous.as_ref().map(|access| access.total_duration).unwrap_or(0);
+        let total = total.checked_add(duration)
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidInput));
+        if total > 604_800 {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let now = env.ledger().timestamp();
+        let start = previous.map(|access| access.expires_at.max(now)).unwrap_or(now);
+        let expires_at = start.checked_add(duration)
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::InvalidInput));
+        env.storage().instance().set(&key, &EmergencyOverride { responder, expires_at, total_duration: total });
+        Self::write_emergency_audit(env, pet_id, pet.owner, reason_code);
     }
 
     /// List all approved emergency responders for a pet. Owner auth required.
