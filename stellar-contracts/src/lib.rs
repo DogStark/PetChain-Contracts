@@ -220,6 +220,8 @@ mod test_upgrade_proposal;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_discriminant_stability;
+#[cfg(test)]
+mod test_max_input_sizes;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
