@@ -1019,6 +1019,174 @@ mod tests {
         }
     }
 
+    mod trusted_time_tests {
+        // Window semantics: `window` is the number of TOTP steps on either
+        // side of the trusted current step that are accepted as valid.
+        // Clock drift beyond that window is rejected.
+        use crate::two_factor::{TotpConfig, TwoFactorAuth};
+        use totp_rs::{Algorithm, Secret, TOTP};
+
+        fn generate_token_at(secret: &str, config: &TotpConfig, now: u64) -> String {
+            TOTP::new(
+                config.algorithm,
+                config.digits,
+                config.window,
+                config.period,
+                Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+                None,
+                String::new(),
+            )
+            .unwrap()
+            .generate(now)
+            .unwrap()
+        }
+
+        #[test]
+        fn test_verify_token_at_step_boundary() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig {
+                algorithm: Algorithm::SHA1,
+                digits: 6,
+                period: 30,
+                window: 0,
+                backup_code_count: 8,
+            };
+            let now = 1_700_000_020u64;
+
+            let token = generate_token_at(&secret, &config, now);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &token,
+                    config.clone(),
+                    now + 19
+                )
+                .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &token,
+                    config.clone(),
+                    now + 20
+                )
+                .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_default_window_accepts_one_step_drift() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+
+            let previous = generate_token_at(&secret, &config, now - config.period);
+            let future = generate_token_at(&secret, &config, now + config.period);
+            let too_old = generate_token_at(&secret, &config, now - 2 * config.period);
+            let too_new = generate_token_at(&secret, &config, now + 2 * config.period);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &previous, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &future, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(&secret, &too_old, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(&secret, &too_new, config.clone(), now)
+                    .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_leap_second_boundary_is_stable() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig {
+                algorithm: Algorithm::SHA1,
+                digits: 6,
+                period: 30,
+                window: 0,
+                backup_code_count: 8,
+            };
+            let before_leap = 1_483_228_799u64;
+            let after_leap = 1_483_228_800u64;
+
+            let before_token = generate_token_at(&secret, &config, before_leap);
+            let after_token = generate_token_at(&secret, &config, after_leap);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &before_token,
+                    config.clone(),
+                    before_leap
+                )
+                .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &after_token,
+                    config.clone(),
+                    after_leap
+                )
+                .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &before_token,
+                    config.clone(),
+                    after_leap
+                )
+                .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_multi_instance_trusted_time_consistency() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+            let token = generate_token_at(&secret, &config, now);
+
+            let first =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap();
+            let second =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap();
+
+            assert_eq!(first, second);
+        }
+
+        #[test]
+        fn test_drift_metric_records_without_secret_material() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+            let rejected = generate_token_at(&secret, &config, now - 2 * config.period);
+
+            let ok =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &rejected, config, now).unwrap();
+            assert!(!ok);
+
+            let rendered = crate::metrics::render_metrics().expect("metrics render");
+            assert!(rendered.contains("totp_drift"));
+            assert!(!rendered.contains(&secret));
+        }
+    }
+
     mod rate_limiter_tests {
         use crate::handlers::{
             clear_two_factor_store_for_tests, overwrite_two_factor_data_for_tests,
