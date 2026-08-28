@@ -33,6 +33,19 @@ jobs:
         working-directory: stellar-contracts
         run: cargo audit --deny warnings
 
+  abi-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Detects unreviewed changes to the contract's public function
+      # signatures (Issue #1147). See stellar-contracts/docs/abi-migrations.md
+      # for what to do if this fails.
+      - name: Check ABI snapshot is up to date
+        working-directory: stellar-contracts
+        run: ./scripts/generate_abi_snapshot.sh --check
+
   coverage:
     runs-on: ubuntu-latest
     steps:
