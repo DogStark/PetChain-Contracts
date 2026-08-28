@@ -207,6 +207,8 @@ mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
 #[cfg(test)]
+mod test_access_grant_pagination;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 // NOTE: test_disputes.rs and test_book_slot.rs were wired but reference
@@ -1791,6 +1793,21 @@ pub struct AccessGrant {
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
     pub is_active: bool,
+}
+
+/// A page of access grants returned by cursor pagination (Issue #1161).
+///
+/// `cursor` is an opaque slot index into the pet's access-grant index; pass
+/// `0` for the first page and echo back `next_cursor` on subsequent calls
+/// until it is `0`, meaning there are no more pages.
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessGrantPage {
+    pub items: Vec<AccessGrant>,
+    pub next_cursor: u64,
+    /// Total number of grant slots for the pet (stable upper bound on live
+    /// rows; some slots may be filtered out when `active_only` is set).
+    pub total_slots: u64,
 }
 
 #[contracttype]
@@ -5980,6 +5997,97 @@ impl PetChainContract {
             }
         }
         false
+    }
+
+    /// Cursor-based pagination of a pet's access grants (Issue #1161).
+    ///
+    /// Lets the owner (or an authorized auditor) review access grants in
+    /// bounded pages instead of loading the entire grant list at once.
+    /// Only the pet owner may call this today, matching the authorization
+    /// used by [`Self::grant_access`] and [`Self::revoke_access`].
+    ///
+    /// Because the grant index is compacted (shifted left) whenever a grant
+    /// is removed, a page may skip or repeat an entry if grants are revoked
+    /// concurrently with pagination -- the same caveat that applies to other
+    /// cursor-paginated views in this contract. Callers that need a
+    /// point-in-time-consistent view should page within a single ledger
+    /// close.
+    ///
+    /// `cursor` is an opaque slot index; pass `0` for the first page and
+    /// echo back `next_cursor` on subsequent calls until it is `0`. When
+    /// `active_only` is `true`, expired and explicitly revoked grants are
+    /// filtered out of `items` (but still count toward slots examined).
+    pub fn get_pet_access_grants_cursor(
+        env: Env,
+        pet_id: u64,
+        cursor: u64,
+        limit: u32,
+        active_only: bool,
+    ) -> AccessGrantPage {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+        if let Some(pet) = pet.as_ref() {
+            pet.owner.require_auth();
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+        let mut items = Vec::new(&env);
+
+        if pet.is_none() || limit == 0 || count == 0 {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        // `cursor` is the last examined slot; resume from the following slot.
+        let start = cursor.saturating_add(1);
+        if start > count {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        let end = count.min(start.saturating_add(limit as u64).saturating_sub(1));
+        let now = env.ledger().timestamp();
+        let mut idx = start;
+        while idx <= end && items.len() < limit {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, idx)))
+            {
+                if let Some(grant) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, grantee)))
+                {
+                    let expired = grant.expires_at.map(|exp| now >= exp).unwrap_or(false);
+                    if !active_only || (grant.is_active && !expired) {
+                        items.push_back(grant);
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        let last_examined = idx.saturating_sub(1);
+        let next_cursor = if last_examined < count { last_examined } else { 0 };
+
+        AccessGrantPage {
+            items,
+            next_cursor,
+            total_slots: count,
+        }
     }
 
     /// Nonce-protected pet registration. Caller supplies their current nonce;
