@@ -205,6 +205,8 @@ mod test_pet_birthday_validation;
 #[cfg(test)]
 mod test_persistent_ttl_policy;
 #[cfg(test)]
+mod test_access_grant_index_invariants;
+#[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
