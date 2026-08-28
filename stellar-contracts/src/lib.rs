@@ -166,7 +166,7 @@ pub enum GroomingKey {
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
-    Env, Map, String, Symbol, Vec,
+    Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
 // Bounded-module split (Issue #1146, phase 1): storage keys and value
@@ -202,6 +202,8 @@ mod test_breeding;
 mod test_breeding_genetics;
 #[cfg(test)]
 mod test_pet_birthday_validation;
+#[cfg(test)]
+mod test_persistent_ttl_policy;
 #[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
@@ -356,6 +358,25 @@ const MAX_LAB_RESULTS_LEN: u32 = 1_000;
 
 /// Maximum byte length of a `LabResult::reference_ranges`.
 const MAX_LAB_REF_RANGES_LEN: u32 = 500;
+
+/// TTL-extension policy for persistent storage entries (Issue #1154).
+///
+/// Persistent entries (audit/access logs, breeding records, ...) are billed
+/// separately from instance storage and, unlike instance storage, are not
+/// automatically kept alive by every contract invocation: each entry's TTL
+/// must be extended explicitly or it can be archived/expire out from under
+/// the contract. `PERSISTENT_TTL_THRESHOLD` is the minimum remaining TTL (in
+/// ledgers) below which we proactively bump it back up to
+/// `PERSISTENT_TTL_EXTEND_TO` on every write (and on reads of
+/// long-lived/critical records) so records that are written once and read
+/// rarely still survive.
+///
+/// At Stellar's ~5s ledger close time, `PERSISTENT_TTL_EXTEND_TO` of
+/// ~1,036,800 ledgers is roughly 60 days; `PERSISTENT_TTL_THRESHOLD` bumps
+/// as soon as the entry has less than ~30 days of life left, well within the
+/// network's max TTL extension window.
+const PERSISTENT_TTL_THRESHOLD: u32 = 518_400; // ~30 days
+const PERSISTENT_TTL_EXTEND_TO: u32 = 1_036_800; // ~60 days
 
 /// Maximum byte length of a `Dispute::reason`.
 const MAX_DISPUTE_REASON_LEN: u32 = 500;
@@ -3683,6 +3704,21 @@ impl PetChainContract {
         result
     }
 
+    /// Extend the TTL of a persistent-storage entry per the archival policy
+    /// defined by `PERSISTENT_TTL_THRESHOLD` / `PERSISTENT_TTL_EXTEND_TO`.
+    /// (Issue #1154). Call this after every `persistent().set(...)` (and on
+    /// reads of records that must remain reachable even when written once
+    /// and read rarely) so critical persistent records are not silently
+    /// archived/expired by the ledger.
+    fn bump_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    }
+
     fn log_access(env: &Env, pet_id: u64, user: Address, action: AccessAction, details: String) {
         let key = (Symbol::new(env, "access_logs"), pet_id);
         let mut logs: Vec<AccessLog> = env
@@ -3711,6 +3747,7 @@ impl PetChainContract {
 
         logs.push_back(log);
         env.storage().persistent().set(&key, &logs);
+        Self::bump_persistent_ttl(env, &key);
     }
 
     /// Read access log entries for a pet. Visible to the pet owner or any admin.
@@ -3731,10 +3768,13 @@ impl PetChainContract {
         }
 
         let key = (Symbol::new(&env, "access_logs"), pet_id);
-        env.storage()
+        let logs = env
+            .storage()
             .persistent()
             .get(&key)
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env));
+        Self::bump_persistent_ttl(&env, &key);
+        logs
     }
 
     fn require_admin(env: &Env) {
@@ -9548,6 +9588,7 @@ impl PetChainContract {
             }
             logs.push_back(log);
             env.storage().persistent().set(&log_key, &logs);
+            Self::bump_persistent_ttl(&env, &log_key);
 
             Self::write_emergency_audit(&env, pet_id, caller, reason_code);
 
@@ -9580,6 +9621,7 @@ impl PetChainContract {
             pet_id,
         });
         env.storage().persistent().set(&audit_key, &entries);
+        Self::bump_persistent_ttl(env, &audit_key);
     }
 
     fn is_admin_address(env: &Env, caller: &Address) -> bool {
@@ -11269,6 +11311,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&ActivityKey::PetActivityStreak(pet_id), &streak);
+        Self::bump_persistent_ttl(&env, &ActivityKey::PetActivityStreak(pet_id));
 
         activity_id
     }
@@ -11366,9 +11409,11 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecord(id), &record);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecord(id));
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecordCount, &id);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecordCount);
 
         Self::inc_pet_breeding_count(&env, sire_id);
         Self::inc_pet_breeding_count(&env, dam_id);
@@ -11385,6 +11430,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::PetBreedingCount(pet_id), &safe_increment(count));
+        Self::bump_persistent_ttl(env, &BreedingKey::PetBreedingCount(pet_id));
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
@@ -11409,15 +11455,17 @@ impl PetChainContract {
         }
 
         // Store parent pair for pedigree queries (COI, lineage)
-        env.storage().persistent().set(
-            &BreedingKey::ParentPair(offspring_id),
-            &(record.sire_id, record.dam_id),
-        );
+        let parent_pair_key = BreedingKey::ParentPair(offspring_id);
+        env.storage()
+            .persistent()
+            .set(&parent_pair_key, &(record.sire_id, record.dam_id));
+        Self::bump_persistent_ttl(&env, &parent_pair_key);
 
         record.offspring_count = record.offspring_count.saturating_add(1);
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecord(record_id), &record);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecord(record_id));
 
         let count = env
             .storage()
@@ -11427,6 +11475,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::PetOffspringCount(offspring_id), &(count + 1));
+        Self::bump_persistent_ttl(&env, &BreedingKey::PetOffspringCount(offspring_id));
 
         true
     }
