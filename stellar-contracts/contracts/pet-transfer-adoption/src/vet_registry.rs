@@ -274,7 +274,7 @@ impl VetRegistryContract {
     ///
     /// # Returns
     /// `Vec<Vet>` — Paginated list of vets
-    pub fn list_vets(env: Env, offset: u64, limit: u32) -> Vec<Vet> {
+    pub fn list_vets(env: Env, offset: u64, limit: u32, verified_only: bool) -> Vec<Vet> {
         let count: u64 = env
             .storage()
             .persistent()
@@ -289,6 +289,7 @@ impl VetRegistryContract {
 
         let start_index = offset + 1; // Indices are 1-based
         let end_index = (offset + limit as u64).min(count);
+        let mut matched = 0u64;
 
         for i in start_index..=end_index {
             if let Some(vet_address) = env
@@ -301,7 +302,14 @@ impl VetRegistryContract {
                     .persistent()
                     .get::<DataKey, Vet>(&DataKey::VetByAddress(vet_address))
                 {
+                    if verified_only && !vet.verified {
+                        continue;
+                    }
                     vets.push_back(vet);
+                    matched += 1;
+                    if matched >= limit as u64 {
+                        break;
+                    }
                 }
             }
         }
@@ -434,7 +442,7 @@ mod tests {
     #[test]
     fn test_list_vets_empty() {
         let (_, _, _, client) = setup();
-        let vets = client.list_vets(&0, &10);
+        let vets = client.list_vets(&0, &10, &false);
         assert!(vets.is_empty());
     }
 
@@ -465,8 +473,61 @@ mod tests {
             &str(&env, "Dermatology"),
         );
 
-        let vets = client.list_vets(&0, &10);
+        let vets = client.list_vets(&0, &10, &false);
         assert_eq!(vets.len(), 3);
+    }
+
+    #[test]
+    fn test_list_vets_verified_only_filters_revoked_vets() {
+        let (env, _, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        let vet3 = soroban_sdk::Address::generate(&env);
+
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
+        client.register_vet(
+            &vet3,
+            &str(&env, "Dr. Three"),
+            &str(&env, "LIC-003"),
+            &str(&env, "Dermatology"),
+        );
+
+        client.verify_vet(&vet1);
+        client.revoke_vet_license(&vet3);
+
+        let vets = client.list_vets(&0, &10, &true);
+        assert_eq!(vets.len(), 1);
+        assert_eq!(vets.get(0).unwrap().address, vet1);
+    }
+
+    #[test]
+    fn test_list_vets_mixed_verified_toggle_preserves_all_vets() {
+        let (env, _, _, client) = setup();
+
+        let vet1 = soroban_sdk::Address::generate(&env);
+        let vet2 = soroban_sdk::Address::generate(&env);
+        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.verify_vet(&vet1);
+
+        let all_vets = client.list_vets(&0, &10, &false);
+        let filtered = client.list_vets(&0, &10, &true);
+
+        assert_eq!(all_vets.len(), 2);
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.get(0).unwrap().verified);
     }
 
     #[test]
@@ -496,7 +557,7 @@ mod tests {
             &str(&env, "Dermatology"),
         );
 
-        let vets = client.list_vets(&0, &2);
+        let vets = client.list_vets(&0, &2, &false);
         assert_eq!(vets.len(), 2);
     }
 
@@ -527,7 +588,7 @@ mod tests {
             &str(&env, "Dermatology"),
         );
 
-        let vets = client.list_vets(&1, &10);
+        let vets = client.list_vets(&1, &10, &false);
         assert_eq!(vets.len(), 2);
     }
 
@@ -543,7 +604,7 @@ mod tests {
             &str(&env, "General"),
         );
 
-        let vets = client.list_vets(&5, &10);
+        let vets = client.list_vets(&5, &10, &false);
         assert!(vets.is_empty());
     }
 
@@ -559,7 +620,7 @@ mod tests {
             &str(&env, "General"),
         );
 
-        let vets = client.list_vets(&0, &0);
+        let vets = client.list_vets(&0, &0, &false);
         assert!(vets.is_empty());
     }
 
@@ -578,7 +639,7 @@ mod tests {
         // Verify the vet
         client.verify_vet(&vet1);
 
-        let vets = client.list_vets(&0, &10);
+        let vets = client.list_vets(&0, &10, &false);
         assert_eq!(vets.len(), 1);
         let retrieved = vets.get(0).unwrap();
         assert!(retrieved.verified);
@@ -711,7 +772,7 @@ mod tests {
         );
 
         // offset == count (1) — guard must return empty Vec without panicking.
-        let vets = client.list_vets(&1, &10);
+        let vets = client.list_vets(&1, &10, &false);
         assert!(vets.is_empty());
     }
 
