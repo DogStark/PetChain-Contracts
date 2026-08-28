@@ -209,6 +209,8 @@ mod test_access_grant_index_invariants;
 #[cfg(test)]
 mod test_medical_record_hashing;
 #[cfg(test)]
+mod test_medical_event_timestamps;
+#[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
@@ -382,6 +384,21 @@ const MAX_LAB_REF_RANGES_LEN: u32 = 500;
 const PERSISTENT_TTL_THRESHOLD: u32 = 518_400; // ~30 days
 const PERSISTENT_TTL_EXTEND_TO: u32 = 1_036_800; // ~60 days
 
+/// Maximum allowed clock skew (seconds) for a medical-event timestamp that is
+/// reported as having already occurred (e.g. `administered_at`), measured
+/// relative to the current ledger time. This is deliberately generous (on
+/// the order of decades) so it only rejects clearly nonsensical/corrupt
+/// future dates (e.g. a caller passing a millisecond timestamp, or a typo
+/// adding extra digits) without constraining legitimate historical or
+/// synthetic test timestamps, which need not track real-world wall-clock
+/// time. (Issue #1174)
+const MAX_EVENT_FUTURE_SKEW: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
+
+/// Furthest a vaccination's `next_due_date` / `expires_at` may be scheduled
+/// past `administered_at`, to catch fat-fingered far-future dates while
+/// still allowing multi-year vaccination schedules. (Issue #1174)
+const MAX_EVENT_HORIZON: u64 = 50 * 365 * 24 * 60 * 60; // ~50 years
+
 /// Maximum byte length of a `Dispute::reason`.
 const MAX_DISPUTE_REASON_LEN: u32 = 500;
 
@@ -527,6 +544,11 @@ pub enum ContractError {
     NotDisputeStakeholder = 166,
     NotInEvidencePhase = 167,
     NotDisputeParty = 168,
+
+    /// A medical-event timestamp fell outside the allowed domain relative to
+    /// ledger time (too far in the past, too far in the future, or with a
+    /// due/expiry date before the event it describes). (Issue #1174)
+    InvalidTimestamp = 169,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -6857,6 +6879,25 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        let now = env.ledger().timestamp();
+
+        // Validate medical-event timestamps against ledger time (Issue #1174).
+        // `administered_at` must not be further in the future than the
+        // allowed clock-skew tolerance relative to the current ledger time.
+        if administered_at > now.saturating_add(MAX_EVENT_FUTURE_SKEW) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+        // `next_due_date` and `expires_at` (when set) describe follow-up
+        // dates and must not precede the event they follow, nor sit
+        // absurdly far beyond it.
+        let max_future = administered_at.saturating_add(MAX_EVENT_HORIZON);
+        if next_due_date != 0 && (next_due_date < administered_at || next_due_date > max_future) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+        if expires_at != 0 && (expires_at < administered_at || expires_at > max_future) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+
         // Check storage quota (Issue #676)
         Self::increment_pet_storage(&env, pet_id);
 
@@ -6868,7 +6909,6 @@ impl PetChainContract {
         let vaccine_id = vaccine_count
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-        let now = env.ledger().timestamp();
         let key = PetChainContract::get_encryption_key(&env);
 
         let vname_bytes = vaccine_name.to_xdr(&env);
