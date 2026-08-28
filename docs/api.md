@@ -74,6 +74,7 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `is_vaccination_current` | Returns whether a vaccine type is current |
 | `get_medical_record` | Returns a medical record by ID |
 | `get_pet_medical_records` | Returns paginated medical records for a pet |
+| `get_pet_medical_records_cursor` | Cursor-based paged medical records; stable under concurrent inserts/deletes (Issue #1173) |
 | `search_medical_records` | Returns filtered medical records |
 | `get_attachments` | Returns attachments for a record (Malicious hidden from non-admins) |
 | `get_attachment_by_index` | Returns a single attachment by index |
@@ -104,6 +105,27 @@ The primary contract lives in `stellar-contracts/src/lib.rs` and exposes functio
 - insurance, grooming, nutrition, activity, and behavior records
 - emergency contacts and emergency access logs
 - multisig administration and upgrade proposals
+
+**Medical-record soft-delete & pagination (Issues #1170–#1173):**
+Medical-record reads are delegated through a shared soft-delete filter so a
+soft-deleted record never resurfaces in `get_medical_record`,
+`get_pet_medical_records`, `get_pet_medical_records_cursor`,
+`search_medical_records`, `search_by_keyword`, or
+`get_pet_full_profile_batch`. Deletion preserves provenance (only the pet
+owner, the record's vet, or an admin may delete) and publishes a
+`MedicalRecordDeleted` audit event. Purging is split into a bounded,
+resumable `purge_deleted_records_bounded` (Issue #1172) so large pets can be
+drained without hitting transaction resource limits.
+
+**Compatibility / migration notes:**
+- `set_max_subscriptions_per_address` was renamed to `set_max_subscriptions`
+  because the previous name (33 chars) exceeded Soroban's 32-char contract
+  function-name limit, which prevented the contract from compiling. Callers
+  must target the new name.
+- The `ProposalNotFound` contract error discriminant moved from `39` to `42`
+  to resolve a collision with `InvalidNonce`; `ProposalAlreadyExecuted`
+  remains `38`. Error-code consumers should rely on the symbol, not the raw
+  discriminant.
 
 ### Transfer and adoption contract
 
