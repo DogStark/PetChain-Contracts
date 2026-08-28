@@ -129,7 +129,7 @@ fn test_admin_override_resolves_without_votes() {
 }
 
 #[test]
-#[should_panic(expected = "Only the pet owner, the opposing party, or an admin may vote")]
+#[should_panic(expected = "Error(Contract, #166)")]
 fn test_non_stakeholder_cannot_vote() {
     let (env, client, _admin, _owner, _target, dispute_id) = setup();
     let stranger = Address::generate(&env);

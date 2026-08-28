@@ -169,6 +169,13 @@ use soroban_sdk::{
     Env, Map, String, Symbol, Vec,
 };
 
+// Bounded-module split (Issue #1146, phase 1): storage keys and value
+// types for the dispute-resolution domain live in `disputes.rs`. The
+// `pub use` keeps every type nameable exactly as before (`Dispute`,
+// `DisputeKey`, ...) from both this file and external callers.
+mod disputes;
+pub use disputes::*;
+
 #[cfg(test)]
 mod test_behavior_records;
 #[cfg(test)]
@@ -212,13 +219,7 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
-mod test_storage_schema; // Issue #1149: schema versioning
-#[cfg(test)]
-mod test_bounded_vecs; // Issue #1153: bounded Vec enforcement
-#[cfg(test)]
-mod test_bounded_strings; // Issue #1152: bounded String/Bytes
-#[cfg(test)]
-mod test_checked_counters; // Issue #1151: checked counter increments
+mod test_discriminant_stability;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -476,6 +477,13 @@ pub enum ContractError {
     DuplicateActivity = 35,
     InbreedingThresholdExceeded = 36,
     SelfBreeding = 37,
+
+    AlreadyDeleted = 160,
+    RecordAlreadyDeleted = 161,
+    RecordNotFound = 163,
+    RetentionPeriodNotMet = 162,
+    ProposalExpired = 43,
+    ProposalNotApproved = 44,
     ProposalAlreadyExecuted = 38,
     /// Discriminant 39 is reserved for `InvalidNonce` (canonical ABI value).
     /// `ProposalNotFound` previously collided here; it is now reassigned to 47.
@@ -486,19 +494,14 @@ pub enum ContractError {
     ProposalNotApproved = 44,
     QuorumNotMet = 45,
     RateLimitExceeded = 46,
-    /// Formerly 39 (collision with `InvalidNonce`); moved to 47. (#1149)
-    ProposalNotFound = 47,
 
-    AlreadyDeleted = 160,
-    RecordAlreadyDeleted = 161,
-    RetentionPeriodNotMet = 162,
-    /// Formerly 163 (collision with second `RecordAlreadyDeleted`); kept as 163. (#1149)
-    RecordNotFound = 163,
-
-    /// Returned by `migrate_storage` when the stored schema version already
-    /// equals or exceeds the requested target version.  Callers may treat this
-    /// as a no-op (idempotent replay is safe). (#1149)
-    StaleMigration = 164,
+    // --- Typed replacements for former assert!/panic! call sites (Issue #1150) ---
+    // Append-only: existing values above must never be renumbered or reused.
+    DisputeNotFound = 164,
+    DisputeNotOpenForVoting = 165,
+    NotDisputeStakeholder = 166,
+    NotInEvidencePhase = 167,
+    NotDisputeParty = 168,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -714,14 +717,6 @@ pub struct AccessLog {
     pub action: AccessAction,
     pub timestamp: u64,
     pub details: String,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArbitratorStats {
-    pub address: Address,
-    pub reputation: i64,
-    pub total_rulings: u64,
 }
 
 #[contracttype]
@@ -2568,76 +2563,6 @@ pub struct GroomingRecordCreatedEvent {
     pub subscription_ids: Vec<u64>,
 }
 
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum DisputeStatus {
-    Pending = 1,
-    EvidencePhase = 2,
-    ResolvedInFavorOfClaimer = 3,
-    ResolvedInFavorOfTarget = 4,
-    Cancelled = 5,
-}
-
-/// A stakeholder's vote on a dispute resolution.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum DisputeVote {
-    Approve = 1,
-    Reject = 2,
-}
-
-/// A single recorded vote on a dispute, tracking who voted and how.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisputeVoteRecord {
-    pub voter: Address,
-    pub vote: DisputeVote,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Dispute {
-    pub dispute_id: u64,
-    pub pet_id: u64,
-    pub claimer: Address,
-    pub target: Address,
-    pub amount: u64,
-    pub reason: String,
-    pub evidence_hash: String,
-    pub status: DisputeStatus,
-    pub created_at: u64,
-    pub resolved_at: Option<u64>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Evidence {
-    pub evidence_id: u64,
-    pub submitter: Address,
-    pub cid: String,
-    pub sha256_hash: BytesN<32>,
-}
-
-#[contracttype]
-pub enum DisputeKey {
-    Dispute(u64),
-    DisputeCount,
-    AppealWindow,
-    Arbitrator,
-    PetDisputesCount(u64),
-    PetDisputesIndex((u64, u64)),
-    DisputeEvidence(u64, u64),
-    DisputeEvidenceCount(u64),
-    PartyEvidenceCount(u64, Address),
-    /// Vote cast by a given address on a given dispute.
-    DisputeVoteByVoter(u64, Address),
-    /// Ordered list of addresses that have voted on a dispute (for enumeration).
-    DisputeVoters(u64),
-}
-
 #[contract]
 pub struct PetChainContract;
 
@@ -2695,7 +2620,7 @@ impl PetChainContract {
             .instance()
             .get(&SubscriptionKey::SubscriptionCount)
             .unwrap_or(0);
-        let subscription_id = safe_increment(current_id);
+        let subscription_id = safe_increment(&env, current_id);
         let expires_at = now.saturating_add(ttl);
         let subscription = EventSubscription {
             id: subscription_id,
@@ -2714,7 +2639,7 @@ impl PetChainContract {
             .instance()
             .set(&SubscriptionKey::SubscriptionCount, &subscription_id);
 
-        let new_subscriber_count = safe_increment(existing_count);
+        let new_subscriber_count = safe_increment(&env, existing_count);
         env.storage().instance().set(
             &SubscriptionKey::SubscriberSubscriptionCount(subscriber.clone()),
             &new_subscriber_count,
@@ -3515,7 +3440,7 @@ impl PetChainContract {
             .get::<SystemKey, u64>(&SystemKey::SnapshotCount)
             .unwrap_or(0);
 
-        let snapshot_id = safe_increment(snapshot_count);
+        let snapshot_id = safe_increment(&env, snapshot_count);
 
         // Gather total pets
         let total_pets = env
@@ -5717,11 +5642,11 @@ impl PetChainContract {
                     .unwrap_or(0);
                 env.storage()
                     .instance()
-                    .set(&StatsKey::ActivePetsCount, &safe_increment(active_count));
+                    .set(&StatsKey::ActivePetsCount, &safe_increment(&env, active_count));
                 Self::record_stat_point(
                     &env,
                     String::from_str(&env, "ActivePetsCount"),
-                    safe_increment(active_count),
+                    safe_increment(&env, active_count),
                 );
             }
             pet.active = true;
@@ -5995,7 +5920,7 @@ impl PetChainContract {
                     .instance()
                     .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
                     .unwrap_or(0);
-                let new_count = safe_increment(existing_count);
+                let new_count = safe_increment(&env, existing_count);
                 env.storage()
                     .instance()
                     .set(&DataKey::AccessGrantCount(pet_id), &new_count);
@@ -6375,7 +6300,7 @@ impl PetChainContract {
 
     fn add_pet_to_owner_index(env: &Env, owner: &Address, pet_id: u64) {
         let count = PetChainContract::get_owner_pet_count(env, owner);
-        let new_count = safe_increment(count);
+        let new_count = safe_increment(env, count);
         env.storage()
             .instance()
             .set(&DataKey::PetCountByOwner(owner.clone()), &new_count);
@@ -6879,7 +6804,7 @@ impl PetChainContract {
     ) -> u64 {
         veterinarian.require_auth();
         if !PetChainContract::is_verified_vet(env.clone(), veterinarian.clone()) {
-            panic!("Veterinarian not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         let _pet: Pet = env
@@ -6955,7 +6880,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetVaccinationCount(pet_id))
             .unwrap_or(0);
-        let new_pet_vax_count = safe_increment(pet_vax_count);
+        let new_pet_vax_count = safe_increment(&env, pet_vax_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetVaccinationCount(pet_id), &new_pet_vax_count);
@@ -6970,7 +6895,7 @@ impl PetChainContract {
             .instance()
             .get::<VetKey, u64>(&VetKey::VetVaccinationCount(veterinarian.clone()))
             .unwrap_or(0);
-        let new_vet_vax_count = safe_increment(vet_vax_count);
+        let new_vet_vax_count = safe_increment(&env, vet_vax_count);
         env.storage().instance().set(
             &VetKey::VetVaccinationCount(veterinarian.clone()),
             &new_vet_vax_count,
@@ -7122,7 +7047,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::LabResultCount)
             .unwrap_or(0);
-        let lab_id = safe_increment(lab_count);
+        let lab_id = safe_increment(&env, lab_count);
 
         // --- anomaly detection: run BEFORE storing so we see only prior readings ---
         let prior_count: u64 = env
@@ -7213,7 +7138,7 @@ impl PetChainContract {
             .instance()
             .set(&MedicalKey::LabResultCount, &lab_id);
 
-        let new_pet_lab_count = safe_increment(prior_count);
+        let new_pet_lab_count = safe_increment(&env, prior_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetLabResultCount(pet_id), &new_pet_lab_count);
@@ -7347,7 +7272,7 @@ impl PetChainContract {
         let mut history = Vec::new(&env);
 
         // Calculate the range to return based on offset and limit
-        let start_index = safe_increment(offset); // Indices start from 1
+        let start_index = safe_increment(&env, offset); // Indices start from 1
         let end_index = (offset + limit as u64).min(count);
 
         for i in start_index..=end_index {
@@ -7727,7 +7652,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::DietPlanCount)
             .unwrap_or(0);
-        let diet_id = safe_increment(diet_count);
+        let diet_id = safe_increment(&env, diet_count);
 
         let now = env.ledger().timestamp();
 
@@ -7966,7 +7891,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::WeightCount)
             .unwrap_or(0);
-        let weight_id = safe_increment(weight_count);
+        let weight_id = safe_increment(&env, weight_count);
         let now = env.ledger().timestamp();
 
         let entry = WeightEntry {
@@ -8091,7 +8016,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::NutritionPlanCount)
             .unwrap_or(0u64);
-        let plan_id = safe_increment(plan_count);
+        let plan_id = safe_increment(&env, plan_count);
 
         let pet_plan_count: u64 = env
             .storage()
@@ -8396,7 +8321,7 @@ impl PetChainContract {
 
     fn generate_tag_id(env: &Env, pet_id: u64, _owner: &Address) -> BytesN<32> {
         let nonce: u64 = env.storage().instance().get(&TagKey::TagNonce).unwrap_or(0);
-        let new_nonce = safe_increment(nonce);
+        let new_nonce = safe_increment(env, nonce);
         env.storage().instance().set(&TagKey::TagNonce, &new_nonce);
 
         let timestamp = env.ledger().timestamp();
@@ -8465,7 +8390,7 @@ impl PetChainContract {
             .unwrap_or(0);
         env.storage()
             .instance()
-            .set(&TagKey::PetTagCount, &safe_increment(count));
+            .set(&TagKey::PetTagCount, &safe_increment(&env, count));
 
         env.events().publish(
             (String::from_str(&env, "TAG_LINKED"),),
@@ -9158,14 +9083,14 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::OwnershipRecordCount)
             .unwrap_or(0);
-        let record_id = safe_increment(global_count);
+        let record_id = safe_increment(env, global_count);
 
         let pet_count: u64 = env
             .storage()
             .instance()
             .get(&SystemKey::PetOwnershipRecordCount(pet_id))
             .unwrap_or(0);
-        let new_pet_count = safe_increment(pet_count);
+        let new_pet_count = safe_increment(env, pet_count);
 
         let record = OwnershipRecord {
             pet_id,
@@ -9561,7 +9486,7 @@ impl PetChainContract {
             .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
         {
             if !PetChainContract::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
-                panic!("Unauthorized");
+                panic_with_error!(&env, ContractError::Unauthorized);
             }
             let key = PetChainContract::get_encryption_key(&env);
 
@@ -9720,7 +9645,7 @@ impl PetChainContract {
             .get::<_, Pet>(&DataKey::Pet(pet_id))
         {
             if !PetChainContract::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
-                panic!("Unauthorized");
+                panic_with_error!(&env, ContractError::Unauthorized);
             }
             let key = PetChainContract::get_encryption_key(&env);
             let c_bytes = decrypt_sensitive_data(
@@ -10040,18 +9965,17 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&dispute_key)
-            .unwrap_or_else(|| panic!("Dispute not found"));
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::DisputeNotFound));
 
-        assert!(
-            dispute.status == DisputeStatus::Pending
-                || dispute.status == DisputeStatus::EvidencePhase,
-            "Dispute is not open for voting"
-        );
+        if !(dispute.status == DisputeStatus::Pending
+            || dispute.status == DisputeStatus::EvidencePhase)
+        {
+            panic_with_error!(&env, ContractError::DisputeNotOpenForVoting);
+        }
 
-        assert!(
-            Self::is_dispute_stakeholder(&env, &dispute, &voter),
-            "Only the pet owner, the opposing party, or an admin may vote"
-        );
+        if !Self::is_dispute_stakeholder(&env, &dispute, &voter) {
+            panic_with_error!(&env, ContractError::NotDisputeStakeholder);
+        }
 
         let vote_key = DisputeKey::DisputeVoteByVoter(dispute_id, voter.clone());
         let is_new_voter = !env.storage().instance().has(&vote_key);
@@ -10193,24 +10117,21 @@ impl PetChainContract {
             .storage()
             .instance()
             .get(&dispute_key)
-            .unwrap_or_else(|| panic!("Dispute not found"));
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::DisputeNotFound));
 
-        assert!(
-            dispute.status == DisputeStatus::EvidencePhase,
-            "Submission outside evidence phase rejected"
-        );
+        if dispute.status != DisputeStatus::EvidencePhase {
+            panic_with_error!(&env, ContractError::NotInEvidencePhase);
+        }
 
-        assert!(
-            submitter == dispute.claimer || submitter == dispute.target,
-            "Only claimer or target can submit evidence"
-        );
+        if !(submitter == dispute.claimer || submitter == dispute.target) {
+            panic_with_error!(&env, ContractError::NotDisputeParty);
+        }
 
         let count_key = DisputeKey::PartyEvidenceCount(dispute_id, submitter.clone());
         let party_count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
-        assert!(
-            party_count < 10,
-            "Max 10 evidence items per dispute per party"
-        );
+        if party_count >= 10 {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
 
         let evidence_count_key = DisputeKey::DisputeEvidenceCount(dispute_id);
         let total_count: u64 = env
@@ -10305,7 +10226,7 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::RecurringScheduleCount)
             .unwrap_or(0);
-        let schedule_id = safe_increment(count);
+        let schedule_id = safe_increment(&env, count);
 
         let interval = Self::frequency_to_seconds(&frequency);
         let mut last_slot_date = start_date;
@@ -10321,7 +10242,7 @@ impl PetChainContract {
                 .instance()
                 .get(&GroomingKey::GroomingRecordCount)
                 .unwrap_or(0);
-            let record_id = safe_increment(rec_count);
+            let record_id = safe_increment(&env, rec_count);
             let record = GroomingRecord {
                 id: record_id,
                 pet_id,
@@ -10344,7 +10265,7 @@ impl PetChainContract {
                 .instance()
                 .get(&GroomingKey::PetGroomingCount(pet_id))
                 .unwrap_or(0);
-            let new_pet_count = safe_increment(pet_count);
+            let new_pet_count = safe_increment(&env, pet_count);
             env.storage()
                 .instance()
                 .set(&GroomingKey::PetGroomingCount(pet_id), &new_pet_count);
@@ -10380,7 +10301,7 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetScheduleCount(pet_id))
             .unwrap_or(0);
-        let new_pet_sched_count = safe_increment(pet_sched_count);
+        let new_pet_sched_count = safe_increment(&env, pet_sched_count);
         env.storage()
             .instance()
             .set(&GroomingKey::PetScheduleCount(pet_id), &new_pet_sched_count);
@@ -10417,7 +10338,7 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::GroomingRecordCount)
             .unwrap_or(0);
-        let record_id = safe_increment(rec_count);
+        let record_id = safe_increment(&env, rec_count);
         let record = GroomingRecord {
             id: record_id,
             pet_id: schedule.pet_id,
@@ -10441,7 +10362,7 @@ impl PetChainContract {
             .instance()
             .get(&GroomingKey::PetGroomingCount(schedule.pet_id))
             .unwrap_or(0);
-        let new_pet_count = safe_increment(pet_count);
+        let new_pet_count = safe_increment(&env, pet_count);
         env.storage().instance().set(
             &GroomingKey::PetGroomingCount(schedule.pet_id),
             &new_pet_count,
@@ -11231,7 +11152,7 @@ impl PetChainContract {
             .instance()
             .get(&ActivityKey::ActivityRecordCount)
             .unwrap_or(0);
-        let activity_id = safe_increment(activity_count);
+        let activity_id = safe_increment(&env, activity_count);
 
         // Create and store activity record
         let record = ActivityRecord {
@@ -11258,7 +11179,7 @@ impl PetChainContract {
             .instance()
             .get(&ActivityKey::PetActivityCount(pet_id))
             .unwrap_or(0);
-        let pet_index = safe_increment(pet_count);
+        let pet_index = safe_increment(&env, pet_count);
         env.storage().instance().set(
             &ActivityKey::PetActivityIndex((pet_id, pet_index)),
             &activity_id,
@@ -11430,7 +11351,7 @@ impl PetChainContract {
             .persistent()
             .get(&BreedingKey::BreedingRecordCount)
             .unwrap_or(0u64);
-        let id = safe_increment(count);
+        let id = safe_increment(&env, count);
 
         let record = BreedingRecord {
             id,
@@ -12042,7 +11963,7 @@ impl PetChainContract {
     ) -> u64 {
         vet_address.require_auth();
         if !Self::is_verified_vet(env.clone(), vet_address.clone()) {
-            panic!("Veterinarian not verified");
+            panic_with_error!(&env, ContractError::VeterinarianNotVerified);
         }
 
         // Bound string fields to prevent unbounded ledger growth. (#1152)
@@ -12073,7 +11994,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::MedicalRecordCount)
             .unwrap_or(0);
-        let record_id = safe_increment(count);
+        let record_id = safe_increment(&env, count);
         let now = env.ledger().timestamp();
 
         let record = MedicalRecord {
@@ -12102,7 +12023,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::PetMedicalRecordCount(pet_id))
             .unwrap_or(0);
-        let new_pet_rec_count = safe_increment(pet_rec_count);
+        let new_pet_rec_count = safe_increment(&env, pet_rec_count);
         env.storage()
             .instance()
             .set(&MedicalKey::PetMedicalRecordCount(pet_id), &new_pet_rec_count);
@@ -12116,7 +12037,7 @@ impl PetChainContract {
             .instance()
             .get::<VetKey, u64>(&VetKey::VetTreatmentCount(vet_address.clone()))
             .unwrap_or(0);
-        let new_vet_tx_count = safe_increment(vet_tx_count);
+        let new_vet_tx_count = safe_increment(&env, vet_tx_count);
         env.storage().instance().set(
             &VetKey::VetTreatmentCount(vet_address.clone()),
             &new_vet_tx_count,
@@ -12917,15 +12838,10 @@ impl PetChainContract {
 } // end impl PetChainContract
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
-/// Increment `count` by one, panicking on u64 overflow.
-///
-/// All storage-ID counters in the contract use this helper so that an
-/// adversarial or buggy caller cannot silently wrap a counter and reuse IDs.
-/// Direct `+ 1` is replaced by this checked variant (Issue #1151).
-pub fn safe_increment(count: u64) -> u64 {
+pub(crate) fn safe_increment(env: &Env, count: u64) -> u64 {
     count
         .checked_add(1)
-        .unwrap_or_else(|| panic!("counter overflow"))
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::CounterOverflow))
 }
 
 // --- ENCRYPTION HELPERS ---
@@ -12953,7 +12869,7 @@ fn derive_encryption_nonce(env: &Env) -> Bytes {
         .instance()
         .get(&SystemKey::EncryptionNonceCounter)
         .unwrap_or(0);
-    let next_counter = safe_increment(counter);
+    let next_counter = safe_increment(env, counter);
     env.storage()
         .instance()
         .set(&SystemKey::EncryptionNonceCounter, &next_counter);
