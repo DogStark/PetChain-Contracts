@@ -207,6 +207,8 @@ mod test_persistent_ttl_policy;
 #[cfg(test)]
 mod test_access_grant_index_invariants;
 #[cfg(test)]
+mod test_medical_record_hashing;
+#[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
@@ -12001,6 +12003,83 @@ impl PetChainContract {
     pub fn purge_expired_records(env: Env, pet_id: u64, caller: Address) -> u32 {
         let res = Self::purge_deleted_records(env, pet_id, caller, false);
         res.deleted.len()
+    }
+
+    /// Build the canonical, versioned preimage bytes for a [`MedicalRecord`]
+    /// (Issue #1169).
+    ///
+    /// Off-chain clients (in any language with a Stellar/Soroban XDR codec)
+    /// need to be able to reproduce the exact same commitment a contract
+    /// computes for a medical record, independent of storage/audit
+    /// metadata that can change without the clinical facts changing. The
+    /// canonical encoding is:
+    ///
+    /// ```text
+    /// sha256(
+    ///     b"petchain:medical-record:v1"        (26-byte literal domain tag)
+    ///  || pet_id            as 8-byte big-endian u64
+    ///  || vet_address       as its XDR-encoded `ScAddress`
+    ///  || diagnosis         as its XDR-encoded `ScString`
+    ///  || treatment         as its XDR-encoded `ScString`
+    ///  || medications       as its XDR-encoded `ScVec` (fixed struct field order)
+    ///  || notes             as its XDR-encoded `ScString`
+    ///  || date              as 8-byte big-endian u64   (clinical event time)
+    /// )
+    /// ```
+    ///
+    /// Fields are concatenated in this fixed order with no separators
+    /// (XDR-encoded values are already self-delimiting/length-prefixed, and
+    /// the two `u64` fields have a fixed 8-byte width, so the encoding is
+    /// unambiguous). `id`, `updated_at`, `attachment_hashes`, and
+    /// `deleted_at` are intentionally excluded: they are ledger
+    /// bookkeeping/audit metadata, not clinical content, so the commitment
+    /// stays stable across non-clinical housekeeping mutations (e.g. an
+    /// attachment being added, or a soft-delete).
+    ///
+    /// The `v1` domain tag is part of the preimage precisely so that any
+    /// future change to the field set, order, or encoding can ship as a
+    /// `v2` tag without silently colliding with existing `v1` commitments
+    /// clients may have already anchored off-chain.
+    fn canonical_medical_record_preimage(env: &Env, record: &MedicalRecord) -> Bytes {
+        let mut preimage = Bytes::new(env);
+        for byte in b"petchain:medical-record:v1" {
+            preimage.push_back(*byte);
+        }
+        for byte in record.pet_id.to_be_bytes() {
+            preimage.push_back(byte);
+        }
+        for byte in record.vet_address.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.diagnosis.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.treatment.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.medications.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.notes.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.date.to_be_bytes() {
+            preimage.push_back(byte);
+        }
+        preimage
+    }
+
+    /// Compute the canonical hash commitment for a stored medical record.
+    /// See [`Self::canonical_medical_record_preimage`] for the exact
+    /// versioned encoding. (Issue #1169)
+    pub fn get_medical_record_hash(env: Env, record_id: u64) -> BytesN<32> {
+        let record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecordNotFound));
+        let preimage = Self::canonical_medical_record_preimage(&env, &record);
+        env.crypto().sha256(&preimage).into()
     }
 
     pub fn add_medical_record(
