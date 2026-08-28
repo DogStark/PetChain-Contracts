@@ -203,6 +203,8 @@ mod test_breeding_genetics;
 #[cfg(test)]
 mod test_pet_birthday_validation;
 #[cfg(test)]
+mod test_microchip_normalization;
+#[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
@@ -323,6 +325,7 @@ const MAX_SUPPORTED_LANGUAGES: u32 = 50;
 
 /// Maximum byte length of a `color` field (pet registration).
 const MAX_COLOR_LEN: u32 = 50;
+const MAX_MICROCHIP_ID_LEN: usize = 64;
 
 /// Maximum byte length of a `BehaviorRecord::description`.
 const MAX_BEHAVIOR_DESC_LEN: u32 = 500;
@@ -1237,6 +1240,8 @@ pub enum DataKey {
     NonceUsage((u64, String, Bytes)),
     RetentionPeriod,
     MaxSubscriptionsPerAddress,
+    /// Canonical microchip identifier -> pet id.
+    MicrochipIndex(String),
 }
 
 #[contracttype]
@@ -4762,6 +4767,14 @@ impl PetChainContract {
         }
         Self::validate_pet_name(&env, &name);
         Self::validate_breed(&env, &species, &breed);
+        let canonical_microchip = microchip_id
+            .as_ref()
+            .map(|value| Self::canonicalize_microchip_id(&env, value));
+        if let Some(ref identifier) = canonical_microchip {
+            if env.storage().instance().has(&DataKey::MicrochipIndex(identifier.clone())) {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
         // Bound color field to prevent unbounded ledger entries. (#1152)
         if color.len() > MAX_COLOR_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
@@ -4859,12 +4872,17 @@ impl PetChainContract {
             gender,
             color,
             weight,
-            microchip_id,
+            microchip_id: canonical_microchip,
             photo_hashes: Vec::new(&env),
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
+        if let Some(ref identifier) = pet.microchip_id {
+            env.storage()
+                .instance()
+                .set(&DataKey::MicrochipIndex(identifier.clone()), &pet_id);
+        }
 
         PetChainContract::log_ownership_change(
             &env,
@@ -4987,7 +5005,29 @@ impl PetChainContract {
             pet.privacy_level = privacy_level;
             pet.color = color;
             pet.weight = weight;
-            pet.microchip_id = microchip_id;
+            let canonical_microchip = microchip_id
+                .as_ref()
+                .map(|value| Self::canonicalize_microchip_id(&env, value));
+            if canonical_microchip.as_ref() != pet.microchip_id.as_ref() {
+                if let Some(ref identifier) = canonical_microchip {
+                    if let Some(existing_id) = env
+                        .storage()
+                        .instance()
+                        .get::<DataKey, u64>(&DataKey::MicrochipIndex(identifier.clone()))
+                    {
+                        if existing_id != id {
+                            panic_with_error!(&env, ContractError::InvalidInput);
+                        }
+                    }
+                }
+                if let Some(ref previous) = pet.microchip_id {
+                    env.storage().instance().remove(&DataKey::MicrochipIndex(previous.clone()));
+                }
+                if let Some(ref identifier) = canonical_microchip {
+                    env.storage().instance().set(&DataKey::MicrochipIndex(identifier.clone()), &id);
+                }
+            }
+            pet.microchip_id = canonical_microchip;
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -8713,6 +8753,36 @@ impl PetChainContract {
                 panic_with_error!(env, ContractError::InvalidPetName);
             }
         }
+    }
+
+    /// Canonical form is trimmed, ASCII upper-case, and separator-free. Only
+    /// ASCII letters and digits are accepted after separators are removed;
+    /// this deliberately rejects Unicode lookalikes and ambiguous encodings.
+    fn canonicalize_microchip_id(env: &Env, value: &String) -> String {
+        let len = value.len() as usize;
+        if len == 0 || len > MAX_MICROCHIP_ID_LEN {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let mut input = [0u8; MAX_MICROCHIP_ID_LEN];
+        value.copy_into_slice(&mut input[..len]);
+        let mut output = [0u8; MAX_MICROCHIP_ID_LEN];
+        let mut out_len = 0usize;
+        for byte in input.iter().take(len) {
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'-' | b':' | b'.') {
+                continue;
+            }
+            let canonical = match byte {
+                b'a'..=b'z' => byte.to_ascii_uppercase(),
+                b'A'..=b'Z' | b'0'..=b'9' => *byte,
+                _ => panic_with_error!(env, ContractError::InvalidInput),
+            };
+            output[out_len] = canonical;
+            out_len += 1;
+        }
+        if out_len == 0 {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        String::from_bytes(env, &output[..out_len])
     }
 
     /// Validate breed against the species-specific whitelist stored on-chain.
@@ -12464,6 +12534,36 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::StorageSchemaVersion, &target_version);
+    }
+
+    /// Rebuild the canonical microchip index for existing records. The work
+    /// is bounded so large deployments can retry in batches. A collision or
+    /// invalid legacy value aborts the batch with InvalidInput.
+    pub fn migrate_microchip_index(env: Env, admin: Address, start: u64, limit: u64) -> u64 {
+        Self::require_admin_auth(&env, &admin);
+        let total: u64 = env.storage().instance().get(&DataKey::PetCount).unwrap_or(0);
+        let end = start.saturating_add(limit).min(total);
+        let mut cursor = start;
+        while cursor < end {
+            let pet_id = cursor + 1;
+            if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+                if let Some(ref legacy) = pet.microchip_id {
+                    let canonical = Self::canonicalize_microchip_id(&env, legacy);
+                    if let Some(existing) = env.storage().instance().get::<DataKey, u64>(&DataKey::MicrochipIndex(canonical.clone())) {
+                        if existing != pet_id {
+                            panic_with_error!(&env, ContractError::InvalidInput);
+                        }
+                    }
+                    if *legacy != canonical {
+                        pet.microchip_id = Some(canonical.clone());
+                        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+                    }
+                    env.storage().instance().set(&DataKey::MicrochipIndex(canonical), &pet_id);
+                }
+            }
+            cursor += 1;
+        }
+        end
     }
 
     pub fn migrate_storage(
