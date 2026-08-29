@@ -17,6 +17,18 @@ env:
   MAX_WASM_SIZE_KB: 100
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
   audit:
     runs-on: ubuntu-latest
     steps:
