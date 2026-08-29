@@ -2801,7 +2801,7 @@ impl PetChainContract {
         {
             if grant.is_active && grant.grantee == caller {
                 if let Some(expires_at) = grant.expires_at {
-                    if env.ledger().timestamp() >= expires_at {
+                    if is_expired(env.ledger().timestamp(), expires_at) {
                         return AccessLevel::None;
                     }
                 }
@@ -2884,7 +2884,7 @@ impl PetChainContract {
                     if consent.is_active {
                         // Filter out expired consents
                         if let Some(expires_at) = consent.expires_at {
-                            if now >= expires_at {
+                            if is_expired(now, expires_at) {
                                 expired_count = expired_count.saturating_add(1);
                                 continue;
                             }
@@ -9326,7 +9326,7 @@ impl PetChainContract {
         if let Some(access) = env.storage().instance().get::<SystemKey, EmergencyOverride>(
             &SystemKey::EmergencyOverride((pet_id, caller.clone())),
         ) {
-            if env.ledger().timestamp() <= access.expires_at {
+            if !is_expired(env.ledger().timestamp(), access.expires_at) {
                 return true;
             }
         }
@@ -10818,7 +10818,7 @@ impl PetChainContract {
                         .instance()
                         .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
                     {
-                        let expired = consent.expires_at.map(|exp| now > exp).unwrap_or(false);
+                        let expired = consent.expires_at.map(|exp| is_expired(now, exp)).unwrap_or(false);
                         if !consent.is_active || expired {
                             stale_indices.push_back(i);
                         }
@@ -10892,7 +10892,7 @@ impl PetChainContract {
                     let key = DataKey::AccessGrant((pet_id, grantee.clone()));
                     if let Some(grant) = env.storage().instance().get::<DataKey, AccessGrant>(&key)
                     {
-                        let expired = grant.expires_at.map(|exp| now >= exp).unwrap_or(false);
+                        let expired = grant.expires_at.map(|exp| is_expired(now, exp)).unwrap_or(false);
                         if !grant.is_active || expired {
                             stale.push_back((i, grantee));
                         }
@@ -11039,7 +11039,7 @@ impl PetChainContract {
         for delegate in delegates.iter() {
             let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
             if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
-                if now >= expires_at {
+                if is_expired(now, expires_at) {
                     env.storage().instance().remove(&key);
                     removed += 1;
 
@@ -12842,6 +12842,27 @@ pub(crate) fn safe_increment(env: &Env, count: u64) -> u64 {
     count
         .checked_add(1)
         .unwrap_or_else(|| panic_with_error!(env, ContractError::CounterOverflow))
+}
+
+// --- EXPIRY BOUNDARY HELPER (Issue #1159) ---
+//
+// Different authorization paths in this contract (access grants, consent
+// records, emergency-override authorization, decryption-delegation tokens)
+// each independently compared `now` against an `expires_at` timestamp, and
+// had drifted onto two different conventions: some treated the exact
+// expiry instant as already-expired (`now >= expires_at`), others treated
+// it as still-valid (`now <= expires_at`, i.e. only expired once
+// `now > expires_at`). At the exact boundary second, a grant/consent/
+// override could be "expired" under one code path and "still active"
+// under another for the same timestamp.
+//
+// This defines the single canonical rule used everywhere in this contract:
+// a resource with expiry `expires_at` is expired starting at, and
+// including, `expires_at` itself. This is the fail-safe direction (it
+// denies access one instant earlier than the lenient alternative would),
+// and matches what most existing call sites already did.
+pub(crate) fn is_expired(now: u64, expires_at: u64) -> bool {
+    now >= expires_at
 }
 
 // --- ENCRYPTION HELPERS ---

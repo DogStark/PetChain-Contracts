@@ -270,6 +270,58 @@ fn test_access_expiry() {
     assert_eq!(access_level, AccessLevel::None);
 }
 
+// Issue #1159: exact-boundary case. At `now == expires_at` (the expiry
+// instant itself), check_access and the compact_storage cleanup sweep must
+// agree that the grant is expired — both now route through the single
+// shared `is_expired` helper (`now >= expires_at`).
+#[test]
+fn test_access_grant_expires_at_exact_boundary_instant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.budget().reset_unlimited();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    let pet_id = client.register_pet(
+        &owner,
+        &String::from_str(&env, "Rex"),
+        &String::from_str(&env, "2019-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(&env, "Boxer"),
+        &String::from_str(&env, "Brindle"),
+        &28u32,
+        &None,
+        &PrivacyLevel::Private,
+    );
+
+    let now = 1000;
+    env.ledger().with_mut(|l| l.timestamp = now);
+
+    let expires_at = now + 100;
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &Some(expires_at));
+
+    // One instant before expiry: still active.
+    env.ledger().with_mut(|l| l.timestamp = expires_at - 1);
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::Full);
+
+    // Exactly at the expiry instant: must already be expired (not one
+    // second later) — this is the boundary #1159 is about.
+    env.ledger().with_mut(|l| l.timestamp = expires_at);
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::None);
+
+    // compact_storage's cleanup sweep must agree at the same instant: the
+    // grant is stale and gets removed, not kept around as "not yet expired".
+    let removed = client.compact_storage(&pet_id, &owner);
+    assert!(
+        removed > 0,
+        "compact_storage must treat a grant as stale at the exact expiry instant, matching check_access"
+    );
+}
+
 #[test]
 #[ignore = "extend_access_grant not yet implemented"]
 fn test_extend_access_grant_updates_expiry() {
