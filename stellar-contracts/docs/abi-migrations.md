@@ -37,6 +37,31 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-08-29 — Custody-history digest + repair of pre-existing ABI drift (#1254)
+
+**New public ABI (intentional, additive):**
+- Added `get_custody_chain_digest(env, pet_id) -> CustodyChainDigest` and the
+  `CustodyChainDigest` contract type (domain, version, pet_id, sequence,
+  digest). Consumers can recompute the canonical SHA-256 hash chain over the
+  custody history to prove completeness and ordering (closes #1254).
+- Regenerated `abi-snapshot.txt`, which had drifted: 24 `pub fn` signatures
+  added since the last snapshot were missing (e.g. `add_training_milestone`,
+  `migrate_schema_version`, `transfer_pet`, `get_custody_chain_digest`).
+
+**Repaired pre-existing ABI/storage corruption (merge artifacts from #1235):**
+- `ContractError`: removed the duplicated `ProposalExpired = 43` and
+  `ProposalNotApproved = 44` variants; restored `ProposalNotFound = 47`;
+  restored `StaleMigration` at **169** (it previously collided with the
+  dispute errors, now 164–168). All other discriminants are unchanged and
+  pinned by `test_error_registry.rs`.
+- `TrainingMilestone` gained its missing `prerequisites: Vec<u64>` field
+  (storage key `TrainingMilestone` is new/unreleased, so no live data).
+- Removed the duplicate `MAX_PREREQUISITES` const; fixed ~20 `safe_increment`
+  call sites that were missing the `env` argument; hoisted `MAX_VEC_MEDS` to
+  module scope.
+- These repairs only affect *compilation* of code that never shipped (the
+  crate did not build at `main`); no deployed storage layout changes.
+
 ### 2026-08-26 — Typed errors for former panic!/assert! sites (Issues #1146–#1150)
 
 - Fixed a pre-existing compile bug: `ContractError::RecordAlreadyDeleted` was

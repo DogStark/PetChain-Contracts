@@ -50,6 +50,7 @@ fn behavior_key_tag(v: &BehaviorKey) -> &'static str {
         BehaviorKey::TrainingMilestoneCount => "TrainingMilestoneCount",
         BehaviorKey::PetMilestoneCount(_) => "PetMilestoneCount",
         BehaviorKey::PetMilestoneIndex(_) => "PetMilestoneIndex",
+        BehaviorKey::MilestonePrerequisite(_) => "MilestonePrerequisite",
     }
 }
 
@@ -408,6 +409,9 @@ fn system_key_tag(v: &SystemKey) -> &'static str {
         SystemKey::StorageVersion => "StorageVersion",
         SystemKey::AdminActivityLog(_) => "AdminActivityLog",
         SystemKey::AdminActivityCount => "AdminActivityCount",
+        SystemKey::PetTransferOffer(_) => "PetTransferOffer",
+        SystemKey::EmergencyOverride(_) => "EmergencyOverride",
+        SystemKey::StorageSchemaVersion => "StorageSchemaVersion",
     }
 }
 
