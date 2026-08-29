@@ -70,17 +70,32 @@ impl SecretProvider for AwsSecretsManagerProvider {
     }
 }
 
+/// Explicit allow-list of `SECRET_PROVIDER` values this build understands.
+/// Keep this in sync with the `match` arms in [`select_secret_provider`].
+const SUPPORTED_SECRET_PROVIDERS: &[&str] = &["env", "aws"];
+
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
-pub fn select_secret_provider() -> Box<dyn SecretProvider> {
-    match std::env::var("SECRET_PROVIDER")
-        .unwrap_or_else(|_| "env".to_string())
-        .as_str()
-    {
-        "aws" => Box::new(
-            AwsSecretsManagerProvider::new()
-                .expect("failed to initialise AwsSecretsManagerProvider"),
-        ),
-        _ => Box::new(EnvSecretProvider {}),
+///
+/// Fails closed: an unset `SECRET_PROVIDER` defaults to `"env"` (the
+/// documented default), but any *set* value that isn't on the explicit
+/// allow-list ([`SUPPORTED_SECRET_PROVIDERS`]) is rejected with a startup
+/// error rather than silently falling back to environment-variable secrets.
+/// This avoids the case where a typo'd or unreachable provider (e.g. AWS
+/// Secrets Manager) is silently swapped for a weaker one. The error message
+/// only ever echoes the offending provider *name*, never secret content.
+pub fn select_secret_provider() -> Result<Box<dyn SecretProvider>, String> {
+    let raw = std::env::var("SECRET_PROVIDER").unwrap_or_else(|_| "env".to_string());
+    match raw.as_str() {
+        "env" => Ok(Box::new(EnvSecretProvider {})),
+        "aws" => {
+            let provider = AwsSecretsManagerProvider::new()
+                .map_err(|e| format!("failed to initialise AwsSecretsManagerProvider: {e}"))?;
+            Ok(Box::new(provider))
+        }
+        other => Err(format!(
+            "unrecognized SECRET_PROVIDER value '{other}'; supported values are: {}",
+            SUPPORTED_SECRET_PROVIDERS.join(", ")
+        )),
     }
 }
 
@@ -1198,9 +1213,19 @@ mod tests {
     #[test]
     fn select_secret_provider_env_default() {
         std::env::remove_var("SECRET_PROVIDER");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("unset SECRET_PROVIDER must default to env");
         // default is EnvSecretProvider; ensure get_secret returns Err for unknown key
         assert!(prov.get_secret("NON_EXISTENT").is_err());
+    }
+
+    #[test]
+    fn select_secret_provider_explicit_env_value() {
+        // "env" is on the allow-list and must select EnvSecretProvider explicitly,
+        // not just as the unset-var default.
+        std::env::set_var("SECRET_PROVIDER", "env");
+        let prov = select_secret_provider().expect("'env' must be a supported provider");
+        assert!(prov.get_secret("NON_EXISTENT").is_err());
+        std::env::remove_var("SECRET_PROVIDER");
     }
 
     #[test]
@@ -1209,10 +1234,72 @@ mod tests {
         // panicking.  Fetching a secret requires real credentials; that path is
         // exercised by the integration test below.
         std::env::set_var("SECRET_PROVIDER", "aws");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("'aws' must be a supported provider");
         // Without real credentials / localstack the fetch must fail, not panic.
         assert!(prov.get_secret("NONEXISTENT_KEY_NO_CREDENTIALS").is_err());
         std::env::remove_var("SECRET_PROVIDER");
+    }
+
+    /// Issue #1221 — an unrecognized `SECRET_PROVIDER` value must fail closed:
+    /// return a typed startup error, never silently fall back to
+    /// environment-variable secrets and never panic.
+    #[test]
+    fn select_secret_provider_unrecognized_value_fails_closed() {
+        std::env::set_var("SECRET_PROVIDER", "totally-bogus-provider");
+        let result = select_secret_provider();
+        std::env::remove_var("SECRET_PROVIDER");
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("unrecognized SECRET_PROVIDER must be rejected, not defaulted"),
+        };
+        assert!(
+            err.contains("totally-bogus-provider"),
+            "error should name the offending value for operator diagnosis: {err}"
+        );
+        assert!(
+            err.contains("env") && err.contains("aws"),
+            "error should list the supported providers: {err}"
+        );
+    }
+
+    /// Belt-and-suspenders: a typo'd provider name must not leak any secret
+    /// content in its error message. There is no secret in scope at
+    /// selection time, but this guards against a future refactor that
+    /// threads a secret value into the error path.
+    #[test]
+    fn select_secret_provider_error_never_contains_secret_material() {
+        std::env::set_var(
+            "TOTP_ENCRYPTION_KEY",
+            "definitely-not-a-real-secret-0123456789",
+        );
+        std::env::set_var("SECRET_PROVIDER", "aws-secrets-manager-typo");
+        let result = select_secret_provider();
+        std::env::remove_var("SECRET_PROVIDER");
+        std::env::remove_var("TOTP_ENCRYPTION_KEY");
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("unrecognized provider must fail closed"),
+        };
+        assert!(
+            !err.contains("definitely-not-a-real-secret-0123456789"),
+            "error message must never include secret content: {err}"
+        );
+    }
+
+    /// Empty string is a common misconfiguration (e.g. `SECRET_PROVIDER=` in a
+    /// shell/compose file) and must be rejected the same as any other
+    /// unrecognized value, not silently treated as the default.
+    #[test]
+    fn select_secret_provider_empty_string_fails_closed() {
+        std::env::set_var("SECRET_PROVIDER", "");
+        let result = select_secret_provider();
+        std::env::remove_var("SECRET_PROVIDER");
+        assert!(
+            result.is_err(),
+            "empty SECRET_PROVIDER must fail closed, not silently default"
+        );
     }
 
     /// Integration test — skipped unless AWS_SECRETS_INTEGRATION_TEST is set.
@@ -1531,4 +1618,3 @@ mod tests {
         );
     }
 }
-
