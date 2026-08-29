@@ -5257,8 +5257,9 @@ mod api_error_logging_tests {
 mod algorithm_upgrade_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AuthenticatedUser, EnableTwoFactorRequest,
-        LoginWithTwoFactorRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
+        overwrite_two_factor_data_for_tests, test_two_factor_store, AuthenticatedUser,
+        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        RecoverWithBackupRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
         VerifyTwoFactorRequest,
     };
     use crate::two_factor::{TotpConfig, TwoFactorAuth, TwoFactorData};
@@ -6231,7 +6232,7 @@ mod algorithm_upgrade_tests {
                 &caller("charlie"),
                 VerifyTwoFactorRequest {
                     user_id: "charlie".to_string(),
-                    token: token_a,
+                    token: token_a.clone(),
                 },
             )
             .unwrap();
@@ -6331,10 +6332,8 @@ mod algorithm_upgrade_tests {
         clear_two_factor_store_for_tests();
         let custom_limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::default());
         let config = crate::two_factor::TenantConfig::new("tenant-custom");
-        let scoped_store = crate::two_factor::TenantScopedStore::new(
-            test_two_factor_store(),
-            config,
-        );
+        let scoped_store =
+            crate::two_factor::TenantScopedStore::new(test_two_factor_store(), config);
 
         let handlers = TwoFactorHandlers::with_store_and_limiter(
             Arc::new(scoped_store),

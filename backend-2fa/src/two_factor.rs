@@ -1299,6 +1299,156 @@ impl TenantScopedStore {
     }
 }
 
+/// `TenantScopedStore` as a `TwoFactorStore` trait object, so it can be
+/// stored behind `Arc<dyn TwoFactorStore>` (as `TwoFactorHandlers::store`
+/// is) and used interchangeably with any other backing store.
+///
+/// Per-user methods delegate to the tenant-prefixed inherent methods above
+/// (`self.key(user_id)`), preserving tenant isolation. The handful of
+/// store-wide/admin methods (`list_users`, `admin_disable_two_fa`'s target
+/// lookup being the exception — see below, `get_canary_accounts`,
+/// `list_locked_users`, `get_recovery_usage_log`) have no per-user key to
+/// scope by and are only ever invoked directly against the raw underlying
+/// store today (see `AdminHandlers`), never through a `TenantScopedStore`
+/// trait object — they delegate straight to `self.inner` unscoped, matching
+/// that existing usage pattern rather than inventing new tenant-filtering
+/// behavior.
+impl TwoFactorStore for TenantScopedStore {
+    fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+        self.inner.save(&self.key(user_id), data)
+    }
+
+    fn get(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        self.inner.get(&self.key(user_id))
+    }
+
+    fn delete(&self, user_id: &str) -> Result<(), String> {
+        TenantScopedStore::delete(self, user_id)
+    }
+
+    fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String> {
+        self.inner.update_enabled(&self.key(user_id), enabled)
+    }
+
+    fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
+        self.inner.update_backup_codes(&self.key(user_id), codes)
+    }
+
+    fn log_recovery_code_usage(
+        &self,
+        user_id: &str,
+        code_index: i32,
+        ip_address: Option<&str>,
+    ) -> Result<(), String> {
+        self.inner
+            .log_recovery_code_usage(&self.key(user_id), code_index, ip_address)
+    }
+
+    fn get_recovery_usage_log(
+        &self,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<RecoveryCodeUsageLog>, String> {
+        self.inner.get_recovery_usage_log(page, page_size)
+    }
+
+    fn list_users(&self, page: u32, page_size: u32) -> Result<Vec<UserTwoFactorSummary>, String> {
+        self.inner.list_users(page, page_size)
+    }
+
+    fn admin_disable_two_fa(&self, user_id: &str, admin_id: &str) -> Result<(), String> {
+        self.inner
+            .admin_disable_two_fa(&self.key(user_id), admin_id)
+    }
+
+    fn get_audit_log(
+        &self,
+        user_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<AuditLogEntry>, String> {
+        self.inner
+            .get_audit_log(&self.key(user_id), page, page_size)
+    }
+
+    fn append_audit_log(
+        &self,
+        user_id: &str,
+        event: &str,
+        actor: &str,
+        metadata: Option<&str>,
+    ) -> Result<(), String> {
+        self.inner
+            .append_audit_log(&self.key(user_id), event, actor, metadata)
+    }
+
+    fn set_canary(&self, user_id: &str, is_canary: bool) -> Result<(), String> {
+        self.inner.set_canary(&self.key(user_id), is_canary)
+    }
+
+    fn is_canary(&self, user_id: &str) -> bool {
+        self.inner.is_canary(&self.key(user_id))
+    }
+
+    fn get_canary_accounts(&self) -> Result<Vec<String>, String> {
+        self.inner.get_canary_accounts()
+    }
+
+    fn get_lockout_state(&self, user_id: &str) -> Result<TwoFactorLockoutState, String> {
+        self.inner.get_lockout_state(&self.key(user_id))
+    }
+
+    fn record_failed_two_fa_attempt(
+        &self,
+        user_id: &str,
+        _lockout_threshold: u32,
+    ) -> Result<TwoFactorLockoutState, String> {
+        // Tenant-scoped stores always enforce their own configured
+        // lockout_threshold (self.config.lockout_threshold), not a
+        // caller-supplied one, matching the inherent
+        // `TenantScopedStore::record_failed_two_fa_attempt` above.
+        self.inner
+            .record_failed_two_fa_attempt(&self.key(user_id), self.config.lockout_threshold)
+    }
+
+    fn reset_two_fa_failures(&self, user_id: &str) -> Result<(), String> {
+        self.inner.reset_two_fa_failures(&self.key(user_id))
+    }
+
+    fn set_last_used_step(&self, user_id: &str, step: u64) -> Result<(), String> {
+        self.inner.set_last_used_step(&self.key(user_id), step)
+    }
+
+    fn unlock_two_fa_account(&self, user_id: &str, actor: &str) -> Result<(), String> {
+        self.inner.unlock_two_fa_account(&self.key(user_id), actor)
+    }
+
+    fn list_locked_users(&self) -> Result<Vec<LockedUserSummary>, String> {
+        self.inner.list_locked_users()
+    }
+
+    fn reset_recovery_log(&self, user_id: &str) -> Result<(), String> {
+        self.inner.reset_recovery_log(&self.key(user_id))
+    }
+
+    fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        self.inner.revoke_session(&self.key(user_id), session_id)
+    }
+
+    fn revoke_all_sessions(&self, user_id: &str) -> Result<(), String> {
+        self.inner.revoke_all_sessions(&self.key(user_id))
+    }
+
+    fn is_session_revoked(&self, user_id: &str, session_id: &str, issued_at: u64) -> bool {
+        self.inner
+            .is_session_revoked(&self.key(user_id), session_id, issued_at)
+    }
+
+    fn check_retry_after(&self, user_id: &str) -> Result<(), String> {
+        self.inner.check_retry_after(&self.key(user_id))
+    }
+}
+
 /// Registry of tenants. Super-admin provisions tenants; all lookups are
 /// scoped so cross-tenant access is structurally impossible.
 #[derive(Default, Clone)]

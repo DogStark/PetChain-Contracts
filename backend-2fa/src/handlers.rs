@@ -40,7 +40,7 @@ fn verify_token_with_replay_protection(
 }
 
 #[cfg(test)]
-fn test_two_factor_store() -> Arc<InMemoryStore> {
+pub(crate) fn test_two_factor_store() -> Arc<InMemoryStore> {
     std::thread_local! {
         static STORE: Arc<InMemoryStore> = Arc::new(InMemoryStore::default());
     }
@@ -440,6 +440,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: Arc::new(scoped_store),
             issuer: "PetChain".to_string(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -448,6 +449,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -494,6 +496,7 @@ impl TwoFactorHandlers {
             limiter: lim,
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -507,6 +510,7 @@ impl TwoFactorHandlers {
             limiter,
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -515,6 +519,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -554,6 +559,7 @@ impl TwoFactorHandlers {
             limiter,
             store,
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -571,6 +577,7 @@ impl TwoFactorHandlers {
             limiter,
             store,
             issuer: "PetChain".to_string(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
