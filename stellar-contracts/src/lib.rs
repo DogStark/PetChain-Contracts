@@ -209,6 +209,14 @@ mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
 #[cfg(test)]
+mod test_access_grant_pagination;
+#[cfg(test)]
+mod test_access_revocation_cascade;
+#[cfg(test)]
+mod test_decryption_token_key_version;
+#[cfg(test)]
+mod test_domain_separated_hashes;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 // NOTE: test_disputes.rs and test_book_slot.rs were wired but reference
@@ -700,6 +708,23 @@ pub enum Gender {
     Male,
     Female,
     Unknown,
+}
+
+/// Domains that get a distinct, versioned prefix before hashing (Issue
+/// #1168). Two canonical encodings that would otherwise collide (e.g. an
+/// evidence blob and an attachment blob that happen to serialize to the
+/// same bytes) hash to different values once tagged with their domain, so
+/// a hash stored for one purpose can never be replayed as if it were a
+/// hash for another.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HashDomain {
+    Evidence,
+    Attachment,
+    ClaimDocument,
+    Certificate,
+    MedicalRecord,
+    TagId,
 }
 
 #[contracttype]
@@ -1267,6 +1292,10 @@ pub enum DataKey {
     AccessGrantIndex((u64, u64)),
     PetDelegationCount(u64),
     DecryptionToken((u64, Address)),
+    /// Current encryption key version for a pet (Issue #1163). Absent means
+    /// version 1, matching [`PetChainContract::derive_versioned_key`]'s
+    /// treatment of versions `<= 1` as the base key.
+    PetKeyVersion(u64),
     EmergencyAccessLogs(u64),
     EmergencyAuditLog(u64),
     EmergencyResponders(u64),
@@ -1842,6 +1871,36 @@ pub struct AccessGrant {
     pub granted_at: u64,
     pub expires_at: Option<u64>, // None means permanent access
     pub is_active: bool,
+}
+
+/// A page of access grants returned by cursor pagination (Issue #1161).
+///
+/// `cursor` is an opaque slot index into the pet's access-grant index; pass
+/// `0` for the first page and echo back `next_cursor` on subsequent calls
+/// until it is `0`, meaning there are no more pages.
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessGrantPage {
+    pub items: Vec<AccessGrant>,
+    pub next_cursor: u64,
+    /// Total number of grant slots for the pet (stable upper bound on live
+    /// rows; some slots may be filtered out when `active_only` is set).
+    pub total_slots: u64,
+}
+
+/// A decryption delegation token bound to the encryption key version that
+/// was active when it was issued (Issue #1163). Rotating a pet's key
+/// version deterministically invalidates every outstanding token, since
+/// [`PetChainContract::verify_decryption_token`] requires an exact version
+/// match rather than trusting a possibly-stale expiry alone.
+#[contracttype]
+#[derive(Clone)]
+pub struct DecryptionDelegation {
+    pub pet_id: u64,
+    pub delegate: Address,
+    pub key_version: u32,
+    pub issued_at: u64,
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -2863,7 +2922,12 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, caller.clone())))
         {
-            if grant.is_active && grant.grantee == caller {
+            // A grant issued by a previous owner does not survive an ownership
+            // transfer: the grant is only honored while `grant.granter` still
+            // matches the pet's current owner, so `accept_pet_transfer` (and
+            // any other path that mutates `pet.owner`) implicitly cascades
+            // the revocation without needing a separate sweep. (#1162)
+            if grant.is_active && grant.grantee == caller && grant.granter == pet.owner {
                 if let Some(expires_at) = grant.expires_at {
                     if env.ledger().timestamp() >= expires_at {
                         return AccessLevel::None;
@@ -6081,6 +6145,97 @@ impl PetChainContract {
         false
     }
 
+    /// Cursor-based pagination of a pet's access grants (Issue #1161).
+    ///
+    /// Lets the owner (or an authorized auditor) review access grants in
+    /// bounded pages instead of loading the entire grant list at once.
+    /// Only the pet owner may call this today, matching the authorization
+    /// used by [`Self::grant_access`] and [`Self::revoke_access`].
+    ///
+    /// Because the grant index is compacted (shifted left) whenever a grant
+    /// is removed, a page may skip or repeat an entry if grants are revoked
+    /// concurrently with pagination -- the same caveat that applies to other
+    /// cursor-paginated views in this contract. Callers that need a
+    /// point-in-time-consistent view should page within a single ledger
+    /// close.
+    ///
+    /// `cursor` is an opaque slot index; pass `0` for the first page and
+    /// echo back `next_cursor` on subsequent calls until it is `0`. When
+    /// `active_only` is `true`, expired and explicitly revoked grants are
+    /// filtered out of `items` (but still count toward slots examined).
+    pub fn get_pet_access_grants_cursor(
+        env: Env,
+        pet_id: u64,
+        cursor: u64,
+        limit: u32,
+        active_only: bool,
+    ) -> AccessGrantPage {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+        if let Some(pet) = pet.as_ref() {
+            pet.owner.require_auth();
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+        let mut items = Vec::new(&env);
+
+        if pet.is_none() || limit == 0 || count == 0 {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        // `cursor` is the last examined slot; resume from the following slot.
+        let start = cursor.saturating_add(1);
+        if start > count {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        let end = count.min(start.saturating_add(limit as u64).saturating_sub(1));
+        let now = env.ledger().timestamp();
+        let mut idx = start;
+        while idx <= end && items.len() < limit {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, idx)))
+            {
+                if let Some(grant) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, grantee)))
+                {
+                    let expired = grant.expires_at.map(|exp| now >= exp).unwrap_or(false);
+                    if !active_only || (grant.is_active && !expired) {
+                        items.push_back(grant);
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        let last_examined = idx.saturating_sub(1);
+        let next_cursor = if last_examined < count { last_examined } else { 0 };
+
+        AccessGrantPage {
+            items,
+            next_cursor,
+            total_slots: count,
+        }
+    }
+
     /// Nonce-protected pet registration. Caller supplies their current nonce;
     /// the nonce is incremented atomically on success, preventing replay.
     /// All pets must belong to the same caller and the entire batch fails if
@@ -8824,7 +8979,10 @@ impl PetChainContract {
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
 
-        let mut preimage = Bytes::new(env);
+        // Domain-separated so a tag ID can never collide with a hash
+        // computed for another stored-hash domain (evidence, attachments,
+        // claim documents, certificates, medical records). (#1168)
+        let mut preimage = Bytes::from_slice(env, Self::hash_domain_tag(&HashDomain::TagId));
         for byte in pet_id.to_be_bytes() {
             preimage.push_back(byte);
         }
@@ -9436,6 +9594,39 @@ impl PetChainContract {
             }
         }
 
+        env.crypto().sha256(&preimage).into()
+    }
+
+    /// Versioned tag prefixed to a domain's canonical encoding before
+    /// hashing (Issue #1168). Bumping the trailing version segment for a
+    /// domain (e.g. to `v2`) is itself a deliberate, published breaking
+    /// change to that domain's hash space, distinct from every other
+    /// domain and every earlier version of the same domain.
+    fn hash_domain_tag(domain: &HashDomain) -> &'static [u8] {
+        match domain {
+            HashDomain::Evidence => b"petchain:hash:evidence:v1",
+            HashDomain::Attachment => b"petchain:hash:attachment:v1",
+            HashDomain::ClaimDocument => b"petchain:hash:claim-document:v1",
+            HashDomain::Certificate => b"petchain:hash:certificate:v1",
+            HashDomain::MedicalRecord => b"petchain:hash:medical-record:v1",
+            HashDomain::TagId => b"petchain:hash:tag-id:v1",
+        }
+    }
+
+    /// Compute a domain-separated SHA-256 hash: `sha256(tag || content)`,
+    /// where `tag` is a versioned, domain-specific ASCII prefix. (#1168)
+    ///
+    /// This is the canonical way to hash content that will be stored or
+    /// compared as a `BytesN<32>` anywhere in this contract (evidence,
+    /// attachments, claim documents, certificates, medical records, tag
+    /// IDs). Off-chain callers computing a hash to submit to
+    /// `submit_evidence`, `add_attachment`, or similar must reproduce this
+    /// same prefixing so that a value hashed for one domain can never
+    /// collide with, or be replayed as, a value from another domain -- see
+    /// `test_domain_separated_hashes.rs` for published test vectors.
+    pub fn compute_domain_hash(env: Env, domain: HashDomain, content: Bytes) -> BytesN<32> {
+        let mut preimage = Bytes::from_slice(&env, Self::hash_domain_tag(&domain));
+        preimage.append(&content);
         env.crypto().sha256(&preimage).into()
     }
 
@@ -11566,12 +11757,18 @@ impl PetChainContract {
         }
 
         let now = env.ledger().timestamp();
+        let current_version = Self::get_pet_key_version(env.clone(), pet_id);
         let mut removed: u32 = 0;
 
         for delegate in delegates.iter() {
             let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
-            if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
-                if now >= expires_at {
+            if let Some(token) = env
+                .storage()
+                .instance()
+                .get::<DataKey, DecryptionDelegation>(&key)
+            {
+                let stale = now >= token.expires_at || token.key_version != current_version;
+                if stale {
                     env.storage().instance().remove(&key);
                     removed += 1;
 
@@ -11591,6 +11788,156 @@ impl PetChainContract {
         }
 
         removed
+    }
+
+    /// The encryption key version currently active for a pet. Defaults to
+    /// `1` when the pet has never had its key rotated. (Issue #1163)
+    pub fn get_pet_key_version(env: Env, pet_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::PetKeyVersion(pet_id))
+            .unwrap_or(1)
+    }
+
+    /// Rotate a pet's encryption key version. Owner-authorized and
+    /// nonce-protected for replay safety, matching [`Self::grant_access`].
+    ///
+    /// Because every decryption token records the key version active when
+    /// it was issued, bumping the version here deterministically and
+    /// immediately invalidates every outstanding delegated token: the next
+    /// call to [`Self::verify_decryption_token`] for any prior delegate
+    /// will observe a version mismatch and fail, with no separate sweep or
+    /// storage write required per delegate. (#1163)
+    pub fn rotate_pet_key_version(env: Env, pet_id: u64, nonce: u64) -> u32 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        let new_version = Self::get_pet_key_version(env.clone(), pet_id)
+            .checked_add(1)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::PetKeyVersion(pet_id), &new_version);
+
+        env.events().publish(
+            (String::from_str(&env, "PetKeyRotated"), pet_id),
+            (pet_id, new_version, env.ledger().timestamp()),
+        );
+
+        new_version
+    }
+
+    /// Issue a time-boxed decryption delegation token bound to the pet's
+    /// current key version. Owner-authorized and nonce-protected. (#1163)
+    pub fn delegate_decryption_access(
+        env: Env,
+        pet_id: u64,
+        delegate: Address,
+        ttl_seconds: u64,
+        nonce: u64,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        if ttl_seconds == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+        let is_new = env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none();
+
+        let now = env.ledger().timestamp();
+        let token = DecryptionDelegation {
+            pet_id,
+            delegate: delegate.clone(),
+            key_version: Self::get_pet_key_version(env.clone(), pet_id),
+            issued_at: now,
+            expires_at: now.saturating_add(ttl_seconds),
+        };
+        env.storage().instance().set(&key, &token);
+
+        if is_new {
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &safe_increment(&env, count));
+        }
+
+        true
+    }
+
+    /// Revoke a delegate's decryption token before it expires.
+    /// Owner-authorized. (#1163)
+    pub fn revoke_decryption_delegation(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none()
+        {
+            return false;
+        }
+        env.storage().instance().remove(&key);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetDelegationCount(pet_id))
+            .unwrap_or(0);
+        if count > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &(count - 1));
+        }
+        true
+    }
+
+    /// Verify whether `delegate` currently holds a valid decryption token
+    /// for `pet_id`: the token must exist, be unexpired, and be bound to
+    /// the pet's *current* key version. A rotation, expiry, or explicit
+    /// revocation all cause this to deterministically return `false`.
+    /// (#1163)
+    pub fn verify_decryption_token(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let token = match env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&DataKey::DecryptionToken((pet_id, delegate)))
+        {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if env.ledger().timestamp() >= token.expires_at {
+            return false;
+        }
+
+        token.key_version == Self::get_pet_key_version(env, pet_id)
     }
 
     /// Verify that a stored claim document hash matches `content_hash`.
