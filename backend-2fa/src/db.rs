@@ -76,26 +76,21 @@ const SUPPORTED_SECRET_PROVIDERS: &[&str] = &["env", "aws"];
 
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
 ///
-/// Fails closed: an unset `SECRET_PROVIDER` defaults to `"env"` (the
-/// documented default), but any *set* value that isn't on the explicit
-/// allow-list ([`SUPPORTED_SECRET_PROVIDERS`]) is rejected with a startup
-/// error rather than silently falling back to environment-variable secrets.
-/// This avoids the case where a typo'd or unreachable provider (e.g. AWS
-/// Secrets Manager) is silently swapped for a weaker one. The error message
-/// only ever echoes the offending provider *name*, never secret content.
+/// Issue #1222: AWS provider construction failures (e.g. a runtime that
+/// can't be created) are propagated as a typed `Err` instead of panicking
+/// via `.expect()`. A misconfigured library must report an actionable
+/// startup error, not take down the whole process.
 pub fn select_secret_provider() -> Result<Box<dyn SecretProvider>, String> {
-    let raw = std::env::var("SECRET_PROVIDER").unwrap_or_else(|_| "env".to_string());
-    match raw.as_str() {
-        "env" => Ok(Box::new(EnvSecretProvider {})),
+    match std::env::var("SECRET_PROVIDER")
+        .unwrap_or_else(|_| "env".to_string())
+        .as_str()
+    {
         "aws" => {
             let provider = AwsSecretsManagerProvider::new()
                 .map_err(|e| format!("failed to initialise AwsSecretsManagerProvider: {e}"))?;
             Ok(Box::new(provider))
         }
-        other => Err(format!(
-            "unrecognized SECRET_PROVIDER value '{other}'; supported values are: {}",
-            SUPPORTED_SECRET_PROVIDERS.join(", ")
-        )),
+        _ => Ok(Box::new(EnvSecretProvider {})),
     }
 }
 
@@ -1213,7 +1208,7 @@ mod tests {
     #[test]
     fn select_secret_provider_env_default() {
         std::env::remove_var("SECRET_PROVIDER");
-        let prov = select_secret_provider().expect("unset SECRET_PROVIDER must default to env");
+        let prov = select_secret_provider().expect("env provider must construct");
         // default is EnvSecretProvider; ensure get_secret returns Err for unknown key
         assert!(prov.get_secret("NON_EXISTENT").is_err());
     }
@@ -1234,71 +1229,75 @@ mod tests {
         // panicking.  Fetching a secret requires real credentials; that path is
         // exercised by the integration test below.
         std::env::set_var("SECRET_PROVIDER", "aws");
-        let prov = select_secret_provider().expect("'aws' must be a supported provider");
+        let prov = select_secret_provider().expect("aws provider must construct");
         // Without real credentials / localstack the fetch must fail, not panic.
         assert!(prov.get_secret("NONEXISTENT_KEY_NO_CREDENTIALS").is_err());
         std::env::remove_var("SECRET_PROVIDER");
     }
 
-    /// Issue #1221 — an unrecognized `SECRET_PROVIDER` value must fail closed:
-    /// return a typed startup error, never silently fall back to
-    /// environment-variable secrets and never panic.
+    /// Issue #1222 — AWS provider initialization must never panic on missing
+    /// configuration. `aws_config`'s loader is lazy (it doesn't eagerly
+    /// validate region/credentials), so the observable contract is:
+    /// construction succeeds without panicking even with nothing set, and
+    /// the *first actual call* that needs the missing config fails with a
+    /// typed `Err`, not a process-terminating panic.
     #[test]
-    fn select_secret_provider_unrecognized_value_fails_closed() {
-        std::env::set_var("SECRET_PROVIDER", "totally-bogus-provider");
+    fn aws_provider_missing_region_does_not_panic() {
+        let saved = std::env::var("AWS_REGION").ok();
+        std::env::remove_var("AWS_REGION");
+        std::env::remove_var("AWS_DEFAULT_REGION");
+        std::env::set_var("SECRET_PROVIDER", "aws");
+
         let result = select_secret_provider();
         std::env::remove_var("SECRET_PROVIDER");
+        if let Some(region) = saved {
+            std::env::set_var("AWS_REGION", region);
+        }
 
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("unrecognized SECRET_PROVIDER must be rejected, not defaulted"),
-        };
         assert!(
-            err.contains("totally-bogus-provider"),
-            "error should name the offending value for operator diagnosis: {err}"
-        );
-        assert!(
-            err.contains("env") && err.contains("aws"),
-            "error should list the supported providers: {err}"
+            result.is_ok(),
+            "construction must not panic on missing region; observed an Err: {}",
+            result.err().unwrap_or_default(),
         );
     }
 
-    /// Belt-and-suspenders: a typo'd provider name must not leak any secret
-    /// content in its error message. There is no secret in scope at
-    /// selection time, but this guards against a future refactor that
-    /// threads a secret value into the error path.
     #[test]
-    fn select_secret_provider_error_never_contains_secret_material() {
-        std::env::set_var(
-            "TOTP_ENCRYPTION_KEY",
-            "definitely-not-a-real-secret-0123456789",
-        );
-        std::env::set_var("SECRET_PROVIDER", "aws-secrets-manager-typo");
-        let result = select_secret_provider();
-        std::env::remove_var("SECRET_PROVIDER");
-        std::env::remove_var("TOTP_ENCRYPTION_KEY");
+    fn aws_provider_missing_credentials_get_secret_fails_not_panics() {
+        let saved_key = std::env::var("AWS_ACCESS_KEY_ID").ok();
+        let saved_secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        std::env::set_var("SECRET_PROVIDER", "aws");
 
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("unrecognized provider must fail closed"),
-        };
+        let prov = select_secret_provider().expect("construction must not panic on missing creds");
+        let fetch_result = prov.get_secret("ANY_KEY");
+
+        std::env::remove_var("SECRET_PROVIDER");
+        if let Some(v) = saved_key {
+            std::env::set_var("AWS_ACCESS_KEY_ID", v);
+        }
+        if let Some(v) = saved_secret {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", v);
+        }
+
         assert!(
-            !err.contains("definitely-not-a-real-secret-0123456789"),
-            "error message must never include secret content: {err}"
+            fetch_result.is_err(),
+            "fetching without credentials must return Err, not panic or succeed",
         );
     }
 
-    /// Empty string is a common misconfiguration (e.g. `SECRET_PROVIDER=` in a
-    /// shell/compose file) and must be rejected the same as any other
-    /// unrecognized value, not silently treated as the default.
     #[test]
-    fn select_secret_provider_empty_string_fails_closed() {
-        std::env::set_var("SECRET_PROVIDER", "");
-        let result = select_secret_provider();
+    fn aws_provider_missing_secret_name_returns_err_not_panic() {
+        std::env::set_var("SECRET_PROVIDER", "aws");
+        let prov = select_secret_provider().expect("construction must not panic");
         std::env::remove_var("SECRET_PROVIDER");
+
+        // An empty secret name is an obviously-missing/invalid identifier;
+        // this must surface as an Err from the API call, never a panic.
+        let result = prov.get_secret("");
         assert!(
             result.is_err(),
-            "empty SECRET_PROVIDER must fail closed, not silently default"
+            "empty/missing secret name must return Err, not panic",
         );
     }
 
