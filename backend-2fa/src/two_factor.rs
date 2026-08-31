@@ -278,8 +278,73 @@ impl TwoFactorAuth {
         codes
     }
 
+    /// Hash a single plaintext backup code with Argon2id using a fresh random
+    /// salt, returning the PHC-formatted hash string (`$argon2id$...`).
+    ///
+    /// Plaintext backup codes must never be persisted — this is called right
+    /// before storage, after the plaintext has already been returned to the
+    /// caller once (at setup/recovery time).
+    pub fn hash_backup_code(code: &str) -> Result<String, String> {
+        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+        use argon2::Argon2;
+
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(code.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Hash a batch of plaintext backup codes for storage, right after
+    /// generation. Each code gets its own fresh random salt.
+    pub fn hash_backup_codes(codes: &[String]) -> Result<Vec<String>, String> {
+        codes
+            .iter()
+            .map(|code| Self::hash_backup_code(code))
+            .collect()
+    }
+
+    /// Compare a provided plaintext backup code against a stored
+    /// representation, transparently supporting both Argon2id hashes and
+    /// legacy plaintext rows (pre-dating this migration).
+    fn code_matches(stored: &str, provided: &str) -> bool {
+        if stored.starts_with("$argon2") {
+            use argon2::password_hash::PasswordVerifier;
+            use argon2::{Argon2, PasswordHash};
+
+            match PasswordHash::new(stored) {
+                Ok(parsed_hash) => Argon2::default()
+                    .verify_password(provided.as_bytes(), &parsed_hash)
+                    .is_ok(),
+                Err(_) => false,
+            }
+        } else {
+            // Legacy plaintext row — compatibility fallback until migrated.
+            stored == provided
+        }
+    }
+
+    /// Migrate a list of stored backup codes to Argon2id hashes. Entries that
+    /// are already Argon2id hashes are left untouched; legacy plaintext
+    /// entries are hashed in place. Used to upgrade legacy rows as they are
+    /// used.
+    pub fn migrate_legacy_backup_codes(codes: &[String]) -> Result<Vec<String>, String> {
+        codes
+            .iter()
+            .map(|code| {
+                if code.starts_with("$argon2") {
+                    Ok(code.clone())
+                } else {
+                    Self::hash_backup_code(code)
+                }
+            })
+            .collect()
+    }
+
     pub fn verify_backup_code(stored_codes: &[String], provided_code: &str) -> Option<usize> {
-        stored_codes.iter().position(|code| code == provided_code)
+        stored_codes
+            .iter()
+            .position(|code| Self::code_matches(code, provided_code))
     }
 
     /// Consume a backup code: removes it from the list if found and returns true.
@@ -1715,6 +1780,164 @@ mod tenant_scoped_store_delete_tests {
         assert!(
             scoped_b.get("carol").is_ok(),
             "tenant-b record must not be affected by tenant-a deletion"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1225 — Argon2id-hashed backup codes
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod backup_code_hashing_tests {
+    use super::*;
+
+    /// A freshly hashed code verifies correctly via both verify_backup_code
+    /// and consume_backup_code.
+    #[test]
+    fn test_hashed_code_verifies_via_verify_and_consume() {
+        let plaintext = "1234-5678".to_string();
+        let hashed = TwoFactorAuth::hash_backup_code(&plaintext).unwrap();
+        let stored = vec![hashed];
+
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, &plaintext),
+            Some(0)
+        );
+
+        let mut stored_mut = stored;
+        assert!(TwoFactorAuth::consume_backup_code(
+            &mut stored_mut,
+            &plaintext
+        ));
+    }
+
+    /// A wrong code does not verify against a hashed entry.
+    #[test]
+    fn test_wrong_code_does_not_verify() {
+        let plaintext = "1111-2222".to_string();
+        let hashed = TwoFactorAuth::hash_backup_code(&plaintext).unwrap();
+        let stored = vec![hashed];
+
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, "9999-9999"),
+            None
+        );
+    }
+
+    /// Consuming a code removes only that entry; it cannot be reused
+    /// afterwards (replay protection).
+    #[test]
+    fn test_consume_removes_only_matching_entry_no_replay() {
+        let codes: Vec<String> = vec!["1111-1111", "2222-2222", "3333-3333"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut stored = TwoFactorAuth::hash_backup_codes(&codes).unwrap();
+        assert_eq!(stored.len(), 3);
+
+        // Consume the middle code.
+        assert!(TwoFactorAuth::consume_backup_code(&mut stored, "2222-2222"));
+        assert_eq!(stored.len(), 2);
+
+        // The other two codes still verify.
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, "1111-1111"),
+            Some(0)
+        );
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, "3333-3333"),
+            Some(1)
+        );
+
+        // Replaying the consumed code fails — it is gone from the list.
+        assert!(!TwoFactorAuth::consume_backup_code(
+            &mut stored,
+            "2222-2222"
+        ));
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, "2222-2222"),
+            None
+        );
+    }
+
+    /// A legacy plaintext entry mixed into a stored_codes Vec alongside
+    /// Argon2id entries still matches via the legacy fallback path.
+    #[test]
+    fn test_legacy_plaintext_entry_matches_via_fallback() {
+        let hashed = TwoFactorAuth::hash_backup_code(&"7777-7777".to_string()).unwrap();
+        let legacy_plaintext = "8888-8888".to_string();
+        let stored = vec![hashed, legacy_plaintext.clone()];
+
+        // The hashed entry still verifies normally.
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, "7777-7777"),
+            Some(0)
+        );
+        // The legacy plaintext entry verifies via the `stored == provided`
+        // fallback (no "$argon2" prefix).
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, &legacy_plaintext),
+            Some(1)
+        );
+    }
+
+    /// migrate_legacy_backup_codes hashes plaintext entries while leaving
+    /// already-hashed entries untouched, and the migrated hash still
+    /// verifies against the original plaintext.
+    #[test]
+    fn test_migrate_legacy_backup_codes() {
+        let already_hashed = TwoFactorAuth::hash_backup_code(&"1010-1010".to_string()).unwrap();
+        let legacy_plaintext = "2020-2020".to_string();
+        let mixed = vec![already_hashed.clone(), legacy_plaintext.clone()];
+
+        let migrated = TwoFactorAuth::migrate_legacy_backup_codes(&mixed).unwrap();
+
+        // The already-hashed entry is left byte-for-byte untouched.
+        assert_eq!(migrated[0], already_hashed);
+        // The legacy plaintext entry is now an Argon2id hash, not the raw value.
+        assert!(migrated[1].starts_with("$argon2"));
+        assert_ne!(migrated[1], legacy_plaintext);
+        // The migrated hash still verifies against the original plaintext.
+        assert!(TwoFactorAuth::verify_backup_code(&migrated, &legacy_plaintext).is_some());
+    }
+
+    /// An empty stored_codes list returns None/false safely (no panics).
+    #[test]
+    fn test_empty_stored_codes_list_is_safe() {
+        let empty: Vec<String> = vec![];
+        assert_eq!(TwoFactorAuth::verify_backup_code(&empty, "anything"), None);
+
+        let mut empty_mut: Vec<String> = vec![];
+        assert!(!TwoFactorAuth::consume_backup_code(
+            &mut empty_mut,
+            "anything"
+        ));
+    }
+
+    /// Two hashes of the same plaintext code differ (fresh random salt per
+    /// call) even when regenerated for identical input, but both verify.
+    #[test]
+    fn test_same_code_hashed_twice_yields_different_hashes_both_verify() {
+        let plaintext = "5555-5555".to_string();
+        let hash_a = TwoFactorAuth::hash_backup_code(&plaintext).unwrap();
+        let hash_b = TwoFactorAuth::hash_backup_code(&plaintext).unwrap();
+
+        assert_ne!(
+            hash_a, hash_b,
+            "salts must differ between independent hash calls"
+        );
+
+        let stored = vec![hash_a, hash_b];
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored, &plaintext),
+            Some(0)
+        );
+        // Remove the first match and confirm the second still verifies too.
+        let mut stored_mut = stored;
+        stored_mut.remove(0);
+        assert_eq!(
+            TwoFactorAuth::verify_backup_code(&stored_mut, &plaintext),
+            Some(0)
         );
     }
 }

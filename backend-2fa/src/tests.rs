@@ -446,7 +446,21 @@ mod tests {
 
         // Response is consistent with what was stored
         assert_eq!(resp.secret, stored.secret);
-        assert_eq!(resp.backup_codes, stored.backup_codes);
+        // Storage holds Argon2id hashes, not the plaintext codes returned in
+        // the response — verify each plaintext code matches its stored hash.
+        assert_eq!(resp.backup_codes.len(), stored.backup_codes.len());
+        for code in &stored.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &resp.backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&stored.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
         // enabled starts as false — not yet verified
         assert!(!stored.enabled);
         // 8 backup codes generated
@@ -898,7 +912,9 @@ mod tests {
 
         let mut data = store.get_data(user_id).unwrap();
         data.enabled = true;
-        let backup_code = data.backup_codes[0].clone();
+        // Storage holds Argon2id hashes, not plaintext — use the plaintext
+        // code from the enrollment response to exercise recovery.
+        let backup_code = enrollment.backup_codes[0].clone();
         store.seed(user_id, data);
 
         let recovered = handlers
@@ -5514,7 +5530,24 @@ mod algorithm_upgrade_tests {
         let data_after = get_two_factor_data_for_tests(user_id).unwrap();
         assert_eq!(data_after.algorithm, Algorithm::SHA256);
         assert_eq!(data_after.secret, upgrade_resp.new_secret);
-        assert_eq!(data_after.backup_codes, upgrade_resp.new_backup_codes);
+        // Storage holds Argon2id hashes, not the plaintext codes returned in
+        // the response — verify each plaintext code matches its stored hash.
+        assert_eq!(
+            data_after.backup_codes.len(),
+            upgrade_resp.new_backup_codes.len()
+        );
+        for code in &data_after.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &upgrade_resp.new_backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&data_after.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
         assert!(data_after.enabled);
 
         // Old secret should no longer work
@@ -5775,9 +5808,22 @@ mod algorithm_upgrade_tests {
         assert_ne!(upgrade_resp.new_backup_codes, old_backup_codes);
         assert_eq!(upgrade_resp.new_backup_codes.len(), 8);
 
-        // Verify they're stored
+        // Verify they're stored — storage holds Argon2id hashes, not the
+        // plaintext codes returned in the response.
         let data = get_two_factor_data_for_tests(user_id).unwrap();
-        assert_eq!(data.backup_codes, upgrade_resp.new_backup_codes);
+        assert_eq!(data.backup_codes.len(), upgrade_resp.new_backup_codes.len());
+        for code in &data.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &upgrade_resp.new_backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&data.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
     }
 
     #[test]

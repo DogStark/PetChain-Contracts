@@ -709,12 +709,17 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup(&req.email, &self.issuer)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         self.store
             .save(
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: false,
                     algorithm: setup.config.algorithm,
                     last_used_step: None,
@@ -992,12 +997,18 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup("recovery", &self.issuer)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored. This also fully rotates
+        // away any legacy plaintext codes that may have been on the record.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         self.store
             .save(
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: true,
                     algorithm: setup.config.algorithm,
                     last_used_step: None,
@@ -1114,13 +1125,18 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         // Save new secret and backup codes, immediately invalidate old secret
         self.store
             .save(
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: true,
                     algorithm: HmacAlgorithm::SHA256,
                     last_used_step: None,
@@ -1577,11 +1593,15 @@ impl CanaryHandlers {
     ) -> Result<CreateCanaryResponse, String> {
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
 
+        // Persist Argon2id hashes only; the canary response never exposes
+        // backup codes at all, so there is no plaintext to preserve here.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
+
         two_factor_store().save(
             &req.user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
+                backup_codes: hashed_backup_codes,
                 enabled: true,
                 algorithm: setup.config.algorithm,
                 last_used_step: None,
@@ -1768,11 +1788,15 @@ impl MultiTenantHandlers {
 
         let setup = TwoFactorAuth::setup(email, self.store.issuer())?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
+
         self.store.save(
             user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
+                backup_codes: hashed_backup_codes,
                 enabled: false,
                 algorithm: setup.config.algorithm,
                 last_used_step: None,
