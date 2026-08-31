@@ -1,0 +1,23 @@
+{
+  "$schema": "./bindings-manifest.schema.json",
+  "version": "1.0.0",
+  "generated_at": "2026-08-30T00:00:00Z",
+  "source": {
+    "commit": "HEAD",
+    "contract_version": 1,
+    "abi_snapshot": "stellar-contracts/abi-snapshot.txt"
+  },
+  "network": "testnet",
+  "generation_tool": {
+    "name": "soroban-cli",
+    "version": "21.7.7"
+  },
+  "interfaces": {
+    "pet-chain": {
+      "contract_id": "PLACEHOLDER_CONTRACT_ID",
+      "wasm_hash": "PLACEHOLDER_WASM_HASH",
+      "abi_version": "1.0.0"
+    }
+  },
+  "migration_notes": []
+}
