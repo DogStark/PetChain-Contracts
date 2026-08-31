@@ -227,7 +227,11 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
-mod test_vet_pagination;
+mod test_discriminant_stability;
+#[cfg(test)]
+mod test_custody_digest;
+#[cfg(test)]
+mod test_custody_chain;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -261,8 +265,6 @@ const MAX_ATTACHMENTS_PER_RECORD: u32 = 20;
 /// 32 slots is far more than the current milestone set (7, 30, 100 days) and
 /// leaves ample room for future milestones while keeping the entry size bounded.
 const MAX_MILESTONES: u32 = 32;
-
-const MAX_PREREQUISITES: u32 = 16;
 
 /// Standard activity-streak milestones (in streak-days).
 /// A new milestone entry is recorded in `ActivityStreak::milestones_reached`
@@ -298,6 +300,9 @@ const MAX_DIETARY_ALLERGIES: u32 = 20;
 /// Maximum `Ingredient` entries in `NutritionPlan::ingredients`.
 const MAX_INGREDIENTS: u32 = 50;
 
+/// Maximum medications per `MedicalRecord::medications`.
+const MAX_VEC_MEDS: u32 = 20;
+
 /// Maximum prerequisite IDs in `TrainingMilestone::prerequisites`.
 const MAX_PREREQUISITES: u32 = 20;
 
@@ -305,17 +310,31 @@ const MAX_PREREQUISITES: u32 = 20;
 /// ~100 transfers × ~80 bytes/entry = ~8 KiB, well within the 64 KiB limit.
 const MAX_CUSTODY_CHAIN: u32 = 100;
 
+/// Canonical domain string for the chain-of-custody digest
+/// ([`PetChainContract::get_custody_chain_digest`]). The domain binds the
+/// digest to this contract so digests of identical chains from other domains
+/// cannot be confused.
+pub const CUSTODY_DIGEST_DOMAIN: &str = "petchain.custody";
+
+/// Canonical digest format version. Bump whenever the canonical entry
+/// serialisation or digest construction changes. Consumers must only compare
+/// digests that share the same domain and version.
+pub const CUSTODY_DIGEST_VERSION: u32 = 1;
+
 /// Maximum number of signers in `MultisigConfig::signers`.
 /// Practical governance cap; more signers = larger XDR + more gas for threshold checks.
 const MAX_MULTISIG_SIGNERS: u32 = 20;
 
 /// Maximum number of pending signature slots in `PetTransferProposal::signatures`.
+#[allow(dead_code)]
 const MAX_TRANSFER_SIGNATURES: u32 = 20;
 
 /// Maximum number of approval entries in a `MultiSigProposal::approvals` Vec.
+#[allow(dead_code)]
 const MAX_PROPOSAL_APPROVALS: u32 = 20;
 
 /// Maximum number of language codes in `SupportedLanguages` Vec.
+#[allow(dead_code)]
 const MAX_SUPPORTED_LANGUAGES: u32 = 50;
 
 // ---------------------------------------------------------------------------
@@ -336,12 +355,15 @@ const MAX_MICROCHIP_ID_LEN: usize = 64;
 const MAX_BEHAVIOR_DESC_LEN: u32 = 500;
 
 /// Maximum byte length of a `GroomingRecord::service_type`.
+#[allow(dead_code)]
 const MAX_GROOMING_SERVICE_LEN: u32 = 100;
 
 /// Maximum byte length of a `GroomingRecord::groomer` (display name).
+#[allow(dead_code)]
 const MAX_GROOMING_GROOMER_LEN: u32 = 100;
 
 /// Maximum byte length of a `GroomingRecord::notes`.
+#[allow(dead_code)]
 const MAX_GROOMING_NOTES_LEN: u32 = 500;
 
 /// Maximum byte length of an `ActivityRecord::notes`.
@@ -406,12 +428,15 @@ const MAX_DISPUTE_REASON_LEN: u32 = 500;
 const MAX_BREEDING_NOTES_LEN: u32 = 500;
 
 /// Maximum byte length of a `LostPetAlert::last_seen_location`.
+#[allow(dead_code)]
 const MAX_LOCATION_LEN: u32 = 200;
 
 /// Maximum byte length of a `SightingReport::location`.
+#[allow(dead_code)]
 const MAX_SIGHTING_LOCATION_LEN: u32 = 200;
 
 /// Maximum byte length of a `SightingReport::description`.
+#[allow(dead_code)]
 const MAX_SIGHTING_DESC_LEN: u32 = 500;
 
 // --- STORAGE QUOTA CONSTANTS ---
@@ -486,7 +511,7 @@ pub enum PetChainError {
     TooManySearchTokens = 5,
 }
 
-#[contracterror]
+#[contracterror(export = false)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ContractError {
@@ -528,12 +553,6 @@ pub enum ContractError {
     InbreedingThresholdExceeded = 36,
     SelfBreeding = 37,
 
-    AlreadyDeleted = 160,
-    RecordAlreadyDeleted = 161,
-    RecordNotFound = 163,
-    RetentionPeriodNotMet = 162,
-    ProposalExpired = 43,
-    ProposalNotApproved = 44,
     ProposalAlreadyExecuted = 38,
     /// Discriminant 39 is reserved for `InvalidNonce` (canonical ABI value).
     /// `ProposalNotFound` previously collided here; it is now reassigned to 47.
@@ -544,6 +563,19 @@ pub enum ContractError {
     ProposalNotApproved = 44,
     QuorumNotMet = 45,
     RateLimitExceeded = 46,
+    /// Formerly 39 (collision with `InvalidNonce`); moved to 47. (#1149)
+    ProposalNotFound = 47,
+
+    AlreadyDeleted = 160,
+    RecordAlreadyDeleted = 161,
+    RetentionPeriodNotMet = 162,
+    RecordNotFound = 163,
+
+    /// Returned by `migrate_storage` when the stored schema version already
+    /// equals or exceeds the requested target version.  Callers may treat this
+    /// as a no-op (idempotent replay is safe). (#1149)
+    /// Appended at 169 because 164-168 are the dispute errors added in #1235.
+    StaleMigration = 169,
 
     // --- Typed replacements for former assert!/panic! call sites (Issue #1150) ---
     // Append-only: existing values above must never be renumbered or reused.
@@ -741,6 +773,7 @@ pub struct TrainingMilestone {
     pub achieved_at: Option<u64>,
     pub trainer: Address,
     pub notes: String,
+    pub prerequisites: Vec<u64>, // prerequisite milestone IDs (Issue #1153)
 }
 
 #[contracttype]
@@ -2172,6 +2205,23 @@ pub struct CustodyVerificationResult {
     pub gap_at: Option<u32>,
 }
 
+/// Canonical digest of a pet's chain-of-custody history.
+///
+/// See [`PetChainContract::get_custody_chain_digest`] for the exact
+/// construction. `digest` commits to `domain`, `version`, `pet_id`,
+/// `sequence` (the number of entries hashed) and every entry in canonical
+/// (chronological) order, so a consumer can recompute it from a returned
+/// history and detect missing, reordered, or altered entries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustodyChainDigest {
+    pub domain: String,
+    pub version: u32,
+    pub pet_id: u64,
+    pub sequence: u32,
+    pub digest: BytesN<32>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalState {
@@ -3152,7 +3202,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::ProposalCount)
             .unwrap_or(0);
-        let proposal_id = safe_increment(proposal_count);
+        let proposal_id = safe_increment(&env, proposal_count);
         let now = env.ledger().timestamp();
         let admin_count = env
             .storage()
@@ -3385,7 +3435,7 @@ impl PetChainContract {
         };
 
         if count < MAX_POINTS {
-            let new_count = safe_increment(count);
+            let new_count = safe_increment(env, count);
             env.storage()
                 .instance()
                 .set(&StatSeriesKey::Point((key.clone(), new_count)), &point);
@@ -4224,7 +4274,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::AdminActivityCount)
             .unwrap_or(0);
-        let next = safe_increment(count);
+        let next = safe_increment(env, count);
         env.storage().instance().set(
             &SystemKey::AdminActivityLog(next),
             &AdminActivityEntry {
@@ -4817,6 +4867,7 @@ impl PetChainContract {
         }
 
         let record_id: u64 = safe_increment(
+            &env,
             env.storage()
                 .instance()
                 .get(&BehaviorKey::BehaviorRecordCount)
@@ -4824,6 +4875,7 @@ impl PetChainContract {
         );
 
         let pet_index: u64 = safe_increment(
+            &env,
             env.storage()
                 .instance()
                 .get(&BehaviorKey::PetBehaviorCount(pet_id))
@@ -6553,11 +6605,7 @@ impl PetChainContract {
     }
 
     fn validate_multisig(env: &Env, owner: &Address, signers: &Vec<Address>, threshold: u32) {
-        if signers.is_empty()
-            || threshold == 0
-            || threshold > signers.len() as u32
-            || !signers.contains(owner)
-        {
+        if signers.is_empty() || threshold == 0 || threshold > signers.len() || !signers.contains(owner) {
             panic_with_error!(env, ContractError::InvalidThreshold);
         }
         for i in 0..signers.len() {
@@ -6579,12 +6627,8 @@ impl PetChainContract {
         let config = Self::get_multisig_config(env.clone(), pet_id)
             .filter(|config| config.enabled)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&SystemKey::PetTransferProposalCount)
-            .unwrap_or(0);
-        let id = safe_increment(count);
+        let count: u64 = env.storage().instance().get(&SystemKey::PetTransferProposalCount).unwrap_or(0);
+        let id = safe_increment(&env, count);
         let mut signatures = Vec::new(&env);
         signatures.push_back(pet.owner);
         let now = env.ledger().timestamp();
@@ -6913,8 +6957,6 @@ impl PetChainContract {
     const MAX_STR_SHORT: u32 = 100;
     #[allow(dead_code)]
     const MAX_STR_LONG: u32 = 1000;
-    #[allow(dead_code)]
-    const MAX_VEC_MEDS: u32 = 20;
     #[allow(dead_code)]
     const MAX_VEC_ATTACHMENTS: u32 = 20;
     #[allow(dead_code)]
@@ -8565,6 +8607,7 @@ impl PetChainContract {
             .set(&NutritionKey::DietPlanCount, &diet_id);
 
         let pet_diet_count: u64 = safe_increment(
+            &env,
             env.storage()
                 .instance()
                 .get(&NutritionKey::PetDietCount(pet_id))
@@ -8911,7 +8954,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::PetNutritionPlanCount(pet_id))
             .unwrap_or(0u64);
-        let next_pet_count = safe_increment(pet_plan_count);
+        let next_pet_count = safe_increment(&env, pet_plan_count);
 
         let plan = NutritionPlan {
             id: plan_id,
@@ -8983,7 +9026,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::PetNutritionVersionCount(pet_id))
             .unwrap_or(0);
-        let new_version = safe_increment(current_version);
+        let new_version = safe_increment(&env, current_version);
         let now = env.ledger().timestamp();
 
         let nutrition_version = NutritionVersion {
@@ -9123,7 +9166,7 @@ impl PetChainContract {
             .instance()
             .get(&NutritionKey::PetNutritionVersionCount(pet_id))
             .unwrap_or(0);
-        let new_version = safe_increment(current_version);
+        let new_version = safe_increment(&env, current_version);
         let now = env.ledger().timestamp();
 
         let rollback_version = NutritionVersion {
@@ -10261,6 +10304,133 @@ impl PetChainContract {
         }
     }
 
+    /// Canonical bytes for a [`CustodyEntry`] used by
+    /// [`PetChainContract::get_custody_chain_digest`].
+    ///
+    /// Layout (all integers big-endian):
+    ///   1. `u32 len(from)`  || XDR of the `from` address
+    ///   2. `u32 len(to)`    || XDR of the `to` address
+    ///   3. `u64 timestamp`
+    ///   4. `u32 transfer_type` discriminant (Direct=0, Adoption=1, Multisig=2)
+    ///
+    /// Address XDR is the `ScVal` encoding of `Address` (`SCV_ADDRESS`
+    /// followed by the `SCAddress` union), so the serialisation is
+    /// unambiguous and deterministic for a given ledger address.
+    fn canonical_custody_entry_bytes(env: &Env, entry: &CustodyEntry) -> Bytes {
+        let mut out = Bytes::new(env);
+
+        let from_xdr = entry.from.clone().to_xdr(env);
+        for byte in from_xdr.len().to_be_bytes() {
+            out.push_back(byte);
+        }
+        for byte in from_xdr.iter() {
+            out.push_back(byte);
+        }
+
+        let to_xdr = entry.to.clone().to_xdr(env);
+        for byte in to_xdr.len().to_be_bytes() {
+            out.push_back(byte);
+        }
+        for byte in to_xdr.iter() {
+            out.push_back(byte);
+        }
+
+        for byte in entry.timestamp.to_be_bytes() {
+            out.push_back(byte);
+        }
+
+        let transfer_type: u32 = match entry.transfer_type {
+            TransferType::Direct => 0,
+            TransferType::Adoption => 1,
+            TransferType::Multisig => 2,
+        };
+        for byte in transfer_type.to_be_bytes() {
+            out.push_back(byte);
+        }
+
+        out
+    }
+
+    /// Seed bytes for the custody digest: `domain || u32be(version) || u64be(pet_id)`.
+    fn custody_digest_seed(env: &Env, pet_id: u64) -> Bytes {
+        let mut seed = Bytes::new(env);
+        for byte in CUSTODY_DIGEST_DOMAIN.as_bytes() {
+            seed.push_back(*byte);
+        }
+        for byte in CUSTODY_DIGEST_VERSION.to_be_bytes() {
+            seed.push_back(byte);
+        }
+        for byte in pet_id.to_be_bytes() {
+            seed.push_back(byte);
+        }
+        seed
+    }
+
+    /// Compute the canonical chain-of-custody digest for `pet_id`. Pure read
+    /// function — no storage writes.
+    ///
+    /// The digest is a SHA-256 hash chain over the custody history in
+    /// canonical (append) order:
+    ///
+    /// ```text
+    /// state = sha256(domain || u32be(version) || u64be(pet_id))
+    /// for each entry in chain order:
+    ///     state = sha256(state || u32be(len(entry_bytes)) || entry_bytes)
+    /// digest = sha256(state || u32be(sequence))
+    /// ```
+    ///
+    /// `domain` is [`CUSTODY_DIGEST_DOMAIN`], `version` is
+    /// [`CUSTODY_DIGEST_VERSION`], and `sequence` is the number of entries
+    /// hashed. Because every entry is folded in order, appending an entry
+    /// changes the digest and reordering entries cannot reproduce it. The
+    /// chain is capped at [`MAX_CUSTODY_CHAIN`] entries, so the computation
+    /// is bounded in both storage size and CPU.
+    pub fn get_custody_chain_digest(env: Env, pet_id: u64) -> CustodyChainDigest {
+        let chain: Vec<CustodyEntry> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::CustodyChain(pet_id))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut state = env
+            .crypto()
+            .sha256(&Self::custody_digest_seed(&env, pet_id));
+
+        let sequence = chain.len();
+        for i in 0..sequence {
+            let entry = chain.get(i).unwrap();
+            let entry_bytes = Self::canonical_custody_entry_bytes(&env, &entry);
+            let mut preimage = Bytes::new(&env);
+            for byte in state.to_array() {
+                preimage.push_back(byte);
+            }
+            for byte in entry_bytes.len().to_be_bytes() {
+                preimage.push_back(byte);
+            }
+            for byte in entry_bytes.iter() {
+                preimage.push_back(byte);
+            }
+            state = env.crypto().sha256(&preimage);
+        }
+
+        // Bind the sequence (entry count) into the final digest.
+        let mut preimage = Bytes::new(&env);
+        for byte in state.to_array() {
+            preimage.push_back(byte);
+        }
+        for byte in sequence.to_be_bytes() {
+            preimage.push_back(byte);
+        }
+
+        CustodyChainDigest {
+            domain: String::from_str(&env, CUSTODY_DIGEST_DOMAIN),
+            version: CUSTODY_DIGEST_VERSION,
+            pet_id,
+            sequence,
+            digest: env.crypto().sha256(&preimage).into(),
+        }
+    }
+
     pub fn get_ownership_history(
         env: Env,
         pet_id: u64,
@@ -10962,7 +11132,7 @@ impl PetChainContract {
             .instance()
             .get(&DisputeKey::DisputeCount)
             .unwrap_or(0);
-        let dispute_id = safe_increment(count);
+        let dispute_id = safe_increment(&env, count);
 
         let dispute = Dispute {
             dispute_id,
@@ -10986,7 +11156,7 @@ impl PetChainContract {
 
         let pet_count_key = DisputeKey::PetDisputesCount(pet_id);
         let pet_count: u64 = env.storage().instance().get(&pet_count_key).unwrap_or(0);
-        let new_pet_count = safe_increment(pet_count);
+        let new_pet_count = safe_increment(&env, pet_count);
 
         env.storage().instance().set(
             &DisputeKey::PetDisputesIndex((pet_id, new_pet_count)),
@@ -11221,7 +11391,7 @@ impl PetChainContract {
             .instance()
             .get(&evidence_count_key)
             .unwrap_or(0);
-        let evidence_id = safe_increment(total_count);
+        let evidence_id = safe_increment(&env, total_count);
 
         let evidence = Evidence {
             evidence_id,
@@ -11569,7 +11739,7 @@ impl PetChainContract {
             {
                 let old_rating = profile.aggregate_rating as u64;
                 let count = profile.review_count;
-                let new_count = safe_increment(count);
+                let new_count = safe_increment(&env, count);
                 let new_avg = ((old_rating * count) + (score as u64 * 100)) / new_count;
                 profile.aggregate_rating = new_avg as u32;
                 profile.review_count = new_count;
@@ -11652,6 +11822,7 @@ impl PetChainContract {
 
         // No conflict — assign a new slot_id and persist the slot
         let slot_id: u64 = safe_increment(
+            &env,
             env.storage()
                 .instance()
                 .get(&GroomingKey::GroomingRecordCount)
@@ -11666,7 +11837,7 @@ impl PetChainContract {
             pet_id,
         };
 
-        let new_count = safe_increment(slot_count);
+        let new_count = safe_increment(&env, slot_count);
         env.storage().instance().set(
             &GroomingKey::GroomerSlotIndex((groomer_id.clone(), new_count)),
             &new_slot,
@@ -12611,10 +12782,9 @@ impl PetChainContract {
             .persistent()
             .get(&BreedingKey::PetBreedingCount(pet_id))
             .unwrap_or(0u64);
-        env.storage().persistent().set(
-            &BreedingKey::PetBreedingCount(pet_id),
-            &safe_increment(count),
-        );
+        env.storage()
+            .persistent()
+            .set(&BreedingKey::PetBreedingCount(pet_id), &safe_increment(env, count));
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
@@ -13497,7 +13667,7 @@ impl PetChainContract {
             .instance()
             .get(&SystemKey::UpgradeProposalCount)
             .unwrap_or(0);
-        let proposal_id = safe_increment(count);
+        let proposal_id = safe_increment(&env, count);
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add((expires_in_days as u64).saturating_mul(86400));
 
@@ -14242,9 +14412,10 @@ impl PetChainContract {
             .instance()
             .get(&BehaviorKey::TrainingMilestoneCount)
             .unwrap_or(0);
-        let milestone_id = safe_increment(global_count);
+        let milestone_id = safe_increment(&env, global_count);
 
         let pet_count: u64 = safe_increment(
+            &env,
             env.storage()
                 .instance()
                 .get(&BehaviorKey::PetMilestoneCount(pet_id))

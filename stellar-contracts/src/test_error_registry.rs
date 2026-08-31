@@ -628,7 +628,7 @@ fn test_contract_error_discriminants() {
     assert_eq!(ContractError::SelfBreeding as u32, 37);
     assert_eq!(ContractError::ProposalAlreadyExecuted as u32, 38);
     assert_eq!(ContractError::InvalidNonce as u32, 39);
-    assert_eq!(ContractError::ProposalNotFound as u32, 39);
+    assert_eq!(ContractError::ProposalNotFound as u32, 47);
     assert_eq!(ContractError::NoPreviousUpgrade as u32, 41);
     assert_eq!(ContractError::RollbackWindowExpired as u32, 40);
     assert_eq!(ContractError::ProposalExpired as u32, 43);
