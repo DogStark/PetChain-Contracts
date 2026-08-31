@@ -689,7 +689,15 @@ pub struct ActivityStreak {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Emitted when a pet reaches a consecutive-day activity streak milestone.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `pet_id`: ID of the pet that reached the milestone.
+/// - `milestone_days`: The milestone threshold reached (e.g. 7, 30, 100).
+/// - `timestamp`: Ledger timestamp when the milestone was recorded.
 pub struct StreakMilestoneEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub milestone_days: u64,
     pub timestamp: u64,
@@ -804,7 +812,17 @@ pub struct AccessLog {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A recorded access-control event returned by `export_access_log`.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `actor`: Address that performed the action.
+/// - `action`: The access action taken (Read, Write, Grant, Revoke, ...).
+/// - `target`: Pet owner who granted/revoked access.
+/// - `timestamp`: Ledger timestamp of the event.
+/// - `result`: Whether the action succeeded.
 pub struct AccessEvent {
+    pub version: u32,
     pub actor: Address,
     pub action: AccessAction,
     pub target: Address,
@@ -1253,7 +1271,16 @@ pub enum CertificateStatus {
 
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when an NFC/QR tag is linked to a pet.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier (BytesN<32>).
+/// - `pet_id`: ID of the pet the tag is linked to.
+/// - `owner`: Address of the pet owner who linked the tag.
+/// - `timestamp`: Ledger timestamp when the link was created.
 pub struct TagLinkedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub owner: Address,
@@ -1262,7 +1289,16 @@ pub struct TagLinkedEvent {
 
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when an NFC/QR tag is deactivated.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier.
+/// - `pet_id`: ID of the pet the tag was linked to.
+/// - `deactivated_by`: Address of the pet owner who deactivated it.
+/// - `timestamp`: Ledger timestamp of the deactivation.
 pub struct TagDeactivatedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub deactivated_by: Address,
@@ -1293,7 +1329,16 @@ pub struct UpgradeProposal {
 }
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when a deactivated NFC/QR tag is reactivated.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier.
+/// - `pet_id`: ID of the pet the tag is linked to.
+/// - `reactivated_by`: Address of the pet owner who reactivated it.
+/// - `timestamp`: Ledger timestamp of the reactivation.
 pub struct TagReactivatedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub reactivated_by: Address,
@@ -2282,7 +2327,18 @@ pub struct Treatment {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Emitted when a veterinary treatment record is added.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `treatment_id`: Unique ID of the new treatment record.
+/// - `pet_id`: ID of the pet treated.
+/// - `vet_address`: Address of the veterinarian.
+/// - `treatment_type`: Category of treatment (Surgery, Therapy, ...).
+/// - `timestamp`: Ledger timestamp when the record was created.
+/// - `subscription_ids`: Matching event subscription IDs.
 pub struct TreatmentAddedEvent {
+    pub version: u32,
     pub treatment_id: u64,
     pub pet_id: u64,
     pub vet_address: Address,
@@ -3843,6 +3899,7 @@ impl PetChainContract {
                 break;
             }
             result.push_back(AccessEvent {
+                version: EVENT_SCHEMA_VERSION,
                 actor: log.user.clone(),
                 action: log.action.clone(),
                 target: pet.owner.clone(),
@@ -9132,6 +9189,7 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "TAG_LINKED"),),
             TagLinkedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 tag_id: tag_id.clone(),
                 pet_id,
                 owner: pet.owner.clone(),
@@ -9210,6 +9268,7 @@ impl PetChainContract {
             env.events().publish(
                 (String::from_str(&env, "TAG_DEACTIVATED"),),
                 TagDeactivatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     tag_id,
                     pet_id: tag.pet_id,
                     deactivated_by: pet.owner,
@@ -9244,6 +9303,7 @@ impl PetChainContract {
             env.events().publish(
                 (String::from_str(&env, "TAG_REACTIVATED"),),
                 TagReactivatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     tag_id,
                     pet_id: tag.pet_id,
                     reactivated_by: pet.owner,
@@ -12214,6 +12274,7 @@ impl PetChainContract {
                             pet_id,
                         ),
                         StreakMilestoneEvent {
+                            version: EVENT_SCHEMA_VERSION,
                             pet_id,
                             milestone_days: milestone,
                             timestamp: now,
