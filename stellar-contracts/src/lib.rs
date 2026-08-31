@@ -6147,33 +6147,37 @@ impl PetChainContract {
 
             let key = DataKey::AccessGrant((pet_id, grantee.clone()));
             let now = env.ledger().timestamp();
-            let mut grant = if let Some(existing) =
-                env.storage().instance().get::<DataKey, AccessGrant>(&key)
-            {
-                existing
-            } else {
-                AccessGrant {
-                    pet_id,
-                    granter: owner.clone(),
-                    grantee: grantee.clone(),
-                    access_level: access_level.clone(),
-                    granted_at: now,
-                    expires_at,
-                    is_active: true,
-                }
-            };
+
+            // Issue #1160: a single read decides both "what was the prior
+            // state" and "is this a new grantee for the index" — the two
+            // questions used to be answered by two separate storage reads
+            // (one implicit, building `grant`, and one explicit for
+            // `is_new_grant`). Both reads always agreed in practice, since
+            // nothing writes to `key` between them, but that safety
+            // depended on no write ever being inserted between two
+            // easy-to-separate reads. Deriving `is_new_grant` from the same
+            // `Option` used to build `grant` makes "one canonical index
+            // entry per grantee" true by construction, not by the absence
+            // of an intervening write.
+            let existing: Option<AccessGrant> =
+                env.storage().instance().get::<DataKey, AccessGrant>(&key);
+            let is_new_grant = existing.is_none();
+
+            let mut grant = existing.unwrap_or_else(|| AccessGrant {
+                pet_id,
+                granter: owner.clone(),
+                grantee: grantee.clone(),
+                access_level: access_level.clone(),
+                granted_at: now,
+                expires_at,
+                is_active: true,
+            });
 
             grant.access_level = access_level.clone();
             grant.granted_at = now;
             grant.expires_at = expires_at;
             grant.is_active = true;
             grant.granter = owner.clone();
-
-            let is_new_grant = env
-                .storage()
-                .instance()
-                .get::<DataKey, AccessGrant>(&key)
-                .is_none();
 
             env.storage().instance().set(&key, &grant);
 
