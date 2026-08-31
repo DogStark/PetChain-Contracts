@@ -70,17 +70,27 @@ impl SecretProvider for AwsSecretsManagerProvider {
     }
 }
 
+/// Explicit allow-list of `SECRET_PROVIDER` values this build understands.
+/// Keep this in sync with the `match` arms in [`select_secret_provider`].
+const SUPPORTED_SECRET_PROVIDERS: &[&str] = &["env", "aws"];
+
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
-pub fn select_secret_provider() -> Box<dyn SecretProvider> {
+///
+/// Issue #1222: AWS provider construction failures (e.g. a runtime that
+/// can't be created) are propagated as a typed `Err` instead of panicking
+/// via `.expect()`. A misconfigured library must report an actionable
+/// startup error, not take down the whole process.
+pub fn select_secret_provider() -> Result<Box<dyn SecretProvider>, String> {
     match std::env::var("SECRET_PROVIDER")
         .unwrap_or_else(|_| "env".to_string())
         .as_str()
     {
-        "aws" => Box::new(
-            AwsSecretsManagerProvider::new()
-                .expect("failed to initialise AwsSecretsManagerProvider"),
-        ),
-        _ => Box::new(EnvSecretProvider {}),
+        "aws" => {
+            let provider = AwsSecretsManagerProvider::new()
+                .map_err(|e| format!("failed to initialise AwsSecretsManagerProvider: {e}"))?;
+            Ok(Box::new(provider))
+        }
+        _ => Ok(Box::new(EnvSecretProvider {})),
     }
 }
 
@@ -1198,9 +1208,19 @@ mod tests {
     #[test]
     fn select_secret_provider_env_default() {
         std::env::remove_var("SECRET_PROVIDER");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("env provider must construct");
         // default is EnvSecretProvider; ensure get_secret returns Err for unknown key
         assert!(prov.get_secret("NON_EXISTENT").is_err());
+    }
+
+    #[test]
+    fn select_secret_provider_explicit_env_value() {
+        // "env" is on the allow-list and must select EnvSecretProvider explicitly,
+        // not just as the unset-var default.
+        std::env::set_var("SECRET_PROVIDER", "env");
+        let prov = select_secret_provider().expect("'env' must be a supported provider");
+        assert!(prov.get_secret("NON_EXISTENT").is_err());
+        std::env::remove_var("SECRET_PROVIDER");
     }
 
     #[test]
@@ -1209,10 +1229,76 @@ mod tests {
         // panicking.  Fetching a secret requires real credentials; that path is
         // exercised by the integration test below.
         std::env::set_var("SECRET_PROVIDER", "aws");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("aws provider must construct");
         // Without real credentials / localstack the fetch must fail, not panic.
         assert!(prov.get_secret("NONEXISTENT_KEY_NO_CREDENTIALS").is_err());
         std::env::remove_var("SECRET_PROVIDER");
+    }
+
+    /// Issue #1222 — AWS provider initialization must never panic on missing
+    /// configuration. `aws_config`'s loader is lazy (it doesn't eagerly
+    /// validate region/credentials), so the observable contract is:
+    /// construction succeeds without panicking even with nothing set, and
+    /// the *first actual call* that needs the missing config fails with a
+    /// typed `Err`, not a process-terminating panic.
+    #[test]
+    fn aws_provider_missing_region_does_not_panic() {
+        let saved = std::env::var("AWS_REGION").ok();
+        std::env::remove_var("AWS_REGION");
+        std::env::remove_var("AWS_DEFAULT_REGION");
+        std::env::set_var("SECRET_PROVIDER", "aws");
+
+        let result = select_secret_provider();
+        std::env::remove_var("SECRET_PROVIDER");
+        if let Some(region) = saved {
+            std::env::set_var("AWS_REGION", region);
+        }
+
+        assert!(
+            result.is_ok(),
+            "construction must not panic on missing region; observed an Err: {}",
+            result.err().unwrap_or_default(),
+        );
+    }
+
+    #[test]
+    fn aws_provider_missing_credentials_get_secret_fails_not_panics() {
+        let saved_key = std::env::var("AWS_ACCESS_KEY_ID").ok();
+        let saved_secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        std::env::set_var("SECRET_PROVIDER", "aws");
+
+        let prov = select_secret_provider().expect("construction must not panic on missing creds");
+        let fetch_result = prov.get_secret("ANY_KEY");
+
+        std::env::remove_var("SECRET_PROVIDER");
+        if let Some(v) = saved_key {
+            std::env::set_var("AWS_ACCESS_KEY_ID", v);
+        }
+        if let Some(v) = saved_secret {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", v);
+        }
+
+        assert!(
+            fetch_result.is_err(),
+            "fetching without credentials must return Err, not panic or succeed",
+        );
+    }
+
+    #[test]
+    fn aws_provider_missing_secret_name_returns_err_not_panic() {
+        std::env::set_var("SECRET_PROVIDER", "aws");
+        let prov = select_secret_provider().expect("construction must not panic");
+        std::env::remove_var("SECRET_PROVIDER");
+
+        // An empty secret name is an obviously-missing/invalid identifier;
+        // this must surface as an Err from the API call, never a panic.
+        let result = prov.get_secret("");
+        assert!(
+            result.is_err(),
+            "empty/missing secret name must return Err, not panic",
+        );
     }
 
     /// Integration test — skipped unless AWS_SECRETS_INTEGRATION_TEST is set.
@@ -1531,4 +1617,3 @@ mod tests {
         );
     }
 }
-
