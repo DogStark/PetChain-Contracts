@@ -222,6 +222,8 @@ mod test_upgrade_proposal;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_discriminant_stability;
+#[cfg(test)]
+mod test_max_input_sizes;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -408,6 +410,14 @@ pub fn validate_id(id: &u64) -> Result<(), ValidationError> {
         return Err(ValidationError::InvalidId);
     }
     Ok(())
+}
+
+/// Compute a vaccination-reminder expiry window in ledger seconds.
+///
+/// Uses saturating arithmetic so inputs near `u64::MAX` cannot wrap or panic
+/// (Issue #3: duration arithmetic near integer limits).
+pub(crate) fn duration_window_end(now: u64, days: u64) -> u64 {
+    now.saturating_add(days.saturating_mul(86_400))
 }
 
 // --- BREED METADATA ---
@@ -1127,7 +1137,12 @@ pub struct Vaccination {
 }
 
 /// Certificate anchor for vaccination PDF metadata
-/// Stores hash of off-chain certificate for authenticity verification
+/// Stores hash of off-chain certificate for authenticity verification.
+///
+/// NOTE (storage migration): adding lifecycle fields to the separate
+/// `CertificateLifecycle` record is additive; existing `CertificateAnchor`
+/// entries are backwards-compatible. Re-anchor certificates if cert_id /
+/// expiry / revocation tracking is required for pre-existing entries.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateAnchor {
@@ -1136,6 +1151,34 @@ pub struct CertificateAnchor {
     pub cert_hash: String, // Hash of the PDF certificate
     pub issuer: Address,   // Verified vet who issued the certificate
     pub anchored_at: u64,  // Timestamp when anchored
+}
+
+/// Lifecycle state bound to a certificate anchor.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateLifecycle {
+    /// Stable, monotonically-assigned certificate identifier.
+    pub cert_id: u64,
+    /// Ledger timestamp when the certificate was issued.
+    pub issue_time: u64,
+    /// Unix timestamp when the certificate expires. `0` means no expiry.
+    pub expiry: u64,
+    /// Whether the certificate has been revoked.
+    pub revoked: bool,
+    /// Ledger timestamp of revocation, if `revoked` is true.
+    pub revoked_at: Option<u64>,
+    /// Free-text reason supplied at revocation time.
+    pub revocation_reason: Option<String>,
+}
+
+/// High-level lifecycle status of a certificate.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CertificateStatus {
+    NotAnchored,
+    Valid,
+    Expired,
+    Revoked,
 }
 
 #[contracttype]
@@ -1328,6 +1371,9 @@ pub enum MedicalKey {
     ScannerRegistry,
     // Retention period for soft-deleted record purging
     RetentionPeriod,
+    // Certificate lifecycle (Issue #X: cert_id, expiry, revocation)
+    CertificateCount,
+    CertificateLifecycle((u64, u64)), // (pet_id, vaccination_id) -> CertificateLifecycle
 }
 
 #[contracttype]
@@ -2434,6 +2480,19 @@ pub struct CertificateAnchoredEvent {
     pub vaccination_id: u64,
     pub cert_hash: String,
     pub issuer: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a certificate is revoked on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateRevokedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub cert_id: u64,
+    pub revoked_by: Address,
+    pub reason: String,
     pub timestamp: u64,
 }
 
@@ -6667,6 +6726,9 @@ impl PetChainContract {
                 env.storage()
                     .instance()
                     .set(&DataKey::Vet(vet.address.clone()), &vet);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::VetCredentialsExpiry(vet_address.clone()));
                 succeeded.push_back(vet_address.clone());
             } else {
                 // Vet not found, record failure
@@ -6693,6 +6755,15 @@ impl PetChainContract {
 
         if !vet.verified {
             panic_with_error!(&env, ContractError::VeterinarianNotVerified);
+        }
+        if let Some(expiry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address.clone()))
+        {
+            if expiry != 0 && env.ledger().timestamp() >= expiry {
+                panic_with_error!(&env, ContractError::VetCredentialsExpired);
+            }
         }
 
         if specializations.is_empty() || specializations.len() > 5 {
@@ -6753,6 +6824,9 @@ impl PetChainContract {
             env.storage()
                 .instance()
                 .set(&DataKey::Vet(vet.address.clone()), &vet);
+            env.storage()
+                .instance()
+                .remove(&DataKey::VetCredentialsExpiry(vet_address));
             true
         } else {
             false
@@ -6778,6 +6852,9 @@ impl PetChainContract {
             env.storage()
                 .instance()
                 .set(&DataKey::Vet(vet.address.clone()), &vet);
+            env.storage()
+                .instance()
+                .remove(&DataKey::VetCredentialsExpiry(vet_address));
             true
         } else {
             false
@@ -6789,11 +6866,79 @@ impl PetChainContract {
     }
 
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
-        env.storage()
+        if let Some(vet) = env
+            .storage()
             .instance()
             .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
-            .map(|vet| vet.verified)
-            .unwrap_or(false)
+        {
+            if !vet.verified {
+                return false;
+            }
+            if let Some(expiry) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address))
+            {
+                if expiry != 0 && env.ledger().timestamp() >= expiry {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Authorise a vet, optionally binding an optional credential expiry.
+    ///
+    /// * `expires_at == None` — credentials are perpetual (no expiry recorded).
+    /// * `expires_at <= now` — rejected with `InvalidInput`.
+    pub fn verify_vet_with_expiry(
+        env: Env,
+        admin: Address,
+        vet_address: Address,
+        expires_at: Option<u64>,
+    ) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+        let verified = PetChainContract::_verify_vet_internal(&env, vet_address);
+        if verified {
+            if let Some(exp) = expires_at {
+                if exp <= env.ledger().timestamp() {
+                    panic_with_error!(&env, ContractError::InvalidInput);
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::VetCredentialsExpiry(vet_address.clone()), &exp);
+            } else {
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::VetCredentialsExpiry(vet_address));
+            }
+            Self::record_admin_activity(&env, &admin, "verify_vet_with_expiry");
+        }
+        verified
+    }
+
+    /// Authorise a vet, returning precise errors for missing, unverified, or
+    /// expired credentials.
+    fn require_verified_vet(env: &Env, vet_address: &Address) {
+        let vet: Vet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Vet(vet_address.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::VetNotFound));
+        if !vet.verified {
+            panic_with_error!(env, ContractError::VetNotVerified);
+        }
+        if let Some(expiry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address.clone()))
+        {
+            if expiry != 0 && env.ledger().timestamp() >= expiry {
+                panic_with_error!(env, ContractError::VetCredentialsExpired);
+            }
+        }
     }
 
     pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet> {
@@ -7015,6 +7160,27 @@ impl PetChainContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+
+        // Cascade revocation to any anchored certificate for this vaccination.
+        let cert_lifecycle_key = MedicalKey::CertificateLifecycle((pet_id, cert_id));
+        if env.storage().instance().has(&cert_lifecycle_key) {
+            if let Some(mut cert_lifecycle) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, CertificateLifecycle>(&cert_lifecycle_key)
+            {
+                if !cert_lifecycle.revoked {
+                    cert_lifecycle.revoked = true;
+                    cert_lifecycle.revoked_at = Some(env.ledger().timestamp());
+                    if cert_lifecycle.revocation_reason.is_none() {
+                        cert_lifecycle.revocation_reason = Some(reason.clone());
+                    }
+                    env.storage()
+                        .instance()
+                        .set(&cert_lifecycle_key, &cert_lifecycle);
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -7335,7 +7501,7 @@ impl PetChainContract {
         days_threshold: u64,
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
-        let threshold = current_time + (days_threshold * 86400);
+        let threshold = duration_window_end(current_time, days_threshold);
         let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
 
@@ -7545,16 +7711,7 @@ impl PetChainContract {
     ) {
         issuer.require_auth();
 
-        // Verify issuer is a verified vet
-        let vet: Vet = env
-            .storage()
-            .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(issuer.clone()))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VetNotFound));
-
-        if !vet.verified {
-            panic_with_error!(&env, ContractError::VetNotVerified);
-        }
+        Self::require_verified_vet(&env, &issuer);
 
         // Verify pet exists
         let _pet: Pet = env
@@ -7587,6 +7744,20 @@ impl PetChainContract {
 
         let current_time = env.ledger().timestamp();
 
+        // Assign a stable certificate identifier.
+        let cert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateCount)
+            .unwrap_or(0);
+        let cert_id = safe_increment(cert_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateCount, &cert_id);
+
+        // Certificate lifetime binds to the underlying dose's expiry.
+        let expiry = vaccination.expires_at;
+
         // Create and store certificate anchor
         let anchor = CertificateAnchor {
             pet_id,
@@ -7597,6 +7768,19 @@ impl PetChainContract {
         };
 
         env.storage().instance().set(&anchor_key, &anchor);
+
+        let lifecycle = CertificateLifecycle {
+            cert_id,
+            issue_time: current_time,
+            expiry,
+            revoked: false,
+            revoked_at: None,
+            revocation_reason: None,
+        };
+        env.storage().instance().set(
+            &MedicalKey::CertificateLifecycle((pet_id, vaccination_id)),
+            &lifecycle,
+        );
 
         // Emit event
         env.events().publish(
@@ -7612,6 +7796,121 @@ impl PetChainContract {
         );
     }
 
+    /// Idempotent variant of `anchor_certificate`.
+    ///
+    /// Uniqueness key = `(pet_id, vaccination_id)`.
+    ///
+    /// * If no certificate is anchored for the pair, a new certificate is
+    ///   created and its `cert_id` is returned.
+    /// * If the same `cert_hash` is already anchored, the existing `cert_id` is
+    ///   returned (idempotent / safe to replay).
+    /// * If a different `cert_hash` is already anchored, the call aborts with
+    ///   `CertificateHashConflict`.
+    pub fn anchor_certificate_idempotent(
+        env: Env,
+        issuer: Address,
+        pet_id: u64,
+        vaccination_id: u64,
+        cert_hash: String,
+    ) -> u64 {
+        issuer.require_auth();
+        let now = env.ledger().timestamp();
+
+        // Authorise issuer.
+        Self::require_verified_vet(&env, &issuer);
+
+        // Verify pet exists.
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Verify vaccination exists and belongs to the pet.
+        let vaccination: Vaccination = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccination_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaccinationNotFound));
+        if vaccination.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::VaccinationNotFound);
+        }
+
+        // Validate certificate hash.
+        if cert_hash.is_empty() || cert_hash.len() > 128 {
+            panic_with_error!(&env, ContractError::InvalidCertificateHash);
+        }
+
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let lifecycle_key = MedicalKey::CertificateLifecycle((pet_id, vaccination_id));
+
+        // Idempotency: same-hash replay returns the existing cert_id.
+        if let Some(existing) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateAnchor>(&anchor_key)
+        {
+            if existing.cert_hash == cert_hash {
+                if let Some(lifecycle) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, CertificateLifecycle>(&lifecycle_key)
+                {
+                    return lifecycle.cert_id;
+                }
+            }
+            panic_with_error!(&env, ContractError::CertificateHashConflict);
+        }
+
+        // Assign cert_id.
+        let cert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateCount)
+            .unwrap_or(0);
+        let cert_id = safe_increment(cert_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateCount, &cert_id);
+
+        let expiry = vaccination.expires_at;
+
+        let anchor = CertificateAnchor {
+            pet_id,
+            vaccination_id,
+            cert_hash: cert_hash.clone(),
+            issuer: issuer.clone(),
+            anchored_at: now,
+        };
+        env.storage().instance().set(&anchor_key, &anchor);
+
+        let lifecycle = CertificateLifecycle {
+            cert_id,
+            issue_time: now,
+            expiry,
+            revoked: false,
+            revoked_at: None,
+            revocation_reason: None,
+        };
+        env.storage()
+            .instance()
+            .set(&lifecycle_key, &lifecycle);
+
+        env.events().publish(
+            (String::from_str(&env, "CertificateAnchored"), pet_id),
+            CertificateAnchoredEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id,
+                cert_hash,
+                issuer: issuer.clone(),
+                timestamp: now,
+            },
+        );
+
+        cert_id
+    }
+
     /// Verify if a certificate hash matches the anchored hash for a vaccination.
     ///
     /// # Arguments
@@ -7620,8 +7919,10 @@ impl PetChainContract {
     /// * `cert_hash` - Hash to verify against the anchored hash
     ///
     /// # Returns
-    /// * `true` if the hash matches the anchored certificate
-    /// * `false` if no certificate is anchored or hash doesn't match
+    /// * `true` if the hash matches the anchored certificate and the certificate is
+    ///   not expired or revoked.
+    /// * `false` if no certificate is anchored, the hash doesn't match, the
+    ///   certificate has expired, or the certificate has been revoked.
     pub fn verify_certificate(
         env: Env,
         pet_id: u64,
@@ -7630,15 +7931,35 @@ impl PetChainContract {
     ) -> bool {
         let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
 
-        if let Some(anchor) = env
+        let Some(anchor) = env
             .storage()
             .instance()
             .get::<MedicalKey, CertificateAnchor>(&anchor_key)
-        {
-            anchor.cert_hash == cert_hash
-        } else {
-            false
+        else {
+            return false;
+        };
+
+        if anchor.cert_hash != cert_hash {
+            return false;
         }
+
+        // Lifecycle check: reject revoked or expired certificates.
+        if let Some(lifecycle) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateLifecycle>(&MedicalKey::CertificateLifecycle((
+                pet_id, vaccination_id,
+            )))
+        {
+            if lifecycle.revoked {
+                return false;
+            }
+            if lifecycle.expiry != 0 && env.ledger().timestamp() >= lifecycle.expiry {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Get the certificate anchor for a vaccination.
@@ -7657,6 +7978,142 @@ impl PetChainContract {
     ) -> Option<CertificateAnchor> {
         let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
         env.storage().instance().get(&anchor_key)
+    }
+
+    /// Read the lifecycle record for a certificate.
+    ///
+    /// # Returns
+    /// * `Some(CertificateLifecycle)` — the lifecycle was anchored.
+    /// * `None` — no certificate has been anchored for this vaccination.
+    pub fn get_certificate_lifecycle(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> Option<CertificateLifecycle> {
+        env.storage()
+            .instance()
+            .get(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)))
+    }
+
+    /// Return the high-level lifecycle status of a certificate.
+    pub fn get_certificate_status(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> CertificateStatus {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        if !env.storage().instance().has(&anchor_key) {
+            return CertificateStatus::NotAnchored;
+        }
+        if let Some(lifecycle) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateLifecycle>(&MedicalKey::CertificateLifecycle((
+                pet_id, vaccination_id,
+            )))
+        {
+            if lifecycle.revoked {
+                return CertificateStatus::Revoked;
+            }
+            if lifecycle.expiry != 0 && env.ledger().timestamp() >= lifecycle.expiry {
+                return CertificateStatus::Expired;
+            }
+        }
+        CertificateStatus::Valid
+    }
+
+    /// Return the certificate anchor, failing if it is not active/valid.
+    ///
+    /// * `CertificateNotFound` — no certificate anchored.
+    /// * `CertificateRevoked` — certificate has been revoked.
+    /// * `CertificateExpired` — certificate expiry has passed.
+    pub fn get_active_certificate(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> CertificateAnchor {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let anchor: CertificateAnchor = env
+            .storage()
+            .instance()
+            .get(&anchor_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+        match Self::get_certificate_status(env.clone(), pet_id, vaccination_id) {
+            CertificateStatus::Valid => anchor,
+            CertificateStatus::NotAnchored => {
+                panic_with_error!(&env, ContractError::CertificateNotFound)
+            }
+            CertificateStatus::Revoked => {
+                panic_with_error!(&env, ContractError::CertificateRevoked)
+            }
+            CertificateStatus::Expired => {
+                panic_with_error!(&env, ContractError::CertificateExpired)
+            }
+        }
+    }
+
+    /// Revoke a certificate anchor on-chain.
+    ///
+    /// Only the issuing vet or an admin may revoke. A second revocation of the
+    /// same certificate returns `CertificateRevoked`.
+    ///
+    /// # Arguments
+    /// * `caller` — issuer or admin (must `require_auth`)
+    /// * `pet_id` — pet the certificate belongs to
+    /// * `vaccination_id` — vaccination the certificate anchors
+    /// * `reason` — free-text revocation reason
+    pub fn revoke_certificate(
+        env: Env,
+        caller: Address,
+        pet_id: u64,
+        vaccination_id: u64,
+        reason: String,
+    ) {
+        caller.require_auth();
+
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let anchor: CertificateAnchor = env
+            .storage()
+            .instance()
+            .get(&anchor_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+
+        let is_admin = Self::is_admin_address(&env, &caller);
+        if !is_admin && anchor.issuer != caller {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut lifecycle: CertificateLifecycle = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+
+        if lifecycle.revoked {
+            panic_with_error!(&env, ContractError::CertificateRevoked);
+        }
+
+        let now = env.ledger().timestamp();
+        lifecycle.revoked = true;
+        lifecycle.revoked_at = Some(now);
+        lifecycle.revocation_reason = Some(reason.clone());
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)), &lifecycle);
+
+        env.events().publish(
+            (String::from_str(&env, "CertificateRevoked"), pet_id),
+            CertificateRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id,
+                cert_id: lifecycle.cert_id,
+                revoked_by: caller,
+                reason,
+                timestamp: now,
+            },
+        );
     }
 
     // --- NUTRITION / DIET FUNCTIONS ---
@@ -10625,8 +11082,13 @@ impl PetChainContract {
             ) {
                 // Conflict: existing.start_time < new.start_time + new.duration_mins
                 //         && new.start_time < existing.start_time + existing.duration_mins
-                if slot.start_time < start_time.saturating_add(duration_mins * 60)
-                    && start_time < slot.start_time.saturating_add(slot.duration_mins * 60)
+                if slot.start_time
+                    < start_time
+                        .saturating_add(duration_mins.saturating_mul(60))
+                    && start_time
+                        < slot
+                            .start_time
+                            .saturating_add(slot.duration_mins.saturating_mul(60))
                 {
                     panic_with_error!(env, ContractError::SlotAlreadyBooked);
                 }
@@ -12440,6 +12902,25 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &version);
+    }
+
+    pub fn migrate_v2_to_v3(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_storage_version(env.clone());
+        if current.major >= 3 {
+            return;
+        }
+        let version = ContractVersion {
+            major: 3,
+            minor: 0,
+            patch: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&SystemKey::StorageVersion, &version);
     }
 
     pub fn get_storage_version(env: Env) -> ContractVersion {
