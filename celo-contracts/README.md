@@ -30,6 +30,27 @@ CELOSCAN_API_KEY=your_celoscan_api_key
 npx hardhat test
 ```
 
+## Medical-record commitments
+
+Each medical record stores a versioned commitment in
+`medicalRecordCommitments(recordId)`. The commitment is
+
+```text
+keccak256(abi.encode(
+  MEDICAL_RECORD_COMMITMENT_DOMAIN,
+  MEDICAL_RECORD_COMMITMENT_VERSION,
+  recordId, petId, vet, recordType,
+  diagnosis, treatment, notes, timestamp
+))
+```
+
+Use `verifyMedicalRecordCommitment` as a permissionless view. Pass the
+canonical record fields and the expected `bytes32` commitment; the contract
+performs the Solidity ABI encoding and returns `true` only when every field,
+domain, and version matches. Diagnosis and treatment must be non-empty and all
+three text fields must be at most `MAX_LONG_LEN` bytes. Invalid, oversized,
+unknown, or stale inputs return `false` without writing state.
+
 ## Scripts
 
 ### `scripts/deploy.js`

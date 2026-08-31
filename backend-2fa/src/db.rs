@@ -70,17 +70,27 @@ impl SecretProvider for AwsSecretsManagerProvider {
     }
 }
 
+/// Explicit allow-list of `SECRET_PROVIDER` values this build understands.
+/// Keep this in sync with the `match` arms in [`select_secret_provider`].
+const SUPPORTED_SECRET_PROVIDERS: &[&str] = &["env", "aws"];
+
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
-pub fn select_secret_provider() -> Box<dyn SecretProvider> {
+///
+/// Issue #1222: AWS provider construction failures (e.g. a runtime that
+/// can't be created) are propagated as a typed `Err` instead of panicking
+/// via `.expect()`. A misconfigured library must report an actionable
+/// startup error, not take down the whole process.
+pub fn select_secret_provider() -> Result<Box<dyn SecretProvider>, String> {
     match std::env::var("SECRET_PROVIDER")
         .unwrap_or_else(|_| "env".to_string())
         .as_str()
     {
-        "aws" => Box::new(
-            AwsSecretsManagerProvider::new()
-                .expect("failed to initialise AwsSecretsManagerProvider"),
-        ),
-        _ => Box::new(EnvSecretProvider {}),
+        "aws" => {
+            let provider = AwsSecretsManagerProvider::new()
+                .map_err(|e| format!("failed to initialise AwsSecretsManagerProvider: {e}"))?;
+            Ok(Box::new(provider))
+        }
+        _ => Ok(Box::new(EnvSecretProvider {})),
     }
 }
 
@@ -168,12 +178,14 @@ impl PostgresTwoFactorStore {
                     .acquire_timeout(Duration::from_secs(effective_timeout_secs))
                     .connect(database_url),
             )
-            .map_err(|e| format!(
-                "Failed to connect to database within {}s: {}. \
+            .map_err(|e| {
+                format!(
+                    "Failed to connect to database within {}s: {}. \
                  Check DATABASE_URL and network reachability. \
                  Falling back to in-memory store.",
-                acquire_timeout_secs, e
-            ))?;
+                    acquire_timeout_secs, e
+                )
+            })?;
 
         Ok(Self {
             pool,
@@ -253,6 +265,157 @@ impl PostgresTwoFactorStore {
         Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
     {
         self.with_retry_typed(op).map_err(|e| e.to_string())
+    }
+
+    /// Async counterpart to [`Self::with_retry_typed`]: the same up-to-3-attempt
+    /// exponential backoff, but `.await`ed directly on the caller's own async
+    /// context instead of being driven by `self.runtime.block_on(..)`.
+    ///
+    /// Issue #1220: methods built on this helper never call `block_on`, so they
+    /// are safe to `.await` from within a Tokio runtime that's already running
+    /// (e.g. an Actix worker) without risking the "cannot start a runtime from
+    /// within a runtime" panic or a worker-thread deadlock.
+    async fn with_retry_typed_async<F, Fut, T>(&self, mut op: F) -> Result<T, sqlx::Error>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut delay_ms = 100u64;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match op().await {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < MAX_ATTEMPTS && is_connection_error(&e) => {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    /// Async counterpart to [`Self::with_retry`].
+    async fn with_retry_async<F, Fut, T>(&self, op: F) -> Result<T, String>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        self.with_retry_typed_async(op)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Async counterpart to [`TwoFactorStore::save`] for this store. Identical
+    /// SQL and retry behavior, but `.await`s the SQLx future directly with no
+    /// `block_on` anywhere in the call chain — see [`Self::with_retry_async`].
+    pub async fn save_async(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
+        let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
+        let user_id = user_id.to_string();
+        let secret = match &self.enc_key {
+            Some(key) => encrypt_secret(&data.secret, key)?,
+            None => data.secret.clone(),
+        };
+        self.with_retry_async(|| {
+            sqlx::query(
+                r#"
+            INSERT INTO user_two_factor (user_id, secret, backup_codes, enabled, algorithm)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                secret = EXCLUDED.secret,
+                backup_codes = EXCLUDED.backup_codes,
+                enabled = EXCLUDED.enabled,
+                algorithm = EXCLUDED.algorithm,
+                updated_at = CURRENT_TIMESTAMP
+            "#,
+            )
+            .bind(&user_id)
+            .bind(&secret)
+            .bind(&backup_codes)
+            .bind(data.enabled)
+            .bind(Self::algorithm_to_db(data.algorithm))
+            .execute(&self.pool)
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Async counterpart to [`TwoFactorStore::get`] for this store.
+    pub async fn get_async(&self, user_id: &str) -> Result<TwoFactorData, String> {
+        let user_id = user_id.to_string();
+        let row = self
+            .with_retry_async(|| {
+                sqlx::query_as::<_, (String, String, bool, Option<String>)>(
+                    r#"
+            SELECT secret, backup_codes, enabled, algorithm
+            FROM user_two_factor
+            WHERE user_id = $1
+            "#,
+                )
+                .bind(&user_id)
+                .fetch_optional(&self.pool)
+            })
+            .await?;
+
+        let (raw_secret, backup_codes, enabled, algorithm) =
+            row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
+        let secret = match &self.enc_key {
+            Some(key) => decrypt_secret(&raw_secret, key).unwrap_or(raw_secret),
+            None => raw_secret,
+        };
+        let backup_codes = serde_json::from_str(&backup_codes).map_err(|e| e.to_string())?;
+
+        Ok(TwoFactorData {
+            secret,
+            backup_codes,
+            enabled,
+            algorithm: Self::algorithm_from_db(algorithm.as_deref()),
+            last_used_step: None,
+        })
+    }
+
+    /// Async counterpart to [`TwoFactorStore::update_enabled`] for this store.
+    pub async fn update_enabled_async(&self, user_id: &str, enabled: bool) -> Result<(), String> {
+        let user_id = user_id.to_string();
+        let result = self
+            .with_retry_async(|| {
+                sqlx::query(
+                    r#"
+                UPDATE user_two_factor
+                SET enabled = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1
+                "#,
+                )
+                .bind(&user_id)
+                .bind(enabled)
+                .execute(&self.pool)
+            })
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(format!("No 2FA data found for user: {}", user_id));
+        }
+
+        Ok(())
+    }
+
+    /// Async counterpart to [`TwoFactorStore::delete`] for this store.
+    pub async fn delete_async(&self, user_id: &str) -> Result<(), String> {
+        let user_id = user_id.to_string();
+        let result = self
+            .with_retry_async(|| {
+                sqlx::query("DELETE FROM user_two_factor WHERE user_id = $1")
+                    .bind(&user_id)
+                    .execute(&self.pool)
+            })
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(format!("No 2FA data found for user: {}", user_id));
+        }
+
+        Ok(())
     }
     /// Ping the database. Returns `Err` if the pool is exhausted or the
     /// connection cannot be acquired within the pool's connect timeout.
@@ -1178,6 +1341,89 @@ mod tests {
         assert!(store.get(user_id).is_err());
     }
 
+    /// Issue #1220 — the async store methods must actually work end to end
+    /// (same round trip as the sync test above, driven by `.await` instead of
+    /// `block_on`).
+    #[tokio::test]
+    async fn postgres_store_async_roundtrip_when_database_url_is_set() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let store = PostgresTwoFactorStore::connect(&database_url).unwrap();
+        let user_id = "postgres-store-async-roundtrip-test";
+        let _ = store.delete_async(user_id).await;
+
+        store.save_async(user_id, test_data()).await.unwrap();
+        assert_eq!(
+            store.get_async(user_id).await.unwrap().backup_codes.len(),
+            2
+        );
+
+        store.update_enabled_async(user_id, true).await.unwrap();
+        assert!(store.get_async(user_id).await.unwrap().enabled);
+
+        store.delete_async(user_id).await.unwrap();
+        assert!(store.get_async(user_id).await.is_err());
+    }
+
+    /// Issue #1220 — concurrency/failure-path coverage: the async store methods
+    /// must not block the executor. Regression test for the bug this issue
+    /// fixes: the *sync* methods drive a private `Runtime::block_on` under the
+    /// hood, so calling them from a thread that is itself inside a Tokio
+    /// runtime (as an Actix worker would) either panics ("Cannot start a
+    /// runtime from within a runtime") or ties up a worker thread for the
+    /// whole call. The async methods added here `.await` the SQLx future
+    /// directly with no nested runtime, so many of them can run concurrently
+    /// on a runtime with far fewer worker threads than in-flight calls,
+    /// without deadlocking or starving each other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_store_async_methods_do_not_block_executor_under_concurrency() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+
+        let store = Arc::new(PostgresTwoFactorStore::connect(&database_url).unwrap());
+        let user_ids: Vec<String> = (0..8)
+            .map(|i| format!("postgres-store-async-concurrency-test-{i}"))
+            .collect();
+        for user_id in &user_ids {
+            let _ = store.delete_async(user_id).await;
+        }
+
+        let tasks: Vec<_> = user_ids
+            .iter()
+            .cloned()
+            .map(|user_id| {
+                let store = Arc::clone(&store);
+                tokio::spawn(async move {
+                    store.save_async(&user_id, test_data()).await.unwrap();
+                    let data = store.get_async(&user_id).await.unwrap();
+                    assert_eq!(data.backup_codes.len(), 2);
+                    store.update_enabled_async(&user_id, true).await.unwrap();
+                    store.delete_async(&user_id).await.unwrap();
+                })
+            })
+            .collect();
+
+        // On a 2-worker runtime, 8 concurrent tasks each doing 4 round trips
+        // can only complete promptly if none of them blocks a worker thread —
+        // with the old `block_on`-based sync methods this pattern would
+        // either panic or serialize behind blocked threads. A generous
+        // timeout catches a deadlock/starvation regression without being
+        // flaky under normal DB latency.
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            for task in tasks {
+                task.await.unwrap();
+            }
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "concurrent async store calls did not complete in time — possible executor blocking regression"
+        );
+    }
+
     #[test]
     fn env_secret_provider_reads_env() {
         std::env::set_var("TEST_SECRET_KEY", "secret-value");
@@ -1198,9 +1444,19 @@ mod tests {
     #[test]
     fn select_secret_provider_env_default() {
         std::env::remove_var("SECRET_PROVIDER");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("env provider must construct");
         // default is EnvSecretProvider; ensure get_secret returns Err for unknown key
         assert!(prov.get_secret("NON_EXISTENT").is_err());
+    }
+
+    #[test]
+    fn select_secret_provider_explicit_env_value() {
+        // "env" is on the allow-list and must select EnvSecretProvider explicitly,
+        // not just as the unset-var default.
+        std::env::set_var("SECRET_PROVIDER", "env");
+        let prov = select_secret_provider().expect("'env' must be a supported provider");
+        assert!(prov.get_secret("NON_EXISTENT").is_err());
+        std::env::remove_var("SECRET_PROVIDER");
     }
 
     #[test]
@@ -1209,10 +1465,76 @@ mod tests {
         // panicking.  Fetching a secret requires real credentials; that path is
         // exercised by the integration test below.
         std::env::set_var("SECRET_PROVIDER", "aws");
-        let prov = select_secret_provider();
+        let prov = select_secret_provider().expect("aws provider must construct");
         // Without real credentials / localstack the fetch must fail, not panic.
         assert!(prov.get_secret("NONEXISTENT_KEY_NO_CREDENTIALS").is_err());
         std::env::remove_var("SECRET_PROVIDER");
+    }
+
+    /// Issue #1222 — AWS provider initialization must never panic on missing
+    /// configuration. `aws_config`'s loader is lazy (it doesn't eagerly
+    /// validate region/credentials), so the observable contract is:
+    /// construction succeeds without panicking even with nothing set, and
+    /// the *first actual call* that needs the missing config fails with a
+    /// typed `Err`, not a process-terminating panic.
+    #[test]
+    fn aws_provider_missing_region_does_not_panic() {
+        let saved = std::env::var("AWS_REGION").ok();
+        std::env::remove_var("AWS_REGION");
+        std::env::remove_var("AWS_DEFAULT_REGION");
+        std::env::set_var("SECRET_PROVIDER", "aws");
+
+        let result = select_secret_provider();
+        std::env::remove_var("SECRET_PROVIDER");
+        if let Some(region) = saved {
+            std::env::set_var("AWS_REGION", region);
+        }
+
+        assert!(
+            result.is_ok(),
+            "construction must not panic on missing region; observed an Err: {}",
+            result.err().unwrap_or_default(),
+        );
+    }
+
+    #[test]
+    fn aws_provider_missing_credentials_get_secret_fails_not_panics() {
+        let saved_key = std::env::var("AWS_ACCESS_KEY_ID").ok();
+        let saved_secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        std::env::set_var("SECRET_PROVIDER", "aws");
+
+        let prov = select_secret_provider().expect("construction must not panic on missing creds");
+        let fetch_result = prov.get_secret("ANY_KEY");
+
+        std::env::remove_var("SECRET_PROVIDER");
+        if let Some(v) = saved_key {
+            std::env::set_var("AWS_ACCESS_KEY_ID", v);
+        }
+        if let Some(v) = saved_secret {
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", v);
+        }
+
+        assert!(
+            fetch_result.is_err(),
+            "fetching without credentials must return Err, not panic or succeed",
+        );
+    }
+
+    #[test]
+    fn aws_provider_missing_secret_name_returns_err_not_panic() {
+        std::env::set_var("SECRET_PROVIDER", "aws");
+        let prov = select_secret_provider().expect("construction must not panic");
+        std::env::remove_var("SECRET_PROVIDER");
+
+        // An empty secret name is an obviously-missing/invalid identifier;
+        // this must surface as an Err from the API call, never a panic.
+        let result = prov.get_secret("");
+        assert!(
+            result.is_err(),
+            "empty/missing secret name must return Err, not panic",
+        );
     }
 
     /// Integration test — skipped unless AWS_SECRETS_INTEGRATION_TEST is set.
@@ -1531,4 +1853,3 @@ mod tests {
         );
     }
 }
-

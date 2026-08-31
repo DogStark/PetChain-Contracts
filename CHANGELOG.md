@@ -13,6 +13,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Canonical chain-of-custody digest (`get_custody_chain_digest`) so consumers can prove a returned custody history is complete and ordered: SHA-256 hash chain over domain, version, pet ID, sequence, and every entry in canonical order, with published test vectors and tamper cases
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
 
+### Changed / Migration notes (certificates, vet credentials, duration safety, idempotency)
+
+- `CertificateAnchor` is now paired with a separate `CertificateLifecycle` record
+  (`cert_id`, `issue_time`, `expiry`, `revoked`, `revoked_at`,
+  `revocation_reason`). The change is storage-additive — existing anchors are
+  still readable. Operators should re-anchor certificates whose cert_id / expiry
+  / revocation tracking is required. `verify_certificate` now returns `false`
+  for expired or revoked certificates. Run `migrate_storage` to v3.0.0 to record
+  the schema bump.
+
+- Vet credentials now support an optional expiry (`VetCredentialsExpiry`
+  storage key). `verify_vet` continues to produce a perpetual (no-expiry) vet;
+  use `verify_vet_with_expiry` to bind an expiry. `is_verified_vet` now rejects
+  vets whose credentials have expired. All privileged medical operations that
+  previously gated on vet verification (`add_vaccination`, `add_medical_record`,
+  `anchor_certificate`) now enforce credential validity.
+
+- `get_upcoming_vaccinations` and groomer-slot overlap checks use saturating
+  duration arithmetic to prevent ledger-timestamp panics near `u64::MAX`.
+
+- `anchor_certificate_idempotent` provides replay-safe certificate anchoring:
+  re-submitting the same `(pet_id, vaccination_id, cert_hash)` returns the
+  existing `cert_id`; a conflicting hash raises `CertificateHashConflict`.
+
+- New errors: `CertificateNotFound` (47), `CertificateRevoked` (48),
+  `CertificateExpired` (49), `VetCredentialsExpired` (50),
+  `CertificateHashConflict` (51).
+
 ## [0.1.0] - 2024-XX-XX
 
 ### Added
