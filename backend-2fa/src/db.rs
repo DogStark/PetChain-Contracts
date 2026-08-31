@@ -70,6 +70,10 @@ impl SecretProvider for AwsSecretsManagerProvider {
     }
 }
 
+/// Explicit allow-list of `SECRET_PROVIDER` values this build understands.
+/// Keep this in sync with the `match` arms in [`select_secret_provider`].
+const SUPPORTED_SECRET_PROVIDERS: &[&str] = &["env", "aws"];
+
 /// Select provider by env var `SECRET_PROVIDER` ("env" or "aws").
 ///
 /// Issue #1222: AWS provider construction failures (e.g. a runtime that
@@ -1210,6 +1214,16 @@ mod tests {
     }
 
     #[test]
+    fn select_secret_provider_explicit_env_value() {
+        // "env" is on the allow-list and must select EnvSecretProvider explicitly,
+        // not just as the unset-var default.
+        std::env::set_var("SECRET_PROVIDER", "env");
+        let prov = select_secret_provider().expect("'env' must be a supported provider");
+        assert!(prov.get_secret("NON_EXISTENT").is_err());
+        std::env::remove_var("SECRET_PROVIDER");
+    }
+
+    #[test]
     fn select_secret_provider_aws_creates_provider() {
         // Verify the "aws" branch constructs an AwsSecretsManagerProvider without
         // panicking.  Fetching a secret requires real credentials; that path is
@@ -1603,4 +1617,3 @@ mod tests {
         );
     }
 }
-

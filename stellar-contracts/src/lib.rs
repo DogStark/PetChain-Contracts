@@ -166,7 +166,7 @@ pub enum GroomingKey {
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
-    Env, Map, String, Symbol, Vec,
+    Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
 // Bounded-module split (Issue #1146, phase 1): storage keys and value
@@ -203,9 +203,25 @@ mod test_breeding_genetics;
 #[cfg(test)]
 mod test_pet_birthday_validation;
 #[cfg(test)]
+mod test_persistent_ttl_policy;
+#[cfg(test)]
+mod test_access_grant_index_invariants;
+#[cfg(test)]
+mod test_medical_record_hashing;
+#[cfg(test)]
+mod test_medical_event_timestamps;
+#[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
 mod test_vet_pagination;
+#[cfg(test)]
+mod test_access_grant_pagination;
+#[cfg(test)]
+mod test_access_revocation_cascade;
+#[cfg(test)]
+mod test_decryption_token_key_version;
+#[cfg(test)]
+mod test_domain_separated_hashes;
 #[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
@@ -220,6 +236,8 @@ mod test_upgrade_proposal;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_discriminant_stability;
+#[cfg(test)]
+mod test_max_input_sizes;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 #[allow(dead_code)]
@@ -323,6 +341,7 @@ const MAX_SUPPORTED_LANGUAGES: u32 = 50;
 
 /// Maximum byte length of a `color` field (pet registration).
 const MAX_COLOR_LEN: u32 = 50;
+const MAX_MICROCHIP_ID_LEN: usize = 64;
 
 /// Maximum byte length of a `BehaviorRecord::description`.
 const MAX_BEHAVIOR_DESC_LEN: u32 = 500;
@@ -356,6 +375,40 @@ const MAX_LAB_RESULTS_LEN: u32 = 1_000;
 
 /// Maximum byte length of a `LabResult::reference_ranges`.
 const MAX_LAB_REF_RANGES_LEN: u32 = 500;
+
+/// TTL-extension policy for persistent storage entries (Issue #1154).
+///
+/// Persistent entries (audit/access logs, breeding records, ...) are billed
+/// separately from instance storage and, unlike instance storage, are not
+/// automatically kept alive by every contract invocation: each entry's TTL
+/// must be extended explicitly or it can be archived/expire out from under
+/// the contract. `PERSISTENT_TTL_THRESHOLD` is the minimum remaining TTL (in
+/// ledgers) below which we proactively bump it back up to
+/// `PERSISTENT_TTL_EXTEND_TO` on every write (and on reads of
+/// long-lived/critical records) so records that are written once and read
+/// rarely still survive.
+///
+/// At Stellar's ~5s ledger close time, `PERSISTENT_TTL_EXTEND_TO` of
+/// ~1,036,800 ledgers is roughly 60 days; `PERSISTENT_TTL_THRESHOLD` bumps
+/// as soon as the entry has less than ~30 days of life left, well within the
+/// network's max TTL extension window.
+const PERSISTENT_TTL_THRESHOLD: u32 = 518_400; // ~30 days
+const PERSISTENT_TTL_EXTEND_TO: u32 = 1_036_800; // ~60 days
+
+/// Maximum allowed clock skew (seconds) for a medical-event timestamp that is
+/// reported as having already occurred (e.g. `administered_at`), measured
+/// relative to the current ledger time. This is deliberately generous (on
+/// the order of decades) so it only rejects clearly nonsensical/corrupt
+/// future dates (e.g. a caller passing a millisecond timestamp, or a typo
+/// adding extra digits) without constraining legitimate historical or
+/// synthetic test timestamps, which need not track real-world wall-clock
+/// time. (Issue #1174)
+const MAX_EVENT_FUTURE_SKEW: u64 = 100 * 365 * 24 * 60 * 60; // ~100 years
+
+/// Furthest a vaccination's `next_due_date` / `expires_at` may be scheduled
+/// past `administered_at`, to catch fat-fingered far-future dates while
+/// still allowing multi-year vaccination schedules. (Issue #1174)
+const MAX_EVENT_HORIZON: u64 = 50 * 365 * 24 * 60 * 60; // ~50 years
 
 /// Maximum byte length of a `Dispute::reason`.
 const MAX_DISPUTE_REASON_LEN: u32 = 500;
@@ -405,6 +458,14 @@ pub fn validate_id(id: &u64) -> Result<(), ValidationError> {
         return Err(ValidationError::InvalidId);
     }
     Ok(())
+}
+
+/// Compute a vaccination-reminder expiry window in ledger seconds.
+///
+/// Uses saturating arithmetic so inputs near `u64::MAX` cannot wrap or panic
+/// (Issue #3: duration arithmetic near integer limits).
+pub(crate) fn duration_window_end(now: u64, days: u64) -> u64 {
+    now.saturating_add(days.saturating_mul(86_400))
 }
 
 // --- BREED METADATA ---
@@ -502,6 +563,11 @@ pub enum ContractError {
     NotDisputeStakeholder = 166,
     NotInEvidencePhase = 167,
     NotDisputeParty = 168,
+
+    /// A medical-event timestamp fell outside the allowed domain relative to
+    /// ledger time (too far in the past, too far in the future, or with a
+    /// due/expiry date before the event it describes). (Issue #1174)
+    InvalidTimestamp = 169,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -623,7 +689,15 @@ pub struct ActivityStreak {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Emitted when a pet reaches a consecutive-day activity streak milestone.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `pet_id`: ID of the pet that reached the milestone.
+/// - `milestone_days`: The milestone threshold reached (e.g. 7, 30, 100).
+/// - `timestamp`: Ledger timestamp when the milestone was recorded.
 pub struct StreakMilestoneEvent {
+    pub version: u32,
     pub pet_id: u64,
     pub milestone_days: u64,
     pub timestamp: u64,
@@ -689,6 +763,23 @@ pub enum Gender {
     Unknown,
 }
 
+/// Domains that get a distinct, versioned prefix before hashing (Issue
+/// #1168). Two canonical encodings that would otherwise collide (e.g. an
+/// evidence blob and an attachment blob that happen to serialize to the
+/// same bytes) hash to different values once tagged with their domain, so
+/// a hash stored for one purpose can never be replayed as if it were a
+/// hash for another.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HashDomain {
+    Evidence,
+    Attachment,
+    ClaimDocument,
+    Certificate,
+    MedicalRecord,
+    TagId,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PrivacyLevel {
@@ -721,7 +812,17 @@ pub struct AccessLog {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A recorded access-control event returned by `export_access_log`.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `actor`: Address that performed the action.
+/// - `action`: The access action taken (Read, Write, Grant, Revoke, ...).
+/// - `target`: Pet owner who granted/revoked access.
+/// - `timestamp`: Ledger timestamp of the event.
+/// - `result`: Whether the action succeeded.
 pub struct AccessEvent {
+    pub version: u32,
     pub actor: Address,
     pub action: AccessAction,
     pub target: Address,
@@ -1124,7 +1225,12 @@ pub struct Vaccination {
 }
 
 /// Certificate anchor for vaccination PDF metadata
-/// Stores hash of off-chain certificate for authenticity verification
+/// Stores hash of off-chain certificate for authenticity verification.
+///
+/// NOTE (storage migration): adding lifecycle fields to the separate
+/// `CertificateLifecycle` record is additive; existing `CertificateAnchor`
+/// entries are backwards-compatible. Re-anchor certificates if cert_id /
+/// expiry / revocation tracking is required for pre-existing entries.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateAnchor {
@@ -1135,9 +1241,46 @@ pub struct CertificateAnchor {
     pub anchored_at: u64,  // Timestamp when anchored
 }
 
+/// Lifecycle state bound to a certificate anchor.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateLifecycle {
+    /// Stable, monotonically-assigned certificate identifier.
+    pub cert_id: u64,
+    /// Ledger timestamp when the certificate was issued.
+    pub issue_time: u64,
+    /// Unix timestamp when the certificate expires. `0` means no expiry.
+    pub expiry: u64,
+    /// Whether the certificate has been revoked.
+    pub revoked: bool,
+    /// Ledger timestamp of revocation, if `revoked` is true.
+    pub revoked_at: Option<u64>,
+    /// Free-text reason supplied at revocation time.
+    pub revocation_reason: Option<String>,
+}
+
+/// High-level lifecycle status of a certificate.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CertificateStatus {
+    NotAnchored,
+    Valid,
+    Expired,
+    Revoked,
+}
+
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when an NFC/QR tag is linked to a pet.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier (BytesN<32>).
+/// - `pet_id`: ID of the pet the tag is linked to.
+/// - `owner`: Address of the pet owner who linked the tag.
+/// - `timestamp`: Ledger timestamp when the link was created.
 pub struct TagLinkedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub owner: Address,
@@ -1146,7 +1289,16 @@ pub struct TagLinkedEvent {
 
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when an NFC/QR tag is deactivated.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier.
+/// - `pet_id`: ID of the pet the tag was linked to.
+/// - `deactivated_by`: Address of the pet owner who deactivated it.
+/// - `timestamp`: Ledger timestamp of the deactivation.
 pub struct TagDeactivatedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub deactivated_by: Address,
@@ -1177,7 +1329,16 @@ pub struct UpgradeProposal {
 }
 #[contracttype]
 #[derive(Clone)]
+/// Emitted when a deactivated NFC/QR tag is reactivated.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `tag_id`: The unique tag identifier.
+/// - `pet_id`: ID of the pet the tag is linked to.
+/// - `reactivated_by`: Address of the pet owner who reactivated it.
+/// - `timestamp`: Ledger timestamp of the reactivation.
 pub struct TagReactivatedEvent {
+    pub version: u32,
     pub tag_id: BytesN<32>,
     pub pet_id: u64,
     pub reactivated_by: Address,
@@ -1221,6 +1382,10 @@ pub enum DataKey {
     AccessGrantIndex((u64, u64)),
     PetDelegationCount(u64),
     DecryptionToken((u64, Address)),
+    /// Current encryption key version for a pet (Issue #1163). Absent means
+    /// version 1, matching [`PetChainContract::derive_versioned_key`]'s
+    /// treatment of versions `<= 1` as the base key.
+    PetKeyVersion(u64),
     EmergencyAccessLogs(u64),
     EmergencyAuditLog(u64),
     EmergencyResponders(u64),
@@ -1237,6 +1402,8 @@ pub enum DataKey {
     NonceUsage((u64, String, Bytes)),
     RetentionPeriod,
     MaxSubscriptionsPerAddress,
+    /// Canonical microchip identifier -> pet id.
+    MicrochipIndex(String),
 }
 
 #[contracttype]
@@ -1323,6 +1490,9 @@ pub enum MedicalKey {
     ScannerRegistry,
     // Retention period for soft-deleted record purging
     RetentionPeriod,
+    // Certificate lifecycle (Issue #X: cert_id, expiry, revocation)
+    CertificateCount,
+    CertificateLifecycle((u64, u64)), // (pet_id, vaccination_id) -> CertificateLifecycle
 }
 
 #[contracttype]
@@ -1793,6 +1963,36 @@ pub struct AccessGrant {
     pub is_active: bool,
 }
 
+/// A page of access grants returned by cursor pagination (Issue #1161).
+///
+/// `cursor` is an opaque slot index into the pet's access-grant index; pass
+/// `0` for the first page and echo back `next_cursor` on subsequent calls
+/// until it is `0`, meaning there are no more pages.
+#[contracttype]
+#[derive(Clone)]
+pub struct AccessGrantPage {
+    pub items: Vec<AccessGrant>,
+    pub next_cursor: u64,
+    /// Total number of grant slots for the pet (stable upper bound on live
+    /// rows; some slots may be filtered out when `active_only` is set).
+    pub total_slots: u64,
+}
+
+/// A decryption delegation token bound to the encryption key version that
+/// was active when it was issued (Issue #1163). Rotating a pet's key
+/// version deterministically invalidates every outstanding token, since
+/// [`PetChainContract::verify_decryption_token`] requires an exact version
+/// match rather than trusting a possibly-stale expiry alone.
+#[contracttype]
+#[derive(Clone)]
+pub struct DecryptionDelegation {
+    pub pet_id: u64,
+    pub delegate: Address,
+    pub key_version: u32,
+    pub issued_at: u64,
+    pub expires_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct TemporaryCustody {
@@ -2127,7 +2327,18 @@ pub struct Treatment {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Emitted when a veterinary treatment record is added.
+///
+/// Field semantics:
+/// - `version`: Schema version (matches `EVENT_SCHEMA_VERSION`).
+/// - `treatment_id`: Unique ID of the new treatment record.
+/// - `pet_id`: ID of the pet treated.
+/// - `vet_address`: Address of the veterinarian.
+/// - `treatment_type`: Category of treatment (Surgery, Therapy, ...).
+/// - `timestamp`: Ledger timestamp when the record was created.
+/// - `subscription_ids`: Matching event subscription IDs.
 pub struct TreatmentAddedEvent {
+    pub version: u32,
     pub treatment_id: u64,
     pub pet_id: u64,
     pub vet_address: Address,
@@ -2429,6 +2640,19 @@ pub struct CertificateAnchoredEvent {
     pub vaccination_id: u64,
     pub cert_hash: String,
     pub issuer: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a certificate is revoked on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateRevokedEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub vaccination_id: u64,
+    pub cert_id: u64,
+    pub revoked_by: Address,
+    pub reason: String,
     pub timestamp: u64,
 }
 
@@ -2799,7 +3023,12 @@ impl PetChainContract {
             .instance()
             .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, caller.clone())))
         {
-            if grant.is_active && grant.grantee == caller {
+            // A grant issued by a previous owner does not survive an ownership
+            // transfer: the grant is only honored while `grant.granter` still
+            // matches the pet's current owner, so `accept_pet_transfer` (and
+            // any other path that mutates `pet.owner`) implicitly cascades
+            // the revocation without needing a separate sweep. (#1162)
+            if grant.is_active && grant.grantee == caller && grant.granter == pet.owner {
                 if let Some(expires_at) = grant.expires_at {
                     if env.ledger().timestamp() >= expires_at {
                         return AccessLevel::None;
@@ -3670,6 +3899,7 @@ impl PetChainContract {
                 break;
             }
             result.push_back(AccessEvent {
+                version: EVENT_SCHEMA_VERSION,
                 actor: log.user.clone(),
                 action: log.action.clone(),
                 target: pet.owner.clone(),
@@ -3681,6 +3911,21 @@ impl PetChainContract {
         }
 
         result
+    }
+
+    /// Extend the TTL of a persistent-storage entry per the archival policy
+    /// defined by `PERSISTENT_TTL_THRESHOLD` / `PERSISTENT_TTL_EXTEND_TO`.
+    /// (Issue #1154). Call this after every `persistent().set(...)` (and on
+    /// reads of records that must remain reachable even when written once
+    /// and read rarely) so critical persistent records are not silently
+    /// archived/expired by the ledger.
+    fn bump_persistent_ttl<K>(env: &Env, key: &K)
+    where
+        K: IntoVal<Env, Val>,
+    {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
     }
 
     fn log_access(env: &Env, pet_id: u64, user: Address, action: AccessAction, details: String) {
@@ -3711,6 +3956,7 @@ impl PetChainContract {
 
         logs.push_back(log);
         env.storage().persistent().set(&key, &logs);
+        Self::bump_persistent_ttl(env, &key);
     }
 
     /// Read access log entries for a pet. Visible to the pet owner or any admin.
@@ -3731,10 +3977,13 @@ impl PetChainContract {
         }
 
         let key = (Symbol::new(&env, "access_logs"), pet_id);
-        env.storage()
+        let logs = env
+            .storage()
             .persistent()
             .get(&key)
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env));
+        Self::bump_persistent_ttl(&env, &key);
+        logs
     }
 
     fn require_admin(env: &Env) {
@@ -4762,6 +5011,14 @@ impl PetChainContract {
         }
         Self::validate_pet_name(&env, &name);
         Self::validate_breed(&env, &species, &breed);
+        let canonical_microchip = microchip_id
+            .as_ref()
+            .map(|value| Self::canonicalize_microchip_id(&env, value));
+        if let Some(ref identifier) = canonical_microchip {
+            if env.storage().instance().has(&DataKey::MicrochipIndex(identifier.clone())) {
+                panic_with_error!(&env, ContractError::InvalidInput);
+            }
+        }
         // Bound color field to prevent unbounded ledger entries. (#1152)
         if color.len() > MAX_COLOR_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
@@ -4859,12 +5116,17 @@ impl PetChainContract {
             gender,
             color,
             weight,
-            microchip_id,
+            microchip_id: canonical_microchip,
             photo_hashes: Vec::new(&env),
         };
 
         env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         env.storage().instance().set(&DataKey::PetCount, &pet_id);
+        if let Some(ref identifier) = pet.microchip_id {
+            env.storage()
+                .instance()
+                .set(&DataKey::MicrochipIndex(identifier.clone()), &pet_id);
+        }
 
         PetChainContract::log_ownership_change(
             &env,
@@ -4987,7 +5249,29 @@ impl PetChainContract {
             pet.privacy_level = privacy_level;
             pet.color = color;
             pet.weight = weight;
-            pet.microchip_id = microchip_id;
+            let canonical_microchip = microchip_id
+                .as_ref()
+                .map(|value| Self::canonicalize_microchip_id(&env, value));
+            if canonical_microchip.as_ref() != pet.microchip_id.as_ref() {
+                if let Some(ref identifier) = canonical_microchip {
+                    if let Some(existing_id) = env
+                        .storage()
+                        .instance()
+                        .get::<DataKey, u64>(&DataKey::MicrochipIndex(identifier.clone()))
+                    {
+                        if existing_id != id {
+                            panic_with_error!(&env, ContractError::InvalidInput);
+                        }
+                    }
+                }
+                if let Some(ref previous) = pet.microchip_id {
+                    env.storage().instance().remove(&DataKey::MicrochipIndex(previous.clone()));
+                }
+                if let Some(ref identifier) = canonical_microchip {
+                    env.storage().instance().set(&DataKey::MicrochipIndex(identifier.clone()), &id);
+                }
+            }
+            pet.microchip_id = canonical_microchip;
             pet.updated_at = env.ledger().timestamp();
 
             env.storage().instance().set(&DataKey::Pet(id), &pet);
@@ -5982,6 +6266,97 @@ impl PetChainContract {
         false
     }
 
+    /// Cursor-based pagination of a pet's access grants (Issue #1161).
+    ///
+    /// Lets the owner (or an authorized auditor) review access grants in
+    /// bounded pages instead of loading the entire grant list at once.
+    /// Only the pet owner may call this today, matching the authorization
+    /// used by [`Self::grant_access`] and [`Self::revoke_access`].
+    ///
+    /// Because the grant index is compacted (shifted left) whenever a grant
+    /// is removed, a page may skip or repeat an entry if grants are revoked
+    /// concurrently with pagination -- the same caveat that applies to other
+    /// cursor-paginated views in this contract. Callers that need a
+    /// point-in-time-consistent view should page within a single ledger
+    /// close.
+    ///
+    /// `cursor` is an opaque slot index; pass `0` for the first page and
+    /// echo back `next_cursor` on subsequent calls until it is `0`. When
+    /// `active_only` is `true`, expired and explicitly revoked grants are
+    /// filtered out of `items` (but still count toward slots examined).
+    pub fn get_pet_access_grants_cursor(
+        env: Env,
+        pet_id: u64,
+        cursor: u64,
+        limit: u32,
+        active_only: bool,
+    ) -> AccessGrantPage {
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id));
+        if let Some(pet) = pet.as_ref() {
+            pet.owner.require_auth();
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+        let mut items = Vec::new(&env);
+
+        if pet.is_none() || limit == 0 || count == 0 {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        // `cursor` is the last examined slot; resume from the following slot.
+        let start = cursor.saturating_add(1);
+        if start > count {
+            return AccessGrantPage {
+                items,
+                next_cursor: 0,
+                total_slots: count,
+            };
+        }
+
+        let end = count.min(start.saturating_add(limit as u64).saturating_sub(1));
+        let now = env.ledger().timestamp();
+        let mut idx = start;
+        while idx <= end && items.len() < limit {
+            if let Some(grantee) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::AccessGrantIndex((pet_id, idx)))
+            {
+                if let Some(grant) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, AccessGrant>(&DataKey::AccessGrant((pet_id, grantee)))
+                {
+                    let expired = grant.expires_at.map(|exp| now >= exp).unwrap_or(false);
+                    if !active_only || (grant.is_active && !expired) {
+                        items.push_back(grant);
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        let last_examined = idx.saturating_sub(1);
+        let next_cursor = if last_examined < count { last_examined } else { 0 };
+
+        AccessGrantPage {
+            items,
+            next_cursor,
+            total_slots: count,
+        }
+    }
+
     /// Nonce-protected pet registration. Caller supplies their current nonce;
     /// the nonce is incremented atomically on success, preventing replay.
     /// All pets must belong to the same caller and the entire batch fails if
@@ -6627,6 +7002,9 @@ impl PetChainContract {
                 env.storage()
                     .instance()
                     .set(&DataKey::Vet(vet.address.clone()), &vet);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::VetCredentialsExpiry(vet_address.clone()));
                 succeeded.push_back(vet_address.clone());
             } else {
                 // Vet not found, record failure
@@ -6653,6 +7031,15 @@ impl PetChainContract {
 
         if !vet.verified {
             panic_with_error!(&env, ContractError::VeterinarianNotVerified);
+        }
+        if let Some(expiry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address.clone()))
+        {
+            if expiry != 0 && env.ledger().timestamp() >= expiry {
+                panic_with_error!(&env, ContractError::VetCredentialsExpired);
+            }
         }
 
         if specializations.is_empty() || specializations.len() > 5 {
@@ -6713,6 +7100,9 @@ impl PetChainContract {
             env.storage()
                 .instance()
                 .set(&DataKey::Vet(vet.address.clone()), &vet);
+            env.storage()
+                .instance()
+                .remove(&DataKey::VetCredentialsExpiry(vet_address));
             true
         } else {
             false
@@ -6738,6 +7128,9 @@ impl PetChainContract {
             env.storage()
                 .instance()
                 .set(&DataKey::Vet(vet.address.clone()), &vet);
+            env.storage()
+                .instance()
+                .remove(&DataKey::VetCredentialsExpiry(vet_address));
             true
         } else {
             false
@@ -6749,11 +7142,79 @@ impl PetChainContract {
     }
 
     pub fn is_verified_vet(env: Env, vet_address: Address) -> bool {
-        env.storage()
+        if let Some(vet) = env
+            .storage()
             .instance()
             .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
-            .map(|vet| vet.verified)
-            .unwrap_or(false)
+        {
+            if !vet.verified {
+                return false;
+            }
+            if let Some(expiry) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address))
+            {
+                if expiry != 0 && env.ledger().timestamp() >= expiry {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Authorise a vet, optionally binding an optional credential expiry.
+    ///
+    /// * `expires_at == None` — credentials are perpetual (no expiry recorded).
+    /// * `expires_at <= now` — rejected with `InvalidInput`.
+    pub fn verify_vet_with_expiry(
+        env: Env,
+        admin: Address,
+        vet_address: Address,
+        expires_at: Option<u64>,
+    ) -> bool {
+        PetChainContract::require_admin_auth(&env, &admin);
+        let verified = PetChainContract::_verify_vet_internal(&env, vet_address);
+        if verified {
+            if let Some(exp) = expires_at {
+                if exp <= env.ledger().timestamp() {
+                    panic_with_error!(&env, ContractError::InvalidInput);
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::VetCredentialsExpiry(vet_address.clone()), &exp);
+            } else {
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::VetCredentialsExpiry(vet_address));
+            }
+            Self::record_admin_activity(&env, &admin, "verify_vet_with_expiry");
+        }
+        verified
+    }
+
+    /// Authorise a vet, returning precise errors for missing, unverified, or
+    /// expired credentials.
+    fn require_verified_vet(env: &Env, vet_address: &Address) {
+        let vet: Vet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Vet(vet_address.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::VetNotFound));
+        if !vet.verified {
+            panic_with_error!(env, ContractError::VetNotVerified);
+        }
+        if let Some(expiry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::VetCredentialsExpiry(vet_address.clone()))
+        {
+            if expiry != 0 && env.ledger().timestamp() >= expiry {
+                panic_with_error!(env, ContractError::VetCredentialsExpired);
+            }
+        }
     }
 
     pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet> {
@@ -6813,6 +7274,25 @@ impl PetChainContract {
             .get(&DataKey::Pet(pet_id))
             .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
 
+        let now = env.ledger().timestamp();
+
+        // Validate medical-event timestamps against ledger time (Issue #1174).
+        // `administered_at` must not be further in the future than the
+        // allowed clock-skew tolerance relative to the current ledger time.
+        if administered_at > now.saturating_add(MAX_EVENT_FUTURE_SKEW) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+        // `next_due_date` and `expires_at` (when set) describe follow-up
+        // dates and must not precede the event they follow, nor sit
+        // absurdly far beyond it.
+        let max_future = administered_at.saturating_add(MAX_EVENT_HORIZON);
+        if next_due_date != 0 && (next_due_date < administered_at || next_due_date > max_future) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+        if expires_at != 0 && (expires_at < administered_at || expires_at > max_future) {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+
         // Check storage quota (Issue #676)
         Self::increment_pet_storage(&env, pet_id);
 
@@ -6824,7 +7304,6 @@ impl PetChainContract {
         let vaccine_id = vaccine_count
             .checked_add(1)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
-        let now = env.ledger().timestamp();
         let key = PetChainContract::get_encryption_key(&env);
 
         let vname_bytes = vaccine_name.to_xdr(&env);
@@ -6975,6 +7454,27 @@ impl PetChainContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+
+        // Cascade revocation to any anchored certificate for this vaccination.
+        let cert_lifecycle_key = MedicalKey::CertificateLifecycle((pet_id, cert_id));
+        if env.storage().instance().has(&cert_lifecycle_key) {
+            if let Some(mut cert_lifecycle) = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, CertificateLifecycle>(&cert_lifecycle_key)
+            {
+                if !cert_lifecycle.revoked {
+                    cert_lifecycle.revoked = true;
+                    cert_lifecycle.revoked_at = Some(env.ledger().timestamp());
+                    if cert_lifecycle.revocation_reason.is_none() {
+                        cert_lifecycle.revocation_reason = Some(reason.clone());
+                    }
+                    env.storage()
+                        .instance()
+                        .set(&cert_lifecycle_key, &cert_lifecycle);
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -7295,7 +7795,7 @@ impl PetChainContract {
         days_threshold: u64,
     ) -> Vec<Vaccination> {
         let current_time = env.ledger().timestamp();
-        let threshold = current_time + (days_threshold * 86400);
+        let threshold = duration_window_end(current_time, days_threshold);
         let history = PetChainContract::get_vaccination_history(env.clone(), pet_id, 0, u32::MAX);
         let mut upcoming = Vec::new(&env);
 
@@ -7505,16 +8005,7 @@ impl PetChainContract {
     ) {
         issuer.require_auth();
 
-        // Verify issuer is a verified vet
-        let vet: Vet = env
-            .storage()
-            .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(issuer.clone()))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VetNotFound));
-
-        if !vet.verified {
-            panic_with_error!(&env, ContractError::VetNotVerified);
-        }
+        Self::require_verified_vet(&env, &issuer);
 
         // Verify pet exists
         let _pet: Pet = env
@@ -7547,6 +8038,20 @@ impl PetChainContract {
 
         let current_time = env.ledger().timestamp();
 
+        // Assign a stable certificate identifier.
+        let cert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateCount)
+            .unwrap_or(0);
+        let cert_id = safe_increment(cert_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateCount, &cert_id);
+
+        // Certificate lifetime binds to the underlying dose's expiry.
+        let expiry = vaccination.expires_at;
+
         // Create and store certificate anchor
         let anchor = CertificateAnchor {
             pet_id,
@@ -7557,6 +8062,19 @@ impl PetChainContract {
         };
 
         env.storage().instance().set(&anchor_key, &anchor);
+
+        let lifecycle = CertificateLifecycle {
+            cert_id,
+            issue_time: current_time,
+            expiry,
+            revoked: false,
+            revoked_at: None,
+            revocation_reason: None,
+        };
+        env.storage().instance().set(
+            &MedicalKey::CertificateLifecycle((pet_id, vaccination_id)),
+            &lifecycle,
+        );
 
         // Emit event
         env.events().publish(
@@ -7572,6 +8090,121 @@ impl PetChainContract {
         );
     }
 
+    /// Idempotent variant of `anchor_certificate`.
+    ///
+    /// Uniqueness key = `(pet_id, vaccination_id)`.
+    ///
+    /// * If no certificate is anchored for the pair, a new certificate is
+    ///   created and its `cert_id` is returned.
+    /// * If the same `cert_hash` is already anchored, the existing `cert_id` is
+    ///   returned (idempotent / safe to replay).
+    /// * If a different `cert_hash` is already anchored, the call aborts with
+    ///   `CertificateHashConflict`.
+    pub fn anchor_certificate_idempotent(
+        env: Env,
+        issuer: Address,
+        pet_id: u64,
+        vaccination_id: u64,
+        cert_hash: String,
+    ) -> u64 {
+        issuer.require_auth();
+        let now = env.ledger().timestamp();
+
+        // Authorise issuer.
+        Self::require_verified_vet(&env, &issuer);
+
+        // Verify pet exists.
+        let _pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+
+        // Verify vaccination exists and belongs to the pet.
+        let vaccination: Vaccination = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, Vaccination>(&MedicalKey::Vaccination(vaccination_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaccinationNotFound));
+        if vaccination.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::VaccinationNotFound);
+        }
+
+        // Validate certificate hash.
+        if cert_hash.is_empty() || cert_hash.len() > 128 {
+            panic_with_error!(&env, ContractError::InvalidCertificateHash);
+        }
+
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let lifecycle_key = MedicalKey::CertificateLifecycle((pet_id, vaccination_id));
+
+        // Idempotency: same-hash replay returns the existing cert_id.
+        if let Some(existing) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateAnchor>(&anchor_key)
+        {
+            if existing.cert_hash == cert_hash {
+                if let Some(lifecycle) = env
+                    .storage()
+                    .instance()
+                    .get::<MedicalKey, CertificateLifecycle>(&lifecycle_key)
+                {
+                    return lifecycle.cert_id;
+                }
+            }
+            panic_with_error!(&env, ContractError::CertificateHashConflict);
+        }
+
+        // Assign cert_id.
+        let cert_count: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateCount)
+            .unwrap_or(0);
+        let cert_id = safe_increment(cert_count);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateCount, &cert_id);
+
+        let expiry = vaccination.expires_at;
+
+        let anchor = CertificateAnchor {
+            pet_id,
+            vaccination_id,
+            cert_hash: cert_hash.clone(),
+            issuer: issuer.clone(),
+            anchored_at: now,
+        };
+        env.storage().instance().set(&anchor_key, &anchor);
+
+        let lifecycle = CertificateLifecycle {
+            cert_id,
+            issue_time: now,
+            expiry,
+            revoked: false,
+            revoked_at: None,
+            revocation_reason: None,
+        };
+        env.storage()
+            .instance()
+            .set(&lifecycle_key, &lifecycle);
+
+        env.events().publish(
+            (String::from_str(&env, "CertificateAnchored"), pet_id),
+            CertificateAnchoredEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id,
+                cert_hash,
+                issuer: issuer.clone(),
+                timestamp: now,
+            },
+        );
+
+        cert_id
+    }
+
     /// Verify if a certificate hash matches the anchored hash for a vaccination.
     ///
     /// # Arguments
@@ -7580,8 +8213,10 @@ impl PetChainContract {
     /// * `cert_hash` - Hash to verify against the anchored hash
     ///
     /// # Returns
-    /// * `true` if the hash matches the anchored certificate
-    /// * `false` if no certificate is anchored or hash doesn't match
+    /// * `true` if the hash matches the anchored certificate and the certificate is
+    ///   not expired or revoked.
+    /// * `false` if no certificate is anchored, the hash doesn't match, the
+    ///   certificate has expired, or the certificate has been revoked.
     pub fn verify_certificate(
         env: Env,
         pet_id: u64,
@@ -7590,15 +8225,35 @@ impl PetChainContract {
     ) -> bool {
         let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
 
-        if let Some(anchor) = env
+        let Some(anchor) = env
             .storage()
             .instance()
             .get::<MedicalKey, CertificateAnchor>(&anchor_key)
-        {
-            anchor.cert_hash == cert_hash
-        } else {
-            false
+        else {
+            return false;
+        };
+
+        if anchor.cert_hash != cert_hash {
+            return false;
         }
+
+        // Lifecycle check: reject revoked or expired certificates.
+        if let Some(lifecycle) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateLifecycle>(&MedicalKey::CertificateLifecycle((
+                pet_id, vaccination_id,
+            )))
+        {
+            if lifecycle.revoked {
+                return false;
+            }
+            if lifecycle.expiry != 0 && env.ledger().timestamp() >= lifecycle.expiry {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Get the certificate anchor for a vaccination.
@@ -7617,6 +8272,142 @@ impl PetChainContract {
     ) -> Option<CertificateAnchor> {
         let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
         env.storage().instance().get(&anchor_key)
+    }
+
+    /// Read the lifecycle record for a certificate.
+    ///
+    /// # Returns
+    /// * `Some(CertificateLifecycle)` — the lifecycle was anchored.
+    /// * `None` — no certificate has been anchored for this vaccination.
+    pub fn get_certificate_lifecycle(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> Option<CertificateLifecycle> {
+        env.storage()
+            .instance()
+            .get(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)))
+    }
+
+    /// Return the high-level lifecycle status of a certificate.
+    pub fn get_certificate_status(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> CertificateStatus {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        if !env.storage().instance().has(&anchor_key) {
+            return CertificateStatus::NotAnchored;
+        }
+        if let Some(lifecycle) = env
+            .storage()
+            .instance()
+            .get::<MedicalKey, CertificateLifecycle>(&MedicalKey::CertificateLifecycle((
+                pet_id, vaccination_id,
+            )))
+        {
+            if lifecycle.revoked {
+                return CertificateStatus::Revoked;
+            }
+            if lifecycle.expiry != 0 && env.ledger().timestamp() >= lifecycle.expiry {
+                return CertificateStatus::Expired;
+            }
+        }
+        CertificateStatus::Valid
+    }
+
+    /// Return the certificate anchor, failing if it is not active/valid.
+    ///
+    /// * `CertificateNotFound` — no certificate anchored.
+    /// * `CertificateRevoked` — certificate has been revoked.
+    /// * `CertificateExpired` — certificate expiry has passed.
+    pub fn get_active_certificate(
+        env: Env,
+        pet_id: u64,
+        vaccination_id: u64,
+    ) -> CertificateAnchor {
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let anchor: CertificateAnchor = env
+            .storage()
+            .instance()
+            .get(&anchor_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+        match Self::get_certificate_status(env.clone(), pet_id, vaccination_id) {
+            CertificateStatus::Valid => anchor,
+            CertificateStatus::NotAnchored => {
+                panic_with_error!(&env, ContractError::CertificateNotFound)
+            }
+            CertificateStatus::Revoked => {
+                panic_with_error!(&env, ContractError::CertificateRevoked)
+            }
+            CertificateStatus::Expired => {
+                panic_with_error!(&env, ContractError::CertificateExpired)
+            }
+        }
+    }
+
+    /// Revoke a certificate anchor on-chain.
+    ///
+    /// Only the issuing vet or an admin may revoke. A second revocation of the
+    /// same certificate returns `CertificateRevoked`.
+    ///
+    /// # Arguments
+    /// * `caller` — issuer or admin (must `require_auth`)
+    /// * `pet_id` — pet the certificate belongs to
+    /// * `vaccination_id` — vaccination the certificate anchors
+    /// * `reason` — free-text revocation reason
+    pub fn revoke_certificate(
+        env: Env,
+        caller: Address,
+        pet_id: u64,
+        vaccination_id: u64,
+        reason: String,
+    ) {
+        caller.require_auth();
+
+        let anchor_key = MedicalKey::CertificateAnchor((pet_id, vaccination_id));
+        let anchor: CertificateAnchor = env
+            .storage()
+            .instance()
+            .get(&anchor_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+
+        let is_admin = Self::is_admin_address(&env, &caller);
+        if !is_admin && anchor.issuer != caller {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut lifecycle: CertificateLifecycle = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CertificateNotFound));
+
+        if lifecycle.revoked {
+            panic_with_error!(&env, ContractError::CertificateRevoked);
+        }
+
+        let now = env.ledger().timestamp();
+        lifecycle.revoked = true;
+        lifecycle.revoked_at = Some(now);
+        lifecycle.revocation_reason = Some(reason.clone());
+
+        env.storage()
+            .instance()
+            .set(&MedicalKey::CertificateLifecycle((pet_id, vaccination_id)), &lifecycle);
+
+        env.events().publish(
+            (String::from_str(&env, "CertificateRevoked"), pet_id),
+            CertificateRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                vaccination_id,
+                cert_id: lifecycle.cert_id,
+                revoked_by: caller,
+                reason,
+                timestamp: now,
+            },
+        );
     }
 
     // --- NUTRITION / DIET FUNCTIONS ---
@@ -8327,7 +9118,10 @@ impl PetChainContract {
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
 
-        let mut preimage = Bytes::new(env);
+        // Domain-separated so a tag ID can never collide with a hash
+        // computed for another stored-hash domain (evidence, attachments,
+        // claim documents, certificates, medical records). (#1168)
+        let mut preimage = Bytes::from_slice(env, Self::hash_domain_tag(&HashDomain::TagId));
         for byte in pet_id.to_be_bytes() {
             preimage.push_back(byte);
         }
@@ -8395,6 +9189,7 @@ impl PetChainContract {
         env.events().publish(
             (String::from_str(&env, "TAG_LINKED"),),
             TagLinkedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 tag_id: tag_id.clone(),
                 pet_id,
                 owner: pet.owner.clone(),
@@ -8473,6 +9268,7 @@ impl PetChainContract {
             env.events().publish(
                 (String::from_str(&env, "TAG_DEACTIVATED"),),
                 TagDeactivatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     tag_id,
                     pet_id: tag.pet_id,
                     deactivated_by: pet.owner,
@@ -8507,6 +9303,7 @@ impl PetChainContract {
             env.events().publish(
                 (String::from_str(&env, "TAG_REACTIVATED"),),
                 TagReactivatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
                     tag_id,
                     pet_id: tag.pet_id,
                     reactivated_by: pet.owner,
@@ -8715,6 +9512,36 @@ impl PetChainContract {
         }
     }
 
+    /// Canonical form is trimmed, ASCII upper-case, and separator-free. Only
+    /// ASCII letters and digits are accepted after separators are removed;
+    /// this deliberately rejects Unicode lookalikes and ambiguous encodings.
+    fn canonicalize_microchip_id(env: &Env, value: &String) -> String {
+        let len = value.len() as usize;
+        if len == 0 || len > MAX_MICROCHIP_ID_LEN {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let mut input = [0u8; MAX_MICROCHIP_ID_LEN];
+        value.copy_into_slice(&mut input[..len]);
+        let mut output = [0u8; MAX_MICROCHIP_ID_LEN];
+        let mut out_len = 0usize;
+        for byte in input.iter().take(len) {
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'-' | b':' | b'.') {
+                continue;
+            }
+            let canonical = match byte {
+                b'a'..=b'z' => byte.to_ascii_uppercase(),
+                b'A'..=b'Z' | b'0'..=b'9' => *byte,
+                _ => panic_with_error!(env, ContractError::InvalidInput),
+            };
+            output[out_len] = canonical;
+            out_len += 1;
+        }
+        if out_len == 0 {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        String::from_bytes(env, &output[..out_len])
+    }
+
     /// Validate breed against the species-specific whitelist stored on-chain.
     /// If no whitelist has been set for the species, any non-empty breed is accepted.
     fn validate_breed(env: &Env, species: &Species, breed: &String) {
@@ -8909,6 +9736,39 @@ impl PetChainContract {
             }
         }
 
+        env.crypto().sha256(&preimage).into()
+    }
+
+    /// Versioned tag prefixed to a domain's canonical encoding before
+    /// hashing (Issue #1168). Bumping the trailing version segment for a
+    /// domain (e.g. to `v2`) is itself a deliberate, published breaking
+    /// change to that domain's hash space, distinct from every other
+    /// domain and every earlier version of the same domain.
+    fn hash_domain_tag(domain: &HashDomain) -> &'static [u8] {
+        match domain {
+            HashDomain::Evidence => b"petchain:hash:evidence:v1",
+            HashDomain::Attachment => b"petchain:hash:attachment:v1",
+            HashDomain::ClaimDocument => b"petchain:hash:claim-document:v1",
+            HashDomain::Certificate => b"petchain:hash:certificate:v1",
+            HashDomain::MedicalRecord => b"petchain:hash:medical-record:v1",
+            HashDomain::TagId => b"petchain:hash:tag-id:v1",
+        }
+    }
+
+    /// Compute a domain-separated SHA-256 hash: `sha256(tag || content)`,
+    /// where `tag` is a versioned, domain-specific ASCII prefix. (#1168)
+    ///
+    /// This is the canonical way to hash content that will be stored or
+    /// compared as a `BytesN<32>` anywhere in this contract (evidence,
+    /// attachments, claim documents, certificates, medical records, tag
+    /// IDs). Off-chain callers computing a hash to submit to
+    /// `submit_evidence`, `add_attachment`, or similar must reproduce this
+    /// same prefixing so that a value hashed for one domain can never
+    /// collide with, or be replayed as, a value from another domain -- see
+    /// `test_domain_separated_hashes.rs` for published test vectors.
+    pub fn compute_domain_hash(env: Env, domain: HashDomain, content: Bytes) -> BytesN<32> {
+        let mut preimage = Bytes::from_slice(&env, Self::hash_domain_tag(&domain));
+        preimage.append(&content);
         env.crypto().sha256(&preimage).into()
     }
 
@@ -9548,6 +10408,7 @@ impl PetChainContract {
             }
             logs.push_back(log);
             env.storage().persistent().set(&log_key, &logs);
+            Self::bump_persistent_ttl(&env, &log_key);
 
             Self::write_emergency_audit(&env, pet_id, caller, reason_code);
 
@@ -9580,6 +10441,7 @@ impl PetChainContract {
             pet_id,
         });
         env.storage().persistent().set(&audit_key, &entries);
+        Self::bump_persistent_ttl(env, &audit_key);
     }
 
     fn is_admin_address(env: &Env, caller: &Address) -> bool {
@@ -10555,8 +11417,13 @@ impl PetChainContract {
             ) {
                 // Conflict: existing.start_time < new.start_time + new.duration_mins
                 //         && new.start_time < existing.start_time + existing.duration_mins
-                if slot.start_time < start_time.saturating_add(duration_mins * 60)
-                    && start_time < slot.start_time.saturating_add(slot.duration_mins * 60)
+                if slot.start_time
+                    < start_time
+                        .saturating_add(duration_mins.saturating_mul(60))
+                    && start_time
+                        < slot
+                            .start_time
+                            .saturating_add(slot.duration_mins.saturating_mul(60))
                 {
                     panic_with_error!(env, ContractError::SlotAlreadyBooked);
                 }
@@ -11034,12 +11901,18 @@ impl PetChainContract {
         }
 
         let now = env.ledger().timestamp();
+        let current_version = Self::get_pet_key_version(env.clone(), pet_id);
         let mut removed: u32 = 0;
 
         for delegate in delegates.iter() {
             let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
-            if let Some(expires_at) = env.storage().instance().get::<DataKey, u64>(&key) {
-                if now >= expires_at {
+            if let Some(token) = env
+                .storage()
+                .instance()
+                .get::<DataKey, DecryptionDelegation>(&key)
+            {
+                let stale = now >= token.expires_at || token.key_version != current_version;
+                if stale {
                     env.storage().instance().remove(&key);
                     removed += 1;
 
@@ -11059,6 +11932,156 @@ impl PetChainContract {
         }
 
         removed
+    }
+
+    /// The encryption key version currently active for a pet. Defaults to
+    /// `1` when the pet has never had its key rotated. (Issue #1163)
+    pub fn get_pet_key_version(env: Env, pet_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::PetKeyVersion(pet_id))
+            .unwrap_or(1)
+    }
+
+    /// Rotate a pet's encryption key version. Owner-authorized and
+    /// nonce-protected for replay safety, matching [`Self::grant_access`].
+    ///
+    /// Because every decryption token records the key version active when
+    /// it was issued, bumping the version here deterministically and
+    /// immediately invalidates every outstanding delegated token: the next
+    /// call to [`Self::verify_decryption_token`] for any prior delegate
+    /// will observe a version mismatch and fail, with no separate sweep or
+    /// storage write required per delegate. (#1163)
+    pub fn rotate_pet_key_version(env: Env, pet_id: u64, nonce: u64) -> u32 {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        let new_version = Self::get_pet_key_version(env.clone(), pet_id)
+            .checked_add(1)
+            .unwrap_or_else(|| env.panic_with_error(ContractError::CounterOverflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::PetKeyVersion(pet_id), &new_version);
+
+        env.events().publish(
+            (String::from_str(&env, "PetKeyRotated"), pet_id),
+            (pet_id, new_version, env.ledger().timestamp()),
+        );
+
+        new_version
+    }
+
+    /// Issue a time-boxed decryption delegation token bound to the pet's
+    /// current key version. Owner-authorized and nonce-protected. (#1163)
+    pub fn delegate_decryption_access(
+        env: Env,
+        pet_id: u64,
+        delegate: Address,
+        ttl_seconds: u64,
+        nonce: u64,
+    ) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+        Self::consume_caller_nonce(&env, &pet.owner, nonce);
+
+        if ttl_seconds == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let key = DataKey::DecryptionToken((pet_id, delegate.clone()));
+        let is_new = env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none();
+
+        let now = env.ledger().timestamp();
+        let token = DecryptionDelegation {
+            pet_id,
+            delegate: delegate.clone(),
+            key_version: Self::get_pet_key_version(env.clone(), pet_id),
+            issued_at: now,
+            expires_at: now.saturating_add(ttl_seconds),
+        };
+        env.storage().instance().set(&key, &token);
+
+        if is_new {
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PetDelegationCount(pet_id))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &safe_increment(&env, count));
+        }
+
+        true
+    }
+
+    /// Revoke a delegate's decryption token before it expires.
+    /// Owner-authorized. (#1163)
+    pub fn revoke_decryption_delegation(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| env.panic_with_error(ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let key = DataKey::DecryptionToken((pet_id, delegate));
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&key)
+            .is_none()
+        {
+            return false;
+        }
+        env.storage().instance().remove(&key);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PetDelegationCount(pet_id))
+            .unwrap_or(0);
+        if count > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::PetDelegationCount(pet_id), &(count - 1));
+        }
+        true
+    }
+
+    /// Verify whether `delegate` currently holds a valid decryption token
+    /// for `pet_id`: the token must exist, be unexpired, and be bound to
+    /// the pet's *current* key version. A rotation, expiry, or explicit
+    /// revocation all cause this to deterministically return `false`.
+    /// (#1163)
+    pub fn verify_decryption_token(env: Env, pet_id: u64, delegate: Address) -> bool {
+        let token = match env
+            .storage()
+            .instance()
+            .get::<DataKey, DecryptionDelegation>(&DataKey::DecryptionToken((pet_id, delegate)))
+        {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if env.ledger().timestamp() >= token.expires_at {
+            return false;
+        }
+
+        token.key_version == Self::get_pet_key_version(env, pet_id)
     }
 
     /// Verify that a stored claim document hash matches `content_hash`.
@@ -11251,6 +12274,7 @@ impl PetChainContract {
                             pet_id,
                         ),
                         StreakMilestoneEvent {
+                            version: EVENT_SCHEMA_VERSION,
                             pet_id,
                             milestone_days: milestone,
                             timestamp: now,
@@ -11269,6 +12293,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&ActivityKey::PetActivityStreak(pet_id), &streak);
+        Self::bump_persistent_ttl(&env, &ActivityKey::PetActivityStreak(pet_id));
 
         activity_id
     }
@@ -11366,9 +12391,11 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecord(id), &record);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecord(id));
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecordCount, &id);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecordCount);
 
         Self::inc_pet_breeding_count(&env, sire_id);
         Self::inc_pet_breeding_count(&env, dam_id);
@@ -11385,6 +12412,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::PetBreedingCount(pet_id), &safe_increment(count));
+        Self::bump_persistent_ttl(env, &BreedingKey::PetBreedingCount(pet_id));
     }
 
     pub fn add_offspring(env: Env, record_id: u64, offspring_id: u64) -> bool {
@@ -11409,15 +12437,17 @@ impl PetChainContract {
         }
 
         // Store parent pair for pedigree queries (COI, lineage)
-        env.storage().persistent().set(
-            &BreedingKey::ParentPair(offspring_id),
-            &(record.sire_id, record.dam_id),
-        );
+        let parent_pair_key = BreedingKey::ParentPair(offspring_id);
+        env.storage()
+            .persistent()
+            .set(&parent_pair_key, &(record.sire_id, record.dam_id));
+        Self::bump_persistent_ttl(&env, &parent_pair_key);
 
         record.offspring_count = record.offspring_count.saturating_add(1);
         env.storage()
             .persistent()
             .set(&BreedingKey::BreedingRecord(record_id), &record);
+        Self::bump_persistent_ttl(&env, &BreedingKey::BreedingRecord(record_id));
 
         let count = env
             .storage()
@@ -11427,6 +12457,7 @@ impl PetChainContract {
         env.storage()
             .persistent()
             .set(&BreedingKey::PetOffspringCount(offspring_id), &(count + 1));
+        Self::bump_persistent_ttl(&env, &BreedingKey::PetOffspringCount(offspring_id));
 
         true
     }
@@ -11952,6 +12983,83 @@ impl PetChainContract {
         res.deleted.len()
     }
 
+    /// Build the canonical, versioned preimage bytes for a [`MedicalRecord`]
+    /// (Issue #1169).
+    ///
+    /// Off-chain clients (in any language with a Stellar/Soroban XDR codec)
+    /// need to be able to reproduce the exact same commitment a contract
+    /// computes for a medical record, independent of storage/audit
+    /// metadata that can change without the clinical facts changing. The
+    /// canonical encoding is:
+    ///
+    /// ```text
+    /// sha256(
+    ///     b"petchain:medical-record:v1"        (26-byte literal domain tag)
+    ///  || pet_id            as 8-byte big-endian u64
+    ///  || vet_address       as its XDR-encoded `ScAddress`
+    ///  || diagnosis         as its XDR-encoded `ScString`
+    ///  || treatment         as its XDR-encoded `ScString`
+    ///  || medications       as its XDR-encoded `ScVec` (fixed struct field order)
+    ///  || notes             as its XDR-encoded `ScString`
+    ///  || date              as 8-byte big-endian u64   (clinical event time)
+    /// )
+    /// ```
+    ///
+    /// Fields are concatenated in this fixed order with no separators
+    /// (XDR-encoded values are already self-delimiting/length-prefixed, and
+    /// the two `u64` fields have a fixed 8-byte width, so the encoding is
+    /// unambiguous). `id`, `updated_at`, `attachment_hashes`, and
+    /// `deleted_at` are intentionally excluded: they are ledger
+    /// bookkeeping/audit metadata, not clinical content, so the commitment
+    /// stays stable across non-clinical housekeeping mutations (e.g. an
+    /// attachment being added, or a soft-delete).
+    ///
+    /// The `v1` domain tag is part of the preimage precisely so that any
+    /// future change to the field set, order, or encoding can ship as a
+    /// `v2` tag without silently colliding with existing `v1` commitments
+    /// clients may have already anchored off-chain.
+    fn canonical_medical_record_preimage(env: &Env, record: &MedicalRecord) -> Bytes {
+        let mut preimage = Bytes::new(env);
+        for byte in b"petchain:medical-record:v1" {
+            preimage.push_back(*byte);
+        }
+        for byte in record.pet_id.to_be_bytes() {
+            preimage.push_back(byte);
+        }
+        for byte in record.vet_address.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.diagnosis.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.treatment.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.medications.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.notes.to_xdr(env).iter() {
+            preimage.push_back(byte);
+        }
+        for byte in record.date.to_be_bytes() {
+            preimage.push_back(byte);
+        }
+        preimage
+    }
+
+    /// Compute the canonical hash commitment for a stored medical record.
+    /// See [`Self::canonical_medical_record_preimage`] for the exact
+    /// versioned encoding. (Issue #1169)
+    pub fn get_medical_record_hash(env: Env, record_id: u64) -> BytesN<32> {
+        let record: MedicalRecord = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::MedicalRecord(record_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecordNotFound));
+        let preimage = Self::canonical_medical_record_preimage(&env, &record);
+        env.crypto().sha256(&preimage).into()
+    }
+
     pub fn add_medical_record(
         env: Env,
         pet_id: u64,
@@ -12372,6 +13480,25 @@ impl PetChainContract {
             .set(&DataKey::ContractVersion, &version);
     }
 
+    pub fn migrate_v2_to_v3(env: Env, admin: Address) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+        let current = Self::get_storage_version(env.clone());
+        if current.major >= 3 {
+            return;
+        }
+        let version = ContractVersion {
+            major: 3,
+            minor: 0,
+            patch: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&SystemKey::StorageVersion, &version);
+    }
+
     pub fn get_storage_version(env: Env) -> ContractVersion {
         env.storage()
             .instance()
@@ -12464,6 +13591,36 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::StorageSchemaVersion, &target_version);
+    }
+
+    /// Rebuild the canonical microchip index for existing records. The work
+    /// is bounded so large deployments can retry in batches. A collision or
+    /// invalid legacy value aborts the batch with InvalidInput.
+    pub fn migrate_microchip_index(env: Env, admin: Address, start: u64, limit: u64) -> u64 {
+        Self::require_admin_auth(&env, &admin);
+        let total: u64 = env.storage().instance().get(&DataKey::PetCount).unwrap_or(0);
+        let end = start.saturating_add(limit).min(total);
+        let mut cursor = start;
+        while cursor < end {
+            let pet_id = cursor + 1;
+            if let Some(mut pet) = env.storage().instance().get::<DataKey, Pet>(&DataKey::Pet(pet_id)) {
+                if let Some(ref legacy) = pet.microchip_id {
+                    let canonical = Self::canonicalize_microchip_id(&env, legacy);
+                    if let Some(existing) = env.storage().instance().get::<DataKey, u64>(&DataKey::MicrochipIndex(canonical.clone())) {
+                        if existing != pet_id {
+                            panic_with_error!(&env, ContractError::InvalidInput);
+                        }
+                    }
+                    if *legacy != canonical {
+                        pet.microchip_id = Some(canonical.clone());
+                        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+                    }
+                    env.storage().instance().set(&DataKey::MicrochipIndex(canonical), &pet_id);
+                }
+            }
+            cursor += 1;
+        }
+        end
     }
 
     pub fn migrate_storage(
