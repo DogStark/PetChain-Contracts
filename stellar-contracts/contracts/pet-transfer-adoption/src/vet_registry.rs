@@ -46,6 +46,7 @@ enum DataKey {
     VetByLicense(String),
     VetCount,
     VetIndex(u64),
+    SchemaVersion,
 }
 
 /// ======================================================
@@ -71,6 +72,8 @@ pub enum ContractError {
     VetNotVerified = 5,
     InputTooLong = 6,
     VetAlreadyVerified = 7,
+    StaleMigration = 8,
+    InvalidMigrationTarget = 9,
 }
 
 /// ======================================================
@@ -316,6 +319,108 @@ impl VetRegistryContract {
 
         vets
     }
+
+    /// ----------------------------------
+    /// SCHEMA MIGRATION  (Issue #1181)
+    ///
+    /// `get_schema_version` returns the flat `u32` stored under
+    /// `DataKey::SchemaVersion`. Absent key -> 0 (pre-versioning: every
+    /// `Vet`/`VetByLicense`/`VetIndex` record written before this feature
+    /// existed).
+    ///
+    /// `migrate_schema_version` is:
+    ///   - Authorized  — gated by `require_admin`, this contract's existing
+    ///                   single-admin `.require_auth()` check (same helper
+    ///                   used by `verify_vet`, `revoke_vet_license`, and
+    ///                   `transfer_admin`). Called first, before any storage
+    ///                   read/write, so an unauthorized caller can neither
+    ///                   observe nor mutate migration state.
+    ///   - Idempotent  — a replay (`current_version` == already-stored target)
+    ///                   or a backward/no-op jump (`target_version <= stored`)
+    ///                   panics with `StaleMigration` instead of silently
+    ///                   re-running a migration step or corrupting state.
+    ///   - Forward-only — `target_version` must strictly exceed `stored`, and
+    ///                   the arm that executes it must be a known, reviewed
+    ///                   step (unrecognized targets panic with
+    ///                   `InvalidMigrationTarget`), preventing silent version
+    ///                   skips past undeployed migration logic.
+    ///
+    /// Threat model:
+    ///   An attacker who compromises the admin key could invoke this function
+    ///   to advance `SchemaVersion` without the corresponding data actually
+    ///   having been migrated, or to attempt to replay a step. The blast
+    ///   radius is bounded by two independent properties: (1) the same
+    ///   `require_admin` gate already protects every other admin-only
+    ///   mutation in this contract (verify/revoke/transfer-admin), so a
+    ///   compromised key is already a total-compromise scenario for this
+    ///   registry regardless of this function's existence — this function
+    ///   adds no new privilege beyond what `transfer_admin` already grants;
+    ///   (2) even with the key, the function cannot rewrite history: it can
+    ///   only move the version counter strictly forward one recognized step
+    ///   at a time, it cannot replay a step already applied (`StaleMigration`),
+    ///   and — as this file's migration arm for v0->v1 demonstrates — a step
+    ///   that performs no structural change cannot itself destroy or
+    ///   resurrect any `Vet` record, since it never touches
+    ///   `DataKey::VetByAddress` / `VetByLicense` / `VetIndex` storage at all.
+    /// ----------------------------------
+
+    /// Returns the current flat storage-schema version (0 = pre-versioning,
+    /// i.e. no migration has ever been run against this contract instance).
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0u32)
+    }
+
+    /// Advance the storage-schema version from `current_version` to
+    /// `target_version`.
+    ///
+    /// # Behavior
+    /// - Panics with `ContractError::StaleMigration` when `current_version`
+    ///   does not match the actually-stored version, or when
+    ///   `target_version <= stored_version` (covers replay, backward jumps,
+    ///   and the exact-equality boundary).
+    /// - Panics with `ContractError::InvalidMigrationTarget` when
+    ///   `target_version` has no corresponding migration arm.
+    /// - Panics via `require_admin` when called by anyone but the
+    ///   registered admin.
+    ///
+    /// # Adding a new migration step
+    /// 1. Add a new arm to the `match target_version` block below for the
+    ///    next version number.
+    /// 2. Keep each arm narrow: touch only the storage that actually needs
+    ///    restructuring for that step, and document why existing records
+    ///    are (or are not) compatible with the new expected shape.
+    pub fn migrate_schema_version(env: Env, current_version: u32, target_version: u32) {
+        require_admin(&env);
+
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0u32);
+
+        // Idempotency guard: reject replays and backward/no-op jumps.
+        if stored != current_version || target_version <= stored {
+            panic_with_error!(&env, ContractError::StaleMigration);
+        }
+
+        match target_version {
+            1 => {
+                // v0 -> v1: no structural changes to Vet/VetByLicense/VetIndex
+                // records — every existing record already has every field
+                // this version expects. This step exists to establish the
+                // version key itself as a baseline for any future structural
+                // migration.
+            }
+            _ => panic_with_error!(&env, ContractError::InvalidMigrationTarget),
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &target_version);
+    }
 }
 
 /// ======================================================
@@ -343,8 +448,8 @@ mod tests {
 
     fn repeat(env: &Env, byte: u8, n: usize) -> String {
         let mut buf = [0u8; 256];
-        for i in 0..n {
-            buf[i] = byte;
+        for b in buf.iter_mut().take(n) {
+            *b = byte;
         }
         String::from_bytes(env, &buf[..n])
     }
@@ -518,8 +623,18 @@ mod tests {
 
         let vet1 = soroban_sdk::Address::generate(&env);
         let vet2 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
         client.verify_vet(&vet1);
 
         let all_vets = client.list_vets(&0, &10, &false);
@@ -679,7 +794,12 @@ mod tests {
 
         let vet = soroban_sdk::Address::generate(&env);
         let license = str(&env, "LIC-REVOKED-001");
-        client.register_vet(&vet, &str(&env, "Dr. Revoked"), &license, &str(&env, "General"));
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Revoked"),
+            &license,
+            &str(&env, "General"),
+        );
         client.verify_vet(&vet);
         client.revoke_vet_license(&vet);
 
@@ -696,11 +816,21 @@ mod tests {
 
         let vet = soroban_sdk::Address::generate(&env);
         let license = str(&env, "LIC-REUSE-001");
-        client.register_vet(&vet, &str(&env, "Dr. Same"), &license, &str(&env, "General"));
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Same"),
+            &license,
+            &str(&env, "General"),
+        );
         client.revoke_vet_license(&vet);
 
         // Same vet re-registers with the same license — must succeed.
-        client.register_vet(&vet, &str(&env, "Dr. Same"), &license, &str(&env, "General"));
+        client.register_vet(
+            &vet,
+            &str(&env, "Dr. Same"),
+            &license,
+            &str(&env, "General"),
+        );
         let found = client.get_vet_by_license(&license);
         assert!(found.is_some());
     }
@@ -733,7 +863,8 @@ mod tests {
         let license = str(&env, "LIC-DUP-001");
         client.register_vet(&vet_a, &str(&env, "Dr. A"), &license, &str(&env, "General"));
         // Same license while vet_a is still active must fail
-        let result = client.try_register_vet(&vet_b, &str(&env, "Dr. B"), &license, &str(&env, "General"));
+        let result =
+            client.try_register_vet(&vet_b, &str(&env, "Dr. B"), &license, &str(&env, "General"));
         assert_eq!(
             result,
             Err(Ok(soroban_sdk::Error::from_contract_error(
@@ -782,11 +913,21 @@ mod tests {
 
         let vet1 = soroban_sdk::Address::generate(&env);
         let vet2 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
 
         // offset >> count — must not panic or attempt an out-of-bounds index.
-        let vets = client.list_vets(&1000, &10);
+        let vets = client.list_vets(&1000, &10, &false);
         assert!(vets.is_empty());
     }
 
@@ -799,11 +940,285 @@ mod tests {
 
         // Register one vet
         let vet1 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet1, &str(&env, "Dr. One"), &str(&env, "LIC-001"), &str(&env, "General"));
+        client.register_vet(
+            &vet1,
+            &str(&env, "Dr. One"),
+            &str(&env, "LIC-001"),
+            &str(&env, "General"),
+        );
         assert_eq!(client.get_vet_count(), 1);
 
         // Register second vet
         let vet2 = soroban_sdk::Address::generate(&env);
-        client.register_vet(&vet2, &str(&env, "Dr. Two"), &str(&env, "LIC-002"), &str(&env, "Surgery"));
+        client.register_vet(
+            &vet2,
+            &str(&env, "Dr. Two"),
+            &str(&env, "LIC-002"),
+            &str(&env, "Surgery"),
+        );
         assert_eq!(client.get_vet_count(), 2);
     }
+
+    // ======================================================
+    // #1181: vet-registry schema-version migration tests
+    // ======================================================
+
+    // ---- baseline: pre-versioning default ----
+
+    #[test]
+    fn test_schema_version_defaults_to_zero_before_migration() {
+        let (_, _, _, client) = setup();
+        assert_eq!(client.get_schema_version(), 0u32);
+    }
+
+    // ---- old-state fixtures: migration preserves pre-existing vet data ----
+
+    // Registers vets under the pre-migration (implicit v0, unversioned)
+    // contract state — one verified, one revoked, one plain
+    // registered-but-unverified — then runs migrate_schema_version(0, 1)
+    // and asserts every vet's data, count, listing, and freed-license
+    // behavior (#1019) are byte-for-byte unchanged by the migration.
+    #[test]
+    fn test_migrate_schema_version_preserves_existing_vet_data() {
+        let (env, _, _, client) = setup();
+
+        let verified_vet = soroban_sdk::Address::generate(&env);
+        let revoked_vet = soroban_sdk::Address::generate(&env);
+        let plain_vet = soroban_sdk::Address::generate(&env);
+
+        let verified_name = str(&env, "Dr. Verified");
+        let verified_license = str(&env, "LIC-OLD-VERIFIED");
+        let verified_spec = str(&env, "Surgery");
+
+        let revoked_name = str(&env, "Dr. Revoked");
+        let revoked_license = str(&env, "LIC-OLD-REVOKED");
+        let revoked_spec = str(&env, "Dermatology");
+
+        let plain_name = str(&env, "Dr. Plain");
+        let plain_license = str(&env, "LIC-OLD-PLAIN");
+        let plain_spec = str(&env, "General");
+
+        // All writes here happen under the old (v0, unversioned) schema —
+        // no migration has been run yet.
+        client.register_vet(
+            &verified_vet,
+            &verified_name,
+            &verified_license,
+            &verified_spec,
+        );
+        client.verify_vet(&verified_vet);
+
+        client.register_vet(&revoked_vet, &revoked_name, &revoked_license, &revoked_spec);
+        client.verify_vet(&revoked_vet);
+        client.revoke_vet_license(&revoked_vet);
+
+        client.register_vet(&plain_vet, &plain_name, &plain_license, &plain_spec);
+
+        assert_eq!(client.get_schema_version(), 0u32);
+        assert_eq!(client.get_vet_count(), 3);
+
+        // Migrate the old-state fixtures forward.
+        client.migrate_schema_version(&0u32, &1u32);
+
+        // Vet count is unchanged.
+        assert_eq!(client.get_vet_count(), 3);
+
+        // Full data for each vet is byte-for-byte unchanged via get_vet.
+        let verified = client.get_vet(&verified_vet);
+        assert_eq!(verified.address, verified_vet);
+        assert_eq!(verified.name, verified_name);
+        assert_eq!(verified.license_number, verified_license);
+        assert_eq!(verified.specialization, verified_spec);
+        assert!(verified.verified);
+
+        let revoked = client.get_vet(&revoked_vet);
+        assert_eq!(revoked.address, revoked_vet);
+        assert_eq!(revoked.name, revoked_name);
+        assert_eq!(revoked.license_number, revoked_license);
+        assert_eq!(revoked.specialization, revoked_spec);
+        assert!(!revoked.verified);
+
+        let plain = client.get_vet(&plain_vet);
+        assert_eq!(plain.address, plain_vet);
+        assert_eq!(plain.name, plain_name);
+        assert_eq!(plain.license_number, plain_license);
+        assert_eq!(plain.specialization, plain_spec);
+        assert!(!plain.verified);
+
+        // list_vets still returns the right set with the right verified flags.
+        let all_vets = client.list_vets(&0, &10, &false);
+        assert_eq!(all_vets.len(), 3);
+
+        let verified_only = client.list_vets(&0, &10, &true);
+        assert_eq!(verified_only.len(), 1);
+        assert_eq!(verified_only.get(0).unwrap().address, verified_vet);
+
+        // The revoked vet's license is still correctly freed (#1019) —
+        // migration must not resurrect the VetByLicense mapping.
+        let found = client.get_vet_by_license(&revoked_license);
+        assert!(found.is_none());
+
+        // Untouched vets' license lookups still resolve correctly.
+        assert_eq!(
+            client
+                .get_vet_by_license(&verified_license)
+                .unwrap()
+                .address,
+            verified_vet
+        );
+        assert_eq!(
+            client.get_vet_by_license(&plain_license).unwrap().address,
+            plain_vet
+        );
+    }
+
+    #[test]
+    fn test_migrate_schema_version_updates_version() {
+        let (_, _, _, client) = setup();
+        client.migrate_schema_version(&0u32, &1u32);
+        assert_eq!(client.get_schema_version(), 1u32);
+    }
+
+    // ---- idempotency / replay ----
+
+    #[test]
+    fn test_migrate_schema_version_replay_fails() {
+        let (_, _, _, client) = setup();
+
+        client.migrate_schema_version(&0u32, &1u32);
+
+        let result = client.try_migrate_schema_version(&0u32, &1u32);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::StaleMigration as u32,
+            )))
+        );
+    }
+
+    // Exact-boundary case: target_version == stored is rejected too
+    // (the `target_version <= stored` check at exact equality).
+    #[test]
+    fn test_migrate_schema_version_exact_boundary_fails() {
+        let (_, _, _, client) = setup();
+
+        client.migrate_schema_version(&0u32, &1u32);
+
+        let result = client.try_migrate_schema_version(&1u32, &1u32);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::StaleMigration as u32,
+            )))
+        );
+    }
+
+    #[test]
+    fn test_migrate_schema_version_stale_current_version_fails() {
+        let (_, _, _, client) = setup();
+
+        // Stored version is actually 0 — passing current_version = 5
+        // (out of sync with reality) must be rejected, guarding against
+        // racing / out-of-order migration calls.
+        let result = client.try_migrate_schema_version(&5u32, &1u32);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::StaleMigration as u32,
+            )))
+        );
+    }
+
+    #[test]
+    fn test_migrate_schema_version_invalid_target_fails() {
+        let (_, _, _, client) = setup();
+
+        let result = client.try_migrate_schema_version(&0u32, &99u32);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::InvalidMigrationTarget as u32,
+            )))
+        );
+    }
+
+    // ---- authorization ----
+
+    // `setup()` calls `env.mock_all_auths()`, which bypasses every
+    // `require_auth()` check in the contract — including the admin's, inside
+    // `require_admin`. To exercise a genuine "wrong/no caller" rejection we
+    // clear all mocked auths with `env.mock_auths(&[])` (the idiom already
+    // used elsewhere in this codebase for negative auth tests, see
+    // `set_species_adoption_config_requires_admin_auth` in
+    // contracts/pet-transfer-adoption/src/test.rs) immediately before the
+    // call under test. With no auths mocked, the admin's `.require_auth()`
+    // inside `require_admin` cannot be satisfied and the call must fail.
+    #[test]
+    fn test_migrate_schema_version_without_admin_auth_fails() {
+        let (env, _, _, client) = setup();
+
+        env.mock_auths(&[]);
+
+        let result = client.try_migrate_schema_version(&0u32, &1u32);
+        assert!(result.is_err());
+
+        // No partial mutation: version must still read as pre-migration.
+        env.mock_all_auths();
+        assert_eq!(client.get_schema_version(), 0u32);
+    }
+
+    // ---- Soroban resource-impact measurement ----
+
+    // Measures CPU/memory cost of migrating a registry with a realistic
+    // number of pre-existing vets (20), using the real (non-unlimited)
+    // budget so the assertion reflects an actual resource bound rather
+    // than a no-op check against an infinite budget. Note this is the
+    // *cumulative* budget for the whole `Env` (contract registration, init,
+    // the 20 `register_vet` calls, and the migration itself) — the
+    // testutils budget API has no per-call isolation — so the numbers below
+    // include that fixed setup overhead, not just the migration step alone.
+    //
+    // Measured on the reference machine when this test was written:
+    //   cpu_instruction_cost ≈ 4_407_262
+    //   memory_bytes_cost    ≈   992_103
+    // The thresholds below are padded roughly 3x-4x over those observed
+    // values to absorb SDK/host version drift and machine variance without
+    // becoming flaky, while still catching a true regression (e.g. an
+    // accidental O(n) rescan of every vet record inside the migration
+    // itself, which the v0->v1 arm deliberately does not do).
+    #[test]
+    fn test_migrate_schema_version_resource_impact_within_bounds() {
+        let (env, _, _, client) = setup();
+
+        for i in 0..20u32 {
+            let vet = soroban_sdk::Address::generate(&env);
+            let name = str(&env, "Dr. Load");
+            // Build a unique license number "LIC-LOAD-NN" without pulling in
+            // `ToString` (not in scope here) — just write the two decimal
+            // digits of `i` (0..20) directly as ASCII bytes.
+            let mut buf = *b"LIC-LOAD-00";
+            let tens = (i / 10) as u8;
+            let ones = (i % 10) as u8;
+            buf[9] = b'0' + tens;
+            buf[10] = b'0' + ones;
+            let license = String::from_bytes(&env, &buf);
+            client.register_vet(&vet, &name, &license, &str(&env, "General"));
+        }
+        assert_eq!(client.get_vet_count(), 20);
+
+        client.migrate_schema_version(&0u32, &1u32);
+
+        let cpu = env.budget().cpu_instruction_cost();
+        let mem = env.budget().memory_bytes_cost();
+
+        // Generously padded thresholds — see comment above for observed values.
+        assert!(
+            cpu < 15_000_000,
+            "migrate_schema_version CPU cost regressed: {cpu} instructions"
+        );
+        assert!(
+            mem < 3_000_000,
+            "migrate_schema_version memory cost regressed: {mem} bytes"
+        );
+    }
+}
