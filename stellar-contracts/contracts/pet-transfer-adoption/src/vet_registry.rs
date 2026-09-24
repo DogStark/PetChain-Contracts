@@ -34,6 +34,25 @@ pub enum VetStatus {
     Revoked,
 }
 
+/// Optional filters for [`VetRegistryContract::list_vets_page`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VetFilter {
+    /// Only return vets whose `verified` flag is set.
+    pub verified_only: bool,
+    /// Only return vets with exactly this specialization.
+    pub specialization: Option<String>,
+}
+
+/// One page of [`VetRegistryContract::list_vets_page`] results.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VetPage {
+    pub vets: Vec<Vet>,
+    /// Cursor for the next page, or `None` once the registry is exhausted.
+    pub next_cursor: Option<u64>,
+}
+
 /// ======================================================
 /// STORAGE KEYS
 /// ======================================================
@@ -74,6 +93,8 @@ pub enum ContractError {
     VetAlreadyVerified = 7,
     StaleMigration = 8,
     InvalidMigrationTarget = 9,
+    InvalidPageLimit = 10,
+    InvalidCursor = 11,
 }
 
 /// ======================================================
@@ -83,6 +104,11 @@ pub enum ContractError {
 const MAX_NAME_LEN: u32 = 100;
 const MAX_LICENSE_LEN: u32 = 50;
 const MAX_SPEC_LEN: u32 = 100;
+
+/// Maximum registry slots a single enumeration call may inspect. Each slot
+/// costs two persistent reads (`VetIndex` + `VetByAddress`), so this keeps a
+/// page well inside the per-transaction ledger read limits.
+pub const MAX_VET_PAGE_SIZE: u32 = 15;
 
 fn validate_len(env: &Env, s: &String, max: u32) {
     if s.len() > max {
@@ -105,6 +131,14 @@ fn get_vet(env: &Env, vet_address: &Address) -> Vet {
         .persistent()
         .get(&DataKey::VetByAddress(vet_address.clone()))
         .unwrap_or_else(|| panic_with_error!(env, ContractError::VetNotFound))
+}
+
+/// Vet stored at 1-based registry slot `index`, if any.
+fn vet_at(env: &Env, index: u64) -> Option<Vet> {
+    let address: Address = env.storage().persistent().get(&DataKey::VetIndex(index))?;
+    env.storage()
+        .persistent()
+        .get(&DataKey::VetByAddress(address))
 }
 
 fn save_vet(env: &Env, vet: &Vet) {
@@ -273,16 +307,16 @@ impl VetRegistryContract {
     ///
     /// # Arguments
     /// * `offset` — Number of vets to skip (0-based)
-    /// * `limit` — Maximum number of vets to return
+    /// * `limit` — Maximum number of vets to return, capped at
+    ///   [`MAX_VET_PAGE_SIZE`]
     ///
     /// # Returns
     /// `Vec<Vet>` — Paginated list of vets
+    ///
+    /// Prefer [`Self::list_vets_page`], which returns a resume cursor.
     pub fn list_vets(env: Env, offset: u64, limit: u32, verified_only: bool) -> Vec<Vet> {
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::VetCount)
-            .unwrap_or(0);
+        let count = Self::get_vet_count(env.clone());
+        let limit = limit.min(MAX_VET_PAGE_SIZE);
 
         let mut vets = Vec::new(&env);
 
@@ -292,32 +326,67 @@ impl VetRegistryContract {
 
         let start_index = offset + 1; // Indices are 1-based
         let end_index = (offset + limit as u64).min(count);
-        let mut matched = 0u64;
 
         for i in start_index..=end_index {
-            if let Some(vet_address) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Address>(&DataKey::VetIndex(i))
-            {
-                if let Some(vet) = env
-                    .storage()
-                    .persistent()
-                    .get::<DataKey, Vet>(&DataKey::VetByAddress(vet_address))
-                {
-                    if verified_only && !vet.verified {
-                        continue;
-                    }
-                    vets.push_back(vet);
-                    matched += 1;
-                    if matched >= limit as u64 {
-                        break;
-                    }
+            if let Some(vet) = vet_at(&env, i) {
+                if verified_only && !vet.verified {
+                    continue;
                 }
+                vets.push_back(vet);
             }
         }
 
         vets
+    }
+
+    /// Cursor-based registry enumeration.
+    ///
+    /// Inspects at most `limit` registry slots after `cursor` and returns the
+    /// vets among them that match `filter`. With a filter set, a page may hold
+    /// fewer than `limit` vets (even none); keep calling with `next_cursor`
+    /// until it is `None`. Start with `cursor = 0`.
+    ///
+    /// The cursor is a registry slot position. Slots are append-only
+    /// (revocation keeps a vet's slot), so a cursor stays valid while the
+    /// registry grows: no vet is skipped or returned twice.
+    ///
+    /// # Errors
+    /// - `InvalidPageLimit` — `limit` is 0 or above [`MAX_VET_PAGE_SIZE`].
+    /// - `InvalidCursor` — `cursor` is past the end of the registry.
+    /// - `InputTooLong` — `filter.specialization` exceeds its max length.
+    pub fn list_vets_page(env: Env, cursor: u64, limit: u32, filter: VetFilter) -> VetPage {
+        if limit == 0 || limit > MAX_VET_PAGE_SIZE {
+            panic_with_error!(env, ContractError::InvalidPageLimit);
+        }
+        if let Some(spec) = &filter.specialization {
+            validate_len(&env, spec, MAX_SPEC_LEN);
+        }
+        let count = Self::get_vet_count(env.clone());
+        if cursor > count {
+            panic_with_error!(env, ContractError::InvalidCursor);
+        }
+
+        let end = cursor.saturating_add(limit as u64).min(count);
+        let mut vets = Vec::new(&env);
+        for i in cursor + 1..=end {
+            let Some(vet) = vet_at(&env, i) else { continue };
+            if filter.verified_only && !vet.verified {
+                continue;
+            }
+            if filter
+                .specialization
+                .as_ref()
+                .is_some_and(|spec| *spec != vet.specialization)
+            {
+                continue;
+            }
+            vets.push_back(vet);
+        }
+
+        VetPage {
+            vets,
+            next_cursor: (end < count).then_some(end),
+        }
     }
 
     /// ----------------------------------
@@ -1292,11 +1361,288 @@ mod tests {
         assert_eq!(client.list_vets(&2, &2, &true).len(), 1);
     }
 
-    // `limit` is not capped: a single call reads every registered vet.
+    // `limit` is capped at MAX_VET_PAGE_SIZE, so no single call reads the
+    // whole registry.
     #[test]
-    fn test_list_vets_limit_is_unbounded() {
+    fn test_list_vets_limit_is_capped() {
         let (env, _, _, client) = setup();
         register_vets(&env, &client, 20);
-        assert_eq!(client.list_vets(&0, &u32::MAX, &false).len(), 20);
+        assert_eq!(
+            client.list_vets(&0, &u32::MAX, &false).len(),
+            MAX_VET_PAGE_SIZE
+        );
+    }
+
+    // ======================================================
+    // #1179: list_vets_page (cursor pagination)
+    // ======================================================
+
+    fn no_filter() -> VetFilter {
+        VetFilter {
+            verified_only: false,
+            specialization: None,
+        }
+    }
+
+    fn contract_error(err: ContractError) -> Error {
+        Error::from_contract_error(err as u32)
+    }
+
+    /// Follows `next_cursor` until exhaustion, returning every vet seen and
+    /// the number of pages fetched.
+    fn walk_pages(
+        env: &Env,
+        client: &VetRegistryContractClient,
+        limit: u32,
+        filter: &VetFilter,
+    ) -> (Vec<Address>, u32) {
+        let mut seen = Vec::new(env);
+        let mut cursor = 0u64;
+        let mut pages = 0u32;
+        loop {
+            let page = client.list_vets_page(&cursor, &limit, filter);
+            assert!(page.vets.len() <= limit);
+            seen.append(&addresses(env, &page.vets));
+            pages += 1;
+            match page.next_cursor {
+                Some(next) => cursor = next,
+                None => return (seen, pages),
+            }
+        }
+    }
+
+    #[test]
+    fn test_list_vets_page_walks_registry_once_in_order() {
+        let (env, _, _, client) = setup();
+        let vets = register_vets(&env, &client, 37);
+
+        let (seen, pages) = walk_pages(&env, &client, MAX_VET_PAGE_SIZE, &no_filter());
+        assert_eq!(seen, vets);
+        assert_eq!(pages, 3); // 15 + 15 + 7
+    }
+
+    #[test]
+    fn test_list_vets_page_cursor_is_stable_while_registry_grows() {
+        let (env, _, _, client) = setup();
+        let mut vets = register_vets(&env, &client, 4);
+
+        let first = client.list_vets_page(&0, &2, &no_filter());
+        assert_eq!(first.next_cursor, Some(2));
+
+        // Mutations between pages: a revocation and a new registration.
+        client.revoke_vet_license(&vets.get(0).unwrap());
+        let late = Address::generate(&env);
+        client.register_vet(
+            &late,
+            &str(&env, "Dr. Late"),
+            &str(&env, "LIC-LATE"),
+            &str(&env, "General"),
+        );
+        vets.push_back(late);
+
+        let mut seen = addresses(&env, &first.vets);
+        let mut cursor = first.next_cursor;
+        while let Some(c) = cursor {
+            let page = client.list_vets_page(&c, &2, &no_filter());
+            seen.append(&addresses(&env, &page.vets));
+            cursor = page.next_cursor;
+        }
+        assert_eq!(seen, vets);
+    }
+
+    #[test]
+    fn test_list_vets_page_filters() {
+        let (env, _, _, client) = setup();
+        let vets = register_vets(&env, &client, 20);
+        let surgeon = Address::generate(&env);
+        client.register_vet(
+            &surgeon,
+            &str(&env, "Dr. Cut"),
+            &str(&env, "LIC-SURG"),
+            &str(&env, "Surgery"),
+        );
+        let verified = [vets.get(3).unwrap(), vets.get(17).unwrap(), surgeon.clone()];
+        for vet in verified.iter() {
+            client.verify_vet(vet);
+        }
+
+        // verified_only: matches spread across pages are all found, in order.
+        let verified_only = VetFilter {
+            verified_only: true,
+            specialization: None,
+        };
+        let (seen, _) = walk_pages(&env, &client, 5, &verified_only);
+        assert_eq!(seen, Vec::from_array(&env, verified));
+
+        // A page can be empty while matches remain; next_cursor resumes.
+        let page = client.list_vets_page(&5, &5, &verified_only);
+        assert!(page.vets.is_empty());
+        assert_eq!(page.next_cursor, Some(10));
+
+        // specialization, alone and combined with verified_only.
+        let surgery = VetFilter {
+            verified_only: false,
+            specialization: Some(str(&env, "Surgery")),
+        };
+        let (seen, _) = walk_pages(&env, &client, MAX_VET_PAGE_SIZE, &surgery);
+        assert_eq!(seen, Vec::from_array(&env, [surgeon.clone()]));
+
+        client.revoke_vet_license(&surgeon);
+        let verified_surgery = VetFilter {
+            verified_only: true,
+            ..surgery
+        };
+        let (seen, _) = walk_pages(&env, &client, MAX_VET_PAGE_SIZE, &verified_surgery);
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn test_list_vets_page_limit_bounds() {
+        let (env, _, _, client) = setup();
+        register_vets(&env, &client, 20);
+
+        let page = client.list_vets_page(&0, &MAX_VET_PAGE_SIZE, &no_filter());
+        assert_eq!(page.vets.len(), MAX_VET_PAGE_SIZE);
+        assert_eq!(page.next_cursor, Some(MAX_VET_PAGE_SIZE as u64));
+
+        let page = client.list_vets_page(&0, &1, &no_filter());
+        assert_eq!(page.vets.len(), 1);
+
+        for limit in [0, MAX_VET_PAGE_SIZE + 1, u32::MAX] {
+            assert_eq!(
+                client.try_list_vets_page(&0, &limit, &no_filter()),
+                Err(Ok(contract_error(ContractError::InvalidPageLimit)))
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_vets_page_cursor_bounds() {
+        let (env, _, _, client) = setup();
+
+        // Empty registry: cursor 0 is the end.
+        let page = client.list_vets_page(&0, &5, &no_filter());
+        assert!(page.vets.is_empty());
+        assert_eq!(page.next_cursor, None);
+
+        register_vets(&env, &client, 5);
+
+        // Page ending exactly at the last slot reports no next cursor.
+        let page = client.list_vets_page(&0, &5, &no_filter());
+        assert_eq!(page.vets.len(), 5);
+        assert_eq!(page.next_cursor, None);
+
+        // cursor == count is the (empty) end of the registry.
+        let page = client.list_vets_page(&5, &5, &no_filter());
+        assert!(page.vets.is_empty());
+        assert_eq!(page.next_cursor, None);
+
+        for cursor in [6, u64::MAX] {
+            assert_eq!(
+                client.try_list_vets_page(&cursor, &5, &no_filter()),
+                Err(Ok(contract_error(ContractError::InvalidCursor)))
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_vets_page_rejects_oversized_specialization_filter() {
+        let (env, _, _, client) = setup();
+        let at_max = VetFilter {
+            verified_only: false,
+            specialization: Some(repeat(&env, b's', MAX_SPEC_LEN as usize)),
+        };
+        assert!(client.list_vets_page(&0, &5, &at_max).vets.is_empty());
+
+        let over_max = VetFilter {
+            verified_only: false,
+            specialization: Some(repeat(&env, b's', MAX_SPEC_LEN as usize + 1)),
+        };
+        assert_eq!(
+            client.try_list_vets_page(&0, &5, &over_max),
+            Err(Ok(contract_error(ContractError::InputTooLong)))
+        );
+    }
+
+    // Read-only: no auth required, and replaying a cursor returns the same
+    // page without changing any state.
+    #[test]
+    fn test_list_vets_page_is_public_and_idempotent() {
+        let (env, _, _, client) = setup();
+        register_vets(&env, &client, 8);
+
+        env.mock_auths(&[]);
+        let first = client.list_vets_page(&3, &4, &no_filter());
+        let replay = client.list_vets_page(&3, &4, &no_filter());
+        assert_eq!(first, replay);
+        assert_eq!(first.next_cursor, Some(7));
+        assert_eq!(client.get_vet_count(), 8);
+    }
+
+    // ---- Soroban resource-impact measurement ----
+
+    fn measure(env: &Env, call: impl FnOnce()) -> (u64, u64) {
+        env.budget().reset_default();
+        call();
+        (
+            env.budget().cpu_instruction_cost(),
+            env.budget().memory_bytes_cost(),
+        )
+    }
+
+    /// CPU and memory used by one full-size `list_vets_page` call against a
+    /// registry of `registry_size` vets, minus the cost of a trivial call
+    /// (`get_vet_count`). The test host's fixed per-invocation overhead grows
+    /// with total storage size, which would otherwise mask the page's own cost.
+    fn page_cost(registry_size: u32, filter: &VetFilter) -> (u64, u64) {
+        let (env, _, _, client) = setup();
+        env.budget().reset_unlimited();
+        let vets = register_vets(&env, &client, registry_size);
+        client.verify_vet(&vets.get(registry_size - 1).unwrap());
+
+        let (base_cpu, base_mem) = measure(&env, || {
+            client.get_vet_count();
+        });
+        let (cpu, mem) = measure(&env, || {
+            let page = client.list_vets_page(&0, &MAX_VET_PAGE_SIZE, filter);
+            assert_eq!(page.next_cursor, Some(MAX_VET_PAGE_SIZE as u64));
+        });
+        (cpu - base_cpu, mem - base_mem)
+    }
+
+    // A page's cost is bounded by MAX_VET_PAGE_SIZE and does not grow with
+    // the registry, even when a filter matches nothing on the page.
+    //
+    // Measured on the reference machine (full page, soroban-sdk 21.7.7):
+    //   20 vets:  cpu ≈ 568_000, mem ≈ 42_000
+    //   300 vets: cpu ≈ 673_000, mem ≈ 42_000
+    // For comparison, the uncapped `list_vets(0, u32::MAX, false)` this
+    // replaces cost ≈ 13_400_000 cpu / 1_250_000 mem at 300 vets.
+    #[test]
+    fn test_list_vets_page_resource_cost_is_bounded() {
+        let verified_only = VetFilter {
+            verified_only: true,
+            specialization: None,
+        };
+        let (small_cpu, small_mem) = page_cost(20, &no_filter());
+        let (large_cpu, large_mem) = page_cost(300, &no_filter());
+        let (filtered_cpu, filtered_mem) = page_cost(300, &verified_only);
+
+        // Storage lookups are logarithmic in the test host, hence the slack.
+        assert!(large_cpu < small_cpu * 3 / 2, "{small_cpu} -> {large_cpu}");
+        assert!(
+            large_mem < small_mem * 11 / 10,
+            "{small_mem} -> {large_mem}"
+        );
+        assert!(filtered_cpu <= large_cpu, "{filtered_cpu} > {large_cpu}");
+        assert!(filtered_mem <= large_mem, "{filtered_mem} > {large_mem}");
+        assert!(
+            large_cpu < 2_000_000,
+            "list_vets_page CPU cost: {large_cpu}"
+        );
+        assert!(
+            large_mem < 200_000,
+            "list_vets_page memory cost: {large_mem}"
+        );
     }
 }
