@@ -947,4 +947,28 @@ mod tests {
             admin_resolve_dispute(&c.env, 203, DisputeDecision::RefundBuyer);
         });
     }
+
+    // ── Issue #1186: fee arithmetic baseline ─────────────────────────────────
+
+    /// The fee is floored to a whole stroop; the remainder stays with the seller.
+    #[test]
+    fn fee_rounds_down_at_stroop_level() {
+        assert_eq!(compute_platform_fee(39, 250), 0);
+        assert_eq!(compute_platform_fee(40, 250), 1);
+        assert_eq!(compute_seller_amount(39, 250), 39);
+    }
+
+    /// `amount * fee_bps` is computed directly, so large amounts overflow i128.
+    #[test]
+    #[should_panic(expected = "attempt to multiply with overflow")]
+    fn fee_overflows_for_large_amounts() {
+        compute_platform_fee(i128::MAX, 250);
+    }
+
+    /// `fee_bps` is not bounded here, so the fee can exceed the payment.
+    #[test]
+    fn fee_can_exceed_payment_when_bps_is_unbounded() {
+        assert_eq!(compute_platform_fee(100, 20_000), 200);
+        assert_eq!(compute_seller_amount(100, 20_000), -100);
+    }
 }
