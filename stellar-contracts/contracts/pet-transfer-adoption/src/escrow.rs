@@ -6,9 +6,15 @@
 //!   3. `refund_fee()` — full amount back to buyer (Held or Disputed state)
 //!   4. `admin_resolve_dispute()` — admin ruling from Disputed state (buyer, seller, or split)
 //!
-//! Platform fee: configurable basis points (e.g. 250 = 2.50%)
-//!   platform_fee   = amount * fee_bps / 10_000
+//! Platform fee: configurable basis points (e.g. 250 = 2.50%), at most
+//! `MAX_FEE_BPS` (10_000 = 100%)
+//!   platform_fee   = floor(amount * fee_bps / 10_000)
 //!   seller_amount  = amount - platform_fee
+//!
+//! Rounding: the platform fee (and the seller's share of a dispute split) is
+//! rounded down to a whole stroop, so any sub-stroop remainder goes to the
+//! seller (or, for a split, the buyer) and the two parts always sum to
+//! `amount`. The math is overflow-free for every non-negative `i128` amount.
 //!
 //! Storage keys added (no conflict with existing DataKey variants):
 //!   DataKey::EscrowEntry(transfer_id) → EscrowEntry
@@ -78,12 +84,48 @@ pub enum EscrowDataKey {
 
 // ─── Fee helpers ──────────────────────────────────────────────────────────────
 
-pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> i128 {
-    amount * fee_bps as i128 / 10_000
+/// Basis-point denominator: 10_000 bps = 100%.
+pub const BPS_DENOMINATOR: u32 = 10_000;
+
+/// Upper bound for the platform fee and for a dispute split share (100%).
+pub const MAX_FEE_BPS: u32 = BPS_DENOMINATOR;
+
+/// `floor(amount * bps / 10_000)`, exact for every non-negative `i128`.
+///
+/// `amount` is split into whole multiples of 10_000 and a remainder, so no
+/// intermediate value exceeds `amount` (the remainder product stays below
+/// 10^8) and `i128::MAX` is handled without overflow.
+///
+/// Errors: `InvalidAmount` if `amount` is negative, `FeeBpsTooHigh` if `bps`
+/// exceeds `MAX_FEE_BPS`.
+pub fn bps_share(amount: i128, bps: u32) -> Result<i128, EscrowError> {
+    if amount < 0 {
+        return Err(EscrowError::InvalidAmount);
+    }
+    if bps > MAX_FEE_BPS {
+        return Err(EscrowError::FeeBpsTooHigh);
+    }
+    let (denom, bps) = (BPS_DENOMINATOR as i128, bps as i128);
+    let whole = (amount / denom)
+        .checked_mul(bps)
+        .ok_or(EscrowError::InvalidAmount)?;
+    let remainder = (amount % denom)
+        .checked_mul(bps)
+        .ok_or(EscrowError::InvalidAmount)?
+        / denom;
+    whole
+        .checked_add(remainder)
+        .ok_or(EscrowError::InvalidAmount)
 }
 
-pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
-    amount - compute_platform_fee(amount, fee_bps)
+/// Platform fee for `amount`, rounded down to a whole stroop.
+pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
+    bps_share(amount, fee_bps)
+}
+
+/// `amount` minus the platform fee; the two always sum to `amount`.
+pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
+    Ok(amount - compute_platform_fee(amount, fee_bps)?)
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -93,7 +135,7 @@ pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
 /// Issue #1185: restricted to admin-only on first call (caller must be fee_recipient)
 /// and validates that token_address is a non-zero contract address.
 pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address, token_address: Address) {
-    if fee_bps > 10_000 {
+    if fee_bps > MAX_FEE_BPS {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
     }
     // Issue #1185: require auth from the fee_recipient (who becomes admin)
@@ -155,7 +197,7 @@ fn token_client(env: &Env) -> token::Client<'_> {
 /// Existing in-flight escrows are NOT retroactively updated (they capture fee_bps at deposit time).
 /// Closes issue #1005.
 pub fn update_fee_config(env: &Env, new_fee_bps: u32, new_fee_recipient: Address) {
-    if new_fee_bps > 10_000 {
+    if new_fee_bps > MAX_FEE_BPS {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
     }
 
@@ -229,11 +271,12 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
+    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps)
+        .unwrap_or_else(|err| panic_with_error!(env, err));
+    let seller_amount = entry.amount - platform_fee;
     // Issue #1183: mark terminal state before any token transfer
     entry.status = EscrowStatus::Released;
     env.storage().persistent().set(&key, &entry);
-    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
-    let seller_amount = entry.amount - platform_fee;
     let contract = env.current_contract_address();
     let client = token_client(env);
     client.transfer(&contract, &entry.seller, &seller_amount);
@@ -332,10 +375,8 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
         DisputeDecision::RefundBuyer => (0, entry.amount),
         DisputeDecision::PaySeller => (entry.amount, 0),
         DisputeDecision::Split(seller_bps) => {
-            if seller_bps > 10_000 {
-                panic_with_error!(env, EscrowError::FeeBpsTooHigh);
-            }
-            let seller_amount = entry.amount * seller_bps as i128 / 10_000;
+            let seller_amount = bps_share(entry.amount, seller_bps)
+                .unwrap_or_else(|err| panic_with_error!(env, err));
             (seller_amount, entry.amount - seller_amount)
         }
     };
@@ -535,8 +576,8 @@ mod tests {
 
     #[test]
     fn fee_calculation_correct() {
-        assert_eq!(compute_platform_fee(10_000_000, 250), 250_000);
-        assert_eq!(compute_seller_amount(10_000_000, 250), 9_750_000);
+        assert_eq!(compute_platform_fee(10_000_000, 250), Ok(250_000));
+        assert_eq!(compute_seller_amount(10_000_000, 250), Ok(9_750_000));
     }
 
     #[test]
@@ -603,8 +644,8 @@ mod tests {
 
     #[test]
     fn zero_fee_bps_full_amount_to_seller() {
-        assert_eq!(compute_platform_fee(10_000_000, 0), 0);
-        assert_eq!(compute_seller_amount(10_000_000, 0), 10_000_000);
+        assert_eq!(compute_platform_fee(10_000_000, 0), Ok(0));
+        assert_eq!(compute_seller_amount(10_000_000, 0), Ok(10_000_000));
     }
 
     // ── Issue #1001: real token transfers on deposit / finalize / refund ─────
@@ -948,27 +989,162 @@ mod tests {
         });
     }
 
-    // ── Issue #1186: fee arithmetic baseline ─────────────────────────────────
+    // ── Issue #1186: fee bounds and rounding ─────────────────────────────────
 
     /// The fee is floored to a whole stroop; the remainder stays with the seller.
     #[test]
     fn fee_rounds_down_at_stroop_level() {
-        assert_eq!(compute_platform_fee(39, 250), 0);
-        assert_eq!(compute_platform_fee(40, 250), 1);
-        assert_eq!(compute_seller_amount(39, 250), 39);
+        let cases: [(i128, u32, i128); 10] = [
+            (0, 250, 0),
+            (1, 250, 0),
+            (39, 250, 0),
+            (40, 250, 1),
+            (79, 250, 1),
+            (80, 250, 2),
+            (9_999, 1, 0),
+            (10_000, 1, 1),
+            (1, 9_999, 0),
+            (1, MAX_FEE_BPS, 1),
+        ];
+        for (amount, bps, fee) in cases {
+            assert_eq!(compute_platform_fee(amount, bps), Ok(fee));
+            assert_eq!(compute_seller_amount(amount, bps), Ok(amount - fee));
+        }
     }
 
-    /// `amount * fee_bps` is computed directly, so large amounts overflow i128.
+    /// For amounts where the direct product cannot overflow, the result equals
+    /// the plain `amount * bps / 10_000` formula, and fee + seller == amount.
     #[test]
-    #[should_panic(expected = "attempt to multiply with overflow")]
-    fn fee_overflows_for_large_amounts() {
-        compute_platform_fee(i128::MAX, 250);
+    fn fee_matches_direct_formula_and_conserves_amount() {
+        for bps in [0, 1, 250, 3_333, 9_999, MAX_FEE_BPS] {
+            for amount in (0..=30_000).chain([i64::MAX as i128 - 1, i64::MAX as i128]) {
+                let fee = compute_platform_fee(amount, bps).unwrap();
+                assert_eq!(fee, amount * bps as i128 / 10_000);
+                assert_eq!(fee + compute_seller_amount(amount, bps).unwrap(), amount);
+            }
+        }
     }
 
-    /// `fee_bps` is not bounded here, so the fee can exceed the payment.
+    /// Exact results at `i128::MAX`, where `amount * bps` would overflow.
     #[test]
-    fn fee_can_exceed_payment_when_bps_is_unbounded() {
-        assert_eq!(compute_platform_fee(100, 20_000), 200);
-        assert_eq!(compute_seller_amount(100, 20_000), -100);
+    fn fee_is_exact_at_maximum_amount() {
+        let cases: [(u32, i128); 5] = [
+            (0, 0),
+            (1, 17_014_118_346_046_923_173_168_730_371_588_410),
+            (250, 4_253_529_586_511_730_793_292_182_592_897_102_643),
+            (9_999, 170_124_169_342_123_184_808_514_134_985_512_517_316),
+            (MAX_FEE_BPS, i128::MAX),
+        ];
+        for (bps, fee) in cases {
+            assert_eq!(compute_platform_fee(i128::MAX, bps), Ok(fee));
+            assert_eq!(compute_seller_amount(i128::MAX, bps), Ok(i128::MAX - fee));
+        }
+    }
+
+    #[test]
+    fn fee_rejects_out_of_range_inputs() {
+        for bps in [MAX_FEE_BPS + 1, u32::MAX] {
+            assert_eq!(
+                compute_platform_fee(100, bps),
+                Err(EscrowError::FeeBpsTooHigh)
+            );
+            assert_eq!(
+                compute_seller_amount(100, bps),
+                Err(EscrowError::FeeBpsTooHigh)
+            );
+        }
+        for amount in [-1, i128::MIN] {
+            assert_eq!(
+                compute_platform_fee(amount, 250),
+                Err(EscrowError::InvalidAmount)
+            );
+        }
+    }
+
+    /// Exact boundary: a 100% fee is accepted and pays the seller nothing.
+    #[test]
+    fn finalize_at_max_fee_bps_pays_everything_to_platform() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, MAX_FEE_BPS, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 300, c.buyer.clone(), c.seller.clone(), 1_000_001);
+            finalize_transfer(&c.env, 300);
+        });
+        assert_eq!(c.balance(&c.seller), 0);
+        assert_eq!(c.balance(&c.platform), 1_000_001);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Stroop-level rounding end to end: the sub-stroop remainder goes to the seller.
+    #[test]
+    fn finalize_rounds_fee_down_to_whole_stroop() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 301, c.buyer.clone(), c.seller.clone(), 79);
+            finalize_transfer(&c.env, 301);
+        });
+        assert_eq!(c.balance(&c.platform), 1);
+        assert_eq!(c.balance(&c.seller), 78);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// The largest amount a Stellar asset can hold settles without overflow
+    /// and without losing or creating a stroop.
+    #[test]
+    fn finalize_conserves_maximum_token_amount() {
+        let c = setup();
+        let amount = i64::MAX as i128;
+        StellarAssetClient::new(&c.env, &c.token).mint(&c.buyer, &(amount - 1_000_000_000));
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 302, c.buyer.clone(), c.seller.clone(), amount);
+            finalize_transfer(&c.env, 302);
+        });
+        assert_eq!(c.balance(&c.platform), 230_584_300_921_369_395);
+        assert_eq!(c.balance(&c.seller), 8_992_787_735_933_406_412);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// A split rounds the seller's share down; the buyer gets the remainder.
+    #[test]
+    fn admin_resolve_dispute_split_rounds_seller_share_down() {
+        let c = setup();
+        let before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 303, c.buyer.clone(), c.seller.clone(), 3);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 303, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 303, DisputeDecision::Split(5_000));
+        });
+        assert_eq!(c.balance(&c.seller), 1);
+        assert_eq!(c.balance(&c.buyer), before - 1);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn admin_resolve_dispute_rejects_split_over_max_bps() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 304, c.buyer.clone(), c.seller.clone(), 1_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 304, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 304, DisputeDecision::Split(MAX_FEE_BPS + 1));
+        });
+    }
+
+    /// Only the stored admin may change the fee.
+    #[test]
+    #[should_panic(expected = "Error(Auth, InvalidAction)")]
+    fn update_fee_config_requires_admin_auth() {
+        let c = setup();
+        c.run(|| init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone()));
+        c.env.mock_auths(&[]);
+        c.run(|| update_fee_config(&c.env, 100, c.platform.clone()));
     }
 }
