@@ -588,7 +588,7 @@ pub enum ContractError {
     /// A medical-event timestamp fell outside the allowed domain relative to
     /// ledger time (too far in the past, too far in the future, or with a
     /// due/expiry date before the event it describes). (Issue #1174)
-    InvalidTimestamp = 169,
+    InvalidTimestamp = 170,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---

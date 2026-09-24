@@ -37,6 +37,15 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-09-24 — Error compatibility policy (#1255)
+
+- `ContractError::InvalidTimestamp` (added in #1270) collided with
+  `StaleMigration = 169`, so the crate could not compile. It now uses the
+  next free code, **170**; `StaleMigration` keeps 169 as documented below.
+  Neither value ever shipped.
+- All contract error codes are now pinned in `error-codes.json` and checked
+  in CI; see [error-compatibility.md](error-compatibility.md).
+
 ### 2026-08-29 — Custody-history digest + repair of pre-existing ABI drift (#1254)
 
 **New public ABI (intentional, additive):**

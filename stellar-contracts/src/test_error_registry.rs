@@ -639,4 +639,20 @@ fn test_contract_error_discriminants() {
     assert_eq!(ContractError::RecordAlreadyDeleted as u32, 161);
     assert_eq!(ContractError::RetentionPeriodNotMet as u32, 162);
     assert_eq!(ContractError::RecordNotFound as u32, 163);
+    assert_eq!(ContractError::DisputeNotFound as u32, 164);
+    assert_eq!(ContractError::DisputeNotOpenForVoting as u32, 165);
+    assert_eq!(ContractError::NotDisputeStakeholder as u32, 166);
+    assert_eq!(ContractError::NotInEvidencePhase as u32, 167);
+    assert_eq!(ContractError::NotDisputeParty as u32, 168);
+    assert_eq!(ContractError::StaleMigration as u32, 169);
+    assert_eq!(ContractError::InvalidTimestamp as u32, 170);
+}
+
+#[test]
+fn test_petchain_error_discriminants_are_stable() {
+    assert_eq!(PetChainError::NonceReused as u32, 1);
+    assert_eq!(PetChainError::SelfLineage as u32, 2);
+    assert_eq!(PetChainError::CircularLineage as u32, 3);
+    assert_eq!(PetChainError::KeywordTooLong as u32, 4);
+    assert_eq!(PetChainError::TooManySearchTokens as u32, 5);
 }
