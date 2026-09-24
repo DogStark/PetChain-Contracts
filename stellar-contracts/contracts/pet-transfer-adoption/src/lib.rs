@@ -26,6 +26,12 @@ pub const MAX_CUSTODY_CHAIN_LENGTH: u32 = 256;
 /// a dispute before [`finalize_transfer`] may be called.
 pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
 
+/// Custody-confirmation window: once a transfer is escrowed, both parties have
+/// this long to confirm the physical handover via [`confirm_custody`]. After
+/// that, a transfer still missing a confirmation can be cancelled with
+/// [`cancel_unconfirmed_transfer`].
+pub const CUSTODY_CONFIRMATION_TIMEOUT_SECONDS: u64 = 7 * 24 * 60 * 60; // 604 800 s
+
 pub mod escrow;
 #[cfg(test)]
 mod test;
@@ -50,7 +56,8 @@ pub struct Pet {
 }
 
 /// A transfer that has been accepted by both parties and is now in the
-/// 48-hour dispute window before ownership is finalised.
+/// 48-hour dispute window before ownership is finalised. Both parties must
+/// also confirm the custody handover (see [`CustodyConfirmation`]).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowedTransfer {
@@ -59,6 +66,15 @@ pub struct EscrowedTransfer {
     pub to: Address,
     pub escrowed_at: u64,
     pub disputed: bool,
+}
+
+/// Custody-handover acknowledgements for an [`EscrowedTransfer`]
+/// (Issue #1187). Stored separately so `EscrowedTransfer`'s layout is unchanged.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CustodyConfirmation {
+    pub from_confirmed: bool,
+    pub to_confirmed: bool,
 }
 
 #[contracttype]
@@ -211,6 +227,7 @@ enum DataKey {
     JurisdictionAdoptionConfig(String), // jurisdiction -> AdoptionConfig
     Admin,                        // adoption contract admin set on first set_adoption_config call
     OwnerPetSet((Address, u64)),   // (owner, pet_id) -> bool for O(1) membership checks
+    CustodyConfirmation(u64),   // pet_id -> CustodyConfirmation (Issue #1187)
 }
 
 /// ======================================================
@@ -225,6 +242,9 @@ const EVT_TRANSFER_DISPUTED: Symbol = symbol_short!("xfer_disp");
 const EVT_TRUSTED_UPDATED: Symbol = symbol_short!("trust_upd");
 const EVT_TRANSFER_EXPIRED: Symbol = symbol_short!("xfer_exp");
 const EVT_ADOPTION_EXPIRED: Symbol = symbol_short!("adopt_exp");
+const EVT_CUSTODY_CONFIRMED: Symbol = symbol_short!("cust_conf");
+const EVT_CUSTODY_EXPIRED: Symbol = symbol_short!("cust_exp");
+const EVT_TRANSFER_ARBITRATED: Symbol = symbol_short!("xfer_arb");
 
 /// ======================================================
 /// ERRORS
@@ -269,6 +289,11 @@ pub enum ContractError {
     AdopterApprovalRequired = 32,
     InputStringTooLong = 33,
     AdoptionNotExpired = 34,
+    // Two-party custody confirmation errors (Issue #1187)
+    CustodyNotConfirmed = 35,
+    CustodyAlreadyConfirmed = 36,
+    CustodyConfirmationExpired = 37,
+    TransferNotDisputed = 38,
 }
 
 /// ======================================================
@@ -456,6 +481,89 @@ fn clear_trusted_update_approvals(env: &Env, admins: &Vec<Address>, new_address:
     }
 }
 
+fn get_escrowed(env: &Env, pet_id: u64) -> EscrowedTransfer {
+    env.storage()
+        .persistent()
+        .get(&DataKey::EscrowedTransfer(pet_id))
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::NoEscrowedTransfer))
+}
+
+fn load_custody_confirmation(env: &Env, pet_id: u64) -> CustodyConfirmation {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CustodyConfirmation(pet_id))
+        .unwrap_or_default()
+}
+
+fn clear_escrow(env: &Env, pet_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::EscrowedTransfer(pet_id));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::CustodyConfirmation(pet_id));
+}
+
+/// Ownership must not move by any other path while an escrowed transfer
+/// (possibly disputed) is awaiting confirmation or arbitration.
+fn require_no_escrow(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
+    }
+}
+
+/// Moves ownership of an escrowed pet to `escrowed.to` and clears the escrow.
+fn complete_escrowed_transfer(env: &Env, escrowed: &EscrowedTransfer) {
+    let pet_id = escrowed.pet_id;
+    let now = env.ledger().timestamp();
+    let mut pet = get_pet(env, pet_id);
+    if pet.current_owner != escrowed.from {
+        panic_with_error!(env, ContractError::Unauthorized);
+    }
+
+    // Update ownership history
+    let mut history = get_history(env, pet_id);
+    if history.len() == 0 {
+        panic_with_error!(env, ContractError::EmptyOwnershipHistory);
+    }
+    let last = history.len() - 1;
+    let mut prev = history
+        .get(last)
+        .unwrap_or_else(|| panic_with_error!(env, ContractError::MissingOwnershipRecord));
+    prev.relinquished_at = Some(now);
+    history.set(last, prev);
+    history.push_back(OwnershipRecord {
+        owner: escrowed.to.clone(),
+        acquired_at: now,
+        relinquished_at: None,
+    });
+
+    remove_pet_from_owner(env, &escrowed.from, pet_id);
+    add_pet_to_owner(env, &escrowed.to, pet_id);
+    pet.current_owner = escrowed.to.clone();
+
+    save_pet(env, &pet);
+    save_history(env, pet_id, &history);
+    clear_escrow(env, pet_id);
+
+    append_custody_entry(
+        env,
+        pet_id,
+        escrowed.from.clone(),
+        escrowed.to.clone(),
+        TransferType::Direct,
+    );
+
+    env.events().publish(
+        (EVT_TRANSFER_FINALIZED, pet_id),
+        (escrowed.from.clone(), escrowed.to.clone()),
+    );
+}
+
 fn get_adoption_admin(env: &Env) -> Address {
     env.storage()
         .persistent()
@@ -633,6 +741,7 @@ impl PetOwnershipContract {
     pub fn sign_adoption(env: Env, pet_id: u64, to: Address, organization: Option<Address>) {
         let pet = get_pet(&env, pet_id);
         pet.current_owner.require_auth();
+        require_no_escrow(&env, pet_id);
 
         if env
             .storage()
@@ -765,6 +874,7 @@ impl PetOwnershipContract {
         {
             panic_with_error!(env, ContractError::TransferAlreadyPending);
         }
+        require_no_escrow(&env, pet_id);
 
         let timeout_secs = (transfer_timeout_days as u64).saturating_mul(86400);
 
@@ -904,6 +1014,7 @@ impl PetOwnershipContract {
             panic_with_error!(&env, ContractError::OrganizationApprovalRequired);
         }
 
+        require_no_escrow(&env, pet_id);
         let mut pet = get_pet(&env, pet_id);
         if pet.current_owner != pending.from {
             panic_with_error!(&env, ContractError::Unauthorized);
@@ -982,6 +1093,7 @@ impl PetOwnershipContract {
         }
 
         let now = env.ledger().timestamp();
+        require_no_escrow(&env, pet_id);
         let mut pet = get_pet(&env, pet_id);
         if pet.current_owner != pending.from {
             panic_with_error!(&env, ContractError::Unauthorized);
@@ -1082,8 +1194,9 @@ impl PetOwnershipContract {
     ///
     /// The recipient accepts the transfer. Ownership does **not** change yet;
     /// the transfer enters an [`EscrowedTransfer`] state and a 48-hour dispute
-    /// window begins. Call [`finalize_transfer`] after the window to complete
-    /// the ownership change, or [`raise_dispute`] to block finalization.
+    /// window begins. Both parties then confirm the handover with
+    /// [`confirm_custody`]; call [`finalize_transfer`] after the window to
+    /// complete the ownership change, or [`raise_dispute`] to block it.
     pub fn accept_transfer(env: Env, pet_id: u64) {
         let transfer: PendingTransfer = env
             .storage()
@@ -1097,6 +1210,7 @@ impl PetOwnershipContract {
         if pet.current_owner != transfer.from {
             panic_with_error!(env, ContractError::Unauthorized);
         }
+        require_no_escrow(&env, pet_id);
 
         let escrowed = EscrowedTransfer {
             pet_id,
@@ -1120,18 +1234,70 @@ impl PetOwnershipContract {
     }
 
     /// ----------------------------------
+    /// CONFIRM CUSTODY (Issue #1187)
+    /// ----------------------------------
+    ///
+    /// Records `caller`'s acknowledgement that the pet has physically changed
+    /// hands. Both the transferor (`from`) and the recipient (`to`) must
+    /// confirm within [`CUSTODY_CONFIRMATION_TIMEOUT_SECONDS`] of escrow before
+    /// [`finalize_transfer`] can complete the transfer.
+    ///
+    /// # Errors
+    /// - [`ContractError::NoEscrowedTransfer`] — nothing to confirm.
+    /// - [`ContractError::Unauthorized`] — `caller` is not `from` or `to`.
+    /// - [`ContractError::TransferAlreadyDisputed`] — use arbitration instead.
+    /// - [`ContractError::CustodyConfirmationExpired`] — the window has closed.
+    /// - [`ContractError::CustodyAlreadyConfirmed`] — `caller` already confirmed.
+    pub fn confirm_custody(env: Env, pet_id: u64, caller: Address) {
+        let escrowed = get_escrowed(&env, pet_id);
+        caller.require_auth();
+        let is_from = caller == escrowed.from;
+        let is_to = caller == escrowed.to;
+        if !is_from && !is_to {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
+        if escrowed.disputed {
+            panic_with_error!(env, ContractError::TransferAlreadyDisputed);
+        }
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(escrowed.escrowed_at) >= CUSTODY_CONFIRMATION_TIMEOUT_SECONDS {
+            panic_with_error!(env, ContractError::CustodyConfirmationExpired);
+        }
+
+        let mut confirmation = load_custody_confirmation(&env, pet_id);
+        if (is_from && confirmation.from_confirmed) || (is_to && confirmation.to_confirmed) {
+            panic_with_error!(env, ContractError::CustodyAlreadyConfirmed);
+        }
+        confirmation.from_confirmed |= is_from;
+        confirmation.to_confirmed |= is_to;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CustodyConfirmation(pet_id), &confirmation);
+
+        env.events()
+            .publish((EVT_CUSTODY_CONFIRMED, pet_id), caller);
+    }
+
+    /// Returns the custody confirmations recorded for `pet_id`'s escrowed
+    /// transfer, or `None` if no transfer is escrowed.
+    pub fn get_custody_confirmation(env: Env, pet_id: u64) -> Option<CustodyConfirmation> {
+        env.storage()
+            .persistent()
+            .has(&DataKey::EscrowedTransfer(pet_id))
+            .then(|| load_custody_confirmation(&env, pet_id))
+    }
+
+    /// ----------------------------------
     /// FINALIZE TRANSFER
     /// ----------------------------------
     ///
-    /// Completes the ownership transfer after the 48-hour dispute window has
-    /// elapsed. Either party may call this. Panics if the window has not yet
-    /// elapsed or if the transfer has been disputed.
+    /// Completes the ownership transfer once both parties have confirmed
+    /// custody via [`confirm_custody`] and the 48-hour dispute window has
+    /// elapsed. Anyone may call this. Panics if the window has not yet
+    /// elapsed, if the transfer has been disputed, or if a confirmation is
+    /// missing.
     pub fn finalize_transfer(env: Env, pet_id: u64) {
-        let escrowed: EscrowedTransfer = env
-            .storage()
-            .persistent()
-            .get(&DataKey::EscrowedTransfer(pet_id))
-            .unwrap_or_else(|| panic_with_error!(env, ContractError::NoEscrowedTransfer));
+        let escrowed = get_escrowed(&env, pet_id);
 
         if escrowed.disputed {
             panic_with_error!(env, ContractError::TransferAlreadyDisputed);
@@ -1142,49 +1308,77 @@ impl PetOwnershipContract {
             panic_with_error!(env, ContractError::DisputeWindowNotElapsed);
         }
 
-        let mut pet = get_pet(&env, pet_id);
-        if pet.current_owner != escrowed.from {
-            panic_with_error!(env, ContractError::Unauthorized);
+        let confirmation = load_custody_confirmation(&env, pet_id);
+        if !(confirmation.from_confirmed && confirmation.to_confirmed) {
+            panic_with_error!(env, ContractError::CustodyNotConfirmed);
         }
 
-        // Update ownership history
-        let mut history = get_history(&env, pet_id);
-        if history.len() == 0 {
-            panic_with_error!(&env, ContractError::EmptyOwnershipHistory);
+        complete_escrowed_transfer(&env, &escrowed);
+    }
+
+    /// ----------------------------------
+    /// CANCEL UNCONFIRMED TRANSFER (Issue #1187)
+    /// ----------------------------------
+    ///
+    /// Cancels an escrowed transfer that did not collect both custody
+    /// confirmations within [`CUSTODY_CONFIRMATION_TIMEOUT_SECONDS`].
+    /// Ownership stays with `from`. Callable by anyone, so a party that never
+    /// confirms cannot hold the pet in escrow indefinitely.
+    ///
+    /// # Errors
+    /// - [`ContractError::NoEscrowedTransfer`] — nothing to cancel.
+    /// - [`ContractError::TransferAlreadyDisputed`] — use arbitration instead.
+    /// - [`ContractError::TransferNotExpired`] — the window is still open.
+    /// - [`ContractError::CustodyAlreadyConfirmed`] — both parties confirmed;
+    ///   use [`finalize_transfer`].
+    pub fn cancel_unconfirmed_transfer(env: Env, pet_id: u64) {
+        let escrowed = get_escrowed(&env, pet_id);
+        if escrowed.disputed {
+            panic_with_error!(env, ContractError::TransferAlreadyDisputed);
         }
-        let last = history.len() - 1;
-        let mut prev = history
-            .get(last)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MissingOwnershipRecord));
-        prev.relinquished_at = Some(now);
-        history.set(last, prev);
-        history.push_back(OwnershipRecord {
-            owner: escrowed.to.clone(),
-            acquired_at: now,
-            relinquished_at: None,
-        });
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(escrowed.escrowed_at) < CUSTODY_CONFIRMATION_TIMEOUT_SECONDS {
+            panic_with_error!(env, ContractError::TransferNotExpired);
+        }
+        let confirmation = load_custody_confirmation(&env, pet_id);
+        if confirmation.from_confirmed && confirmation.to_confirmed {
+            panic_with_error!(env, ContractError::CustodyAlreadyConfirmed);
+        }
 
-        remove_pet_from_owner(&env, &escrowed.from, pet_id);
-        add_pet_to_owner(&env, &escrowed.to, pet_id);
-        pet.current_owner = escrowed.to.clone();
+        clear_escrow(&env, pet_id);
+        env.events()
+            .publish((EVT_CUSTODY_EXPIRED, pet_id), (escrowed.from, escrowed.to));
+    }
 
-        save_pet(&env, &pet);
-        save_history(&env, pet_id, &history);
-        env.storage()
-            .persistent()
-            .remove(&DataKey::EscrowedTransfer(pet_id));
+    /// ----------------------------------
+    /// RESOLVE CUSTODY DISPUTE (Issue #1187)
+    /// ----------------------------------
+    ///
+    /// Arbitration path for a disputed escrowed transfer. Any trusted
+    /// multisig admin (see [`init_trusted_contract`]) may rule: `complete =
+    /// true` moves ownership to `to`, `false` cancels the transfer and leaves
+    /// ownership with `from`. Custody confirmations are not required.
+    ///
+    /// # Errors
+    /// - [`ContractError::NotMultisigAdmin`] — `arbitrator` is not a trusted admin.
+    /// - [`ContractError::NoEscrowedTransfer`] — nothing to resolve.
+    /// - [`ContractError::TransferNotDisputed`] — the transfer is not disputed.
+    pub fn resolve_custody_dispute(env: Env, pet_id: u64, arbitrator: Address, complete: bool) {
+        require_trusted_multisig_admin(&env, &arbitrator);
+        let escrowed = get_escrowed(&env, pet_id);
+        if !escrowed.disputed {
+            panic_with_error!(env, ContractError::TransferNotDisputed);
+        }
 
-        append_custody_entry(
-            &env,
-            pet_id,
-            escrowed.from.clone(),
-            escrowed.to.clone(),
-            TransferType::Direct,
-        );
+        if complete {
+            complete_escrowed_transfer(&env, &escrowed);
+        } else {
+            clear_escrow(&env, pet_id);
+        }
 
         env.events().publish(
-            (EVT_TRANSFER_FINALIZED, pet_id),
-            (escrowed.from, escrowed.to),
+            (EVT_TRANSFER_ARBITRATED, pet_id),
+            (arbitrator, escrowed.from, escrowed.to, complete),
         );
     }
 
@@ -1379,6 +1573,7 @@ impl PetOwnershipContract {
             {
                 panic_with_error!(env, ContractError::TransferAlreadyPending);
             }
+            require_no_escrow(&env, pet_id);
         }
 
         // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
@@ -1431,6 +1626,7 @@ impl PetOwnershipContract {
                 panic_with_error!(env, ContractError::InvalidBatch);
             }
             seen_ids.push_back(pet_id);
+            require_no_escrow(&env, pet_id);
 
             let pet = get_pet(&env, pet_id);
             match expected_owner {
