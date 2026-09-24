@@ -1221,4 +1221,82 @@ mod tests {
             "migrate_schema_version memory cost regressed: {mem} bytes"
         );
     }
+
+    // ======================================================
+    // #1179: registry enumeration baseline
+    // ======================================================
+
+    /// Unique license number "LIC-PAGE-NNNN" for fixture vet `i`.
+    fn page_license(env: &Env, i: u32) -> String {
+        let mut buf = *b"LIC-PAGE-0000";
+        let mut n = i;
+        for b in buf[9..].iter_mut().rev() {
+            *b = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        String::from_bytes(env, &buf)
+    }
+
+    fn register_vets(env: &Env, client: &VetRegistryContractClient, n: u32) -> Vec<Address> {
+        let mut vets = Vec::new(env);
+        for i in 0..n {
+            let vet = Address::generate(env);
+            client.register_vet(
+                &vet,
+                &str(env, "Dr. Page"),
+                &page_license(env, i),
+                &str(env, "General"),
+            );
+            vets.push_back(vet);
+        }
+        vets
+    }
+
+    fn addresses(env: &Env, vets: &Vec<Vet>) -> Vec<Address> {
+        let mut out = Vec::new(env);
+        for vet in vets.iter() {
+            out.push_back(vet.address);
+        }
+        out
+    }
+
+    // `VetIndex` is append-only: revocation keeps a vet's slot and new vets
+    // are appended, so index positions never shift as the registry changes.
+    #[test]
+    fn test_vet_index_positions_survive_revocation_and_growth() {
+        let (env, _, _, client) = setup();
+        let mut vets = register_vets(&env, &client, 3);
+        client.revoke_vet_license(&vets.get(1).unwrap());
+        let late = Address::generate(&env);
+        client.register_vet(
+            &late,
+            &str(&env, "Dr. Late"),
+            &str(&env, "LIC-LATE"),
+            &str(&env, "General"),
+        );
+        vets.push_back(late);
+
+        assert_eq!(addresses(&env, &client.list_vets(&0, &10, &false)), vets);
+    }
+
+    // A filtered `list_vets` call only inspects the window
+    // [offset, offset + limit), so a page can be empty even though matching
+    // vets exist further on, and the caller gets no resume point.
+    #[test]
+    fn test_list_vets_filtered_window_can_be_empty() {
+        let (env, _, _, client) = setup();
+        let vets = register_vets(&env, &client, 3);
+        client.verify_vet(&vets.get(2).unwrap());
+
+        assert!(client.list_vets(&0, &2, &true).is_empty());
+        assert_eq!(client.list_vets(&2, &2, &true).len(), 1);
+    }
+
+    // `limit` is not capped: a single call reads every registered vet.
+    #[test]
+    fn test_list_vets_limit_is_unbounded() {
+        let (env, _, _, client) = setup();
+        register_vets(&env, &client, 20);
+        assert_eq!(client.list_vets(&0, &u32::MAX, &false).len(), 20);
+    }
 }
