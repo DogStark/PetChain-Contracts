@@ -29,6 +29,8 @@ pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
 pub mod escrow;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_cross_contract;
 mod vet_registry;
 
 /// ======================================================
