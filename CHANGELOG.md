@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) to standardize contributor submissions
 - Canonical chain-of-custody digest (`get_custody_chain_digest`) so consumers can prove a returned custody history is complete and ordered: SHA-256 hash chain over domain, version, pet ID, sequence, and every entry in canonical order, with published test vectors and tamper cases
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
