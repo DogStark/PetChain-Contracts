@@ -1431,3 +1431,71 @@ fn custody_chain_is_capped_at_max_length() {
     let newest = chain.get(MAX_CUSTODY_CHAIN_LENGTH - 1).unwrap();
     assert_eq!(newest.to, new_owner);
 }
+
+// ======================================================
+// Two-party custody confirmation baseline (Issue #1187)
+// ======================================================
+
+/// Creates `pet_id` owned by `owner` and moves a transfer to `to` into escrow.
+fn escrow_transfer(
+    client: &PetOwnershipContractClient,
+    pet_id: u64,
+    owner: &Address,
+    to: &Address,
+) {
+    client.create_pet(&pet_id, owner);
+    client.initiate_transfer(&pet_id, to);
+    client.accept_transfer(&pet_id);
+}
+
+fn pass_dispute_window(env: &Env) {
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+}
+
+// Once the recipient accepts, the transfer completes after the dispute window
+// without any action from the transferor: `finalize_transfer` needs no auth.
+#[test]
+fn finalize_completes_without_transferor_acknowledgement() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    pass_dispute_window(&env);
+
+    env.mock_auths(&[]);
+    client.finalize_transfer(&pet_id);
+    assert_eq!(client.get_current_owner(&pet_id), new_owner);
+}
+
+// The owner alone can move a pet whose escrowed transfer is under dispute.
+#[test]
+fn batch_transfer_moves_pet_during_dispute() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.raise_dispute(&pet_id, &new_owner);
+
+    let other = Address::generate(&env);
+    client.batch_transfer(&Vec::from_array(&env, [pet_id]), &other);
+    assert_eq!(client.get_current_owner(&pet_id), other);
+}
+
+// A new transfer accepted during a dispute replaces the disputed escrow.
+#[test]
+fn disputed_escrow_is_overwritten_by_new_transfer() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.raise_dispute(&pet_id, &new_owner);
+
+    let other = Address::generate(&env);
+    client.initiate_transfer(&pet_id, &other);
+    client.accept_transfer(&pet_id);
+    let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
+    assert_eq!(escrowed.to, other);
+    assert!(!escrowed.disputed);
+}
