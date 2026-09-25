@@ -79,7 +79,11 @@ pub enum EscrowDataKey {
 // ─── Fee helpers ──────────────────────────────────────────────────────────────
 
 pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> i128 {
-    amount * fee_bps as i128 / 10_000
+    // Split before multiplying so a valid token amount near i128::MAX cannot
+    // overflow even though the resulting fee is representable.
+    let whole = amount / 10_000;
+    let remainder = amount % 10_000;
+    whole * fee_bps as i128 + remainder * fee_bps as i128 / 10_000
 }
 
 pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
@@ -540,6 +544,95 @@ mod tests {
     }
 
     #[test]
+    fn fee_calculation_conserves_maximum_positive_amount() {
+        let amount = i128::MAX;
+        let fee = compute_platform_fee(amount, 10_000);
+
+        assert_eq!(fee, amount);
+        assert_eq!(compute_seller_amount(amount, 10_000), 0);
+        assert_eq!(fee + compute_seller_amount(amount, 10_000), amount);
+    }
+
+    /// Documents the escrow accounting invariant: after every successful
+    /// terminal path, buyer + seller + platform + contract equals the total
+    /// token balance before deposit, and the contract retains no funds.
+    /// The existing state checks above cover unauthorized, invalid-input, and
+    /// replay attempts; this matrix covers each successful lifecycle path.
+    #[test]
+    fn lifecycle_paths_conserve_tokens() {
+        let fee_rates = [0, 1, 250, 5_000, 9_999, 10_000];
+
+        for case in 0..24u64 {
+            let c = setup();
+            let amount = 1 + ((case * 7_919) % 50_000_000) as i128;
+            let fee_bps = fee_rates[case as usize % fee_rates.len()];
+            let transfer_id = 10_000 + case;
+            let total_before = c.balance(&c.buyer)
+                + c.balance(&c.seller)
+                + c.balance(&c.platform)
+                + c.balance(&c.contract);
+
+            c.run(|| {
+                init_escrow_config(&c.env, fee_bps, c.platform.clone(), c.token.clone());
+                deposit_fee(&c.env, transfer_id, c.buyer.clone(), c.seller.clone(), amount);
+            });
+
+            match case % 5 {
+                0 => c.run(|| finalize_transfer(&c.env, transfer_id)),
+                1 => c.run(|| refund_fee(&c.env, transfer_id)),
+                2 => {
+                    c.run(|| dispute_transfer(&c.env, transfer_id, c.buyer.clone()));
+                    c.run(|| refund_fee(&c.env, transfer_id));
+                }
+                3 => {
+                    let seller_bps = fee_rates[(case as usize + 1) % fee_rates.len()];
+                    c.run(|| dispute_transfer(&c.env, transfer_id, c.buyer.clone()));
+                    c.run(|| {
+                        admin_resolve_dispute(
+                            &c.env,
+                            transfer_id,
+                            DisputeDecision::Split(seller_bps),
+                        )
+                    });
+                }
+                _ => {
+                    c.run(|| {
+                        c.env.ledger().with_mut(|ledger| {
+                            ledger.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1;
+                        });
+                        cancel_expired_escrow(&c.env, transfer_id);
+                    });
+                }
+            }
+
+            let total_after = c.balance(&c.buyer)
+                + c.balance(&c.seller)
+                + c.balance(&c.platform)
+                + c.balance(&c.contract);
+            assert_eq!(total_after, total_before, "case {case} changed token supply");
+            assert_eq!(c.balance(&c.contract), 0, "case {case} left escrow funds");
+        }
+    }
+
+    #[test]
+    fn finalize_resource_impact_stays_bounded() {
+        let c = setup();
+        let cpu_before = c.env.budget().cpu_instruction_cost();
+        let mem_before = c.env.budget().memory_bytes_cost();
+
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 30_000, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 30_000);
+        });
+
+        let cpu_used = c.env.budget().cpu_instruction_cost() - cpu_before;
+        let mem_used = c.env.budget().memory_bytes_cost() - mem_before;
+        assert!(cpu_used < 50_000_000, "escrow finalize CPU cost regressed: {cpu_used}");
+        assert!(mem_used < 10_000_000, "escrow finalize memory cost regressed: {mem_used}");
+    }
+
+    #[test]
     fn refund_sets_refunded() {
         let c = setup();
         c.run(|| {
@@ -945,6 +1038,21 @@ mod tests {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
             deposit_fee(&c.env, 203, c.buyer.clone(), c.seller.clone(), 1_000_000);
             admin_resolve_dispute(&c.env, 203, DisputeDecision::RefundBuyer);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn admin_resolve_dispute_rejects_replay() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 204, c.buyer.clone(), c.seller.clone(), 1_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 204, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 204, DisputeDecision::RefundBuyer);
+            admin_resolve_dispute(&c.env, 204, DisputeDecision::RefundBuyer);
         });
     }
 }
