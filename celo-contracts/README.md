@@ -51,11 +51,35 @@ domain, and version matches. Diagnosis and treatment must be non-empty and all
 three text fields must be at most `MAX_LONG_LEN` bytes. Invalid, oversized,
 unknown, or stale inputs return `false` without writing state.
 
+## Deployment invariants
+
+The constructor takes `(initialAdmin, expectedChainId)` and reverts when the
+admin is the zero address, when `expectedChainId != block.chainid`, or when the
+chain is not supported (`31337` local, `44787` Alfajores, `42220` Celo).
+`admin()` and the immutable `deploymentChainId()` are queryable after deployment.
+
+## Deactivated pet retention
+
+Deactivating a pet removes it from the owner index, so it no longer appears in
+`getPetsByOwner`/`getPetsByOwnerPaged` and the index is bounded by live pets.
+`pets(petId)` (including the last owner), medical records and their commitments
+are retained for historical ownership and commitment proofs. Reactivation
+re-adds the pet to the index exactly once.
+
+## Identifier normalization
+
+`normalizeIdentifier` defines the canonical form used for licence uniqueness
+(and available to clients for chip/QR identifiers): ASCII spaces are removed,
+`a-z` is upper-cased, any other byte outside printable ASCII (control characters
+and all non-ASCII Unicode) is rejected, and the result must be 1-`MAX_SHORT_LEN`
+bytes.
+
 ## Scripts
 
 ### `scripts/deploy.js`
 
-Deploys `PetChainRegistry` and prints its address.
+Deploys `PetChainRegistry` with the network's configured chain id and prints its address.
+The admin defaults to the deployer; set `ADMIN_ADDRESS` to override.
 
 ```bash
 # Local network (no env vars needed)

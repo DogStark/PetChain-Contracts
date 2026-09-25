@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, network } = require("hardhat");
 
 describe("PetChainRegistry medical-record commitments", function () {
   let registry, admin, owner, other, vet, petId;
@@ -7,7 +7,7 @@ describe("PetChainRegistry medical-record commitments", function () {
   beforeEach(async function () {
     [admin, owner, other, vet] = await ethers.getSigners();
     const Factory = await ethers.getContractFactory("PetChainRegistry");
-    registry = await Factory.deploy();
+    registry = await Factory.deploy(admin.address, network.config.chainId);
     await registry.connect(vet).registerVet("LIC-COMMIT", "General Practice");
     await registry.connect(admin).verifyVet(vet.address);
     const tx = await registry.connect(owner).registerPet("Rex", "Dog", "Labrador", "2020-01-01");
