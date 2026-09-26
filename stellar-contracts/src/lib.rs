@@ -175,6 +175,9 @@ use soroban_sdk::{
 // `DisputeKey`, ...) from both this file and external callers.
 mod disputes;
 pub use disputes::*;
+mod governance_guard;
+#[cfg(test)]
+mod test_governance_double_vote;
 
 #[cfg(test)]
 mod test_attachment_limit;
@@ -3350,7 +3353,9 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
 
         // Check threshold
-        if proposal.approvals.len() < proposal.required_approvals {
+        // Count each voting identity once even if an entry is duplicated. (#1210)
+        let distinct_approvals = governance_guard::distinct_count(&proposal.approvals);
+        if distinct_approvals < proposal.required_approvals {
             panic_with_error!(&env, ContractError::ThresholdNotMet);
         }
 
@@ -3367,7 +3372,7 @@ impl PetChainContract {
             if admin_count == 0 {
                 panic_with_error!(&env, ContractError::NoAdminsConfigured);
             }
-            let votes_cast = proposal.approvals.len() as u64;
+            let votes_cast = distinct_approvals as u64;
             // Ceiling division so that e.g. 50 % of 3 admins = 2 votes, not 1.
             let required_votes = (current_quorum as u64)
                 .saturating_mul(admin_count)
