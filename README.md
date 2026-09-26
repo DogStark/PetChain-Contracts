@@ -78,3 +78,8 @@ Rules:
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1307 -->
+- #1307: [Contracts] Add cursor invalidation tests after deletion and state transitions
