@@ -10,6 +10,13 @@ const REQUIRED_ENV = {
   celo: ["PRIVATE_KEY", "CELO_RPC_URL"],
 };
 
+// Canonical chain ids for every deployable network. The deployment manifest
+// binds an address to one of these ids and must be rejected on any other chain.
+const CHAIN_IDS = {
+  alfajores: 44787,
+  celo: 42220,
+};
+
 // Redact secrets so private keys and full RPC URLs are never printed.
 function redact(value) {
   if (!value) return "<unset>";
@@ -67,9 +74,9 @@ module.exports = {
     alfajores: networkConfig(
       "alfajores",
       "https://alfajores-forno.celo-testnet.org",
-      44787
+      CHAIN_IDS.alfajores
     ),
-    celo: networkConfig("celo", "https://forno.celo.org", 42220),
+    celo: networkConfig("celo", "https://forno.celo.org", CHAIN_IDS.celo),
   },
   etherscan: {
     apiKey: {
@@ -79,7 +86,7 @@ module.exports = {
     customChains: [
       {
         network: "alfajores",
-        chainId: 44787,
+        chainId: CHAIN_IDS.alfajores,
         urls: {
           apiURL: "https://api-alfajores.celoscan.io/api",
           browserURL: "https://alfajores.celoscan.io",
@@ -87,7 +94,7 @@ module.exports = {
       },
       {
         network: "celo",
-        chainId: 42220,
+        chainId: CHAIN_IDS.celo,
         urls: {
           apiURL: "https://api.celoscan.io/api",
           browserURL: "https://celoscan.io",
@@ -99,3 +106,4 @@ module.exports = {
 
 module.exports.redact = redact;
 module.exports.redactUrl = redactUrl;
+module.exports.CHAIN_IDS = CHAIN_IDS;

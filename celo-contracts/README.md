@@ -87,11 +87,49 @@ reconstruct the full commitment history for a record by replaying
    `recordId`, ordering by `version` (and `timestamp`), and verify each version
    independently. A mismatch at any version indicates tampering.
 
+## Deployment manifests
+
+Every deployment is recorded in a checked-in, versioned manifest under
+`deployments/<network>.json`. A manifest binds a contract address to the chain
+id it was deployed on, the deployed bytecode hash, the compiler settings used,
+and the deployment transaction hash. Manifests are the source of truth for
+client and deployment tooling; they are validated in CI.
+
+```json
+{
+  "network": "alfajores",
+  "chainId": 44787,
+  "contract": "PetChainRegistry",
+  "address": "0xDeployedAddress",
+  "bytecodeHash": "0x<keccak256 of deployed bytecode>",
+  "compiler": { "version": "0.8.20", "optimizer": { "enabled": true, "runs": 200 } },
+  "transactionHash": "0x<deployment tx hash>"
+}
+```
+
+Rules enforced by the manifest checks:
+
+- **Chain binding.** A manifest is rejected when the connected chain id does not
+  match its `chainId`; an address can never be reused on a different chain.
+- **Bytecode integrity.** The recorded `bytecodeHash` must equal the keccak256
+  hash of the deployed artifact's bytecode; a mismatch fails the check.
+- **Freshness.** Missing manifests, or manifests whose `bytecodeHash` no longer
+  matches the compiled artifact, fail client and deployment checks.
+- **No secrets.** Manifests contain only public deployment data — never private
+  keys, mnemonics, or API keys.
+
+Generate or refresh a manifest after deploying:
+
+```bash
+npx hardhat run scripts/deploy.js --network alfajores
+```
+
 ## Scripts
 
 ### `scripts/deploy.js`
 
-Deploys `PetChainRegistry` and prints its address.
+Deploys `PetChainRegistry`, prints its address, and writes the chain-specific
+deployment manifest to `deployments/<network>.json`.
 
 ```bash
 # Local network (no env vars needed)
@@ -106,10 +144,16 @@ npx hardhat run scripts/deploy.js --network celo
 
 ### `scripts/register-pet.js`
 
-Registers a sample pet against an already-deployed `PetChainRegistry`. Requires
-`CONTRACT_ADDRESS` to be set to the address printed by `deploy.js`.
+Registers a sample pet against an already-deployed `PetChainRegistry`. The
+contract address is read from the selected network's manifest
+(`deployments/<network>.json`); set `CONTRACT_ADDRESS` to override it. The
+script fails if the manifest is missing, stale, or bound to a different chain
+id.
 
 ```bash
+npx hardhat run scripts/register-pet.js --network alfajores
+
+# Explicit override
 CONTRACT_ADDRESS=0xDeployedAddress npx hardhat run scripts/register-pet.js --network alfajores
 ```
 
