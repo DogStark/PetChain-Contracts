@@ -54,3 +54,8 @@ cargo test
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1311 -->
+- #1311: [Contracts] Add emergency-contact priority and duplicate invariant tests
