@@ -10220,10 +10220,22 @@ impl PetChainContract {
         if chain.len() >= MAX_CUSTODY_CHAIN {
             panic_with_error!(env, ContractError::TooManyItems);
         }
+        // Append-only ancestry (#1195): reject self-links, entries that do not
+        // continue from the previous entry's `to`, and non-monotonic
+        // timestamps, so the chain is always a single acyclic path.
+        if from == to {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let now = env.ledger().timestamp();
+        if let Some(prev) = chain.last() {
+            if prev.to != from || now < prev.timestamp {
+                panic_with_error!(env, ContractError::InvalidState);
+            }
+        }
         chain.push_back(CustodyEntry {
             from,
             to,
-            timestamp: env.ledger().timestamp(),
+            timestamp: now,
             transfer_type,
         });
         env.storage()
