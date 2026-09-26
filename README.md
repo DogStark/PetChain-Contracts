@@ -73,3 +73,8 @@ test.
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1331 -->
+- #1331: [Contracts] Add Soroban event privacy regression tests
