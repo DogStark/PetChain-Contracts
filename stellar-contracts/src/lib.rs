@@ -178,6 +178,8 @@ pub use disputes::*;
 mod governance_guard;
 #[cfg(test)]
 mod test_governance_double_vote;
+#[cfg(test)]
+mod test_governance_quorum_snapshot;
 
 #[cfg(test)]
 mod test_attachment_limit;
@@ -1614,6 +1616,8 @@ pub enum SystemKey {
     // Admin activity log keys (Issue #816)
     AdminActivityLog(u64), // index -> AdminActivityEntry
     AdminActivityCount,    // Total number of recorded admin actions
+    /// Eligible voter set snapshotted at proposal creation. (#1211)
+    ProposalEligibleSnapshot(u64),
 }
 
 /// Statistics snapshot for governance reporting (Issue #828)
@@ -3245,7 +3249,29 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::ProposalCount, &proposal_id);
+
+        // Snapshot eligible voters at proposal start so later membership
+        // changes cannot manipulate quorum. (#1211)
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or_else(|| Vec::new(&env));
+        let legacy: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        env.storage().instance().set(
+            &SystemKey::ProposalEligibleSnapshot(proposal_id),
+            &governance_guard::dedupe(&admins, legacy),
+        );
         proposal_id
+    }
+
+    /// Returns the eligible voter set snapshotted when `proposal_id` was
+    /// created (empty for proposals created before snapshots existed).
+    pub fn get_proposal_eligible_voters(env: Env, proposal_id: u64) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::ProposalEligibleSnapshot(proposal_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Returns the current global storage quota. Used by governance tests
@@ -3368,11 +3394,24 @@ impl PetChainContract {
             .get(&SystemKey::AdminQuorumPercent)
             .unwrap_or(0);
         if current_quorum > 0 {
-            let admin_count = admin_list.len() as u64;
+            // Use the proposal-start snapshot when present; proposals created
+            // before snapshots existed fall back to the live admin list. (#1211)
+            let snapshot: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&SystemKey::ProposalEligibleSnapshot(proposal_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let (admin_count, votes_cast) = if snapshot.is_empty() {
+                (admin_list.len() as u64, distinct_approvals as u64)
+            } else {
+                (
+                    snapshot.len() as u64,
+                    governance_guard::eligible_approvals(&proposal.approvals, &snapshot) as u64,
+                )
+            };
             if admin_count == 0 {
                 panic_with_error!(&env, ContractError::NoAdminsConfigured);
             }
-            let votes_cast = distinct_approvals as u64;
             // Ceiling division so that e.g. 50 % of 3 admins = 2 votes, not 1.
             let required_votes = (current_quorum as u64)
                 .saturating_mul(admin_count)

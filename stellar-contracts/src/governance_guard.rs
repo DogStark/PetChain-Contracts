@@ -18,3 +18,31 @@ pub fn distinct_count(approvals: &Vec<Address>) -> u32 {
     }
     seen.len()
 }
+
+/// Returns the distinct addresses of `approvals` that are members of `eligible`.
+pub fn eligible_approvals(approvals: &Vec<Address>, eligible: &Vec<Address>) -> u32 {
+    let mut seen: Vec<Address> = Vec::new(approvals.env());
+    for a in approvals.iter() {
+        if eligible.contains(&a) && !seen.contains(&a) {
+            seen.push_back(a);
+        }
+    }
+    seen.len()
+}
+
+/// Builds a de-duplicated eligible-voter list from the current admin set
+/// (multisig list plus the legacy single admin, if any).
+pub fn dedupe(list: &Vec<Address>, extra: Option<Address>) -> Vec<Address> {
+    let mut out: Vec<Address> = Vec::new(list.env());
+    for a in list.iter() {
+        if !out.contains(&a) {
+            out.push_back(a);
+        }
+    }
+    if let Some(a) = extra {
+        if !out.contains(&a) {
+            out.push_back(a);
+        }
+    }
+    out
+}
