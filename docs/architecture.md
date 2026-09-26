@@ -97,6 +97,47 @@ Batch behavior is covered by success, failure, and limit tests that assert
 state snapshots before and after each call, verifying that failed batches leave
 state unchanged and that over-limit batches are rejected.
 
+## Custody History Pagination and Digest Proofs
+
+Custody history is exposed as an ordered, append-only chain of entries. Because
+consumers read it page by page, each page carries boundary digests that let a
+consumer prove the page belongs to a single chain and that no entries were
+skipped between pages.
+
+### Page Boundary Digests
+
+Every custody history page exposes two digests:
+
+- `prev_digest` — the digest of the last entry on the immediately preceding
+  page, or the chain's genesis digest for the first page.
+- `next_digest` — the digest of the last entry on the current page, which the
+  following page must echo as its `prev_digest`.
+
+A page is only valid when `page.prev_digest` equals the `next_digest` of the
+page before it. The first page anchors to the genesis digest, and the terminal
+page is the one whose `next_digest` equals the chain head digest.
+
+### Verification Rules
+
+- **Consecutive pages verify against the expected chain.** For pages `P(n)` and
+  `P(n+1)`, `P(n+1).prev_digest == P(n).next_digest` must hold, and both must
+  belong to the same chain identifier.
+- **Tampered pages fail.** If any entry is mutated, its recomputed digest no
+  longer matches the boundary digest, so the page fails verification.
+- **Out-of-order pages fail.** Presenting `P(n+1)` before `P(n)`, or skipping a
+  page, breaks the `prev_digest`/`next_digest` linkage and fails verification.
+- **Empty and terminal pages are unambiguous.** An empty page reports no
+  entries with `prev_digest == next_digest`, so it cannot be mistaken for a page
+  that advanced the chain. A terminal page is identified by `next_digest`
+  matching the chain head, distinguishing it from a page that was truncated.
+
+### Testing
+
+Custody pagination is covered by generated custody history fixtures and proof
+tests that assert: consecutive pages verify against the expected chain;
+tampered and out-of-order pages fail; and empty and terminal pages are
+unambiguous.
+
 ## Verification Status
 
 As of this cleanup:

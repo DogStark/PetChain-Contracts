@@ -89,9 +89,65 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_custody_chain` | Returns the chain-of-custody log for a pet (chronological, append-only, capped at 100 entries) |
 | `verify_custody_chain` | Checks chain-of-custody internal consistency (links, creator, current owner) |
 | `get_custody_chain_digest` | Returns the canonical SHA-256 digest of the custody chain (domain, version, pet ID, sequence, entries in order) for completeness/ordering proofs |
+| `get_custody_history_page` | Returns a single page of custody history with boundary digests (see below) |
 | `get_access_logs` | Returns access logs for a pet (owner/admin only) |
 
 > **Audit note:** All `log_access` (storage write) calls were removed from the above functions. Write functions (`add_medical_record`, `update_pet_profile`, `grant_access`, `revoke_access`, `add_attachment`, etc.) retain their access log writes.
+
+---
+
+## Custody History Pagination Proofs (Issue #1339)
+
+Custody history consumers must be able to verify that a page belongs to a
+single chain and that no entries were skipped between pages. To make this
+possible, every custody history page exposes **boundary digests** that bind the
+page to its position in the chain.
+
+### Page shape
+
+`get_custody_history_page(pet_id, cursor, limit)` returns a page with the
+following fields:
+
+| Field | Description |
+|---|---|
+| `entries` | The custody entries in this page, in chain order |
+| `prev_digest` | Digest of the entry immediately preceding this page (`None` for the first page) |
+| `next_digest` | Digest of the entry immediately following this page (`None` for the terminal page) |
+| `page_digest` | Canonical digest over `(domain, version, pet_id, start_seq, end_seq, entries)` |
+| `start_seq` / `end_seq` | Inclusive sequence range covered by this page |
+| `is_terminal` | `true` iff this page is the last page of the chain |
+
+### Verification rules
+
+A consumer verifies a page against the expected chain as follows:
+
+1. **Chain membership.** Recompute `page_digest` from the returned entries and
+   compare it to the returned `page_digest`. A mismatch means the page was
+   tampered with.
+2. **Linkage.** For consecutive pages `P` and `Q`, require
+   `P.next_digest == Q.prev_digest` and `Q.start_seq == P.end_seq + 1`. This
+   proves no entries were skipped and that the pages belong to the same chain.
+3. **Ordering.** `start_seq` must be strictly greater than the previous page's
+   `end_seq`; out-of-order pages fail the linkage check.
+4. **Empty pages.** An empty page has `entries == []`, `start_seq == end_seq`,
+   and `page_digest` equal to the canonical digest of an empty range. An empty
+   page is only valid when it is also terminal.
+5. **Terminal pages.** The terminal page has `next_digest == None` and
+   `is_terminal == true`. A non-terminal page with `next_digest == None` is
+   invalid, and a terminal page with a non-`None` `next_digest` is invalid.
+
+### Proof test plan
+
+Generated custody history fixtures and proof tests cover:
+
+- **Consecutive pages verify.** For a generated chain, every adjacent page pair
+  satisfies the linkage rule and each `page_digest` recomputes correctly.
+- **Tampered pages fail.** Mutating an entry, `start_seq`, or `page_digest`
+  causes verification to fail.
+- **Out-of-order pages fail.** Swapping two pages or skipping a page breaks the
+  linkage rule.
+- **Empty and terminal pages are unambiguous.** An empty page is accepted only
+  when terminal; a terminal page is accepted only when `next_digest == None`.
 
 ---
 
@@ -146,50 +202,6 @@ The primary contract lives in `stellar-contracts/src/lib.rs` and exposes functio
 - multisig administration and upgrade proposals
 
 **Medical-record soft-delete & pagination (Issues #1170–#1173):**
-Medical-record reads are delegated through a shared soft-delete filter so a
-soft-deleted record never resurfaces in `get_medical_record`,
-`get_pet_medical_records`,
-`get_pet_medical_records_cursor`,
-`search_medical_records`, `search_by_keyword`, or
-`get_pet_full_profile_batch`. Deletion preserves provenance (only the pet
-owner, the record's vet, or an admin may delete) and publishes a
-`MedicalRecordDeleted` audit event. Purging is split into a bounded,
-resumable `purge_deleted_records_bounded` (Issue #1172) so large pets can be
-drained without hitting transaction resource limits.
+Medical-record reads are delegated through a shared soft
 
-**Compatibility / migration notes:**
-- `set_max_subscriptions_per_address` was renamed to `set_max_subscriptions`
-  because the previous name (33 chars) exceeded Soroban's 32-char contract
-  function-name limit, which prevented the contract from compiling. Callers
-  must target the new name.
-- The `ProposalNotFound` contract error discriminant moved from `39` to `42`
-  to resolve a collision with `InvalidNonce`; `ProposalAlreadyExecuted`
-  remains `38`. Error-code consumers should rely on the symbol, not the raw
-  discriminant.
-
-### Transfer and adoption contract
-
-The transfer-focused contract lives in `stellar-contracts/contracts/pet-transfer-adoption/src/lib.rs` and handles:
-
-- pet creation
-- transfer initiation and acceptance
-- transfer cancellation and reclaim flows
-- ownership history tracking
-
-## Backend 2FA
-
-The backend crate provides:
-
-- 2FA enrollment
-- token verification and activation
-- login-time token checks
-- disable and recovery flows
-- request tracing middleware
-- in-memory and Redis-backed rate limiting
-- standardized JSON error responses via `ApiError`
-
-For implementation details, read the crate sources in `backend-2fa/src/`.
-
-### Error response format
-
-Backend 2FA endpoints return structured J
+/* … truncated 1763 chars — edit only what you need near the top … */
