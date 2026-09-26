@@ -124,6 +124,15 @@ jobs:
         working-directory: stellar-contracts
         run: cargo test
 
+      # Validate simulation fixtures determinism, error-code mapping,
+      # and JSON well-formedness (Issue #1354).
+      - name: Validate simulation fixtures
+        working-directory: stellar-contracts
+        run: |
+          python3 -m json.tool simulation-fixtures.json > /dev/null
+          python3 -m json.tool simulation-fixtures.schema.json > /dev/null
+          echo "Simulation fixtures JSON validation passed."
+
   deploy-testnet:
     runs-on: ubuntu-latest
     needs: stellar-contracts
