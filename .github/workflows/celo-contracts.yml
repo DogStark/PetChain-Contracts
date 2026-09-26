@@ -34,3 +34,40 @@ jobs:
 
       - name: Deploy dry run on local network
         run: npx hardhat run scripts/deploy.js --network hardhat
+
+  binding-compatibility:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: celo-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: celo-contracts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npx hardhat compile
+
+      - name: Generate bindings on clean checkout
+        run: npm run bindings:generate
+
+      - name: Verify generation is deterministic
+        run: |
+          git diff --exit-code -- celo-contracts/bindings \
+            || (echo "::error::Binding generation is not deterministic on a clean checkout. Re-run 'npm run bindings:generate' and commit the result." && exit 1)
+
+      - name: Check public method and error-code compatibility
+        run: npm run bindings:check
+
+      - name: Compile generated Rust bindings
+        run: npm run bindings:smoke:rust
+
+      - name: Compile generated TypeScript bindings
+        run: npm run bindings:smoke:ts
