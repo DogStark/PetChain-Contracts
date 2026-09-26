@@ -176,6 +176,9 @@ use soroban_sdk::{
 mod disputes;
 pub use disputes::*;
 
+mod consent_policy;
+pub use consent_policy::*;
+
 #[cfg(test)]
 mod test_attachment_limit;
 #[cfg(test)]
@@ -232,6 +235,8 @@ mod test_discriminant_stability;
 mod test_custody_digest;
 #[cfg(test)]
 mod test_custody_chain;
+#[cfg(test)]
+mod test_consent_versioning;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -10201,6 +10206,87 @@ impl PetChainContract {
             &SystemKey::PetOwnershipRecordIndex((pet_id, new_pet_count)),
             &record_id,
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Consent purpose / data-scope versioning (#1201)
+    // ---------------------------------------------------------------
+
+    /// Current consent policy version (defaults to 1).
+    pub fn get_consent_policy_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&ConsentPolicyKey::PolicyVersion)
+            .unwrap_or(1)
+    }
+
+    /// Admin-only: bump the policy version after an incompatible change to
+    /// consent purposes or data scopes. Consents stamped with an older
+    /// version stop being current until the owner renews them.
+    pub fn bump_consent_policy_version(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let next = Self::get_consent_policy_version(env.clone())
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        env.storage()
+            .instance()
+            .set(&ConsentPolicyKey::PolicyVersion, &next);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("CPOL_VER"),), next);
+        next
+    }
+
+    /// Owner-only: renew a consent under the current policy version.
+    pub fn renew_consent_version(env: Env, consent_id: u64, owner: Address) -> u32 {
+        owner.require_auth();
+        let consent: Consent = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::Consent(consent_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        if consent.owner != owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let v = Self::get_consent_policy_version(env.clone());
+        env.storage()
+            .instance()
+            .set(&ConsentPolicyKey::ConsentVersion(consent_id), &v);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("CONS_RNW"), consent_id), v);
+        v
+    }
+
+    /// Policy version a consent was last granted/renewed under. Consents
+    /// never stamped are treated as version 1.
+    pub fn get_consent_version(env: Env, consent_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get(&ConsentPolicyKey::ConsentVersion(consent_id))
+            .unwrap_or(1)
+    }
+
+    /// True only if the consent exists, is active, unexpired, and its stamped
+    /// version equals the current policy version.
+    pub fn is_consent_current(env: Env, consent_id: u64) -> bool {
+        match env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            Some(c) => {
+                let live = c.is_active
+                    && !c
+                        .expires_at
+                        .map(|e| is_expired(env.ledger().timestamp(), e))
+                        .unwrap_or(false);
+                live && Self::get_consent_version(env.clone(), consent_id)
+                    == Self::get_consent_policy_version(env)
+            }
+            None => false,
+        }
     }
 
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
