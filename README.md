@@ -76,3 +76,8 @@ applies none of them. There is no partial-success mode.
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1340 -->
+- #1340: [Contracts] Add Soroban insurance reserve accounting audit view
