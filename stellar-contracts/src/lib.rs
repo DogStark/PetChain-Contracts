@@ -14720,4 +14720,7 @@ mod test_lab_result_anomaly {
 #[cfg(test)]
 mod test_breeding_coi;
 
+#[allow(dead_code)]
 mod insurance_ledger;
+#[allow(dead_code)]
+mod insurance_validation;
