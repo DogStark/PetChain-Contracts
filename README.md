@@ -59,3 +59,6 @@ MIT
 
 <!-- handsoff-issue-1223 -->
 - #1223: [backend-2fa] Version encrypted TOTP secret envelopes
+
+<!-- handsoff-issue-1224 -->
+- #1224: [backend-2fa] Add online key rotation for encrypted TOTP secrets
