@@ -5,6 +5,25 @@ members = [
 ]
 resolver = "2"
 
+# Denied-warning policy for the Rust contract workspace (issue #1348).
+# CI runs `cargo clippy --all-targets --all-features -- -D warnings` so any
+# warning fails the build. The lints below are explicitly denied (or allowed)
+# so the policy is documented and reproducible rather than implicit.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+correctness = "deny"
+suspicious = "deny"
+perf = "deny"
+# Documented allowances: these are noisy for Soroban contract code and are
+# intentionally not treated as failures.
+needless_return = "allow"
+module_name_repetitions = "allow"
+
 [profile.dev]
 panic = "unwind"
 

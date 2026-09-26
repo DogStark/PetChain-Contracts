@@ -5,6 +5,12 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+    inputs:
+      update_baseline:
+        description: "Refresh the resource-budget baseline snapshot"
+        type: boolean
+        default: false
 
 permissions: read-all
 
@@ -15,6 +21,10 @@ env:
   # Soroban currently enforces a ~128KB max WASM contract size; keeping a 100KB
   # budget catches size regressions early while leaving headroom.
   MAX_WASM_SIZE_KB: 100
+  # Pinned Rust toolchain (Issue #1348). Keep in sync with
+  # stellar-contracts/rust-toolchain.toml so local and CI builds are
+  # reproducible. Bump deliberately, never float on "stable".
+  RUST_TOOLCHAIN: "1.81.0"
 
 jobs:
   fmt:
@@ -24,10 +34,60 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
 
       - name: Check formatting
+        working-directory: stellar-contracts
         run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      # Denied-warning policy (Issue #1348):
+      #   -D warnings            -> every rustc/clippy warning is an error
+      #   -D clippy::all         -> default correctness/style/complexity lints
+      #   -D clippy::suspicious  -> likely-bug lints
+      #   -D clippy::perf        -> performance regressions
+      #   -D clippy::unwrap_used -> no panicking unwraps in contract code
+      #   -D clippy::expect_used -> no panicking expects in contract code
+      #   -D clippy::panic       -> no explicit panics in contract code
+      #   -D clippy::todo        -> no unfinished code paths
+      #   -D clippy::unimplemented -> no unimplemented code paths
+      # Allowed (documented) exceptions:
+      #   -A clippy::too_many_arguments -> Soroban entrypoints legitimately take
+      #     many typed arguments; splitting them would change the ABI.
+      #   -A clippy::module_name_repetitions -> contract module naming mirrors
+      #     the public ABI surface.
+      - name: Run clippy with denied warnings
+        working-directory: stellar-contracts
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::all \
+            -D clippy::suspicious \
+            -D clippy::perf \
+            -D clippy::unwrap_used \
+            -D clippy::expect_used \
+            -D clippy::panic \
+            -D clippy::todo \
+            -D clippy::unimplemented \
+            -A clippy::too_many_arguments \
+            -A clippy::module_name_repetitions
 
   audit:
     runs-on: ubuntu-latest
@@ -36,7 +96,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -65,7 +127,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -91,7 +155,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -124,6 +190,38 @@ jobs:
         working-directory: stellar-contracts
         run: cargo test
 
+  # Issue #1348: compile and test every workspace member individually so a
+  # failure is attributed to a specific crate rather than the whole workspace.
+  workspace-crates:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - petchain-contract
+          - petchain-registry
+          - petchain-consent
+          - petchain-claims
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Compile crate
+        working-directory: stellar-contracts
+        run: cargo build -p ${{ matrix.crate }} --all-features
+
+      - name: Test crate
+        working-directory: stellar-contracts
+        run: cargo test -p ${{ matrix.crate }} --all-features
+
   # Issue #1345: Soroban resource-budget regression checks for the largest
   # workflows (registration, record, consent, claim, pagination).
   #
@@ -143,7 +241,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Run resource-budget regression checks
         working-directory: stellar-contracts
@@ -182,7 +282,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -235,17 +337,3 @@ jobs:
         with:
           name: testnet-contract-id
           path: contract_id.txt
-          retention-days: 30
-
-      - name: Notify on deployment failure
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Testnet deployment failed — ${context.sha.slice(0, 7)}`,
-              body: `Deployment to Stellar testnet failed for commit ${context.sha}.\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              labels: ['ci-failure'],
-            })
