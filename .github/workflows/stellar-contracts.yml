@@ -58,6 +58,20 @@ jobs:
         working-directory: stellar-contracts
         run: ./scripts/generate_abi_snapshot.sh --check
 
+  error-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Generates the deterministic error registry from the contract source
+      # (Issue #1330) and fails if the committed snapshot is stale. This keeps
+      # every public error's code, meaning, and retryability in sync with the
+      # contracts and prevents discriminants from changing silently.
+      - name: Check error registry snapshot is up to date
+        working-directory: stellar-contracts
+        run: ./scripts/generate_error_registry.sh --check
+
   coverage:
     runs-on: ubuntu-latest
     steps:
