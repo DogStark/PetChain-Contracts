@@ -14719,3 +14719,6 @@ mod test_lab_result_anomaly {
 
 #[cfg(test)]
 mod test_breeding_coi;
+
+#[cfg(test)]
+mod test_cross_domain_deletion_invariants;
