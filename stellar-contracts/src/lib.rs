@@ -14724,3 +14724,5 @@ mod test_breeding_coi;
 mod insurance_ledger;
 #[allow(dead_code)]
 mod insurance_validation;
+#[allow(dead_code)]
+mod insurance_appeal_rules;
