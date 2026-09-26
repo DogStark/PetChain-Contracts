@@ -15,6 +15,26 @@ To build a release artifact:
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+## Release Verification
+
+Every release archive is verified for reproducibility and provenance. See [docs/release-verification.md](docs/release-verification.md) for details.
+
+### Quick checks
+
+```bash
+# Verify clean-checkout reproducibility
+bash scripts/clean_checkout_test.sh
+
+# Scan artifacts for secrets
+bash scripts/check_no_secrets.sh release-artifacts
+
+# Validate deployment manifest
+bash scripts/validate_manifest.sh --strict
+
+# Verify ABI snapshot is up to date
+bash scripts/generate_abi_snapshot.sh --check
+```
+
 ## Notes
 
 - The main contract source lives in `src/lib.rs`.

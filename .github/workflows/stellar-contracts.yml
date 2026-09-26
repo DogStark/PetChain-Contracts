@@ -124,6 +124,39 @@ jobs:
         working-directory: stellar-contracts
         run: cargo test
 
+  reproducibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Run clean-checkout reproducibility test
+        working-directory: stellar-contracts
+        run: bash scripts/clean_checkout_test.sh
+
+      - name: Check for secrets in artifacts
+        working-directory: stellar-contracts
+        run: bash scripts/check_no_secrets.sh
+
+      - name: Verify ABI snapshot is up to date
+        working-directory: stellar-contracts
+        run: bash scripts/generate_abi_snapshot.sh --check
+
+      - name: Validate deployment manifest
+        working-directory: stellar-contracts
+        run: bash scripts/validate_manifest.sh --strict
+
   deploy-testnet:
     runs-on: ubuntu-latest
     needs: stellar-contracts
