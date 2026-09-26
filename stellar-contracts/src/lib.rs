@@ -179,6 +179,8 @@ pub use disputes::*;
 mod consent_policy;
 pub use consent_policy::*;
 
+pub mod insurance_state;
+
 #[cfg(test)]
 mod test_attachment_limit;
 #[cfg(test)]
@@ -10402,6 +10404,16 @@ impl PetChainContract {
             (removed, next),
         );
         (removed, next)
+    }
+
+    /// Read-only check of the claim state machine (#1204): whether `from`
+    /// may transition to `to`. See [`insurance_state`].
+    pub fn can_transition_claim_status(
+        _env: Env,
+        from: InsuranceClaimStatus,
+        to: InsuranceClaimStatus,
+    ) -> bool {
+        insurance_state::is_valid_claim_transition(&from, &to)
     }
 
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
