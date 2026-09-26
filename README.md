@@ -78,3 +78,6 @@ MIT
 
 <!-- handsoff-issue-1331 -->
 - #1331: [Contracts] Add Soroban event privacy regression tests
+
+<!-- handsoff-issue-1332 -->
+- #1332: [Contracts] Add Soroban upgrade proposal expiry semantics
