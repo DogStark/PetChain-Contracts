@@ -24,3 +24,13 @@ lto = true
 [profile.release-with-logs]
 inherits = "release"
 debug-assertions = true
+
+# Soroban resource-budget regression checks (issue #1345).
+# The `budget-tests` feature gates the worst-case resource-budget
+# snapshots for the largest PetChain workflows (registration, record,
+# consent, claim, pagination). CI enables it so the budget suite runs
+# alongside the normal contract tests and reports the specific resource
+# (instructions, memory, or storage) that regressed.
+[workspace.metadata.soroban-budgets]
+feature = "budget-tests"
+report = "instructions,memory,storage"

@@ -124,6 +124,53 @@ jobs:
         working-directory: stellar-contracts
         run: cargo test
 
+  # Issue #1345: Soroban resource-budget regression checks for the largest
+  # workflows (registration, record, consent, claim, pagination).
+  #
+  # Budgets are documented per workflow in
+  # stellar-contracts/docs/resource-budgets.md. The budget tests emit a
+  # machine-readable snapshot (stellar-contracts/target/resource-budgets.json)
+  # and fail with the specific regressed resource (instructions, memory, or
+  # storage) when a workflow exceeds its documented budget.
+  #
+  # To intentionally update the baseline after a reviewed change, run the
+  # "Update resource-budget baseline" step below (workflow_dispatch with
+  # update_baseline=true) and commit the refreshed snapshot.
+  resource-budgets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run resource-budget regression checks
+        working-directory: stellar-contracts
+        run: cargo test --test resource_budgets -- --nocapture
+
+      - name: Report regressed resource
+        if: failure()
+        working-directory: stellar-contracts
+        run: |
+          echo "::error::Soroban resource-budget regression detected. See the failing workflow above for the specific resource (instructions, memory, or storage) that exceeded its documented budget in docs/resource-budgets.md."
+
+      - name: Upload resource-budget snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-budgets
+          path: stellar-contracts/target/resource-budgets.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Update resource-budget baseline
+        if: github.event_name == 'workflow_dispatch' && inputs.update_baseline
+        working-directory: stellar-contracts
+        run: |
+          UPDATE_RESOURCE_BUDGET_BASELINE=1 cargo test --test resource_budgets -- --nocapture
+          echo "Baseline snapshot refreshed at target/resource-budgets.json — commit it to update the documented budgets."
+
   deploy-testnet:
     runs-on: ubuntu-latest
     needs: stellar-contracts
