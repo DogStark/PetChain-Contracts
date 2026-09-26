@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) to standardize contributor submissions
 - Canonical chain-of-custody digest (`get_custody_chain_digest`) so consumers can prove a returned custody history is complete and ordered: SHA-256 hash chain over domain, version, pet ID, sequence, and every entry in canonical order, with published test vectors and tamper cases
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
+- Soroban storage schema migration fixtures: old-version snapshot fixtures for core persistent-storage domains (keys and value shapes) plus fixture-based upgrade/read tests. Current code reads every supported fixture; unsupported schema versions fail with an explicit `UnsupportedSchemaVersion` error instead of a silent misread; migrations are asserted not to widen unbounded values (no unbounded `Vec`/`String` growth). A schema-version CI check guards the fixtures against drift.
 
 ### Changed / Migration notes (certificates, vet credentials, duration safety, idempotency)
 
@@ -194,5 +195,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Secure backup code generation and invalidation after use
 - HTTPS enforcement recommendations for backend services
 
-[unreleased]: https://github.com/DogStark/PetChain-Contracts/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/DogStark/PetChain-Contracts/releases/tag/v0.1.0
+[unreleased]: https://github.com/DogStark/PetChain-Contracts/compare/v0.1.0.

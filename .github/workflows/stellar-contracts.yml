@@ -58,6 +58,21 @@ jobs:
         working-directory: stellar-contracts
         run: ./scripts/generate_abi_snapshot.sh --check
 
+  schema-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Guards the Soroban storage schema version (Issue #1333). The check
+      # fails when the declared schema version is bumped without adding a
+      # matching old-version fixture snapshot under
+      # stellar-contracts/tests/fixtures/storage/, so upgrade tests always
+      # have a supported fixture to read.
+      - name: Check storage schema version has fixtures
+        working-directory: stellar-contracts
+        run: ./scripts/check_schema_version.sh
+
   coverage:
     runs-on: ubuntu-latest
     steps:
