@@ -34,3 +34,83 @@ jobs:
 
       - name: Deploy dry run on local network
         run: npx hardhat run scripts/deploy.js --network hardhat
+
+  cross-network-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: celo-contracts/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Record toolchain versions
+        run: |
+          mkdir -p release-metadata
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "node_version=$(node --version)"
+            echo "npm_version=$(npm --version)"
+            echo "rustc_version=$(rustc --version)"
+            echo "cargo_version=$(cargo --version)"
+          } > release-metadata/toolchain.txt
+          cat release-metadata/toolchain.txt
+
+      - name: Build Celo artifacts
+        working-directory: celo-contracts
+        run: |
+          npm ci
+          npx hardhat compile
+
+      - name: Validate Celo artifacts
+        working-directory: celo-contracts
+        run: |
+          test -d artifacts || { echo "::error::Missing Celo artifacts directory"; exit 1; }
+          abi_count=$(find artifacts -name '*.json' -path '*dbg*' -prune -o -name '*.json' -print | wc -l)
+          if [ "$abi_count" -eq 0 ]; then
+            echo "::error::No Celo ABI artifacts produced";
+            exit 1;
+          fi
+          echo "Celo ABI artifacts: $abi_count"
+
+      - name: Local Celo deployment smoke test
+        working-directory: celo-contracts
+        run: npx hardhat run scripts/deploy.js --network hardhat
+
+      - name: Build Soroban artifacts
+        working-directory: soroban-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Validate Soroban artifacts
+        working-directory: soroban-contracts
+        run: |
+          wasm_count=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' | wc -l)
+          if [ "$wasm_count" -eq 0 ]; then
+            echo "::error::No Soroban WASM artifacts produced";
+            exit 1;
+          fi
+          echo "Soroban WASM artifacts: $wasm_count"
+
+      - name: Validate manifests
+        run: |
+          status=0
+          for manifest in celo-contracts/deployments/*.json soroban-contracts/manifests/*.json; do
+            [ -e "$manifest" ] || continue
+            if ! node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$manifest"; then
+              echo "::error::Invalid manifest: $manifest"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata/toolchain.txt
