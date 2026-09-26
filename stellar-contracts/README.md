@@ -15,6 +15,27 @@ To build a release artifact:
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+## ABI Snapshot & Diff
+
+The contract's public ABI is tracked in `abi-snapshot.txt` and can be
+regenerated with:
+
+```bash
+./scripts/generate_abi_snapshot.sh          # regenerate snapshot
+./scripts/generate_abi_snapshot.sh --check  # verify snapshot is up to date
+./scripts/generate_abi_snapshot.sh --diff   # check for breaking changes
+```
+
+To compare two snapshots and get a categorized compatibility summary:
+
+```bash
+python3 scripts/abi_diff.py <old-snapshot> <new-snapshot>
+```
+
+The diff tool groups changes by category (methods, events, errors, types)
+and labels each as additive or breaking. CI requires a migration note in
+`docs/abi-migrations.md` for every breaking change.
+
 ## Notes
 
 - The main contract source lives in `src/lib.rs`.

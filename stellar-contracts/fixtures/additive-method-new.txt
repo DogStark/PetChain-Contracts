@@ -1,0 +1,4 @@
+# Methods
+pub fn add_pet(env: Env, owner: Address, name: String) -> u64
+pub fn get_pet(env: Env, id: u64) -> Option<Pet>
+pub fn list_pets(env: Env, owner: Address, page: u32, page_size: u32) -> Vec<Pet>
