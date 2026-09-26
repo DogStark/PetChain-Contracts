@@ -215,6 +215,9 @@ fn data_key_tag(v: &DataKey) -> &'static str {
         DataKey::NonceUsage(_) => "NonceUsage",
         DataKey::RetentionPeriod => "RetentionPeriod",
         DataKey::MaxSubscriptionsPerAddress => "MaxSubscriptionsPerAddress",
+        DataKey::PetKeyVersion(_) => "PetKeyVersion",
+        DataKey::MicrochipIndex(_) => "MicrochipIndex",
+        DataKey::VetCredentialsExpiry(_) => "VetCredentialsExpiry",
     }
 }
 
@@ -301,6 +304,8 @@ fn medical_key_tag(v: &MedicalKey) -> &'static str {
         MedicalKey::CertificateAnchor(_) => "CertificateAnchor",
         MedicalKey::ScannerRegistry => "ScannerRegistry",
         MedicalKey::RetentionPeriod => "RetentionPeriod",
+        MedicalKey::CertificateCount => "CertificateCount",
+        MedicalKey::CertificateLifecycle(_) => "CertificateLifecycle",
     }
 }
 
@@ -542,3 +547,61 @@ fn dispute_key_variant_tags_are_pinned() {
     assert_eq!(dispute_key_tag(&DisputeKey::Arbitrator), "Arbitrator");
 }
 
+
+#[allow(dead_code)]
+fn claim_doc_key_tag(v: &ClaimDocKey) -> &'static str {
+    match v {
+        ClaimDocKey::ClaimPet(_) => "ClaimPet",
+        ClaimDocKey::Document(_) => "Document",
+        ClaimDocKey::DocumentCount(_) => "DocumentCount",
+        ClaimDocKey::Settlement(_) => "Settlement",
+        ClaimDocKey::RevokedDigest(_) => "RevokedDigest",
+    }
+}
+
+#[allow(dead_code)]
+fn breeding_eligibility_key_tag(v: &BreedingEligibilityKey) -> &'static str {
+    match v {
+        BreedingEligibilityKey::Policy => "Policy",
+        BreedingEligibilityKey::LastMating(_) => "LastMating",
+        BreedingEligibilityKey::Mating(_) => "Mating",
+    }
+}
+
+#[test]
+fn breeding_eligibility_key_variant_tags_are_pinned() {
+    assert_eq!(breeding_eligibility_key_tag(&BreedingEligibilityKey::Policy), "Policy");
+}
+
+#[allow(dead_code)]
+fn health_score_key_tag(v: &HealthScoreKey) -> &'static str {
+    match v {
+        HealthScoreKey::Record(_) => "Record",
+        HealthScoreKey::Count(_) => "Count",
+        HealthScoreKey::ByInput(_) => "ByInput",
+        HealthScoreKey::Latest(_) => "Latest",
+    }
+}
+
+#[allow(dead_code)]
+fn purge_key_tag(v: &PurgeKey) -> &'static str {
+    match v {
+        PurgeKey::Nonce(_) => "Nonce",
+        PurgeKey::Hold(_) => "Hold",
+        PurgeKey::AuditCount => "AuditCount",
+        PurgeKey::Audit(_) => "Audit",
+    }
+}
+
+#[test]
+fn purge_key_variant_tags_are_pinned() {
+    assert_eq!(purge_key_tag(&PurgeKey::AuditCount), "AuditCount");
+}
+
+#[test]
+fn health_input_kind_discriminants_are_pinned() {
+    // Part of the canonical health-score input encoding (Issue #1343).
+    assert_eq!(HealthInputKind::MedicalRecord as u32, 0);
+    assert_eq!(HealthInputKind::Vaccination as u32, 1);
+    assert_eq!(HealthInputKind::LabResult as u32, 2);
+}

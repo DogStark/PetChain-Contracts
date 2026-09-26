@@ -639,4 +639,28 @@ fn test_contract_error_discriminants() {
     assert_eq!(ContractError::RecordAlreadyDeleted as u32, 161);
     assert_eq!(ContractError::RetentionPeriodNotMet as u32, 162);
     assert_eq!(ContractError::RecordNotFound as u32, 163);
+    assert_eq!(ContractError::DisputeNotFound as u32, 164);
+    assert_eq!(ContractError::NotDisputeParty as u32, 168);
+    assert_eq!(ContractError::StaleMigration as u32, 169);
+    assert_eq!(ContractError::InvalidTimestamp as u32, 170);
+    assert_eq!(ContractError::CertificateNotFound as u32, 171);
+    assert_eq!(ContractError::CertificateRevoked as u32, 48);
+    assert_eq!(ContractError::CertificateExpired as u32, 49);
+    assert_eq!(ContractError::CertificateHashConflict as u32, 51);
+    assert_eq!(ContractError::VetCredentialsExpired as u32, 50);
+    assert_eq!(ContractError::NonceReused as u32, 172);
+    assert_eq!(ContractError::ClaimDocumentNotFound as u32, 173);
+    assert_eq!(ContractError::ClaimDocumentRevoked as u32, 174);
+    assert_eq!(ContractError::ClaimDocumentSuperseded as u32, 175);
+    assert_eq!(ContractError::ClaimAlreadySettled as u32, 176);
+    assert_eq!(ContractError::ClaimPetMismatch as u32, 177);
+    assert_eq!(ContractError::DuplicateClaimDocument as u32, 178);
+    assert_eq!(ContractError::ParentInactive as u32, 179);
+    assert_eq!(ContractError::IncompatibleParents as u32, 180);
+    assert_eq!(ContractError::ParentTooYoung as u32, 181);
+    assert_eq!(ContractError::BreedingCooldownActive as u32, 182);
+    assert_eq!(ContractError::UnsupportedAlgorithmVersion as u32, 183);
+    assert_eq!(ContractError::PurgeConfirmationMismatch as u32, 184);
+    assert_eq!(ContractError::RecordOnPurgeHold as u32, 185);
+    assert_eq!(ContractError::PetScopeViolation as u32, 186);
 }

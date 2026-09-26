@@ -176,6 +176,16 @@ use soroban_sdk::{
 mod disputes;
 pub use disputes::*;
 
+// Same pattern for the domains added by Issues #1341-#1344.
+mod breeding_eligibility;
+mod claim_documents;
+mod health_provenance;
+mod purge_authorization;
+pub use breeding_eligibility::*;
+pub use claim_documents::*;
+pub use health_provenance::*;
+pub use purge_authorization::*;
+
 #[cfg(test)]
 mod test_attachment_limit;
 #[cfg(test)]
@@ -227,11 +237,17 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
-mod test_discriminant_stability;
-#[cfg(test)]
 mod test_custody_digest;
 #[cfg(test)]
 mod test_custody_chain;
+#[cfg(test)]
+mod test_claim_document_revocation;
+#[cfg(test)]
+mod test_breeding_eligibility;
+#[cfg(test)]
+mod test_health_score_provenance;
+#[cfg(test)]
+mod test_purge_authorization;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -588,7 +604,44 @@ pub enum ContractError {
     /// A medical-event timestamp fell outside the allowed domain relative to
     /// ledger time (too far in the past, too far in the future, or with a
     /// due/expiry date before the event it describes). (Issue #1174)
-    InvalidTimestamp = 169,
+    /// Formerly 169 (collision with `StaleMigration`); moved to 170.
+    InvalidTimestamp = 170,
+
+    // --- Repaired merge drift: variants referenced by #1264 / #1275 but
+    // dropped from the enum. 48-51 are the values already published in
+    // CHANGELOG.md for #1264; `CertificateNotFound` was published as 47,
+    // which collides with `ProposalNotFound`, so it is appended instead. ---
+    CertificateRevoked = 48,
+    CertificateExpired = 49,
+    VetCredentialsExpired = 50,
+    CertificateHashConflict = 51,
+    CertificateNotFound = 171,
+    NonceReused = 172,
+
+    // --- Claim-document lifecycle (Issue #1341) ---
+    ClaimDocumentNotFound = 173,
+    ClaimDocumentRevoked = 174,
+    ClaimDocumentSuperseded = 175,
+    ClaimAlreadySettled = 176,
+    ClaimPetMismatch = 177,
+    DuplicateClaimDocument = 178,
+
+    // --- Breeding eligibility (Issue #1342) ---
+    ParentInactive = 179,
+    IncompatibleParents = 180,
+    ParentTooYoung = 181,
+    BreedingCooldownActive = 182,
+
+    // --- Health-score provenance (Issue #1343) ---
+    UnsupportedAlgorithmVersion = 183,
+
+    // --- Purge authorization (Issue #1344) ---
+    PurgeConfirmationMismatch = 184,
+    RecordOnPurgeHold = 185,
+
+    /// A referenced record belongs to a different pet than the one the
+    /// operation is scoped to (Issues #1343, #1344).
+    PetScopeViolation = 186,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -1426,6 +1479,7 @@ pub enum DataKey {
     MaxSubscriptionsPerAddress,
     /// Canonical microchip identifier -> pet id.
     MicrochipIndex(String),
+    VetCredentialsExpiry(Address), // optional u64 expiry; 0/absent = no expiry
 }
 
 #[contracttype]
@@ -7235,7 +7289,7 @@ impl PetChainContract {
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             vet.verified = true;
             env.storage()
@@ -7263,7 +7317,7 @@ impl PetChainContract {
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             vet.verified = false;
             env.storage()
@@ -7286,7 +7340,7 @@ impl PetChainContract {
         if let Some(vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             if !vet.verified {
                 return false;
@@ -7317,7 +7371,7 @@ impl PetChainContract {
         expires_at: Option<u64>,
     ) -> bool {
         PetChainContract::require_admin_auth(&env, &admin);
-        let verified = PetChainContract::_verify_vet_internal(&env, vet_address);
+        let verified = PetChainContract::_verify_vet_internal(&env, vet_address.clone());
         if verified {
             if let Some(exp) = expires_at {
                 if exp <= env.ledger().timestamp() {
@@ -7591,7 +7645,7 @@ impl PetChainContract {
                 pet_id,
                 vaccination_id: cert_id,
                 vet_or_admin,
-                reason,
+                reason: reason.clone(),
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -8183,7 +8237,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::CertificateCount)
             .unwrap_or(0);
-        let cert_id = safe_increment(cert_count);
+        let cert_id = safe_increment(&env, cert_count);
         env.storage()
             .instance()
             .set(&MedicalKey::CertificateCount, &cert_id);
@@ -8301,7 +8355,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::CertificateCount)
             .unwrap_or(0);
-        let cert_id = safe_increment(cert_count);
+        let cert_id = safe_increment(&env, cert_count);
         env.storage()
             .instance()
             .set(&MedicalKey::CertificateCount, &cert_id);
@@ -12498,6 +12552,382 @@ impl PetChainContract {
         matches
     }
 
+    // ── CLAIM-DOCUMENT STATUS & VERSIONING (Issue #1341) ────────────
+    //
+    // Lifecycle and historical settlement behavior are documented in
+    // `claim_documents.rs` and `docs/claim-document-revocation.md`.
+
+    /// Register a new document digest against `claim_id` (status `Active`,
+    /// version 1). The first submission binds the claim to `pet_id`;
+    /// `submitter` must be that pet's owner.
+    pub fn submit_claim_document(
+        env: Env,
+        submitter: Address,
+        pet_id: u64,
+        claim_id: u64,
+        digest: BytesN<32>,
+    ) -> u32 {
+        submitter.require_auth();
+        let owner = Self::get_pet_owner(env.clone(), pet_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if owner != submitter {
+            panic_with_error!(&env, ContractError::NotPetOwner);
+        }
+        let pet_key = ClaimDocKey::ClaimPet(claim_id);
+        match env.storage().persistent().get::<_, u64>(&pet_key) {
+            Some(bound) if bound != pet_id => {
+                panic_with_error!(&env, ContractError::ClaimPetMismatch)
+            }
+            Some(_) => {}
+            None => {
+                env.storage().persistent().set(&pet_key, &pet_id);
+                Self::bump_persistent_ttl(&env, &pet_key);
+            }
+        }
+        Self::require_claim_unsettled(&env, claim_id);
+        Self::append_claim_document(&env, claim_id, digest, 1, None, &submitter)
+    }
+
+    /// Replace an `Active` document with a new digest. The old record
+    /// becomes `Superseded` (still auditable); the new one is `Active` with
+    /// `version = old.version + 1`. Returns the new document index.
+    pub fn supersede_claim_document(
+        env: Env,
+        submitter: Address,
+        claim_id: u64,
+        doc_index: u32,
+        new_digest: BytesN<32>,
+    ) -> u32 {
+        submitter.require_auth();
+        let pet_id = Self::claim_pet(&env, claim_id);
+        if Self::get_pet_owner(env.clone(), pet_id) != Some(submitter.clone()) {
+            panic_with_error!(&env, ContractError::NotPetOwner);
+        }
+        Self::require_claim_unsettled(&env, claim_id);
+
+        let mut old = Self::load_claim_document(&env, claim_id, doc_index);
+        Self::require_claim_document_active(&env, &old);
+
+        let new_index = Self::append_claim_document(
+            &env,
+            claim_id,
+            new_digest,
+            old.version.saturating_add(1),
+            Some(doc_index),
+            &submitter,
+        );
+
+        let now = env.ledger().timestamp();
+        old.status = ClaimDocumentStatus::Superseded;
+        old.superseded_by = Some(new_index);
+        old.status_changed_by = Some(submitter.clone());
+        old.status_changed_at = Some(now);
+        Self::save_claim_document(&env, &old);
+        Self::emit_claim_document_status(&env, &old, &submitter);
+
+        new_index
+    }
+
+    /// Revoke a document. Allowed from `Active` or `Superseded`; `Revoked`
+    /// is terminal. The pet owner or an admin may revoke, including after
+    /// the claim has settled (settlements are not unwound; see
+    /// `settlement_has_revoked_documents`). The digest is burned
+    /// contract-wide so it can never be re-submitted to back an approval.
+    pub fn revoke_claim_document(
+        env: Env,
+        caller: Address,
+        claim_id: u64,
+        doc_index: u32,
+        reason: String,
+    ) {
+        caller.require_auth();
+        if reason.len() > MAX_CLAIM_REVOCATION_REASON_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        let pet_id = Self::claim_pet(&env, claim_id);
+        if Self::get_pet_owner(env.clone(), pet_id) != Some(caller.clone())
+            && !Self::is_admin_address(&env, &caller)
+        {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut doc = Self::load_claim_document(&env, claim_id, doc_index);
+        if doc.status == ClaimDocumentStatus::Revoked {
+            panic_with_error!(&env, ContractError::ClaimDocumentRevoked);
+        }
+
+        doc.status = ClaimDocumentStatus::Revoked;
+        doc.status_changed_by = Some(caller.clone());
+        doc.status_changed_at = Some(env.ledger().timestamp());
+        doc.revocation_reason = Some(reason);
+        Self::save_claim_document(&env, &doc);
+
+        let burned = ClaimDocKey::RevokedDigest(doc.digest.clone());
+        if !env.storage().persistent().has(&burned) {
+            env.storage()
+                .persistent()
+                .set(&burned, &(claim_id, doc_index));
+            Self::bump_persistent_ttl(&env, &burned);
+        }
+        if Self::is_admin_address(&env, &caller) {
+            Self::record_admin_activity(&env, &caller, "revoke_claim_document");
+        }
+        Self::emit_claim_document_status(&env, &doc, &caller);
+    }
+
+    /// Approve (settle) a claim on the basis of the listed documents.
+    /// Every listed document must currently be `Active`; a `Revoked` or
+    /// `Superseded` document can never satisfy a new approval. The
+    /// settlement snapshot is immutable.
+    pub fn approve_claim(
+        env: Env,
+        approver: Address,
+        claim_id: u64,
+        doc_indices: Vec<u32>,
+    ) -> ClaimSettlement {
+        if !Self::is_admin_address(&env, &approver) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        approver.require_auth();
+        let pet_id = Self::claim_pet(&env, claim_id);
+        Self::require_claim_unsettled(&env, claim_id);
+
+        if doc_indices.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if doc_indices.len() > MAX_CLAIM_DOCUMENTS {
+            panic_with_error!(&env, ContractError::TooManyItems);
+        }
+
+        let mut digests: Vec<BytesN<32>> = Vec::new(&env);
+        let mut versions: Vec<u32> = Vec::new(&env);
+        let mut prev: Option<u32> = None;
+        for idx in doc_indices.iter() {
+            // Strictly ascending: canonical and duplicate-free.
+            if let Some(p) = prev {
+                if idx <= p {
+                    panic_with_error!(&env, ContractError::InvalidInput);
+                }
+            }
+            prev = Some(idx);
+            let doc = Self::load_claim_document(&env, claim_id, idx);
+            Self::require_claim_document_active(&env, &doc);
+            digests.push_back(doc.digest);
+            versions.push_back(doc.version);
+        }
+
+        let now = env.ledger().timestamp();
+        let settlement = ClaimSettlement {
+            claim_id,
+            pet_id,
+            approver: approver.clone(),
+            approved_at: now,
+            doc_indices,
+            doc_digests: digests,
+            doc_versions: versions,
+        };
+        let key = ClaimDocKey::Settlement(claim_id);
+        env.storage().persistent().set(&key, &settlement);
+        Self::bump_persistent_ttl(&env, &key);
+        Self::record_admin_activity(&env, &approver, "approve_claim");
+
+        env.events().publish(
+            (Symbol::new(&env, "ClaimApproved"), claim_id),
+            ClaimApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id,
+                approver,
+                doc_count: settlement.doc_indices.len(),
+                timestamp: now,
+            },
+        );
+
+        settlement
+    }
+
+    pub fn get_claim_document(
+        env: Env,
+        claim_id: u64,
+        doc_index: u32,
+    ) -> Option<ClaimDocumentRecord> {
+        env.storage()
+            .persistent()
+            .get(&ClaimDocKey::Document((claim_id, doc_index)))
+    }
+
+    pub fn get_claim_document_count(env: Env, claim_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&ClaimDocKey::DocumentCount(claim_id))
+            .unwrap_or(0)
+    }
+
+    pub fn get_claim_settlement(env: Env, claim_id: u64) -> Option<ClaimSettlement> {
+        env.storage()
+            .persistent()
+            .get(&ClaimDocKey::Settlement(claim_id))
+    }
+
+    /// Whether the document could back a new approval right now.
+    pub fn is_claim_document_acceptable(env: Env, claim_id: u64, doc_index: u32) -> bool {
+        match Self::get_claim_document(env.clone(), claim_id, doc_index) {
+            Some(doc) => {
+                doc.status == ClaimDocumentStatus::Active
+                    && !env
+                        .storage()
+                        .persistent()
+                        .has(&ClaimDocKey::RevokedDigest(doc.digest))
+            }
+            None => false,
+        }
+    }
+
+    /// Audit helper for settled claims: true when any document captured in
+    /// the settlement has since been revoked. The settlement itself stands.
+    pub fn settlement_has_revoked_documents(env: Env, claim_id: u64) -> bool {
+        let settlement = match Self::get_claim_settlement(env.clone(), claim_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        for idx in settlement.doc_indices.iter() {
+            if let Some(doc) = Self::get_claim_document(env.clone(), claim_id, idx) {
+                if doc.status == ClaimDocumentStatus::Revoked {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn claim_pet(env: &Env, claim_id: u64) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&ClaimDocKey::ClaimPet(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimDocumentNotFound))
+    }
+
+    fn require_claim_unsettled(env: &Env, claim_id: u64) {
+        if env
+            .storage()
+            .persistent()
+            .has(&ClaimDocKey::Settlement(claim_id))
+        {
+            panic_with_error!(env, ContractError::ClaimAlreadySettled);
+        }
+    }
+
+    fn require_claim_document_active(env: &Env, doc: &ClaimDocumentRecord) {
+        match doc.status {
+            ClaimDocumentStatus::Active => {}
+            ClaimDocumentStatus::Superseded => {
+                panic_with_error!(env, ContractError::ClaimDocumentSuperseded)
+            }
+            ClaimDocumentStatus::Revoked => {
+                panic_with_error!(env, ContractError::ClaimDocumentRevoked)
+            }
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&ClaimDocKey::RevokedDigest(doc.digest.clone()))
+        {
+            panic_with_error!(env, ContractError::ClaimDocumentRevoked);
+        }
+    }
+
+    fn load_claim_document(env: &Env, claim_id: u64, doc_index: u32) -> ClaimDocumentRecord {
+        env.storage()
+            .persistent()
+            .get(&ClaimDocKey::Document((claim_id, doc_index)))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimDocumentNotFound))
+    }
+
+    fn save_claim_document(env: &Env, doc: &ClaimDocumentRecord) {
+        let key = ClaimDocKey::Document((doc.claim_id, doc.doc_index));
+        env.storage().persistent().set(&key, doc);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    /// Appends a new `Active` record and mirrors its digest into the legacy
+    /// `DataKey::ClaimDocuments` list so `verify_claim_document` (a pure
+    /// integrity check, independent of status) keeps working by index.
+    fn append_claim_document(
+        env: &Env,
+        claim_id: u64,
+        digest: BytesN<32>,
+        version: u32,
+        supersedes: Option<u32>,
+        submitter: &Address,
+    ) -> u32 {
+        if env
+            .storage()
+            .persistent()
+            .has(&ClaimDocKey::RevokedDigest(digest.clone()))
+        {
+            panic_with_error!(env, ContractError::ClaimDocumentRevoked);
+        }
+        let mut digests: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimDocuments(claim_id))
+            .unwrap_or(Vec::new(env));
+        if digests.contains(&digest) {
+            panic_with_error!(env, ContractError::DuplicateClaimDocument);
+        }
+        let doc_index = Self::get_claim_document_count(env.clone(), claim_id);
+        if doc_index >= MAX_CLAIM_DOCUMENTS {
+            panic_with_error!(env, ContractError::TooManyItems);
+        }
+        // Indices must stay aligned with the legacy digest list.
+        if digests.len() != doc_index {
+            panic_with_error!(env, ContractError::InvalidState);
+        }
+
+        let doc = ClaimDocumentRecord {
+            claim_id,
+            doc_index,
+            digest: digest.clone(),
+            version,
+            supersedes,
+            superseded_by: None,
+            status: ClaimDocumentStatus::Active,
+            submitted_by: submitter.clone(),
+            submitted_at: env.ledger().timestamp(),
+            status_changed_by: None,
+            status_changed_at: None,
+            revocation_reason: None,
+        };
+        Self::save_claim_document(env, &doc);
+
+        let count_key = ClaimDocKey::DocumentCount(claim_id);
+        env.storage().persistent().set(&count_key, &(doc_index + 1));
+        Self::bump_persistent_ttl(env, &count_key);
+        digests.push_back(digest);
+        env.storage()
+            .instance()
+            .set(&DataKey::ClaimDocuments(claim_id), &digests);
+
+        Self::emit_claim_document_status(env, &doc, submitter);
+        doc_index
+    }
+
+    fn emit_claim_document_status(env: &Env, doc: &ClaimDocumentRecord, actor: &Address) {
+        env.events().publish(
+            (Symbol::new(env, "ClaimDocStatus"), doc.claim_id),
+            ClaimDocumentStatusEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id: doc.claim_id,
+                doc_index: doc.doc_index,
+                digest: doc.digest.clone(),
+                doc_version: doc.version,
+                status: doc.status,
+                actor: actor.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
     pub fn add_activity_record(
         env: Env,
         pet_id: u64,
@@ -12731,6 +13161,209 @@ impl PetChainContract {
         0u32
     }
 
+    // ── HEALTH-SCORE INPUT PROVENANCE (Issue #1343) ─────────────────
+    //
+    // Encoding, algorithm versions and invariants are documented in
+    // `health_provenance.rs`.
+
+    /// Record a health score bound to its canonical input digest, algorithm
+    /// version, scorer and timestamp. The score is computed on-chain from
+    /// `inputs`; the scorer cannot choose it.
+    ///
+    /// - `scorer` must be an admin or a currently verified vet.
+    /// - Every source record must exist, be live, and belong to `pet_id`.
+    /// - Same `(pet_id, algorithm_version, inputs)` returns the existing
+    ///   record unchanged (deterministic replay; first scorer is kept).
+    /// - A different version never overwrites another version's records.
+    pub fn record_health_score(
+        env: Env,
+        scorer: Address,
+        pet_id: u64,
+        algorithm_version: u32,
+        inputs: HealthScoreInputs,
+    ) -> HealthScoreRecord {
+        scorer.require_auth();
+        if !Self::is_admin_address(&env, &scorer)
+            && !Self::is_verified_vet(env.clone(), scorer.clone())
+        {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        if !env.storage().instance().has(&DataKey::Pet(pet_id)) {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        }
+        let score = score_for_version(algorithm_version, &inputs)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::UnsupportedAlgorithmVersion));
+        let digest = Self::checked_health_input_digest(&env, pet_id, &inputs);
+        if inputs.as_of > env.ledger().timestamp() {
+            panic_with_error!(&env, ContractError::InvalidTimestamp);
+        }
+        for source in inputs.sources.iter() {
+            Self::require_health_source_in_scope(&env, pet_id, &source);
+        }
+
+        let by_input = HealthScoreKey::ByInput((pet_id, algorithm_version, digest.clone()));
+        if let Some(seq) = env.storage().persistent().get::<_, u64>(&by_input) {
+            return env
+                .storage()
+                .persistent()
+                .get(&HealthScoreKey::Record((pet_id, seq)))
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        }
+
+        let count_key = HealthScoreKey::Count(pet_id);
+        let count: u64 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let seq = safe_increment(&env, count);
+        let now = env.ledger().timestamp();
+        let record = HealthScoreRecord {
+            pet_id,
+            seq,
+            score,
+            algorithm_version,
+            input_digest: digest.clone(),
+            inputs,
+            scorer: scorer.clone(),
+            scored_at: now,
+        };
+
+        let record_key = HealthScoreKey::Record((pet_id, seq));
+        let latest_key = HealthScoreKey::Latest((pet_id, algorithm_version));
+        env.storage().persistent().set(&record_key, &record);
+        env.storage().persistent().set(&count_key, &seq);
+        env.storage().persistent().set(&by_input, &seq);
+        env.storage().persistent().set(&latest_key, &seq);
+        Self::bump_persistent_ttl(&env, &record_key);
+        Self::bump_persistent_ttl(&env, &count_key);
+        Self::bump_persistent_ttl(&env, &by_input);
+        Self::bump_persistent_ttl(&env, &latest_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "HealthScoreRecorded"), pet_id),
+            HealthScoreRecordedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                seq,
+                score,
+                algorithm_version,
+                input_digest: digest,
+                scorer,
+                timestamp: now,
+            },
+        );
+
+        record
+    }
+
+    /// Canonical input digest for `inputs` (structural validation only).
+    pub fn compute_health_input_digest(
+        env: Env,
+        pet_id: u64,
+        inputs: HealthScoreInputs,
+    ) -> BytesN<32> {
+        Self::checked_health_input_digest(&env, pet_id, &inputs)
+    }
+
+    /// Pure score for `inputs` under `algorithm_version`.
+    pub fn compute_health_score_value(
+        env: Env,
+        algorithm_version: u32,
+        inputs: HealthScoreInputs,
+    ) -> u32 {
+        if validate_inputs(&inputs).is_err() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        score_for_version(algorithm_version, &inputs)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::UnsupportedAlgorithmVersion))
+    }
+
+    /// Audit check: do `inputs` reproduce the stored record's digest and
+    /// score under its recorded algorithm version?
+    pub fn verify_health_score_provenance(
+        env: Env,
+        pet_id: u64,
+        seq: u64,
+        inputs: HealthScoreInputs,
+    ) -> bool {
+        let record: HealthScoreRecord = match env
+            .storage()
+            .persistent()
+            .get(&HealthScoreKey::Record((pet_id, seq)))
+        {
+            Some(r) => r,
+            None => return false,
+        };
+        if validate_inputs(&inputs).is_err() {
+            return false;
+        }
+        input_digest(&env, pet_id, &inputs) == record.input_digest
+            && score_for_version(record.algorithm_version, &inputs) == Some(record.score)
+    }
+
+    pub fn get_health_score_record(env: Env, pet_id: u64, seq: u64) -> Option<HealthScoreRecord> {
+        env.storage()
+            .persistent()
+            .get(&HealthScoreKey::Record((pet_id, seq)))
+    }
+
+    pub fn get_health_score_record_count(env: Env, pet_id: u64) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&HealthScoreKey::Count(pet_id))
+            .unwrap_or(0)
+    }
+
+    pub fn get_latest_health_score(
+        env: Env,
+        pet_id: u64,
+        algorithm_version: u32,
+    ) -> Option<HealthScoreRecord> {
+        let seq: u64 = env
+            .storage()
+            .persistent()
+            .get(&HealthScoreKey::Latest((pet_id, algorithm_version)))?;
+        Self::get_health_score_record(env, pet_id, seq)
+    }
+
+    fn checked_health_input_digest(
+        env: &Env,
+        pet_id: u64,
+        inputs: &HealthScoreInputs,
+    ) -> BytesN<32> {
+        match validate_inputs(inputs) {
+            Ok(()) => input_digest(env, pet_id, inputs),
+            Err(HealthInputError::TooManySources) => {
+                panic_with_error!(env, ContractError::TooManyItems)
+            }
+            Err(HealthInputError::ComponentOutOfRange | HealthInputError::NotCanonical) => {
+                panic_with_error!(env, ContractError::InvalidInput)
+            }
+        }
+    }
+
+    fn require_health_source_in_scope(env: &Env, pet_id: u64, source: &HealthInputRef) {
+        let storage = env.storage().instance();
+        let owner_pet = match source.kind {
+            HealthInputKind::MedicalRecord => storage
+                .get::<_, MedicalRecord>(&MedicalKey::MedicalRecord(source.id))
+                .map(|r| {
+                    if r.deleted_at.is_some() {
+                        panic_with_error!(env, ContractError::RecordAlreadyDeleted);
+                    }
+                    r.pet_id
+                }),
+            HealthInputKind::Vaccination => storage
+                .get::<_, Vaccination>(&MedicalKey::Vaccination(source.id))
+                .map(|v| v.pet_id),
+            HealthInputKind::LabResult => storage
+                .get::<_, LabResult>(&MedicalKey::LabResult(source.id))
+                .map(|l| l.pet_id),
+        };
+        match owner_pet {
+            None => panic_with_error!(env, ContractError::RecordNotFound),
+            Some(p) if p != pet_id => panic_with_error!(env, ContractError::PetScopeViolation),
+            Some(_) => {}
+        }
+    }
+
     // ── BREEDING RECORD MANAGEMENT ──────────────────────────────────
 
     pub fn add_breeding_record(
@@ -12744,6 +13377,20 @@ impl PetChainContract {
         if notes.len() > MAX_BREEDING_NOTES_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
         }
+        let breeder = env.current_contract_address();
+        Self::store_breeding_record(&env, sire_id, dam_id, breeding_date, notes, breeder)
+    }
+
+    /// Shared writer for `add_breeding_record` and `record_mating`.
+    fn store_breeding_record(
+        env: &Env,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+        notes: String,
+        breeder: Address,
+    ) -> u64 {
+        let env = env.clone();
         let count = env
             .storage()
             .persistent()
@@ -12757,7 +13404,7 @@ impl PetChainContract {
             dam_id,
             breeding_date,
             offspring_count: 0,
-            breeder: env.current_contract_address(),
+            breeder,
             notes,
         };
 
@@ -12877,6 +13524,240 @@ impl PetChainContract {
             .persistent()
             .get(&BreedingKey::PetBreedingCount(pet_id))
             .unwrap_or(0u64)
+    }
+
+    // ── BREEDING ELIGIBILITY & COOLDOWNS (Issue #1342) ─────────────
+
+    pub fn set_breeding_policy(env: Env, admin: Address, policy: BreedingPolicy) {
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        admin.require_auth();
+        if policy.max_coi_bp > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        env.storage()
+            .instance()
+            .set(&BreedingEligibilityKey::Policy, &policy);
+        Self::record_admin_activity(&env, &admin, "set_breeding_policy");
+    }
+
+    pub fn get_breeding_policy(env: Env) -> BreedingPolicy {
+        env.storage()
+            .instance()
+            .get(&BreedingEligibilityKey::Policy)
+            .unwrap_or_else(BreedingPolicy::default_policy)
+    }
+
+    /// Breeding date of the pet's most recent mating recorded through
+    /// `record_mating`, if any.
+    pub fn get_last_mating_date(env: Env, pet_id: u64) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&BreedingEligibilityKey::LastMating(pet_id))
+    }
+
+    /// Read-only evaluation of every eligibility rule for a proposed mating.
+    /// Does not evaluate authorization; see `record_mating`.
+    pub fn check_breeding_eligibility(
+        env: Env,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+    ) -> BreedingCheck {
+        Self::evaluate_breeding_eligibility(&env, sire_id, dam_id, breeding_date)
+    }
+
+    /// Record a mating after authorization and the full eligibility check.
+    ///
+    /// `caller` must own the sire or the dam; the owner of the other parent
+    /// must also authorize. Replaying the same `(sire_id, dam_id,
+    /// breeding_date)` returns the original record id without writing
+    /// anything or re-evaluating cooldowns.
+    pub fn record_mating(
+        env: Env,
+        caller: Address,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+        notes: String,
+    ) -> u64 {
+        caller.require_auth();
+        if notes.len() > MAX_BREEDING_NOTES_LEN {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+        if sire_id == dam_id {
+            panic_with_error!(&env, ContractError::SelfBreeding);
+        }
+
+        let sire_owner = Self::get_pet_owner(env.clone(), sire_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        let dam_owner = Self::get_pet_owner(env.clone(), dam_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if caller == sire_owner {
+            if dam_owner != caller {
+                dam_owner.require_auth();
+            }
+        } else if caller == dam_owner {
+            sire_owner.require_auth();
+        } else {
+            panic_with_error!(&env, ContractError::NotPetOwner);
+        }
+
+        let mating_key = BreedingEligibilityKey::Mating((sire_id, dam_id, breeding_date));
+        if let Some(existing) = env.storage().persistent().get::<_, u64>(&mating_key) {
+            return existing;
+        }
+
+        match Self::evaluate_breeding_eligibility(&env, sire_id, dam_id, breeding_date) {
+            BreedingCheck::Eligible => {}
+            BreedingCheck::SelfBreeding => panic_with_error!(&env, ContractError::SelfBreeding),
+            BreedingCheck::ParentNotFound => panic_with_error!(&env, ContractError::PetNotFound),
+            BreedingCheck::ParentInactive => {
+                panic_with_error!(&env, ContractError::ParentInactive)
+            }
+            BreedingCheck::IncompatibleSpecies | BreedingCheck::IncompatibleSex => {
+                panic_with_error!(&env, ContractError::IncompatibleParents)
+            }
+            BreedingCheck::InvalidBreedingDate => {
+                panic_with_error!(&env, ContractError::InvalidTimestamp)
+            }
+            BreedingCheck::ParentTooYoung => {
+                panic_with_error!(&env, ContractError::ParentTooYoung)
+            }
+            BreedingCheck::SireCooldownActive | BreedingCheck::DamCooldownActive => {
+                panic_with_error!(&env, ContractError::BreedingCooldownActive)
+            }
+            BreedingCheck::InbreedingThresholdExceeded => {
+                panic_with_error!(&env, ContractError::InbreedingThresholdExceeded)
+            }
+        }
+
+        let record_id = Self::store_breeding_record(
+            &env,
+            sire_id,
+            dam_id,
+            breeding_date,
+            notes,
+            caller.clone(),
+        );
+
+        env.storage().persistent().set(&mating_key, &record_id);
+        Self::bump_persistent_ttl(&env, &mating_key);
+        for pet_id in [sire_id, dam_id] {
+            let key = BreedingEligibilityKey::LastMating(pet_id);
+            env.storage().persistent().set(&key, &breeding_date);
+            Self::bump_persistent_ttl(&env, &key);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "MatingRecorded"), sire_id, dam_id),
+            MatingRecordedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                sire_id,
+                dam_id,
+                breeding_date,
+                breeder: caller,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        record_id
+    }
+
+    /// Single source of truth for breeding eligibility. Rules and their
+    /// order are documented in `breeding_eligibility.rs`.
+    fn evaluate_breeding_eligibility(
+        env: &Env,
+        sire_id: u64,
+        dam_id: u64,
+        breeding_date: u64,
+    ) -> BreedingCheck {
+        if sire_id == dam_id {
+            return BreedingCheck::SelfBreeding;
+        }
+        let load = |id: u64| {
+            env.storage()
+                .instance()
+                .get::<DataKey, Pet>(&DataKey::Pet(id))
+        };
+        let (sire, dam) = match (load(sire_id), load(dam_id)) {
+            (Some(s), Some(d)) => (s, d),
+            _ => return BreedingCheck::ParentNotFound,
+        };
+        if !sire.active || sire.archived || !dam.active || dam.archived {
+            return BreedingCheck::ParentInactive;
+        }
+        if sire.species != dam.species {
+            return BreedingCheck::IncompatibleSpecies;
+        }
+        if sire.gender != Gender::Male || dam.gender != Gender::Female {
+            return BreedingCheck::IncompatibleSex;
+        }
+
+        let (sire_birth, dam_birth) = match (
+            Self::pet_birth_timestamp(env, &sire),
+            Self::pet_birth_timestamp(env, &dam),
+        ) {
+            (Some(s), Some(d)) => (s, d),
+            // An unknown birth date cannot prove minimum age.
+            _ => return BreedingCheck::ParentTooYoung,
+        };
+        if breeding_date > env.ledger().timestamp()
+            || breeding_date < sire_birth
+            || breeding_date < dam_birth
+        {
+            return BreedingCheck::InvalidBreedingDate;
+        }
+
+        let policy = Self::get_breeding_policy(env.clone());
+        if breeding_date - sire_birth < policy.min_age_secs
+            || breeding_date - dam_birth < policy.min_age_secs
+        {
+            return BreedingCheck::ParentTooYoung;
+        }
+
+        let cooled_down = |pet_id: u64, cooldown: u64| -> bool {
+            match env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&BreedingEligibilityKey::LastMating(pet_id))
+            {
+                None => true,
+                Some(last) => match last.checked_add(cooldown) {
+                    Some(next) => breeding_date >= next,
+                    None => false,
+                },
+            }
+        };
+        if !cooled_down(sire_id, policy.sire_cooldown_secs) {
+            return BreedingCheck::SireCooldownActive;
+        }
+        if !cooled_down(dam_id, policy.dam_cooldown_secs) {
+            return BreedingCheck::DamCooldownActive;
+        }
+
+        if Self::calc_coi(env, sire_id, dam_id) >= policy.max_coi_bp {
+            return BreedingCheck::InbreedingThresholdExceeded;
+        }
+
+        BreedingCheck::Eligible
+    }
+
+    /// Decrypts and parses a pet's stored birthday. `get_pet` cannot be
+    /// used here because it hides `Private` pets from the contract itself.
+    fn pet_birth_timestamp(env: &Env, pet: &Pet) -> Option<u64> {
+        let key = Self::get_encryption_key(env);
+        let bytes = decrypt_sensitive_data(
+            env,
+            &pet.encrypted_birthday.ciphertext,
+            &pet.encrypted_birthday.nonce,
+            &key,
+        )
+        .ok()?;
+        let birthday = String::from_xdr(env, &bytes).ok()?;
+        Self::parse_birthday_timestamp(&birthday).ok()
     }
 
     // ── MENDELIAN GENETICS ──────────────────────────────────────────
@@ -13191,7 +14072,9 @@ impl PetChainContract {
                     .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
                 {
                     if let Some(deleted_at) = record.deleted_at {
-                        if now >= deleted_at.saturating_add(retention_period) {
+                        if Self::is_on_purge_hold(&env, record_id) {
+                            // Held records are never purged (Issue #1344).
+                        } else if now >= deleted_at.saturating_add(retention_period) {
                             deleted.push_back(record_id);
                             if !dry_run {
                                 env.storage()
@@ -13305,7 +14188,9 @@ impl PetChainContract {
                     .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(record_id))
                 {
                     if let Some(deleted_at) = record.deleted_at {
-                        if now >= deleted_at.saturating_add(retention_period) {
+                        if Self::is_on_purge_hold(&env, record_id) {
+                            // Held records are never purged (Issue #1344).
+                        } else if now >= deleted_at.saturating_add(retention_period) {
                             deleted.push_back(record_id);
                             if !dry_run {
                                 env.storage()
@@ -13354,6 +14239,251 @@ impl PetChainContract {
         res.deleted.len()
     }
 
+    // ── CONFIRMED, AUDITED PURGE (Issue #1344) ──────────────────────
+    //
+    // Roles, nonce/confirmation rules and audit privacy are documented in
+    // `purge_authorization.rs`.
+
+    /// Irreversibly remove specific soft-deleted medical records of one pet.
+    ///
+    /// `record_ids` must be non-empty, at most `MAX_PURGE_BATCH`, strictly
+    /// ascending, and every record must belong to `pet_id`, be soft-deleted,
+    /// be past retention and not be on hold. `nonce` must equal
+    /// `get_purge_nonce(caller)` and `confirmation` must equal
+    /// `compute_purge_confirmation(caller, pet_id, record_ids, nonce)`.
+    /// All checks run before any record is removed.
+    pub fn purge_records_confirmed(
+        env: Env,
+        caller: Address,
+        pet_id: u64,
+        record_ids: Vec<u64>,
+        nonce: u64,
+        confirmation: BytesN<32>,
+    ) -> PurgeAuditEntry {
+        caller.require_auth();
+        let owner = Self::get_pet_owner(env.clone(), pet_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        let role = if caller == owner {
+            PurgeRole::Owner
+        } else if Self::is_admin_address(&env, &caller) {
+            PurgeRole::Admin
+        } else {
+            panic_with_error!(&env, ContractError::Unauthorized)
+        };
+
+        let nonce_key = PurgeKey::Nonce(caller.clone());
+        let expected_nonce: u64 = env.storage().persistent().get(&nonce_key).unwrap_or(0);
+        if nonce != expected_nonce {
+            panic_with_error!(&env, ContractError::InvalidNonce);
+        }
+        Self::require_canonical_purge_scope(&env, &record_ids);
+        if confirmation != Self::purge_confirmation(&env, &caller, pet_id, &record_ids, nonce) {
+            panic_with_error!(&env, ContractError::PurgeConfirmationMismatch);
+        }
+
+        let retention_period = Self::get_retention_period(env.clone());
+        let now = env.ledger().timestamp();
+        let mut digest_input = Bytes::from_slice(&env, PURGE_RECORDS_DIGEST_DOMAIN);
+        digest_input.extend_from_array(&pet_id.to_be_bytes());
+        digest_input.extend_from_array(&record_ids.len().to_be_bytes());
+        for record_id in record_ids.iter() {
+            let record: MedicalRecord = env
+                .storage()
+                .instance()
+                .get(&MedicalKey::MedicalRecord(record_id))
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecordNotFound));
+            if record.pet_id != pet_id {
+                panic_with_error!(&env, ContractError::PetScopeViolation);
+            }
+            if Self::is_on_purge_hold(&env, record_id) {
+                panic_with_error!(&env, ContractError::RecordOnPurgeHold);
+            }
+            let deleted_at = record
+                .deleted_at
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+            if now < deleted_at.saturating_add(retention_period) {
+                panic_with_error!(&env, ContractError::RetentionPeriodNotMet);
+            }
+            let record_hash: BytesN<32> = env
+                .crypto()
+                .sha256(&Self::canonical_medical_record_preimage(&env, &record))
+                .into();
+            digest_input.extend_from_array(&record_id.to_be_bytes());
+            digest_input.append(&Bytes::from(record_hash));
+        }
+        let records_digest: BytesN<32> = env.crypto().sha256(&digest_input).into();
+
+        for record_id in record_ids.iter() {
+            env.storage()
+                .instance()
+                .remove(&MedicalKey::MedicalRecord(record_id));
+        }
+
+        env.storage()
+            .persistent()
+            .set(&nonce_key, &safe_increment(&env, nonce));
+        Self::bump_persistent_ttl(&env, &nonce_key);
+
+        let audit_count: u64 = env
+            .storage()
+            .persistent()
+            .get(&PurgeKey::AuditCount)
+            .unwrap_or(0);
+        let audit_id = safe_increment(&env, audit_count);
+        let entry = PurgeAuditEntry {
+            audit_id,
+            pet_id,
+            purged_by: caller.clone(),
+            role,
+            record_count: record_ids.len(),
+            records_digest: records_digest.clone(),
+            nonce,
+            timestamp: now,
+        };
+        let audit_key = PurgeKey::Audit(audit_id);
+        env.storage().persistent().set(&audit_key, &entry);
+        env.storage()
+            .persistent()
+            .set(&PurgeKey::AuditCount, &audit_id);
+        Self::bump_persistent_ttl(&env, &audit_key);
+        Self::bump_persistent_ttl(&env, &PurgeKey::AuditCount);
+
+        if role == PurgeRole::Admin {
+            Self::record_admin_activity(&env, &caller, "purge_records_confirmed");
+        }
+        env.events().publish(
+            (Symbol::new(&env, "RecordsPurged"), pet_id),
+            PurgeAuditEvent {
+                version: EVENT_SCHEMA_VERSION,
+                audit_id,
+                pet_id,
+                purged_by: caller,
+                role,
+                record_count: entry.record_count,
+                records_digest,
+                nonce,
+                timestamp: now,
+            },
+        );
+
+        entry
+    }
+
+    /// Confirmation digest a caller must present to `purge_records_confirmed`.
+    pub fn compute_purge_confirmation(
+        env: Env,
+        caller: Address,
+        pet_id: u64,
+        record_ids: Vec<u64>,
+        nonce: u64,
+    ) -> BytesN<32> {
+        Self::require_canonical_purge_scope(&env, &record_ids);
+        Self::purge_confirmation(&env, &caller, pet_id, &record_ids, nonce)
+    }
+
+    pub fn get_purge_nonce(env: Env, caller: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&PurgeKey::Nonce(caller))
+            .unwrap_or(0)
+    }
+
+    /// Place or lift a purge hold (e.g. legal hold) on a medical record.
+    /// Admin only; owners cannot lift a hold. Held records are skipped by
+    /// every purge path.
+    pub fn set_purge_hold(env: Env, admin: Address, record_id: u64, held: bool) {
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        admin.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .has(&MedicalKey::MedicalRecord(record_id))
+        {
+            panic_with_error!(&env, ContractError::RecordNotFound);
+        }
+        let key = PurgeKey::Hold(record_id);
+        if held {
+            env.storage().persistent().set(&key, &true);
+            Self::bump_persistent_ttl(&env, &key);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        Self::record_admin_activity(&env, &admin, "set_purge_hold");
+        env.events().publish(
+            (Symbol::new(&env, "PurgeHoldChanged"), record_id),
+            PurgeHoldChangedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                record_id,
+                held,
+                admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    pub fn is_record_on_purge_hold(env: Env, record_id: u64) -> bool {
+        Self::is_on_purge_hold(&env, record_id)
+    }
+
+    pub fn get_purge_audit(env: Env, audit_id: u64) -> Option<PurgeAuditEntry> {
+        env.storage().persistent().get(&PurgeKey::Audit(audit_id))
+    }
+
+    pub fn get_purge_audit_count(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&PurgeKey::AuditCount)
+            .unwrap_or(0)
+    }
+
+    fn is_on_purge_hold(env: &Env, record_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&PurgeKey::Hold(record_id))
+            .unwrap_or(false)
+    }
+
+    fn require_canonical_purge_scope(env: &Env, record_ids: &Vec<u64>) {
+        if record_ids.is_empty() {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        if record_ids.len() > MAX_PURGE_BATCH {
+            panic_with_error!(env, ContractError::BatchTooLarge);
+        }
+        let mut prev: Option<u64> = None;
+        for id in record_ids.iter() {
+            if let Some(p) = prev {
+                if id <= p {
+                    panic_with_error!(env, ContractError::InvalidInput);
+                }
+            }
+            prev = Some(id);
+        }
+    }
+
+    /// sha256(domain || contract || caller || pet_id || nonce || count || ids),
+    /// with addresses XDR-encoded and integers big-endian.
+    fn purge_confirmation(
+        env: &Env,
+        caller: &Address,
+        pet_id: u64,
+        record_ids: &Vec<u64>,
+        nonce: u64,
+    ) -> BytesN<32> {
+        let mut buf = Bytes::from_slice(env, PURGE_CONFIRMATION_DOMAIN);
+        buf.append(&env.current_contract_address().to_xdr(env));
+        buf.append(&caller.clone().to_xdr(env));
+        buf.extend_from_array(&pet_id.to_be_bytes());
+        buf.extend_from_array(&nonce.to_be_bytes());
+        buf.extend_from_array(&record_ids.len().to_be_bytes());
+        for id in record_ids.iter() {
+            buf.extend_from_array(&id.to_be_bytes());
+        }
+        env.crypto().sha256(&buf).into()
+    }
+
     /// Build the canonical, versioned preimage bytes for a [`MedicalRecord`]
     /// (Issue #1169).
     ///
@@ -13397,19 +14527,19 @@ impl PetChainContract {
         for byte in record.pet_id.to_be_bytes() {
             preimage.push_back(byte);
         }
-        for byte in record.vet_address.to_xdr(env).iter() {
+        for byte in record.vet_address.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.diagnosis.to_xdr(env).iter() {
+        for byte in record.diagnosis.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.treatment.to_xdr(env).iter() {
+        for byte in record.treatment.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.medications.to_xdr(env).iter() {
+        for byte in record.medications.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.notes.to_xdr(env).iter() {
+        for byte in record.notes.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
         for byte in record.date.to_be_bytes() {

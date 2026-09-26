@@ -37,6 +37,63 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-09-26 — Claim-document revocation, breeding eligibility, health-score provenance, confirmed purge (#1341–#1344) + repair of pre-existing build breakage
+
+**New public ABI (intentional, additive):**
+- #1341: `submit_claim_document`, `supersede_claim_document`,
+  `revoke_claim_document`, `approve_claim`, `get_claim_document`,
+  `get_claim_document_count`, `get_claim_settlement`,
+  `is_claim_document_acceptable`, `settlement_has_revoked_documents`.
+  See `docs/claim-document-revocation.md`.
+- #1342: `record_mating`, `check_breeding_eligibility`,
+  `set_breeding_policy`, `get_breeding_policy`, `get_last_mating_date`.
+  Legacy `add_breeding_record` / `register_breeding_pair` are unchanged.
+- #1343: `record_health_score`, `compute_health_input_digest`,
+  `compute_health_score_value`, `verify_health_score_provenance`,
+  `get_health_score_record`, `get_health_score_record_count`,
+  `get_latest_health_score`. The canonical input encoding is documented in
+  `src/health_provenance.rs` and pinned by published digest vectors in
+  `src/test_health_score_provenance.rs`.
+- #1344: `purge_records_confirmed`, `compute_purge_confirmation`,
+  `get_purge_nonce`, `set_purge_hold`, `is_record_on_purge_hold`,
+  `get_purge_audit`, `get_purge_audit_count`.
+
+**Behavior change (existing functions):** `purge_deleted_records` and
+`purge_deleted_records_bounded` now skip records on a purge hold. No record
+can be on hold before this release, so existing behavior is unchanged until
+an admin places a hold.
+
+**New storage-key enums (append-only, pinned in
+`test_discriminant_stability.rs`):** `ClaimDocKey`,
+`BreedingEligibilityKey`, `HealthScoreKey`, `PurgeKey`. No existing key
+changed. `HealthInputKind` discriminants (0, 1, 2) are part of the health
+input digest and are pinned too.
+
+**New `ContractError` values:** 173–178 (claim documents), 179–182
+(breeding), 183 (health score), 184–185 (purge), 186
+(`PetScopeViolation`). All are pinned in `test_error_registry.rs`.
+
+**Repaired pre-existing breakage (the crate did not compile at `main`):**
+- `ContractError`: `InvalidTimestamp` collided with `StaleMigration` at 169
+  and moved to **170**. Re-added the variants that #1264/#1275 referenced
+  but that were lost in merges: `CertificateRevoked` (48),
+  `CertificateExpired` (49), `VetCredentialsExpired` (50) and
+  `CertificateHashConflict` (51), at the values already published in
+  CHANGELOG.md. `CertificateNotFound` was published as 47, which is
+  `ProposalNotFound`, so it is appended at **171**. `NonceReused` (never
+  published) is at **172**.
+- Re-added `DataKey::VetCredentialsExpiry(Address)` (dropped by the #1268
+  merge) and pinned `DataKey::PetKeyVersion`, `DataKey::MicrochipIndex`,
+  `MedicalKey::CertificateCount` and `MedicalKey::CertificateLifecycle` in
+  the discriminant tests.
+- Fixed a duplicate `mod test_discriminant_stability`, two `safe_increment`
+  calls missing `env`, and several use-after-move errors. Imported the
+  testutils `Ledger` trait in two test modules.
+- Regenerated `abi-snapshot.txt`, which had drifted again (for example,
+  `anchor_certificate_idempotent` and `revoke_certificate` were missing).
+- None of the repaired code could have been deployed (it did not compile),
+  so no live discriminant or storage layout changed.
+
 ### 2026-08-29 — Custody-history digest + repair of pre-existing ABI drift (#1254)
 
 **New public ABI (intentional, additive):**
