@@ -14719,3 +14719,5 @@ mod test_lab_result_anomaly {
 
 #[cfg(test)]
 mod test_breeding_coi;
+
+mod insurance_ledger;
