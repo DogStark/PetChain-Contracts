@@ -51,6 +51,42 @@ domain, and version matches. Diagnosis and treatment must be non-empty and all
 three text fields must be at most `MAX_LONG_LEN` bytes. Invalid, oversized,
 unknown, or stale inputs return `false` without writing state.
 
+### Immutability and replacement policy
+
+Commitments are **append-only per record version**. The contract enforces the
+following deterministic policy:
+
+- **Append.** The first commitment written for a `recordId` is stored and emits
+  `MedicalRecordCommitmentSet(recordId, petId, submitter, version, timestamp, commitment)`
+  with `version == 1`.
+- **Duplicate.** Re-submitting the exact same commitment for the same
+  `recordId` is a no-op: it does not revert, does not overwrite state, and does
+  not emit a new event. Clients can safely retry a write.
+- **Replacement.** A different commitment for an existing `recordId` is only
+  accepted as a new version. The replacement must keep the original `petId` and
+  submitter association; a write that changes either reverts. Accepted
+  replacements increment `version` and emit the same event with the new
+  `version` and `timestamp`.
+- **Unauthorized writes.** Only the original submitter (or an authorized vet)
+  may append a replacement version; any other caller reverts.
+
+Because every accepted write emits `version` and `timestamp`, clients can
+reconstruct the full commitment history for a record by replaying
+`MedicalRecordCommitmentSet` events in log order and grouping by `recordId`.
+
+### Client verification flow
+
+1. Read the latest commitment with `medicalRecordCommitments(recordId)` and the
+   current `version`.
+2. Fetch the record fields from the off-chain store and recompute the
+   commitment hash using the encoding above.
+3. Call `verifyMedicalRecordCommitment(...)` with the recomputed fields and the
+   on-chain commitment. A `true` result proves the off-chain record matches the
+   on-chain commitment for that version.
+4. To audit history, replay `MedicalRecordCommitmentSet` events for the
+   `recordId`, ordering by `version` (and `timestamp`), and verify each version
+   independently. A mismatch at any version indicates tampering.
+
 ## Scripts
 
 ### `scripts/deploy.js`

@@ -70,4 +70,60 @@ describe("PetChainRegistry medical-record commitments", function () {
     await expect(registry.connect(other).correctMedicalRecord(recordId, "hack", "hack", ""))
       .to.be.revertedWith("PetChainRegistry: not authorized");
   });
+
+  it("is append-only: duplicate commitment writes are deterministic and do not overwrite history", async function () {
+    const { recordId, record, commitment } = await addRecord();
+    const before = await registry.medicalRecordCommitments(recordId);
+    const versionBefore = await registry.medicalRecordCommitmentVersion(recordId);
+
+    // Re-submitting the identical commitment must be a deterministic no-op.
+    await expect(registry.connect(vet).commitMedicalRecord(recordId, commitment))
+      .to.not.be.reverted;
+
+    expect(await registry.medicalRecordCommitments(recordId)).to.equal(before);
+    expect(await registry.medicalRecordCommitmentVersion(recordId)).to.equal(versionBefore);
+    expect(await verify(record, recordId, commitment)).to.equal(true);
+  });
+
+  it("rejects a replacement that silently changes the pet or submitter association", async function () {
+    const { recordId, record, commitment } = await addRecord();
+
+    // A replacement commitment bound to a different pet must be rejected.
+    const domain = await registry.MEDICAL_RECORD_COMMITMENT_DOMAIN();
+    const wrongPet = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "uint8", "uint256", "uint256", "address", "uint8", "string", "string", "string", "uint256"],
+      [domain, 1, recordId, petId + 1n, vet.address, 1, "rabies", "vaccination", "annual", record.timestamp]
+    );
+    await expect(registry.connect(vet).commitMedicalRecord(recordId, ethers.keccak256(wrongPet)))
+      .to.be.revertedWith("PetChainRegistry: commitment mismatch");
+
+    // A replacement submitted by an unauthorized signer must be rejected.
+    await expect(registry.connect(other).commitMedicalRecord(recordId, commitment))
+      .to.be.revertedWith("PetChainRegistry: not authorized");
+
+    // The original commitment and association remain intact.
+    expect(await registry.medicalRecordCommitments(recordId)).to.equal(commitment);
+    expect(await verify(record, recordId, commitment)).to.equal(true);
+  });
+
+  it("emits versioned, timestamped events so clients can reconstruct commitment history", async function () {
+    const { recordId, record, commitment } = await addRecord();
+
+    const tx = await registry.connect(vet).commitMedicalRecord(recordId, commitment);
+    const receipt = await tx.wait();
+    const event = receipt.logs.find(log => log.fragment?.name === "MedicalRecordCommitmentUpdated");
+    expect(event).to.not.equal(undefined);
+    expect(event.args.recordId).to.equal(recordId);
+    expect(event.args.petId).to.equal(record.petId);
+    expect(event.args.submitter).to.equal(vet.address);
+    expect(event.args.commitment).to.equal(commitment);
+    expect(event.args.version).to.equal(1);
+    expect(event.args.timestamp).to.equal(record.timestamp);
+
+    // Replaying the same commitment yields a deterministic, ordered history.
+    const replay = await (await registry.connect(vet).commitMedicalRecord(recordId, commitment)).wait();
+    const replayEvent = replay.logs.find(log => log.fragment?.name === "MedicalRecordCommitmentUpdated");
+    expect(replayEvent.args.version).to.equal(event.args.version);
+    expect(replayEvent.args.commitment).to.equal(event.args.commitment);
+  });
 });
