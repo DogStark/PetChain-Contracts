@@ -51,6 +51,28 @@ domain, and version matches. Diagnosis and treatment must be non-empty and all
 three text fields must be at most `MAX_LONG_LEN` bytes. Invalid, oversized,
 unknown, or stale inputs return `false` without writing state.
 
+## Pause reason codes
+
+Pausing and unpausing emit operational audit events that are indexable and
+privacy-safe: only a bounded reason code is stored on-chain, never free-form
+incident text. The reason code is validated on pause and unknown codes are
+rejected.
+
+| Code | Name                | Meaning                                              |
+|------|---------------------|------------------------------------------------------|
+| 0    | `NONE`              | Reserved; not a valid pause reason.                  |
+| 1    | `SECURITY`          | Suspected exploit or unauthorized access.            |
+| 2    | `MAINTENANCE`       | Planned maintenance or upgrade.                      |
+| 3    | `ORACLE`            | Oracle or external dependency failure.               |
+| 4    | `REGULATORY`        | Regulatory or compliance hold.                       |
+| 5    | `EMERGENCY`         | Emergency stop by an operator.                       |
+
+Pause and unpause events include the `actor`, a monotonically increasing
+`sequence`, and a `timestamp` so operators can reconstruct the audit trail
+without off-chain notes. Replayed state changes are rejected: pausing an
+already-paused contract, unpausing a contract that is not paused, or supplying
+a stale `sequence` reverts without writing state.
+
 ## Scripts
 
 ### `scripts/deploy.js`
