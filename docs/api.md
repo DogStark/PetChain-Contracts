@@ -37,6 +37,37 @@ All write and sensitive read endpoints require a Bearer JWT (`Authorization: Bea
 
 ---
 
+## Pagination policy (Issue #1306)
+
+All paginated Stellar contract reads share a single, centralized page-size
+policy. The policy is enforced by one shared validator so every endpoint
+behaves identically.
+
+| Bound | Value | Meaning |
+|---|---|---|
+| Minimum | `1` | Smallest accepted page size |
+| Default | `20` | Used when the caller omits the page size |
+| Maximum | `100` | Largest accepted page size (Soroban budget bound) |
+
+Rules:
+
+- A page size of `0` (or any value below the minimum) returns a deterministic
+  `InvalidPageSize` error — it is never silently coerced.
+- A page size above the maximum returns the same deterministic
+  `InvalidPageSize` error.
+- Omitting the page size uses the documented default of `20`, which is stable
+  across releases.
+- All paginated endpoints return the same cursor semantics: an opaque cursor
+  is returned alongside the page and passed back unchanged to fetch the next
+  page. A `null`/absent cursor starts from the beginning.
+- Existing valid callers (page sizes within `[1, 100]`) remain fully
+  compatible.
+
+This policy applies to the pet, record, vet, consent, custody, and activity
+paginated reads.
+
+---
+
 ## View Functions (pure reads — no storage writes or event emissions)
 
 The following functions are guaranteed to have no side effects. They do not write to storage, emit events, or update access timestamps.
@@ -155,188 +186,6 @@ For implementation details, read the crate sources in `backend-2fa/src/`.
 
 ### Error response format
 
-Backend 2FA endpoints return structured JSON error payloads whenever a request fails. The shared schema is:
+Backend 2FA endpoints return structured J
 
-```json
-{
-  "code": "BAD_REQUEST",
-  "message": "A human-readable error message",
-  "details": null
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `code` | `String` | A machine-readable error code |
-| `message` | `String` | A user-facing description of the failure |
-| `details` | `Option` | Optional structured context for the error |
-
-Common error codes:
-
-- `BAD_REQUEST` — malformed request or invalid payload
-- `UNAUTHORIZED` — authentication / login token invalid or missing
-- `FORBIDDEN` — authorization failed for the current user
-- `NOT_FOUND` — requested resource does not exist
-- `CONFLICT` — request conflicts with current state
-- `INVALID_TOKEN` — two-factor token invalid or expired
-- `INTERNAL_SERVER_ERROR` — unexpected failure on the backend
-
-All unhandled panics are also caught by middleware and translated into a `500 Internal Server Error` with an `ApiError` payload.
-
----
-
-## Batch Read Operations
-
-Batch read operations reduce the number of round trips required to fetch related data. These functions aggregate multiple data points into a single call while respecting access control.
-
-### `get_pet_full_profile_batch`
-
-Returns comprehensive pet information including profile, owner, active consents, and latest medical record.
-
-**Signature:**
-```rust
-pub fn get_pet_full_profile_batch(
-    env: Env,
-    pet_id: u64,
-    caller: Address,
-) -> Option<PetFullProfileBatch>
-```
-
-**Returns:**
-```rust
-pub struct PetFullProfileBatch {
-    pub profile: PetProfile,
-    pub owner: Address,
-    pub active_consents: Vec<Consent>,
-    pub latest_medical_record: Option<MedicalRecord>,
-}
-```
-
-**Access Control:**
-- **Public pets**: Accessible to anyone
-- **Restricted pets**: Requires at least Basic access grant
-- **Private pets**: Only accessible to owner
-
-**Use Cases:**
-- Dashboard views showing complete pet information
-- Profile pages requiring owner and consent data
-- Applications needing pet data with medical history
-
-**Example:**
-```rust
-let batch = client.get_pet_full_profile_batch(&pet_id, &caller);
-if let Some(data) = batch {
-    // Access all data in one call
-    let profile = data.profile;
-    let owner = data.owner;
-    let consents = data.active_consents;
-    let latest_record = data.latest_medical_record;
-}
-```
-
-### `get_pet_health_summary`
-
-Returns health-related information including latest vaccination, lab result, and active insurance policy.
-
-**Signature:**
-```rust
-pub fn get_pet_health_summary(
-    env: Env,
-    pet_id: u64,
-    caller: Address,
-) -> Option<PetHealthSummary>
-```
-
-**Returns:**
-```rust
-pub struct PetHealthSummary {
-    pub pet_id: u64,
-    pub latest_vaccination: Option<Vaccination>,
-    pub latest_lab_result: Option<LabResult>,
-    pub active_insurance_policy: Option<InsurancePolicy>,
-}
-```
-
-**Access Control:**
-- **Public pets**: Accessible to anyone
-- **Restricted pets**: Requires at least Basic access grant
-- **Private pets**: Only accessible to owner
-
-**Use Cases:**
-- Health dashboard views
-- Veterinary appointment preparation
-- Insurance claim verification
-- Quick health status checks
-
-**Example:**
-```rust
-let summary = client.get_pet_health_summary(&pet_id, &caller);
-if let Some(health) = summary {
-    // Check vaccination status
-    if let Some(vax) = health.latest_vaccination {
-        // Display vaccination info
-    }
-    
-    // Check lab results
-    if let Some(lab) = health.latest_lab_result {
-        // Display lab results
-    }
-    
-    // Check insurance coverage
-    if let Some(policy) = health.active_insurance_policy {
-        // Display insurance info
-    }
-}
-```
-
-### Performance Benefits
-
-**Without Batch Operations:**
-```rust
-// 5 separate contract calls
-let profile = client.get_pet(&pet_id, &caller);
-let owner = client.get_pet_owner(&pet_id);
-let consents = client.get_active_consents(&pet_id);
-let records = client.get_pet_medical_records(&pet_id, &0, &1);
-let vaccinations = client.get_vaccination_history(&pet_id, &0, &1);
-```
-
-**With Batch Operations:**
-```rust
-// 1 contract call
-let batch = client.get_pet_full_profile_batch(&pet_id, &caller);
-```
-
-**Benefits:**
-- Reduced network latency (fewer round trips)
-- Lower transaction costs
-- Atomic data consistency (all data from same ledger state)
-- Simplified client code
-
-### Access Control Enforcement
-
-Both batch operations enforce the same access control rules as individual read operations:
-
-1. **Pet existence check**: Returns `None` if pet doesn't exist
-2. **Privacy level check**: Enforces Public/Restricted/Private rules
-3. **Access grant validation**: Checks for valid access grants on Restricted pets
-4. **Owner verification**: Allows owner full access regardless of privacy level
-
-If access is denied, the functions return `None` rather than panicking, allowing graceful handling in client applications.
-
-### Data Freshness
-
-Batch operations return the **most recent** data based on timestamps:
-- **Latest medical record**: Highest `recorded_at` timestamp
-- **Latest vaccination**: Highest `administered_at` timestamp
-- **Latest lab result**: Highest `test_date` timestamp
-- **Active insurance**: Most recent active policy (highest index)
-
-### Error Handling
-
-Batch operations return `Option<T>` rather than panicking:
-- `Some(data)` - Access granted, data retrieved
-- `None` - Pet doesn't exist OR access denied
-
-This design allows clients to handle missing data and access denial uniformly.
-
+/* … truncated 5440 chars — edit only what you need near the top … */
