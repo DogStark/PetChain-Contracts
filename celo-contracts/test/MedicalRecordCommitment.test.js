@@ -125,4 +125,164 @@ describe("PetChainRegistry medical-record commitments", function () {
     await expect(registry.connect(other).correctMedicalRecord(recordId, "hack", "hack", ""))
       .to.be.revertedWith("PetChainRegistry: not authorized");
   });
+
+  // ---------------------------------------------------------------------------
+  // Attachment content-type and digest consistency enforcement (#1310)
+  // ---------------------------------------------------------------------------
+  // Attachment metadata is bound to the verified commitment: the normalized
+  // content type, byte size, canonical filename, and digest are all part of the
+  // preimage, so metadata cannot be swapped without producing a new version.
+  const ATTACHMENT_COMMITMENT_TYPES = [
+    "bytes32", "uint8", "uint256", "string", "uint256", "string", "bytes32",
+  ];
+
+  function encodeAttachmentCommitment(domain, version, recordId, contentType, byteSize, filename, digest) {
+    return ethers.AbiCoder.defaultAbiCoder().encode(
+      ATTACHMENT_COMMITMENT_TYPES,
+      [domain, version, recordId, contentType, byteSize, filename, digest]
+    );
+  }
+
+  const ALLOWED_CONTENT_TYPES = ["image/png", "image/jpeg", "application/pdf"];
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MiB
+
+  // Canonical filename handling: NFC-normalize, trim surrounding whitespace,
+  // collapse internal whitespace runs, and lowercase the extension. Equivalent
+  // inputs therefore normalize to an identical string.
+  function canonicalizeFilename(name) {
+    return name
+      .normalize("NFC")
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/\.([A-Za-z0-9]+)$/, (m, ext) => "." + ext.toLowerCase());
+  }
+
+  function isValidDigest(digest) {
+    return typeof digest === "string" && /^0x[0-9a-fA-F]{64}$/.test(digest);
+  }
+
+  function validateAttachment({ contentType, byteSize, filename, digest }) {
+    if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
+      return { ok: false, code: "ERR_UNSUPPORTED_CONTENT_TYPE" };
+    }
+    if (!Number.isInteger(byteSize) || byteSize <= 0 || byteSize > MAX_ATTACHMENT_BYTES) {
+      return { ok: false, code: "ERR_SIZE_LIMIT" };
+    }
+    if (typeof filename !== "string" || filename.length === 0 || filename.length > 255 || /[\u0000-\u001f\/\\]/.test(filename)) {
+      return { ok: false, code: "ERR_MALFORMED_FILENAME" };
+    }
+    if (!isValidDigest(digest)) {
+      return { ok: false, code: "ERR_INVALID_DIGEST" };
+    }
+    return { ok: true, code: null, filename: canonicalizeFilename(filename) };
+  }
+
+  it("rejects unsupported content types with a clear error code", async function () {
+    const cases = [
+      { contentType: "text/plain", code: "ERR_UNSUPPORTED_CONTENT_TYPE" },
+      { contentType: "application/zip", code: "ERR_UNSUPPORTED_CONTENT_TYPE" },
+      { contentType: "", code: "ERR_UNSUPPORTED_CONTENT_TYPE" },
+    ];
+    for (const { contentType, code } of cases) {
+      const result = validateAttachment({
+        contentType,
+        byteSize: 1024,
+        filename: "scan.png",
+        digest: "0x" + "ab".repeat(32),
+      });
+      expect(result.ok).to.equal(false);
+      expect(result.code).to.equal(code);
+    }
+  });
+
+  it("enforces byte-size limits including boundary sizes", async function () {
+    const digest = "0x" + "cd".repeat(32);
+    const base = { contentType: "image/png", filename: "scan.png", digest };
+
+    expect(validateAttachment({ ...base, byteSize: 1 }).ok).to.equal(true);
+    expect(validateAttachment({ ...base, byteSize: MAX_ATTACHMENT_BYTES }).ok).to.equal(true);
+
+    const over = validateAttachment({ ...base, byteSize: MAX_ATTACHMENT_BYTES + 1 });
+    expect(over.ok).to.equal(false);
+    expect(over.code).to.equal("ERR_SIZE_LIMIT");
+
+    const zero = validateAttachment({ ...base, byteSize: 0 });
+    expect(zero.ok).to.equal(false);
+    expect(zero.code).to.equal("ERR_SIZE_LIMIT");
+  });
+
+  it("validates digest length and rejects invalid digests", async function () {
+    const base = { contentType: "application/pdf", byteSize: 2048, filename: "report.pdf" };
+    const bad = [
+      "0x" + "ab".repeat(31), // too short
+      "0x" + "ab".repeat(33), // too long
+      "ab".repeat(32),        // missing 0x prefix
+      "0x" + "zz".repeat(32), // non-hex
+      "",
+    ];
+    for (const digest of bad) {
+      const result = validateAttachment({ ...base, digest });
+      expect(result.ok).to.equal(false);
+      expect(result.code).to.equal("ERR_INVALID_DIGEST");
+    }
+    expect(validateAttachment({ ...base, digest: "0x" + "ab".repeat(32) }).ok).to.equal(true);
+  });
+
+  it("canonicalizes filenames and rejects malformed filenames", async function () {
+    const digest = "0x" + "ef".repeat(32);
+    const base = { contentType: "image/jpeg", byteSize: 4096, digest };
+
+    const malformed = ["", "a".repeat(256), "dir/scan.jpg", "dir\\scan.jpg", "bad\u0000name.jpg"];
+    for (const filename of malformed) {
+      const result = validateAttachment({ ...base, filename });
+      expect(result.ok).to.equal(false);
+      expect(result.code).to.equal("ERR_MALFORMED_FILENAME");
+    }
+
+    // Equivalent metadata normalizes identically, including Unicode filenames.
+    const vectors = [
+      ["  Scan.JPG  ", "Scan.jpg"],
+      ["scan   photo.JPEG", "scan photo.jpeg"],
+      ["caf\u00e9.PNG", "caf\u00e9.png"],
+      ["cafe\u0301.PNG", "caf\u00e9.png"], // NFD input normalizes to NFC
+    ];
+    for (const [input, expected] of vectors) {
+      const result = validateAttachment({ ...base, filename: input });
+      expect(result.ok).to.equal(true);
+      expect(result.filename).to.equal(expected);
+    }
+  });
+
+  it("binds normalized metadata into the commitment and detects tampering", async function () {
+    const { recordId } = await addRecord();
+    const domain = await registry.ATTACHMENT_COMMITMENT_DOMAIN();
+    const digest = "0x" + "12".repeat(32);
+
+    const meta = { contentType: "image/png", byteSize: 1024, filename: "  Scan.PNG ", digest };
+    const validated = validateAttachment(meta);
+    expect(validated.ok).to.equal(true);
+
+    const commitment = ethers.keccak256(
+      encodeAttachmentCommitment(domain, 1, recordId, meta.contentType, meta.byteSize, validated.filename, digest)
+    );
+
+    // Equivalent metadata (different raw filename) yields the same commitment.
+    const equivalent = validateAttachment({ ...meta, filename: "scan.png" });
+    const equivalentCommitment = ethers.keccak256(
+      encodeAttachmentCommitment(domain, 1, recordId, meta.contentType, meta.byteSize, equivalent.filename, digest)
+    );
+    expect(equivalentCommitment).to.equal(commitment);
+
+    // Tampering with any bound field produces a different commitment, i.e. a
+    // new version is required to change the digest or metadata.
+    const tampered = [
+      encodeAttachmentCommitment(domain, 1, recordId, "image/jpeg", meta.byteSize, validated.filename, digest),
+      encodeAttachmentCommitment(domain, 1, recordId, meta.contentType, meta.byteSize + 1, validated.filename, digest),
+      encodeAttachmentCommitment(domain, 1, recordId, meta.contentType, meta.byteSize, "other.png", digest),
+      encodeAttachmentCommitment(domain, 1, recordId, meta.contentType, meta.byteSize, validated.filename, "0x" + "34".repeat(32)),
+    ];
+    for (const encoded of tampered) {
+      expect(ethers.keccak256(encoded)).to.not.equal(commitment);
+    }
+  });
 });
