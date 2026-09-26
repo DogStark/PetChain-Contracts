@@ -54,3 +54,8 @@ cargo test
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1304 -->
+- #1304: [Contracts] Add Celo invariant tests for registry pause and recovery behavior
