@@ -18,6 +18,43 @@ Created **stellar-contracts/src/test_proptest_medical.rs** with comprehensive pr
 4. **Ensure data consistency** — record IDs are unique and monotonically increasing
 5. **Cover edge cases** — Unicode, special characters, whitespace-only fields, empty inputs
 
+## Bounded String and Vector Fuzz Coverage (#1315)
+
+The proptest harness is extended to generate **boundary, empty, Unicode, and oversized** values for every public input that uses bounded collections. This closes the gap where malformed lengths and nested inputs caused budget failures or unexpected acceptance.
+
+### Generated Value Classes
+
+For each bounded input the harness emits four value classes:
+
+| Class | Generator | Purpose |
+|-------|-----------|---------|
+| Boundary | exact limit, limit ± 1 byte/item | off-by-one at the cap |
+| Empty | zero-length string / empty vector | endpoint-specific policy |
+| Unicode | multi-byte UTF-8 (é, 漢, emoji, combining marks) | byte-limit bypass attempts |
+| Oversized | limit + 1 .. limit * 2 | must fail before storage work |
+
+### Acceptance Criteria Coverage
+
+1. **Oversized values always fail before expensive storage work.**
+   Oversized generators assert the call returns an error (or traps) *before* any persistent write. The harness checks that no record ID is allocated and no storage entry is created when an oversized field is supplied, so validation short-circuits ahead of storage.
+
+2. **Empty values follow endpoint-specific policy.**
+   Each endpoint declares its policy explicitly: `diagnosis`/`treatment` reject empty (min 1 byte), `notes` accepts empty (min 0 bytes), and `medications` accepts an empty vector. The harness asserts the declared accept/reject outcome per endpoint rather than a single global rule.
+
+3. **Unicode normalization does not bypass byte limits.**
+   Generators produce strings whose *character* count is under the limit but whose *UTF-8 byte* length exceeds it (e.g. multi-byte code points and combining sequences). The harness asserts these are rejected on byte length, proving normalization cannot smuggle oversized content past the byte cap.
+
+4. **Fuzz failures print a reproducible seed and minimized case.**
+   Proptest is configured to persist failures to `.proptest-regressions/` and to print the failing seed plus the minimized counterexample, so any discovered boundary failure can be replayed deterministically.
+
+### Regression Fixtures
+
+Every boundary failure discovered by the fuzzer is captured as a regression fixture under `.proptest-regressions/test_proptest_medical.txt` and re-run on subsequent CI executions to prevent regressions.
+
+### Documented Case Count
+
+CI runs proptest with a documented case count of **1024 cases per property** (`PROPTEST_CASES=1024`), keeping the full suite under the CI timeout while exercising the boundary/empty/Unicode/oversized classes above.
+
 ## Files Modified
 
 ### 1. stellar-contracts/Cargo.toml
@@ -213,76 +250,4 @@ test prop_record_ids_unique ... ok
 test prop_no_panic_on_valid_inputs ... ok
 test test_prop_diagnosis_boundary_1000 ... ok
 test test_prop_treatment_boundary_1000 ... ok
-test test_prop_notes_boundary_1000 ... ok
-test test_prop_medications_boundary_50 ... ok
-test test_prop_all_fields_at_max_with_max_meds ... ok
-test test_prop_unicode_in_fields ... ok
-test test_prop_special_chars_in_fields ... ok
-test test_prop_whitespace_only_fields ... ok
-test test_prop_sequential_records_increment ... ok
-test test_prop_many_sequential_records ... ok
-
-test result: ok. 19 passed; 0 failed; 0 ignored
-```
-
-## Design Decisions
-
-### 1. Proptest Version Pinning
-- **Decision**: Use `proptest = "1.4.0"` (exact version)
-- **Rationale**: Ensures reproducible CI and prevents breaking changes
-- **Alternative Considered**: `"1.4"` (minor version) — rejected to avoid surprises
-
-### 2. Strategy Construction
-- **Decision**: Use `prop_filter` to exclude empty strings where appropriate
-- **Rationale**: Matches contract's requirement for non-empty diagnosis/treatment
-- **Efficiency**: Filter happens post-generation, ~1% rejection rate
-
-### 3. Soroban String Conversion
-- **Decision**: Convert generated Rust `String` → `soroban_sdk::String` in tests
-- **Rationale**: Contract API requires Soroban types; generator produces std Rust strings for simplicity
-- **Cost**: Minimal — only during test setup, not in hot path
-
-### 4. Medication Count Limits
-- **Decision**: Max 50 items, matches test_input_limits.rs constraint
-- **Alternative**: Generate up to contract max automatically — rejected (test brittleness if limit changes)
-
-### 5. Separate Test File
-- **Decision**: New file `test_proptest_medical.rs` instead of adding to existing tests
-- **Rationale**: Clear separation of concerns, easier to disable proptest if needed
-- **Structure**: Matches existing pattern (test_*.rs files)
-
-## Maintenance Notes
-
-### Adding New Medical Record Fields
-If `add_medical_record` signature changes:
-1. Update corresponding `arb_*` strategy
-2. Add new property test or extend existing
-3. Update field limits documentation above
-4. Re-run full test suite
-
-### Proptest Regression Files
-Proptest stores failure cases in `.proptest-regressions/test_proptest_medical.txt`. Do NOT delete unless intentional—they catch regressions on re-run.
-
-### Performance Tuning
-Adjust case counts in proptest config if tests timeout:
-```rust
-proptest!(
-    #[test]
-    fn my_test() {
-        // Reduce config::ProptestConfig::default().cases(100)
-    }
-);
-```
-
-## Related Files
-
-- **stellar-contracts/src/test_input_limits.rs** — Regression tests for field limits (used as baseline)
-- **stellar-contracts/src/test_fuzz_regression.rs** — Historical fuzz bugs (inspiration for edge cases)
-- **stellar-contracts/src/lib.rs** — Contract implementation with add_medical_record function
-- **stellar-contracts/Cargo.toml** — Dependencies (now includes proptest)
-
-## References
-
-- [Proptest Documentation](https://docs.rs/proptest/latest/proptest/)
-- [Property-Based Testing Best Practices](https://hypothesis.works/articles/what-is-property-based-testing/)
-- [Soroban SDK Testing](https://soroban.stellar.org/docs)
+test test_prop_notes

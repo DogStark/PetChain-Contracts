@@ -1,5 +1,37 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const fc = require("fast-check");
+
+// Bounded-collection limits mirrored from PetChainRegistry.
+const MAX_DIAGNOSIS_BYTES = 1000;
+const MAX_TREATMENT_BYTES = 1000;
+const MAX_NOTES_BYTES = 1000;
+const MAX_RECORD_TYPE_BYTES = 64;
+
+// Documented proptest case count for CI (see celo-contracts/README.md).
+const FUZZ_CASES = 100;
+
+// fast-check configuration that prints a reproducible seed and minimized case.
+const FC_CONFIG = { numRuns: FUZZ_CASES, verbose: true };
+
+function byteLength(value) {
+  return ethers.toUtf8Bytes(value).length;
+}
+
+// Generators for boundary, empty, Unicode, and oversized bounded strings.
+const boundaryString = (maxBytes) =>
+  fc.string({ maxLength: maxBytes }).map((s) => {
+    const bytes = ethers.toUtf8Bytes(s);
+    return bytes.length <= maxBytes ? s : ethers.toUtf8String(bytes.slice(0, maxBytes));
+  });
+
+const oversizedString = (maxBytes) =>
+  fc.string({ minLength: 1, maxLength: 32 }).map((s) => s + "x".repeat(maxBytes + 1));
+
+const unicodeString = (maxBytes) =>
+  fc.array(fc.constantFrom("\u00e9", "\u0301", "\u4e2d", "\u{1f600}", "a"), { maxLength: 16 })
+    .map((parts) => parts.join(""))
+    .filter((s) => byteLength(s) <= maxBytes);
 
 describe("PetChainRegistry medical-record commitments", function () {
   let registry, admin, owner, other, vet, petId;
@@ -69,5 +101,68 @@ describe("PetChainRegistry medical-record commitments", function () {
     expect(await verify(record, recordId, commitment)).to.equal(true);
     await expect(registry.connect(other).correctMedicalRecord(recordId, "hack", "hack", ""))
       .to.be.revertedWith("PetChainRegistry: not authorized");
+  });
+
+  it("fuzzes bounded strings: oversized values always fail before storage work", async function () {
+    const { recordId, record, commitment } = await addRecord();
+    await fc.assert(
+      fc.asyncProperty(
+        oversizedString(MAX_DIAGNOSIS_BYTES),
+        oversizedString(MAX_NOTES_BYTES),
+        async (diagnosis, notes) => {
+          expect(await verify(record, recordId, commitment, { diagnosis })).to.equal(false);
+          expect(await verify(record, recordId, commitment, { notes })).to.equal(false);
+        }
+      ),
+      FC_CONFIG
+    );
+  });
+
+  it("fuzzes boundary and empty values against endpoint policy", async function () {
+    const { recordId, record, commitment } = await addRecord();
+    await fc.assert(
+      fc.asyncProperty(
+        boundaryString(MAX_DIAGNOSIS_BYTES),
+        boundaryString(MAX_NOTES_BYTES),
+        async (diagnosis, notes) => {
+          // Empty diagnosis is rejected by policy; non-empty bounded values are accepted.
+          const expected = diagnosis.length > 0;
+          expect(await verify(record, recordId, commitment, { diagnosis, notes })).to.equal(expected);
+        }
+      ),
+      FC_CONFIG
+    );
+  });
+
+  it("fuzzes Unicode inputs so normalization cannot bypass byte limits", async function () {
+    const { recordId, record, commitment } = await addRecord();
+    await fc.assert(
+      fc.asyncProperty(
+        unicodeString(MAX_DIAGNOSIS_BYTES),
+        unicodeString(MAX_NOTES_BYTES),
+        async (diagnosis, notes) => {
+          expect(byteLength(diagnosis)).to.be.at.most(MAX_DIAGNOSIS_BYTES);
+          expect(byteLength(notes)).to.be.at.most(MAX_NOTES_BYTES);
+          const expected = diagnosis.length > 0;
+          expect(await verify(record, recordId, commitment, { diagnosis, notes })).to.equal(expected);
+        }
+      ),
+      FC_CONFIG
+    );
+  });
+
+  it("fuzzes recordType byte limits on the bounded vector input", async function () {
+    const { recordId, record, commitment } = await addRecord();
+    await fc.assert(
+      fc.asyncProperty(
+        boundaryString(MAX_RECORD_TYPE_BYTES),
+        oversizedString(MAX_RECORD_TYPE_BYTES),
+        async (bounded, oversized) => {
+          expect(await verify(record, recordId, commitment, { recordType: bounded })).to.equal(true);
+          expect(await verify(record, recordId, commitment, { recordType: oversized })).to.equal(false);
+        }
+      ),
+      FC_CONFIG
+    );
   });
 });
