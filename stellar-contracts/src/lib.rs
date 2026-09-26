@@ -237,6 +237,8 @@ mod test_custody_digest;
 mod test_custody_chain;
 #[cfg(test)]
 mod test_consent_versioning;
+#[cfg(test)]
+mod test_consent_cleanup;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -314,6 +316,9 @@ const MAX_PREREQUISITES: u32 = 20;
 /// Maximum entries in the chain-of-custody Vec stored per pet.
 /// ~100 transfers × ~80 bytes/entry = ~8 KiB, well within the 64 KiB limit.
 const MAX_CUSTODY_CHAIN: u32 = 100;
+
+/// Maximum index slots inspected per `compact_consents_bounded` call.
+const MAX_CONSENT_CLEANUP_STEPS: u32 = 50;
 
 /// Canonical domain string for the chain-of-custody digest
 /// ([`PetChainContract::get_custody_chain_digest`]). The domain binds the
@@ -10287,6 +10292,116 @@ impl PetChainContract {
             }
             None => false,
         }
+    }
+
+    /// Resumable, bounded consent index compaction (#1203).
+    ///
+    /// Inspects at most `max_steps` (1..=`MAX_CONSENT_CLEANUP_STEPS`) index
+    /// slots starting at the stored per-pet cursor. A stale (inactive or
+    /// expired) consent is removed by moving the last index slot into its
+    /// position, so no live entry is skipped and appends made between calls
+    /// are still visited. Returns `(removed, next_cursor)`; `next_cursor` is
+    /// `None` once the whole index has been swept (the cursor then resets).
+    /// Callable by the pet owner or an admin.
+    pub fn compact_consents_bounded(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        max_steps: u32,
+    ) -> (u32, Option<u64>) {
+        caller.require_auth();
+        if max_steps == 0 || max_steps > MAX_CONSENT_CLEANUP_STEPS {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if pet.owner != caller && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentPolicyKey::CleanupCursor(pet_id))
+            .unwrap_or(1);
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+        let mut removed: u32 = 0;
+
+        for _ in 0..max_steps {
+            if cursor > count {
+                break;
+            }
+            let idx_key = ConsentKey::PetConsentIndex((pet_id, cursor));
+            let cid: Option<u64> = env.storage().instance().get(&idx_key);
+            let stale = match cid {
+                Some(cid) => match env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    Some(c) => {
+                        !c.is_active
+                            || c.expires_at.map(|e| is_expired(now, e)).unwrap_or(false)
+                    }
+                    None => true,
+                },
+                None => true,
+            };
+            if !stale {
+                cursor += 1;
+                continue;
+            }
+            if let Some(cid) = cid {
+                env.storage().instance().remove(&ConsentKey::Consent(cid));
+                env.storage()
+                    .instance()
+                    .remove(&ConsentPolicyKey::ConsentVersion(cid));
+            }
+            // Move the last slot into this one; do not advance the cursor so
+            // the moved entry is inspected next.
+            if cursor != count {
+                if let Some(last) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, count)))
+                {
+                    env.storage().instance().set(&idx_key, &last);
+                }
+            }
+            env.storage()
+                .instance()
+                .remove(&ConsentKey::PetConsentIndex((pet_id, count)));
+            count -= 1;
+            removed += 1;
+        }
+
+        env.storage()
+            .instance()
+            .set(&ConsentKey::PetConsentCount(pet_id), &count);
+        let next = if cursor > count {
+            env.storage()
+                .instance()
+                .remove(&ConsentPolicyKey::CleanupCursor(pet_id));
+            None
+        } else {
+            env.storage()
+                .instance()
+                .set(&ConsentPolicyKey::CleanupCursor(pet_id), &cursor);
+            Some(cursor)
+        };
+        env.events().publish(
+            (soroban_sdk::symbol_short!("CONS_GC"), pet_id),
+            (removed, next),
+        );
+        (removed, next)
     }
 
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
