@@ -54,3 +54,8 @@ cargo test
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1223 -->
+- #1223: [backend-2fa] Version encrypted TOTP secret envelopes
