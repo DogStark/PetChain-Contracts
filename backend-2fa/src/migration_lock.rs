@@ -1,3 +1,9 @@
+//! Advisory-lock migration runner ported from the removed `backend-2fa-implementation`
+//! crate (Issue #1217). Unlike `migrations`, it serialises concurrent runners via a
+//! Postgres advisory lock and verifies checksums of applied migrations. It is kept as
+//! a separate module so no behaviour of the canonical runner changes; consolidating
+//! the two runners is follow-up work.
+
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;

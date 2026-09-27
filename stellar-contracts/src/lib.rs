@@ -175,6 +175,13 @@ use soroban_sdk::{
 // `DisputeKey`, ...) from both this file and external callers.
 mod disputes;
 pub use disputes::*;
+mod governance_guard;
+#[cfg(test)]
+mod test_governance_double_vote;
+#[cfg(test)]
+mod test_governance_quorum_snapshot;
+#[cfg(test)]
+mod test_dispute_evidence_access;
 
 // Types, storage keys and canonical hashing for replay-protected emergency
 // notifications (#1338), consent canonicalization (#1337) and vet credential
@@ -437,6 +444,8 @@ const MAX_EVENT_HORIZON: u64 = 50 * 365 * 24 * 60 * 60; // ~50 years
 
 /// Maximum byte length of a `Dispute::reason`.
 const MAX_DISPUTE_REASON_LEN: u32 = 500;
+/// Maximum length of an evidence CID string. (#1216)
+const MAX_EVIDENCE_CID_LEN: u32 = 128;
 
 /// Maximum byte length of a `BreedingRecord::notes`.
 const MAX_BREEDING_NOTES_LEN: u32 = 500;
@@ -1663,6 +1672,8 @@ pub enum SystemKey {
     // Admin activity log keys (Issue #816)
     AdminActivityLog(u64), // index -> AdminActivityEntry
     AdminActivityCount,    // Total number of recorded admin actions
+    /// Eligible voter set snapshotted at proposal creation. (#1211)
+    ProposalEligibleSnapshot(u64),
 }
 
 /// Statistics snapshot for governance reporting (Issue #828)
@@ -3294,7 +3305,29 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::ProposalCount, &proposal_id);
+
+        // Snapshot eligible voters at proposal start so later membership
+        // changes cannot manipulate quorum. (#1211)
+        let admins: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Admins)
+            .unwrap_or_else(|| Vec::new(&env));
+        let legacy: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        env.storage().instance().set(
+            &SystemKey::ProposalEligibleSnapshot(proposal_id),
+            &governance_guard::dedupe(&admins, legacy),
+        );
         proposal_id
+    }
+
+    /// Returns the eligible voter set snapshotted when `proposal_id` was
+    /// created (empty for proposals created before snapshots existed).
+    pub fn get_proposal_eligible_voters(env: Env, proposal_id: u64) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&SystemKey::ProposalEligibleSnapshot(proposal_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Returns the current global storage quota. Used by governance tests
@@ -3402,7 +3435,9 @@ impl PetChainContract {
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoAdminsConfigured));
 
         // Check threshold
-        if proposal.approvals.len() < proposal.required_approvals {
+        // Count each voting identity once even if an entry is duplicated. (#1210)
+        let distinct_approvals = governance_guard::distinct_count(&proposal.approvals);
+        if distinct_approvals < proposal.required_approvals {
             panic_with_error!(&env, ContractError::ThresholdNotMet);
         }
 
@@ -3415,11 +3450,24 @@ impl PetChainContract {
             .get(&SystemKey::AdminQuorumPercent)
             .unwrap_or(0);
         if current_quorum > 0 {
-            let admin_count = admin_list.len() as u64;
+            // Use the proposal-start snapshot when present; proposals created
+            // before snapshots existed fall back to the live admin list. (#1211)
+            let snapshot: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&SystemKey::ProposalEligibleSnapshot(proposal_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let (admin_count, votes_cast) = if snapshot.is_empty() {
+                (admin_list.len() as u64, distinct_approvals as u64)
+            } else {
+                (
+                    snapshot.len() as u64,
+                    governance_guard::eligible_approvals(&proposal.approvals, &snapshot) as u64,
+                )
+            };
             if admin_count == 0 {
                 panic_with_error!(&env, ContractError::NoAdminsConfigured);
             }
-            let votes_cast = proposal.approvals.len() as u64;
             // Ceiling division so that e.g. 50 % of 3 admins = 2 votes, not 1.
             let required_votes = (current_quorum as u64)
                 .saturating_mul(admin_count)
@@ -11174,6 +11222,11 @@ impl PetChainContract {
     ) -> u64 {
         claimer.require_auth();
 
+        // A party cannot dispute itself. (#1216)
+        if claimer == target {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
         // Bound string fields to prevent unbounded ledger growth. (#1152)
         if reason.len() > MAX_DISPUTE_REASON_LEN {
             panic_with_error!(&env, ContractError::InputStringTooLong);
@@ -11431,6 +11484,11 @@ impl PetChainContract {
             panic_with_error!(&env, ContractError::NotDisputeParty);
         }
 
+        // Validate evidence payload: non-empty and bounded CID. (#1216)
+        if cid.is_empty() || cid.len() > MAX_EVIDENCE_CID_LEN {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
         let count_key = DisputeKey::PartyEvidenceCount(dispute_id, submitter.clone());
         let party_count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
         if party_count >= 10 {
@@ -11466,7 +11524,82 @@ impl PetChainContract {
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow)),
         );
 
+        env.events().publish(
+            (Symbol::new(&env, "EvidenceSubmitted"),),
+            (dispute_id, evidence_id, submitter, env.ledger().timestamp()),
+        );
+
         evidence_id
+    }
+
+    /// Returns true if `who` is a party, the configured arbitrator, or an
+    /// admin for `dispute` (may inspect restricted evidence).
+    fn can_access_dispute_evidence(env: &Env, dispute: &Dispute, who: &Address) -> bool {
+        who == &dispute.claimer
+            || who == &dispute.target
+            || env
+                .storage()
+                .instance()
+                .get::<DisputeKey, Address>(&DisputeKey::Arbitrator)
+                .map(|a| &a == who)
+                .unwrap_or(false)
+            || Self::is_admin_address(env, who)
+    }
+
+    /// Moves a `Pending` dispute into the `EvidencePhase`, the only state in
+    /// which `submit_evidence` accepts submissions. Callable by a dispute
+    /// party, the arbitrator, or an admin. Emits `DisputeEvidencePhaseOpened`.
+    pub fn open_evidence_phase(env: Env, caller: Address, dispute_id: u64) -> bool {
+        caller.require_auth();
+        let key = DisputeKey::Dispute(dispute_id);
+        let mut dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::DisputeNotFound));
+        if !Self::can_access_dispute_evidence(&env, &dispute, &caller) {
+            panic_with_error!(&env, ContractError::NotDisputeStakeholder);
+        }
+        if dispute.status != DisputeStatus::Pending {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        dispute.status = DisputeStatus::EvidencePhase;
+        env.storage().instance().set(&key, &dispute);
+        env.events().publish(
+            (Symbol::new(&env, "DisputeEvidencePhaseOpened"),),
+            (dispute_id, caller, env.ledger().timestamp()),
+        );
+        true
+    }
+
+    /// Lists evidence for a dispute. Restricted to the dispute's parties, the
+    /// arbitrator, and admins; `caller` must authorize.
+    pub fn get_dispute_evidence(env: Env, caller: Address, dispute_id: u64) -> Vec<Evidence> {
+        caller.require_auth();
+        let dispute: Dispute = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::Dispute(dispute_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::DisputeNotFound));
+        if !Self::can_access_dispute_evidence(&env, &dispute, &caller) {
+            panic_with_error!(&env, ContractError::NotDisputeStakeholder);
+        }
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DisputeKey::DisputeEvidenceCount(dispute_id))
+            .unwrap_or(0);
+        let mut out = Vec::new(&env);
+        for i in 1..=count {
+            if let Some(e) = env
+                .storage()
+                .instance()
+                .get::<DisputeKey, Evidence>(&DisputeKey::DisputeEvidence(dispute_id, i))
+            {
+                out.push_back(e);
+            }
+        }
+        out
     }
 
     pub fn verify_evidence(env: Env, dispute_id: u64, evidence_id: u64, hash: BytesN<32>) -> bool {
