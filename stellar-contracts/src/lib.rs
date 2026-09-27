@@ -176,6 +176,16 @@ use soroban_sdk::{
 mod disputes;
 pub use disputes::*;
 
+// Types, storage keys and canonical hashing for replay-protected emergency
+// notifications (#1338), consent canonicalization (#1337) and vet credential
+// issuer rotation (#1336). Their contract methods live in the main impl below.
+mod consent_canon;
+mod credential_issuers;
+mod emergency_notify;
+pub use consent_canon::*;
+pub use credential_issuers::*;
+pub use emergency_notify::*;
+
 #[cfg(test)]
 mod test_attachment_limit;
 #[cfg(test)]
@@ -227,11 +237,15 @@ mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_verify_claim_document;
 #[cfg(test)]
-mod test_discriminant_stability;
-#[cfg(test)]
 mod test_custody_digest;
 #[cfg(test)]
 mod test_custody_chain;
+#[cfg(test)]
+mod test_consent_canonicalization;
+#[cfg(test)]
+mod test_emergency_notify_replay;
+#[cfg(test)]
+mod test_vet_credential_issuer_rotation;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -574,8 +588,10 @@ pub enum ContractError {
     /// Returned by `migrate_storage` when the stored schema version already
     /// equals or exceeds the requested target version.  Callers may treat this
     /// as a no-op (idempotent replay is safe). (#1149)
-    /// Appended at 169 because 164-168 are the dispute errors added in #1235.
-    StaleMigration = 169,
+    /// Appended at 169 because 164-168 are the dispute errors added in #1235,
+    /// then moved to 170 because 169 was already `InvalidTimestamp` (#1270)
+    /// and duplicate discriminants do not compile.
+    StaleMigration = 170,
 
     // --- Typed replacements for former assert!/panic! call sites (Issue #1150) ---
     // Append-only: existing values above must never be renumbered or reused.
@@ -589,6 +605,40 @@ pub enum ContractError {
     /// ledger time (too far in the past, too far in the future, or with a
     /// due/expiry date before the event it describes). (Issue #1174)
     InvalidTimestamp = 169,
+
+    // --- Variants referenced by existing call sites whose declarations were
+    // lost in merges (#1264 certificates, vet credential expiry, nonce reuse).
+    // #1264 intended 47-49 for the certificate errors, but 47 is taken by
+    // `ProposalNotFound`, so they are appended here instead.
+    VetCredentialsExpired = 171,
+    CertificateNotFound = 172,
+    CertificateRevoked = 173,
+    CertificateExpired = 174,
+    CertificateHashConflict = 175,
+    NonceReused = 176,
+
+    // --- Emergency notification replay protection (Issue #1338) ---
+    /// The request's validity window has closed; its nonce cannot be reused.
+    NotificationExpired = 177,
+    /// This (pet, event, recipient) was already notified under another nonce.
+    NotificationAlreadySent = 178,
+    /// The recipient id does not match any of the pet's emergency contacts.
+    UnknownEmergencyRecipient = 179,
+
+    // --- Consent canonicalization (Issue #1337) ---
+    ConsentNotFound = 180,
+    /// Revocation targeted a version that is not the line's active version.
+    ConsentVersionMismatch = 181,
+
+    // --- Vet credential issuer rotation (Issue #1336) ---
+    IssuerAlreadyRegistered = 182,
+    IssuerNotFound = 183,
+    IssuerRevoked = 184,
+    IssuerKeyVersionNotFound = 185,
+    /// The key version is revoked, expired, or past its rotation overlap.
+    IssuerKeyVersionInactive = 186,
+    /// The public key was already used by an earlier version of this issuer.
+    IssuerKeyReused = 187,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -1426,6 +1476,8 @@ pub enum DataKey {
     MaxSubscriptionsPerAddress,
     /// Canonical microchip identifier -> pet id.
     MicrochipIndex(String),
+    /// Optional u64 credential expiry for a vet; 0/absent = no expiry.
+    VetCredentialsExpiry(Address),
 }
 
 #[contracttype]
@@ -7235,7 +7287,7 @@ impl PetChainContract {
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             vet.verified = true;
             env.storage()
@@ -7263,7 +7315,7 @@ impl PetChainContract {
         if let Some(mut vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             vet.verified = false;
             env.storage()
@@ -7286,7 +7338,7 @@ impl PetChainContract {
         if let Some(vet) = env
             .storage()
             .instance()
-            .get::<DataKey, Vet>(&DataKey::Vet(vet_address))
+            .get::<DataKey, Vet>(&DataKey::Vet(vet_address.clone()))
         {
             if !vet.verified {
                 return false;
@@ -7317,7 +7369,7 @@ impl PetChainContract {
         expires_at: Option<u64>,
     ) -> bool {
         PetChainContract::require_admin_auth(&env, &admin);
-        let verified = PetChainContract::_verify_vet_internal(&env, vet_address);
+        let verified = PetChainContract::_verify_vet_internal(&env, vet_address.clone());
         if verified {
             if let Some(exp) = expires_at {
                 if exp <= env.ledger().timestamp() {
@@ -7591,7 +7643,7 @@ impl PetChainContract {
                 pet_id,
                 vaccination_id: cert_id,
                 vet_or_admin,
-                reason,
+                reason: reason.clone(),
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -8183,7 +8235,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::CertificateCount)
             .unwrap_or(0);
-        let cert_id = safe_increment(cert_count);
+        let cert_id = safe_increment(&env, cert_count);
         env.storage()
             .instance()
             .set(&MedicalKey::CertificateCount, &cert_id);
@@ -8301,7 +8353,7 @@ impl PetChainContract {
             .instance()
             .get(&MedicalKey::CertificateCount)
             .unwrap_or(0);
-        let cert_id = safe_increment(cert_count);
+        let cert_id = safe_increment(&env, cert_count);
         env.storage()
             .instance()
             .set(&MedicalKey::CertificateCount, &cert_id);
@@ -13397,19 +13449,19 @@ impl PetChainContract {
         for byte in record.pet_id.to_be_bytes() {
             preimage.push_back(byte);
         }
-        for byte in record.vet_address.to_xdr(env).iter() {
+        for byte in record.vet_address.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.diagnosis.to_xdr(env).iter() {
+        for byte in record.diagnosis.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.treatment.to_xdr(env).iter() {
+        for byte in record.treatment.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.medications.to_xdr(env).iter() {
+        for byte in record.medications.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
-        for byte in record.notes.to_xdr(env).iter() {
+        for byte in record.notes.clone().to_xdr(env).iter() {
             preimage.push_back(byte);
         }
         for byte in record.date.to_be_bytes() {
@@ -14455,6 +14507,614 @@ impl PetChainContract {
         env.storage()
             .instance()
             .get(&BehaviorKey::TrainingMilestone(milestone_id))
+    }
+
+    // --- EMERGENCY NOTIFICATION REPLAY PROTECTION (Issue #1338) ---
+    // Replay rules are documented in `emergency_notify.rs`.
+
+    /// Recipient id for `contact` on `pet_id`, as expected by
+    /// `notify_emergency_recipient`. Pure; exposed so clients derive the
+    /// same id the contract checks against.
+    pub fn get_emergency_recipient_id(
+        env: Env,
+        pet_id: u64,
+        contact: EmergencyContact,
+    ) -> BytesN<32> {
+        emergency_recipient_id(&env, pet_id, &contact)
+    }
+
+    /// Notify one emergency contact about one emergency event, at most once.
+    ///
+    /// Retrying the exact request (same pet, event, recipient and nonce)
+    /// before `expires_at` returns the original receipt with
+    /// `replayed = true` and emits nothing. After `expires_at` the request
+    /// and its nonce are dead (`NotificationExpired`). A new nonce for an
+    /// already-notified (pet, event, recipient) fails with
+    /// `NotificationAlreadySent`.
+    pub fn notify_emergency_recipient(
+        env: Env,
+        caller: Address,
+        pet_id: u64,
+        event_id: BytesN<32>,
+        recipient: BytesN<32>,
+        nonce: u64,
+        expires_at: u64,
+    ) -> EmergencyNotificationReceipt {
+        caller.require_auth();
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if !Self::is_emergency_authorized(&env, pet_id, &caller, &pet.owner) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let request_id =
+            emergency_notification_request_id(&env, pet_id, &event_id, &recipient, nonce);
+        let request_key = EmergencyNotifyKey::Request(request_id.clone());
+
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyNotification>(&request_key)
+        {
+            if is_expired(now, existing.expires_at) {
+                panic_with_error!(&env, ContractError::NotificationExpired);
+            }
+            return EmergencyNotificationReceipt {
+                notification: existing,
+                replayed: true,
+            };
+        }
+
+        if is_expired(now, expires_at) {
+            panic_with_error!(&env, ContractError::NotificationExpired);
+        }
+        if expires_at > now.saturating_add(MAX_NOTIFY_REQUEST_TTL_SECS) {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let contacts = Self::get_emergency_contacts(env.clone(), pet_id, caller.clone());
+        let known_recipient = contacts
+            .iter()
+            .any(|contact| emergency_recipient_id(&env, pet_id, &contact) == recipient);
+        if !known_recipient {
+            panic_with_error!(&env, ContractError::UnknownEmergencyRecipient);
+        }
+
+        let delivery_key =
+            EmergencyNotifyKey::Delivery((pet_id, event_id.clone(), recipient.clone()));
+        if env.storage().persistent().has(&delivery_key) {
+            panic_with_error!(&env, ContractError::NotificationAlreadySent);
+        }
+
+        let notification = EmergencyNotification {
+            request_id: request_id.clone(),
+            pet_id,
+            event_id: event_id.clone(),
+            recipient: recipient.clone(),
+            nonce,
+            submitter: caller,
+            accepted_at: now,
+            expires_at,
+        };
+        env.storage().persistent().set(&request_key, &notification);
+        Self::bump_persistent_ttl(&env, &request_key);
+        env.storage().persistent().set(&delivery_key, &request_id);
+        Self::bump_persistent_ttl(&env, &delivery_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "EmergencyRecipientNotified"), pet_id),
+            (request_id, event_id, recipient),
+        );
+
+        EmergencyNotificationReceipt {
+            notification,
+            replayed: false,
+        }
+    }
+
+    pub fn get_emergency_notification(
+        env: Env,
+        request_id: BytesN<32>,
+    ) -> Option<EmergencyNotification> {
+        env.storage()
+            .persistent()
+            .get(&EmergencyNotifyKey::Request(request_id))
+    }
+
+    // --- CONSENT CANONICALIZATION (Issue #1337) ---
+    // Canonical encoding is documented in `consent_canon.rs`.
+
+    /// Canonical hash of a consent version. Pure; exposed so clients can
+    /// derive and verify consent hashes off-chain.
+    pub fn compute_canonical_consent_hash(
+        env: Env,
+        pet_id: u64,
+        subject: Address,
+        purpose: ConsentType,
+        scopes: Vec<ConsentScope>,
+        version: u32,
+    ) -> BytesN<32> {
+        let mask = canonical_scope_mask(&scopes)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        canonical_consent_hash(
+            &env,
+            pet_id,
+            &subject,
+            purpose_code(&purpose),
+            mask,
+            version,
+        )
+    }
+
+    /// Grant `subject` consent for `purpose` over `scopes` on a pet.
+    ///
+    /// Equivalent terms (same scope set, in any order or with duplicates)
+    /// as the line's active version are a no-op that returns that version.
+    /// Different terms create the next version and supersede the active one.
+    pub fn grant_canonical_consent(
+        env: Env,
+        pet_id: u64,
+        subject: Address,
+        purpose: ConsentType,
+        scopes: Vec<ConsentScope>,
+    ) -> CanonicalConsent {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let mask = canonical_scope_mask(&scopes)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        let code = purpose_code(&purpose);
+        let now = env.ledger().timestamp();
+        let line_key = ConsentCanonKey::Line((pet_id, subject.clone(), code));
+        let latest: u32 = env.storage().persistent().get(&line_key).unwrap_or(0);
+
+        if let Some(mut current) =
+            Self::load_canonical_consent_version(&env, pet_id, &subject, code, latest)
+        {
+            if current.status == CanonicalConsentStatus::Active {
+                if current.scope_mask == mask {
+                    return current;
+                }
+                current.status = CanonicalConsentStatus::Superseded;
+                current.ended_at = Some(now);
+                Self::save_canonical_consent(&env, &current);
+            }
+        }
+
+        let version = latest
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let consent_hash = canonical_consent_hash(&env, pet_id, &subject, code, mask, version);
+        let consent = CanonicalConsent {
+            consent_hash: consent_hash.clone(),
+            pet_id,
+            owner: pet.owner,
+            subject: subject.clone(),
+            purpose,
+            scope_mask: mask,
+            version,
+            status: CanonicalConsentStatus::Active,
+            granted_at: now,
+            ended_at: None,
+        };
+        Self::save_canonical_consent(&env, &consent);
+        let version_key = ConsentCanonKey::Version((pet_id, subject, code, version));
+        env.storage().persistent().set(&version_key, &consent_hash);
+        Self::bump_persistent_ttl(&env, &version_key);
+        env.storage().persistent().set(&line_key, &version);
+        Self::bump_persistent_ttl(&env, &line_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "CanonicalConsentGranted"), pet_id),
+            (consent_hash, version),
+        );
+        consent
+    }
+
+    /// Revoke the exact consent version identified by `consent_hash`. Fails
+    /// with `ConsentVersionMismatch` unless that version is the line's
+    /// active version, so a stale revocation cannot hit a newer grant.
+    pub fn revoke_canonical_consent(
+        env: Env,
+        pet_id: u64,
+        consent_hash: BytesN<32>,
+    ) -> CanonicalConsent {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let mut consent: CanonicalConsent = env
+            .storage()
+            .persistent()
+            .get(&ConsentCanonKey::Record(consent_hash))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ConsentNotFound));
+        if consent.pet_id != pet_id {
+            panic_with_error!(&env, ContractError::ConsentNotFound);
+        }
+        let latest: u32 = env
+            .storage()
+            .persistent()
+            .get(&ConsentCanonKey::Line((
+                pet_id,
+                consent.subject.clone(),
+                purpose_code(&consent.purpose),
+            )))
+            .unwrap_or(0);
+        if consent.version != latest || consent.status != CanonicalConsentStatus::Active {
+            panic_with_error!(&env, ContractError::ConsentVersionMismatch);
+        }
+
+        consent.status = CanonicalConsentStatus::Revoked;
+        consent.ended_at = Some(env.ledger().timestamp());
+        Self::save_canonical_consent(&env, &consent);
+
+        env.events().publish(
+            (Symbol::new(&env, "CanonicalConsentRevoked"), pet_id),
+            (consent.consent_hash.clone(), consent.version),
+        );
+        consent
+    }
+
+    pub fn get_canonical_consent(env: Env, consent_hash: BytesN<32>) -> Option<CanonicalConsent> {
+        env.storage()
+            .persistent()
+            .get(&ConsentCanonKey::Record(consent_hash))
+    }
+
+    /// Latest version on the (pet, subject, purpose) line, whatever its status.
+    pub fn get_latest_canonical_consent(
+        env: Env,
+        pet_id: u64,
+        subject: Address,
+        purpose: ConsentType,
+    ) -> Option<CanonicalConsent> {
+        let code = purpose_code(&purpose);
+        let latest: u32 = env
+            .storage()
+            .persistent()
+            .get(&ConsentCanonKey::Line((pet_id, subject.clone(), code)))
+            .unwrap_or(0);
+        Self::load_canonical_consent_version(&env, pet_id, &subject, code, latest)
+    }
+
+    /// True when the line's active version covers `scope`.
+    pub fn has_canonical_consent_scope(
+        env: Env,
+        pet_id: u64,
+        subject: Address,
+        purpose: ConsentType,
+        scope: ConsentScope,
+    ) -> bool {
+        Self::get_latest_canonical_consent(env, pet_id, subject, purpose)
+            .map(|c| {
+                c.status == CanonicalConsentStatus::Active && c.scope_mask & scope_bit(&scope) != 0
+            })
+            .unwrap_or(false)
+    }
+
+    fn load_canonical_consent_version(
+        env: &Env,
+        pet_id: u64,
+        subject: &Address,
+        code: u32,
+        version: u32,
+    ) -> Option<CanonicalConsent> {
+        if version == 0 {
+            return None;
+        }
+        let hash: BytesN<32> = env.storage().persistent().get(&ConsentCanonKey::Version((
+            pet_id,
+            subject.clone(),
+            code,
+            version,
+        )))?;
+        env.storage()
+            .persistent()
+            .get(&ConsentCanonKey::Record(hash))
+    }
+
+    fn save_canonical_consent(env: &Env, consent: &CanonicalConsent) {
+        let key = ConsentCanonKey::Record(consent.consent_hash.clone());
+        env.storage().persistent().set(&key, consent);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // --- VET CREDENTIAL ISSUER ROTATION (Issue #1336) ---
+    // Policy is documented in `docs/vet-credential-issuers.md`.
+
+    /// Register a credential issuer with its first key version (version 1).
+    pub fn register_credential_issuer(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        public_key: BytesN<32>,
+        key_expires_at: u64,
+    ) -> IssuerKeyVersion {
+        Self::require_admin_auth(&env, &admin);
+        let issuer_key = IssuerKey::Issuer(issuer.clone());
+        if env.storage().persistent().has(&issuer_key) {
+            panic_with_error!(&env, ContractError::IssuerAlreadyRegistered);
+        }
+        let now = env.ledger().timestamp();
+        let key_version =
+            Self::add_issuer_key_version(&env, &issuer, 1, public_key, key_expires_at);
+        let record = CredentialIssuer {
+            issuer: issuer.clone(),
+            current_version: 1,
+            registered_at: now,
+            revoked_at: None,
+        };
+        Self::save_credential_issuer(&env, &record);
+        Self::record_admin_activity(&env, &admin, "register_credential_issuer");
+        env.events().publish(
+            (Symbol::new(&env, "CredentialIssuerRegistered"), issuer),
+            1u32,
+        );
+        key_version
+    }
+
+    /// Rotate `issuer` to a new key version. Callable by the issuer or an
+    /// admin. The previous version may keep minting for `overlap_secs`
+    /// (capped at `MAX_ISSUER_ROTATION_OVERLAP_SECS` and at its own expiry);
+    /// credentials it already minted stay valid until they expire.
+    pub fn rotate_credential_issuer_key(
+        env: Env,
+        caller: Address,
+        issuer: Address,
+        new_public_key: BytesN<32>,
+        key_expires_at: u64,
+        overlap_secs: u64,
+    ) -> IssuerKeyVersion {
+        caller.require_auth();
+        if caller != issuer && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let mut record = Self::load_active_credential_issuer(&env, &issuer);
+        if overlap_secs > MAX_ISSUER_ROTATION_OVERLAP_SECS {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let now = env.ledger().timestamp();
+        let old_key = IssuerKey::KeyVersion((issuer.clone(), record.current_version));
+        let mut old: IssuerKeyVersion =
+            env.storage().persistent().get(&old_key).unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::IssuerKeyVersionNotFound)
+            });
+
+        let version = record
+            .current_version
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let key_version =
+            Self::add_issuer_key_version(&env, &issuer, version, new_public_key, key_expires_at);
+
+        if old.revoked_at.is_none() && old.mint_until.is_none() {
+            old.mint_until = Some(now.saturating_add(overlap_secs).min(old.expires_at));
+            env.storage().persistent().set(&old_key, &old);
+            Self::bump_persistent_ttl(&env, &old_key);
+        }
+        record.current_version = version;
+        Self::save_credential_issuer(&env, &record);
+
+        env.events().publish(
+            (Symbol::new(&env, "CredentialIssuerRotated"), issuer),
+            version,
+        );
+        key_version
+    }
+
+    /// Revoke one key version (e.g. key compromise). Retroactive: credentials
+    /// minted under it stop verifying. Idempotent.
+    pub fn revoke_credential_issuer_key(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        version: u32,
+    ) -> IssuerKeyVersion {
+        Self::require_admin_auth(&env, &admin);
+        let key = IssuerKey::KeyVersion((issuer.clone(), version));
+        let mut key_version: IssuerKeyVersion =
+            env.storage().persistent().get(&key).unwrap_or_else(|| {
+                panic_with_error!(&env, ContractError::IssuerKeyVersionNotFound)
+            });
+        if key_version.revoked_at.is_none() {
+            key_version.revoked_at = Some(env.ledger().timestamp());
+            env.storage().persistent().set(&key, &key_version);
+            Self::bump_persistent_ttl(&env, &key);
+            Self::record_admin_activity(&env, &admin, "revoke_credential_issuer_key");
+            env.events()
+                .publish((Symbol::new(&env, "IssuerKeyRevoked"), issuer), version);
+        }
+        key_version
+    }
+
+    /// Revoke an issuer entirely. Retroactive: none of its credentials
+    /// verify afterwards, and it can no longer mint or rotate. Idempotent.
+    pub fn revoke_credential_issuer(env: Env, admin: Address, issuer: Address) -> CredentialIssuer {
+        Self::require_admin_auth(&env, &admin);
+        let mut record: CredentialIssuer = env
+            .storage()
+            .persistent()
+            .get(&IssuerKey::Issuer(issuer.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::IssuerNotFound));
+        if record.revoked_at.is_none() {
+            record.revoked_at = Some(env.ledger().timestamp());
+            Self::save_credential_issuer(&env, &record);
+            Self::record_admin_activity(&env, &admin, "revoke_credential_issuer");
+            env.events()
+                .publish((Symbol::new(&env, "CredentialIssuerRevoked"), issuer), ());
+        }
+        record
+    }
+
+    /// Mint a credential for a registered vet under `key_version`, which must
+    /// be the current version or a rotated-out version still inside its
+    /// overlap window. The credential cannot outlive the signing key.
+    pub fn issue_vet_credential(
+        env: Env,
+        issuer: Address,
+        key_version: u32,
+        vet: Address,
+        expires_at: u64,
+    ) -> VetCredential {
+        issuer.require_auth();
+        Self::load_active_credential_issuer(&env, &issuer);
+        let key: IssuerKeyVersion = env
+            .storage()
+            .persistent()
+            .get(&IssuerKey::KeyVersion((issuer.clone(), key_version)))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::IssuerKeyVersionNotFound));
+
+        let now = env.ledger().timestamp();
+        let past_overlap = key.mint_until.map(|t| is_expired(now, t)).unwrap_or(false);
+        if key.revoked_at.is_some() || is_expired(now, key.expires_at) || past_overlap {
+            panic_with_error!(&env, ContractError::IssuerKeyVersionInactive);
+        }
+        if !env.storage().instance().has(&DataKey::Vet(vet.clone())) {
+            panic_with_error!(&env, ContractError::VetNotFound);
+        }
+        if is_expired(now, expires_at) || expires_at > key.expires_at {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&IssuerKey::CredentialCount)
+            .unwrap_or(0);
+        let id = safe_increment(&env, count);
+        let credential = VetCredential {
+            id,
+            issuer: issuer.clone(),
+            key_version,
+            vet,
+            issued_at: now,
+            expires_at,
+        };
+        let credential_key = IssuerKey::Credential(id);
+        env.storage().persistent().set(&credential_key, &credential);
+        Self::bump_persistent_ttl(&env, &credential_key);
+        env.storage()
+            .persistent()
+            .set(&IssuerKey::CredentialCount, &id);
+        Self::bump_persistent_ttl(&env, &IssuerKey::CredentialCount);
+
+        env.events().publish(
+            (Symbol::new(&env, "VetCredentialIssued"), issuer),
+            (id, key_version),
+        );
+        credential
+    }
+
+    /// Current validity of a credential. Issuer revocation takes precedence
+    /// over key-version revocation, which takes precedence over expiry.
+    pub fn verify_vet_credential(env: Env, credential_id: u64) -> VetCredentialStatus {
+        let Some(credential) = env
+            .storage()
+            .persistent()
+            .get::<_, VetCredential>(&IssuerKey::Credential(credential_id))
+        else {
+            return VetCredentialStatus::NotFound;
+        };
+        let issuer: Option<CredentialIssuer> = env
+            .storage()
+            .persistent()
+            .get(&IssuerKey::Issuer(credential.issuer.clone()));
+        if issuer.map(|i| i.revoked_at.is_some()).unwrap_or(true) {
+            return VetCredentialStatus::IssuerRevoked;
+        }
+        let key: Option<IssuerKeyVersion> = env.storage().persistent().get(&IssuerKey::KeyVersion(
+            (credential.issuer, credential.key_version),
+        ));
+        if key.map(|k| k.revoked_at.is_some()).unwrap_or(true) {
+            return VetCredentialStatus::KeyVersionRevoked;
+        }
+        if is_expired(env.ledger().timestamp(), credential.expires_at) {
+            return VetCredentialStatus::Expired;
+        }
+        VetCredentialStatus::Valid
+    }
+
+    pub fn get_vet_credential(env: Env, credential_id: u64) -> Option<VetCredential> {
+        env.storage()
+            .persistent()
+            .get(&IssuerKey::Credential(credential_id))
+    }
+
+    pub fn get_credential_issuer(env: Env, issuer: Address) -> Option<CredentialIssuer> {
+        env.storage().persistent().get(&IssuerKey::Issuer(issuer))
+    }
+
+    pub fn get_issuer_key_version(
+        env: Env,
+        issuer: Address,
+        version: u32,
+    ) -> Option<IssuerKeyVersion> {
+        env.storage()
+            .persistent()
+            .get(&IssuerKey::KeyVersion((issuer, version)))
+    }
+
+    fn load_active_credential_issuer(env: &Env, issuer: &Address) -> CredentialIssuer {
+        let record: CredentialIssuer = env
+            .storage()
+            .persistent()
+            .get(&IssuerKey::Issuer(issuer.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::IssuerNotFound));
+        if record.revoked_at.is_some() {
+            panic_with_error!(env, ContractError::IssuerRevoked);
+        }
+        record
+    }
+
+    fn save_credential_issuer(env: &Env, record: &CredentialIssuer) {
+        let key = IssuerKey::Issuer(record.issuer.clone());
+        env.storage().persistent().set(&key, record);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    /// Validate and persist a new key version, reserving its public key so
+    /// no later version of the same issuer can reuse it.
+    fn add_issuer_key_version(
+        env: &Env,
+        issuer: &Address,
+        version: u32,
+        public_key: BytesN<32>,
+        expires_at: u64,
+    ) -> IssuerKeyVersion {
+        let now = env.ledger().timestamp();
+        if is_expired(now, expires_at) {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let in_use_key = IssuerKey::KeyInUse((issuer.clone(), public_key.clone()));
+        if env.storage().persistent().has(&in_use_key) {
+            panic_with_error!(env, ContractError::IssuerKeyReused);
+        }
+        let key_version = IssuerKeyVersion {
+            version,
+            public_key,
+            activated_at: now,
+            expires_at,
+            mint_until: None,
+            revoked_at: None,
+        };
+        let key = IssuerKey::KeyVersion((issuer.clone(), version));
+        env.storage().persistent().set(&key, &key_version);
+        Self::bump_persistent_ttl(env, &key);
+        env.storage().persistent().set(&in_use_key, &version);
+        Self::bump_persistent_ttl(env, &in_use_key);
+        key_version
     }
 } // end impl PetChainContract
 
