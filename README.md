@@ -54,3 +54,8 @@ cargo test
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1305 -->
+- #1305: [Contracts] Add Stellar storage-key namespace collision tests
