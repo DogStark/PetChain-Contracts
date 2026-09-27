@@ -199,6 +199,7 @@ fn data_key_tag(v: &DataKey) -> &'static str {
         DataKey::AccessGrantIndex(_) => "AccessGrantIndex",
         DataKey::PetDelegationCount(_) => "PetDelegationCount",
         DataKey::DecryptionToken(_) => "DecryptionToken",
+        DataKey::PetKeyVersion(_) => "PetKeyVersion",
         DataKey::EmergencyAccessLogs(_) => "EmergencyAccessLogs",
         DataKey::EmergencyAuditLog(_) => "EmergencyAuditLog",
         DataKey::EmergencyResponders(_) => "EmergencyResponders",
@@ -215,6 +216,8 @@ fn data_key_tag(v: &DataKey) -> &'static str {
         DataKey::NonceUsage(_) => "NonceUsage",
         DataKey::RetentionPeriod => "RetentionPeriod",
         DataKey::MaxSubscriptionsPerAddress => "MaxSubscriptionsPerAddress",
+        DataKey::MicrochipIndex(_) => "MicrochipIndex",
+        DataKey::VetCredentialsExpiry(_) => "VetCredentialsExpiry",
     }
 }
 
@@ -301,6 +304,8 @@ fn medical_key_tag(v: &MedicalKey) -> &'static str {
         MedicalKey::CertificateAnchor(_) => "CertificateAnchor",
         MedicalKey::ScannerRegistry => "ScannerRegistry",
         MedicalKey::RetentionPeriod => "RetentionPeriod",
+        MedicalKey::CertificateCount => "CertificateCount",
+        MedicalKey::CertificateLifecycle(_) => "CertificateLifecycle",
     }
 }
 
@@ -542,3 +547,35 @@ fn dispute_key_variant_tags_are_pinned() {
     assert_eq!(dispute_key_tag(&DisputeKey::Arbitrator), "Arbitrator");
 }
 
+#[allow(dead_code)]
+fn emergency_notify_key_tag(v: &EmergencyNotifyKey) -> &'static str {
+    match v {
+        EmergencyNotifyKey::Request(_) => "Request",
+        EmergencyNotifyKey::Delivery(_) => "Delivery",
+    }
+}
+
+#[allow(dead_code)]
+fn consent_canon_key_tag(v: &ConsentCanonKey) -> &'static str {
+    match v {
+        ConsentCanonKey::Line(_) => "Line",
+        ConsentCanonKey::Version(_) => "Version",
+        ConsentCanonKey::Record(_) => "Record",
+    }
+}
+
+#[allow(dead_code)]
+fn issuer_key_tag(v: &IssuerKey) -> &'static str {
+    match v {
+        IssuerKey::Issuer(_) => "Issuer",
+        IssuerKey::KeyVersion(_) => "KeyVersion",
+        IssuerKey::KeyInUse(_) => "KeyInUse",
+        IssuerKey::Credential(_) => "Credential",
+        IssuerKey::CredentialCount => "CredentialCount",
+    }
+}
+
+#[test]
+fn issuer_key_variant_tags_are_pinned() {
+    assert_eq!(issuer_key_tag(&IssuerKey::CredentialCount), "CredentialCount");
+}
