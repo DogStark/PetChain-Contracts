@@ -79,6 +79,37 @@ jobs:
             python3 scripts/check_error_compat.py
           fi
 
+  cross-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      # Deploys the main, ownership/adoption/escrow and vet-registry contracts
+      # into one local Soroban env (Issue #1253).
+      # See stellar-contracts/docs/cross-contract-compat.md.
+      - name: Build main contract WASM
+        working-directory: stellar-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Run cross-contract compatibility tests
+        working-directory: stellar-contracts/contracts/pet-transfer-adoption
+        run: |
+          export PETCHAIN_MAIN_WASM=$(find "$GITHUB_WORKSPACE/target" "$GITHUB_WORKSPACE/stellar-contracts/target" \
+            -path '*wasm32-unknown-unknown/release/petchain_stellar.wasm' 2>/dev/null | head -n 1)
+          test -n "$PETCHAIN_MAIN_WASM" || { echo "main contract WASM not found" >&2; exit 1; }
+          # soroban-env-host accepts any ed25519-dalek >= 2; keep it on the 2.x
+          # line that soroban-sdk's testutils are built against.
+          cargo generate-lockfile
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.1.1 2>/dev/null || true
+          cargo test test_cross_contract -- --include-ignored
+
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -144,6 +175,107 @@ jobs:
       - name: Test Stellar contracts
         working-directory: stellar-contracts
         run: cargo test
+
+  # Issue #1317: cross-network release smoke tests. Builds both the Celo
+  # (Hardhat) and Soroban (Rust/WASM) artifact sets from a clean checkout,
+  # validates their manifests, records compiler/runtime versions, and runs
+  # local deployments that require no production credentials.
+  cross-network-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Build Celo (Hardhat) artifacts
+        working-directory: celo-contracts
+        run: |
+          npm ci
+          npx hardhat compile
+
+      - name: Validate Celo ABI artifacts
+        working-directory: celo-contracts
+        run: |
+          missing=0
+          for abi in $(find artifacts -name '*.json' -path '*contracts*' 2>/dev/null); do
+            if ! jq -e '.abi' "$abi" >/dev/null 2>&1; then
+              echo "ERROR: missing ABI in $abi" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          if [ -z "$(find artifacts -name '*.json' -path '*contracts*' 2>/dev/null)" ]; then
+            echo "ERROR: no Celo ABI artifacts produced" >&2
+            exit 1
+          fi
+
+      - name: Local Celo deployment smoke test
+        working-directory: celo-contracts
+        run: npx hardhat test --network hardhat
+
+      - name: Build Soroban artifacts
+        working-directory: stellar-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Validate Soroban WASM artifacts
+        working-directory: stellar-contracts
+        run: |
+          WASM_COUNT=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' | wc -l)
+          if [ "$WASM_COUNT" -eq 0 ]; then
+            echo "ERROR: no Soroban WASM artifacts produced" >&2
+            exit 1
+          fi
+          echo "Found ${WASM_COUNT} Soroban WASM artifact(s)"
+
+      - name: Validate manifests
+        run: |
+          status=0
+          for manifest in celo-contracts/deployments/*.json stellar-contracts/manifests/*.json; do
+            if [ -f "$manifest" ]; then
+              if ! jq -e . "$manifest" >/dev/null 2>&1; then
+                echo "ERROR: invalid manifest JSON: $manifest" >&2
+                status=1
+              fi
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Record compiler and runtime versions
+        run: |
+          mkdir -p release-metadata
+          {
+            echo "source_commit=${GITHUB_SHA}"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "stellar_cli=$(stellar --version 2>/dev/null || echo unknown)"
+          } > release-metadata/versions.txt
+          cat release-metadata/versions.txt
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-network-release-metadata
+          path: release-metadata/versions.txt
+          retention-days: 30
 
   deploy-testnet:
     runs-on: ubuntu-latest

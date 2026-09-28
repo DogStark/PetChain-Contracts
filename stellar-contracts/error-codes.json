@@ -67,8 +67,26 @@
     { "code": 166, "name": "NotDisputeStakeholder", "retry": "never" },
     { "code": 167, "name": "NotInEvidencePhase", "retry": "never" },
     { "code": 168, "name": "NotDisputeParty", "retry": "never" },
-    { "code": 169, "name": "StaleMigration", "retry": "treat_as_success" },
-    { "code": 170, "name": "InvalidTimestamp", "retry": "never" }
+    { "code": 169, "name": "InvalidTimestamp", "retry": "never" },
+    { "code": 170, "name": "StaleMigration", "retry": "treat_as_success" },
+    { "code": 171, "name": "VetCredentialsExpired", "retry": "after_state_change" },
+    { "code": 172, "name": "CertificateNotFound", "retry": "never" },
+    { "code": 173, "name": "CertificateRevoked", "retry": "never" },
+    { "code": 174, "name": "CertificateExpired", "retry": "never" },
+    { "code": 175, "name": "CertificateHashConflict", "retry": "never" },
+    { "code": 176, "name": "NonceReused", "retry": "after_state_change" },
+    { "code": 177, "name": "NotificationExpired", "retry": "never" },
+    { "code": 178, "name": "NotificationAlreadySent", "retry": "treat_as_success" },
+    { "code": 179, "name": "UnknownEmergencyRecipient", "retry": "never" },
+    { "code": 180, "name": "ConsentNotFound", "retry": "never" },
+    { "code": 181, "name": "ConsentVersionMismatch", "retry": "after_state_change" },
+    { "code": 182, "name": "IssuerAlreadyRegistered", "retry": "never" },
+    { "code": 183, "name": "IssuerNotFound", "retry": "never" },
+    { "code": 184, "name": "IssuerRevoked", "retry": "never" },
+    { "code": 185, "name": "IssuerKeyVersionNotFound", "retry": "never" },
+    { "code": 186, "name": "IssuerKeyVersionInactive", "retry": "never" },
+    { "code": 187, "name": "IssuerKeyReused", "retry": "never" },
+    { "code": 188, "name": "RevokedConsentReplay", "retry": "never" }
    ]
   },
   {
@@ -157,7 +175,9 @@
     { "code": 6, "name": "InputTooLong", "retry": "never" },
     { "code": 7, "name": "VetAlreadyVerified", "retry": "treat_as_success" },
     { "code": 8, "name": "StaleMigration", "retry": "treat_as_success" },
-    { "code": 9, "name": "InvalidMigrationTarget", "retry": "never" }
+    { "code": 9, "name": "InvalidMigrationTarget", "retry": "never" },
+    { "code": 10, "name": "InvalidPageLimit", "retry": "never" },
+    { "code": 11, "name": "InvalidCursor", "retry": "never" }
    ]
   }
  ]

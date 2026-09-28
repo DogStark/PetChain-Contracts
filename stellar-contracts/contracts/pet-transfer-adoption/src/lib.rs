@@ -30,6 +30,8 @@ pub mod escrow;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod test_cross_contract;
+#[cfg(test)]
 mod test_error_codes;
 mod vet_registry;
 
@@ -282,6 +284,20 @@ fn get_pet(env: &Env, pet_id: u64) -> Pet {
         .persistent()
         .get(&DataKey::Pet(pet_id))
         .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound))
+}
+
+fn ensure_no_active_transfer(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::PendingTransfer(pet_id))
+        || env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
+    }
 }
 
 fn save_pet(env: &Env, pet: &Pet) {
@@ -643,13 +659,7 @@ impl PetOwnershipContract {
         {
             panic_with_error!(&env, ContractError::TransferAlreadyPending);
         }
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::PendingTransfer(pet_id))
-        {
-            panic_with_error!(&env, ContractError::TransferAlreadyPending);
-        }
+        ensure_no_active_transfer(&env, pet_id);
 
         let now = env.ledger().timestamp();
         let pending = PendingAdoption {
@@ -760,13 +770,7 @@ impl PetOwnershipContract {
         let pet = get_pet(&env, pet_id);
         pet.current_owner.require_auth();
 
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::PendingTransfer(pet_id))
-        {
-            panic_with_error!(env, ContractError::TransferAlreadyPending);
-        }
+        ensure_no_active_transfer(&env, pet_id);
 
         let timeout_secs = (transfer_timeout_days as u64).saturating_mul(86400);
 
@@ -1378,6 +1382,10 @@ impl PetOwnershipContract {
                 .storage()
                 .persistent()
                 .has(&DataKey::PendingTransfer(pet_id))
+                || env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::EscrowedTransfer(pet_id))
             {
                 panic_with_error!(env, ContractError::TransferAlreadyPending);
             }

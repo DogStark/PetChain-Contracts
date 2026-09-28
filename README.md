@@ -54,3 +54,8 @@ cargo test
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1320 -->
+- #1320: [Contracts] Add Celo event indexing compatibility fixtures
