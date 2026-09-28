@@ -71,6 +71,7 @@ pub fn purpose_code(purpose: &ConsentType) -> u32 {
         ConsentType::Research => 2,
         ConsentType::PublicHealth => 3,
         ConsentType::Other => 4,
+        ConsentType::DataSharing => 5,
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{ContractError, PetChainContract, PetChainContractClient};
+use crate::{PetChainContract, PetChainContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn setup(env: &Env) -> (PetChainContractClient, Address) {
