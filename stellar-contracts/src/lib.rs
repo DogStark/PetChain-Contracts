@@ -11527,6 +11527,7 @@ impl PetChainContract {
 
         let mut has_primary = false;
         let mut priorities = soroban_sdk::Vec::new(env);
+        let mut identities = soroban_sdk::Vec::new(env);
 
         for contact in contacts.iter() {
             if contact.name.is_empty() || contact.phone.is_empty() {
@@ -11536,15 +11537,54 @@ impl PetChainContract {
                 has_primary = true;
             }
 
-            // Check for duplicate priorities
             if priorities.contains(contact.priority) {
                 panic_with_error!(env, ContractError::InvalidInput);
             }
             priorities.push_back(contact.priority);
+
+            let identity = Self::normalized_contact_identity(env, &contact);
+            if identities.contains(&identity) {
+                panic_with_error!(env, ContractError::InvalidInput);
+            }
+            identities.push_back(identity);
         }
 
         if !has_primary {
             panic_with_error!(env, ContractError::InvalidInput);
+        }
+    }
+
+    fn normalized_contact_identity(env: &Env, contact: &EmergencyContact) -> Bytes {
+        let mut identity = Bytes::new(env);
+        Self::append_normalized_identity_field(&mut identity, &contact.name);
+        Self::append_normalized_identity_field(&mut identity, &contact.phone);
+        Self::append_normalized_identity_field(&mut identity, &contact.email);
+        Self::append_normalized_identity_field(&mut identity, &contact.relationship);
+        identity
+    }
+
+    fn append_normalized_identity_field(output: &mut Bytes, value: &String) {
+        let bytes = value.to_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+
+        while start < end && bytes.get(start).unwrap().is_ascii_whitespace() {
+            start += 1;
+        }
+        while end > start && bytes.get(end - 1).unwrap().is_ascii_whitespace() {
+            end -= 1;
+        }
+
+        for byte in (end - start).to_be_bytes() {
+            output.push_back(byte);
+        }
+        for index in start..end {
+            let byte = bytes.get(index).unwrap();
+            output.push_back(if byte.is_ascii_uppercase() {
+                byte.to_ascii_lowercase()
+            } else {
+                byte
+            });
         }
     }
 
@@ -11874,6 +11914,8 @@ impl PetChainContract {
                 let contact = contacts.get(i).unwrap();
                 let mut inserted = false;
                 for j in 0..ordered.len() {
+                    // Validation guarantees unique priorities, so this
+                    // insertion sort is deterministic and stable.
                     if contact.priority < ordered.get(j).unwrap().priority {
                         ordered.insert(j, contact.clone());
                         inserted = true;
@@ -16150,6 +16192,112 @@ fn xor_stream_crypt(env: &Env, input: &Bytes, key: &Bytes, nonce: &Bytes) -> Byt
         block_index = block_index.saturating_add(1);
     }
     output
+}
+
+#[cfg(test)]
+mod test_emergency_contact_invariants {
+    use super::{EmergencyContact, PetChainContract};
+    use soroban_sdk::{Env, String, Vec};
+
+    fn contact(
+        env: &Env,
+        name: &str,
+        phone: &str,
+        email: &str,
+        relationship: &str,
+        is_primary: bool,
+        priority: u32,
+    ) -> EmergencyContact {
+        EmergencyContact {
+            name: String::from_str(env, name),
+            phone: String::from_str(env, phone),
+            email: String::from_str(env, email),
+            relationship: String::from_str(env, relationship),
+            is_primary,
+            priority,
+        }
+    }
+
+    /// Validation happens before encrypted storage is written, so equivalent
+    /// identities cannot create ambiguous responders and existing payloads are
+    /// not rewritten or migrated.
+    #[test]
+    #[should_panic]
+    fn equivalent_contact_identity_is_rejected() {
+        let env = Env::default();
+        let mut contacts = Vec::new(&env);
+        contacts.push_back(contact(
+            &env,
+            "Jane Doe",
+            "555-0100",
+            "jane@example.com",
+            "Owner",
+            true,
+            1,
+        ));
+        contacts.push_back(contact(
+            &env,
+            " jane doe ",
+            "555-0100",
+            "JANE@EXAMPLE.COM",
+            "owner",
+            false,
+            2,
+        ));
+
+        PetChainContract::validate_emergency_contacts(&env, &contacts);
+    }
+
+    #[test]
+    fn maximum_unique_priority_is_valid() {
+        let env = Env::default();
+        let mut contacts = Vec::new(&env);
+        contacts.push_back(contact(
+            &env,
+            "Primary",
+            "555-0100",
+            "primary@example.com",
+            "Owner",
+            true,
+            u32::MAX,
+        ));
+
+        PetChainContract::validate_emergency_contacts(&env, &contacts);
+    }
+
+    #[test]
+    fn contact_validation_resource_impact_stays_bounded() {
+        let env = Env::default();
+        let mut contacts = Vec::new(&env);
+        contacts.push_back(contact(
+            &env,
+            "Primary",
+            "555-0100",
+            "primary@example.com",
+            "Owner",
+            true,
+            1,
+        ));
+        for priority in 2..=32u32 {
+            contacts.push_back(EmergencyContact {
+                name: String::from_bytes(&env, &[b'a' + (priority as u8 - 2)]),
+                phone: String::from_bytes(&env, &[b'0' + (priority as u8 % 10)]),
+                email: String::from_str(&env, ""),
+                relationship: String::from_str(&env, "backup"),
+                is_primary: false,
+                priority,
+            });
+        }
+
+        let cpu_before = env.budget().cpu_instruction_cost();
+        let mem_before = env.budget().memory_bytes_cost();
+        PetChainContract::validate_emergency_contacts(&env, &contacts);
+        let cpu_used = env.budget().cpu_instruction_cost() - cpu_before;
+        let mem_used = env.budget().memory_bytes_cost() - mem_before;
+
+        assert!(cpu_used < 10_000_000, "contact validation CPU cost regressed: {cpu_used}");
+        assert!(mem_used < 2_000_000, "contact validation memory cost regressed: {mem_used}");
+    }
 }
 
 // =============================================================================
