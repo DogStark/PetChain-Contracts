@@ -6,8 +6,8 @@
 mod test_search_medical_records {
     extern crate std;
     use crate::{
-        Gender, MedicalRecordFilter, PetChainContract,
-        PetChainContractClient, PrivacyLevel, Species,
+        Gender, MedicalRecordFilter, PetChainContract, PetChainContractClient, PrivacyLevel,
+        Species,
     };
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -261,7 +261,7 @@ mod test_search_medical_records {
 
     #[test]
     fn test_get_medical_record_by_id_not_found() {
-        let (env, client, _admin, _owner, _vet, _pet_id) = setup();
+        let (_env, client, _admin, _owner, _vet, _pet_id) = setup();
 
         let record = client.get_medical_record(&99999u64);
         assert!(record.is_none());
@@ -387,7 +387,7 @@ mod test_search_medical_records {
     #[test]
     #[should_panic(expected = "Error(Contract, #12)")]
     fn test_date_range_invalid_from_greater_than_to_returns_error() {
-        let (env, client, _admin, _owner, _vet, pet_id) = setup();
+        let (_env, client, _admin, _owner, _vet, pet_id) = setup();
 
         client.search_medical_records(
             &pet_id,
