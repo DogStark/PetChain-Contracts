@@ -37,6 +37,47 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-09-27 — Emergency notification replay protection, consent canonicalization, vet credential issuer rotation (#1338, #1337, #1336)
+
+**New public functions** (all additive, no existing signature changed):
+- #1338: `notify_emergency_recipient`, `get_emergency_notification`,
+  `get_emergency_recipient_id`.
+- #1337: `grant_canonical_consent`, `revoke_canonical_consent`,
+  `get_canonical_consent`, `get_latest_canonical_consent`,
+  `has_canonical_consent_scope`, `compute_canonical_consent_hash`.
+- #1336: `register_credential_issuer`, `rotate_credential_issuer_key`,
+  `revoke_credential_issuer_key`, `revoke_credential_issuer`,
+  `issue_vet_credential`, `verify_vet_credential`, `get_vet_credential`,
+  `get_credential_issuer`, `get_issuer_key_version`.
+
+**New storage-key enums** (persistent storage, pinned in
+`test_discriminant_stability.rs`): `EmergencyNotifyKey`, `ConsentCanonKey`,
+`IssuerKey`.
+
+**New `ContractError` variants** (appended): `NotificationExpired` (177),
+`NotificationAlreadySent` (178), `UnknownEmergencyRecipient` (179),
+`ConsentNotFound` (180), `ConsentVersionMismatch` (181),
+`IssuerAlreadyRegistered` (182), `IssuerNotFound` (183), `IssuerRevoked`
+(184), `IssuerKeyVersionNotFound` (185), `IssuerKeyVersionInactive` (186),
+`IssuerKeyReused` (187).
+
+**Repaired pre-existing build breakage** (the crate did not compile at
+`main`, so none of this ever shipped):
+- `StaleMigration` collided with `InvalidTimestamp` at 169; `InvalidTimestamp`
+  landed first (#1270), so `StaleMigration` moved to **170**.
+- Restored variants referenced by existing code but lost in merges:
+  `ContractError::{VetCredentialsExpired (171), CertificateNotFound (172),
+  CertificateRevoked (173), CertificateExpired (174),
+  CertificateHashConflict (175), NonceReused (176)}` — #1264 intended 47–49
+  for the certificate errors, but 47 is `ProposalNotFound` — and
+  `DataKey::VetCredentialsExpiry` (appended after `MicrochipIndex`).
+- Fixed `safe_increment` arity, several use-after-move errors, a duplicate
+  `mod test_discriminant_stability`, missing `Ledger` imports in two tests,
+  and the non-exhaustive `DataKey`/`MedicalKey` matches in the stability test.
+- Regenerated `abi-snapshot.txt`, which had drifted again (e.g.
+  `anchor_certificate_idempotent`, `rotate_pet_key_version`,
+  `migrate_microchip_index` were missing).
+
 ### 2026-08-29 — Custody-history digest + repair of pre-existing ABI drift (#1254)
 
 **New public ABI (intentional, additive):**

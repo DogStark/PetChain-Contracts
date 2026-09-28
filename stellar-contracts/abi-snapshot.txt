@@ -16,8 +16,9 @@ pub fn add_training_milestone(env: Env, pet_id: u64, trainer: Address, milestone
 pub fn add_vaccination(env: Env, pet_id: u64, veterinarian: Address, vaccine_type: VaccineType, vaccine_name: String, administered_at: u64, next_due_date: u64, expires_at: u64, batch_number: String,) -> u64
 pub fn add_weight_entry(env: Env, pet_id: u64, weight: u32) -> bool
 pub fn advance_schedule(env: Env, schedule_id: u64) -> u64
-pub fn amend_medical_record(env: Env, pet_id: u64, record_id: u64, input: MedicalRecordAmendmentInput) -> u32
+pub fn amend_medical_record(env: Env, pet_id: u64, record_id: u64, input: MedicalRecordAmendmentInput,) -> u32
 pub fn anchor_certificate(env: Env, issuer: Address, pet_id: u64, vaccination_id: u64, cert_hash: String,)
+pub fn anchor_certificate_idempotent(env: Env, issuer: Address, pet_id: u64, vaccination_id: u64, cert_hash: String,) -> u64
 pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64)
 pub fn approve_upgrade_proposal(env: Env, admin: Address, proposal_id: u64)
 pub fn archive_pet(env: Env, pet_id: u64)
@@ -32,20 +33,24 @@ pub fn cancel_pet_transfer(env: Env, id: u64)
 pub fn cancel_transfer_proposal(env: Env, proposal_id: u64)
 pub fn compact_delegations(env: Env, pet_id: u64, caller: Address, delegates: Vec<Address>,) -> u32
 pub fn compact_storage(env: Env, pet_id: u64, caller: Address) -> u32
+pub fn compute_canonical_consent_hash(env: Env, pet_id: u64, subject: Address, purpose: ConsentType, scopes: Vec<ConsentScope>, version: u32,) -> BytesN<32>
+pub fn compute_domain_hash(env: Env, domain: HashDomain, content: Bytes) -> BytesN<32>
 pub fn compute_offspring_traits(env: Env, record_id: u64) -> Map<String, u32>
-pub fn configure_multisig(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32) -> bool
+pub fn configure_multisig(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32,) -> bool
 pub fn confirm_init(env: Env, confirmer: Address)
 pub fn create_grooming_schedule(env: Env, pet_id: u64, frequency: GroomingFrequency, start_date: u64, end_date: u64, groomer: String, service_type: String, cost: u64,) -> u64
 pub fn deactivate_pet(env: Env, id: u64)
 pub fn deactivate_tag(env: Env, tag_id: BytesN<32>) -> bool
+pub fn delegate_decryption_access(env: Env, pet_id: u64, delegate: Address, ttl_seconds: u64, nonce: u64,) -> bool
 pub fn delete_breed_metadata(env: Env, admin: Address, breed_id: String)
 pub fn delete_medical_record(env: Env, pet_id: u64, record_id: u64, caller: Address) -> bool
-pub fn diff_record_versions(env: Env, pet_id: u64, record_id: u64, from_version: u32, to_version: u32) -> Vec<MedicalFieldDiff>
+pub fn diff_record_versions(env: Env, pet_id: u64, record_id: u64, from_version: u32, to_version: u32,) -> Vec<MedicalFieldDiff>
 pub fn disable_multisig(env: Env, pet_id: u64) -> bool
 pub fn execute_proposal(env: Env, proposal_id: u64)
 pub fn execute_upgrade(env: Env, admin: Address, proposal_id: u64)
 pub fn export_access_log(env: Env, caller: Address, pet_id: u64, start_ts: u64, end_ts: u64, page: u32,) -> Vec<AccessEvent>
 pub fn get_access_logs(env: Env, pet_id: u64, caller: Address) -> Vec<AccessLog>
+pub fn get_active_certificate(env: Env, pet_id: u64, vaccination_id: u64,) -> CertificateAnchor
 pub fn get_active_pets_count(env: Env) -> u64
 pub fn get_active_transfer_proposals(env: Env, pet_id: u64) -> Vec<PetTransferProposal>
 pub fn get_activity_streak(env: Env, pet_id: u64) -> ActivityStreak
@@ -64,8 +69,12 @@ pub fn get_breed_list(env: Env, species: Species) -> Vec<String>
 pub fn get_breeding_count(env: Env, pet_id: u64) -> u64
 pub fn get_breeding_record(env: Env, record_id: u64) -> Option<BreedingRecord>
 pub fn get_caller_nonce(env: Env, caller: Address) -> u64
+pub fn get_canonical_consent(env: Env, consent_hash: BytesN<32>) -> Option<CanonicalConsent>
 pub fn get_certificate_anchor(env: Env, pet_id: u64, vaccination_id: u64,) -> Option<CertificateAnchor>
+pub fn get_certificate_lifecycle(env: Env, pet_id: u64, vaccination_id: u64,) -> Option<CertificateLifecycle>
+pub fn get_certificate_status(env: Env, pet_id: u64, vaccination_id: u64,) -> CertificateStatus
 pub fn get_contacts_ordered(env: Env, pet_id: u64, owner: Address) -> Vec<EmergencyContact>
+pub fn get_credential_issuer(env: Env, issuer: Address) -> Option<CredentialIssuer>
 pub fn get_current_diet_plan(env: Env, pet_id: u64) -> Option<DietPlan>
 pub fn get_current_nutrition_version(env: Env, pet_id: u64) -> Option<NutritionVersion>
 pub fn get_custody_chain(env: Env, pet_id: u64) -> Vec<CustodyEntry>
@@ -81,6 +90,8 @@ pub fn get_emergency_audit(env: Env, pet_id: u64, page: u64, page_size: u32, cal
 pub fn get_emergency_contacts(env: Env, pet_id: u64, caller: Address) -> Vec<EmergencyContact>
 pub fn get_emergency_info(env: Env, pet_id: u64, caller: Address) -> EmergencyInfo
 pub fn get_emergency_info_with_reason(env: Env, pet_id: u64, caller: Address, reason_code: u32,) -> EmergencyInfo
+pub fn get_emergency_notification(env: Env, request_id: BytesN<32>,) -> Option<EmergencyNotification>
+pub fn get_emergency_recipient_id(env: Env, pet_id: u64, contact: EmergencyContact,) -> BytesN<32>
 pub fn get_emergency_responders(env: Env, pet_id: u64, owner: Address) -> Vec<Address>
 pub fn get_error_message(env: Env, error_code: u32, language: String) -> Option<String>
 pub fn get_expiring_vaccinations(env: Env, pet_id: u64, within_days: u64,) -> Vec<ExpiringVaccination>
@@ -88,18 +99,23 @@ pub fn get_global_storage_quota(env: Env) -> u64
 pub fn get_groomer_profile(env: Env, address: Address) -> Option<GroomerProfile>
 pub fn get_groomer_slots(env: Env, groomer_id: Address) -> Vec<GroomingSlot>
 pub fn get_grooming_count(env: Env, pet_id: u64) -> u64
+pub fn get_issuer_key_version(env: Env, issuer: Address, version: u32,) -> Option<IssuerKeyVersion>
 pub fn get_lab_result_count(env: Env, pet_id: u64) -> u64
 pub fn get_lab_results(env: Env, pet_id: u64, offset: u64, limit: u32, from_timestamp: Option<u64>, to_timestamp: Option<u64>,) -> Vec<LabResult>
+pub fn get_latest_canonical_consent(env: Env, pet_id: u64, subject: Address, purpose: ConsentType,) -> Option<CanonicalConsent>
 pub fn get_lineage(env: Env, pet_id: u64, max_depth: u32) -> Vec<u64>
 pub fn get_matching_subscription_ids(env: Env, event_type: EventType, pet_id: u64) -> Vec<u64>
 pub fn get_medical_record(env: Env, record_id: u64) -> Option<MedicalRecord>
+pub fn get_medical_record_hash(env: Env, record_id: u64) -> BytesN<32>
 pub fn get_multisig_config(env: Env, pet_id: u64) -> Option<MultisigConfig>
+pub fn get_nonce_history(env: Env, pet_id: u64, key_id: String) -> Vec<Bytes>
 pub fn get_nutrition_plan(env: Env, plan_id: u64) -> Option<NutritionPlan>
 pub fn get_nutrition_version(env: Env, pet_id: u64, version: u64) -> Option<NutritionVersion>
-pub fn get_offspring_ids(env: Env, record_id: u64, offset: u32, limit: u32,) -> Vec<u64>
+pub fn get_offspring_ids(env: Env, record_id: u64, offset: u32, limit: u32) -> Vec<u64>
 pub fn get_overdue_vaccinations(env: Env, pet_id: u64) -> Vec<VaccineType>
 pub fn get_ownership_history(env: Env, pet_id: u64, offset: u64, limit: u32,) -> Vec<OwnershipRecord>
 pub fn get_pet(env: Env, id: u64, caller: Address) -> Option<PetProfile>
+pub fn get_pet_access_grants_cursor(env: Env, pet_id: u64, cursor: u64, limit: u32, active_only: bool,) -> AccessGrantPage
 pub fn get_pet_age(env: Env, pet_id: u64) -> (u64, u64)
 pub fn get_pet_age_with_lifespan(env: Env, pet_id: u64) -> PetAge
 pub fn get_pet_by_tag(env: Env, tag_id: BytesN<32>) -> Option<PetProfile>
@@ -108,6 +124,7 @@ pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute>
 pub fn get_pet_full_profile(env: Env, pet_id: u64, caller: Address) -> Option<PetFullProfile>
 pub fn get_pet_full_profile_batch(env: Env, pet_id: u64, caller: Address,) -> Option<PetFullProfileBatch>
 pub fn get_pet_health_summary(env: Env, pet_id: u64, caller: Address,) -> Option<PetHealthSummary>
+pub fn get_pet_key_version(env: Env, pet_id: u64) -> u32
 pub fn get_pet_medical_records(env: Env, pet_id: u64, offset: u64, limit: u32,) -> Vec<MedicalRecord>
 pub fn get_pet_medical_records_cursor(env: Env, pet_id: u64, cursor: u64, limit: u32,) -> MedicalRecordPage
 pub fn get_pet_multisig_config(env: Env, pet_id: u64) -> Option<MultisigConfig>
@@ -135,7 +152,7 @@ pub fn get_tag(env: Env, tag_id: BytesN<32>) -> Option<PetTag>
 pub fn get_tag_by_pet(env: Env, pet_id: u64) -> Option<BytesN<32>>
 pub fn get_total_pets(env: Env) -> u64
 pub fn get_training_milestone(env: Env, milestone_id: u64) -> Option<TrainingMilestone>
-pub fn get_trait_probability(env: Env, record_id: u64, trait_name: String,) -> Option<u32>
+pub fn get_trait_probability(env: Env, record_id: u64, trait_name: String) -> Option<u32>
 pub fn get_transfer_proposal(env: Env, proposal_id: u64) -> Option<PetTransferProposal>
 pub fn get_upcoming_vaccinations(env: Env, pet_id: u64, days_threshold: u64,) -> Vec<Vaccination>
 pub fn get_upgrade_proposal(env: Env, proposal_id: u64) -> Option<UpgradeProposal>
@@ -146,6 +163,7 @@ pub fn get_verified_vets(env: Env, offset: u64, limit: u32) -> Vec<Vet>
 pub fn get_version(env: Env) -> ContractVersion
 pub fn get_vet(env: Env, vet_address: Address) -> Option<Vet>
 pub fn get_vet_by_license(env: Env, license_number: String) -> Option<Vet>
+pub fn get_vet_credential(env: Env, credential_id: u64) -> Option<VetCredential>
 pub fn get_vet_specializations(env: Env, vet_address: Address) -> Vec<Specialization>
 pub fn get_vet_stats(env: Env, vet_address: Address) -> VetStats
 pub fn get_vet_treatment_history(env: Env, vet_address: Address, page: u32, page_size: u32,) -> TreatmentHistoryPage
@@ -154,7 +172,9 @@ pub fn get_weight_entry(env: Env, weight_id: u64) -> Option<WeightEntry>
 pub fn get_weight_entry_count(env: Env, pet_id: u64) -> u64
 pub fn get_weight_history(env: Env, pet_id: u64) -> Vec<WeightEntry>
 pub fn grant_access(env: Env, pet_id: u64, grantee: Address, access_level: AccessLevel, expires_at: Option<u64>, nonce: u64,) -> bool
+pub fn grant_canonical_consent(env: Env, pet_id: u64, subject: Address, purpose: ConsentType, scopes: Vec<ConsentScope>,) -> CanonicalConsent
 pub fn grant_emergency_override(env: Env, pet_id: u64, responder: Address, reason_code: u32, duration: u64,)
+pub fn has_canonical_consent_scope(env: Env, pet_id: u64, subject: Address, purpose: ConsentType, scope: ConsentScope,) -> bool
 pub fn has_reached_milestone(env: Env, pet_id: u64, milestone_days: u64) -> bool
 pub fn init_admin(env: Env, admin: Address)
 pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold: u32)
@@ -165,17 +185,21 @@ pub fn is_tag_active(env: Env, tag_id: BytesN<32>) -> bool
 pub fn is_vaccination_current(env: Env, pet_id: u64, vaccine_type: VaccineType) -> bool
 pub fn is_verified_vet(env: Env, vet_address: Address) -> bool
 pub fn is_vet_registered(env: Env, vet_address: Address) -> bool
+pub fn issue_vet_credential(env: Env, issuer: Address, key_version: u32, vet: Address, expires_at: u64,) -> VetCredential
 pub fn link_tag_to_pet(env: Env, pet_id: u64) -> BytesN<32>
 pub fn list_nutrition_versions(env: Env, pet_id: u64) -> Vec<NutritionVersion>
 pub fn list_upgrade_proposals(env: Env, start: u64, limit: u32) -> Vec<UpgradeProposal>
 pub fn log_feeding(env: Env, pet_id: u64, plan_id: u64, servings: u32) -> bool
 pub fn max_subscriptions_per_address(env: Env) -> u32
+pub fn migrate_microchip_index(env: Env, admin: Address, start: u64, limit: u64) -> u64
 pub fn migrate_schema_version(env: Env, admin: Address, current_version: u32, target_version: u32,)
 pub fn migrate_storage(env: Env, admin: Address, _from_major: u32, _from_minor: u32, _from_patch: u32, to_major: u32, to_minor: u32, to_patch: u32,)
 pub fn migrate_v1_to_v2(env: Env, admin: Address)
+pub fn migrate_v2_to_v3(env: Env, admin: Address)
 pub fn migrate_version(env: Env, admin: Address, major: u32, minor: u32, patch: u32)
 pub fn multisig_transfer_pet(env: Env, proposal_id: u64) -> bool
 pub fn notify_emergency_contacts(env: Env, caller: Address, pet_id: u64) -> u32
+pub fn notify_emergency_recipient(env: Env, caller: Address, pet_id: u64, event_id: BytesN<32>, recipient: BytesN<32>, nonce: u64, expires_at: u64,) -> EmergencyNotificationReceipt
 pub fn propose_init(env: Env, admins: Vec<Address>, threshold: u32)
 pub fn propose_signer_rotation(env: Env, proposer: Address, remove_address: Address, add_address: Address,) -> u64
 pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>, expires_in_days: u32,) -> u64
@@ -186,7 +210,9 @@ pub fn purge_expired_records(env: Env, pet_id: u64, caller: Address) -> u32
 pub fn raise_dispute(env: Env, pet_id: u64, claimer: Address, target: Address, amount: u64, reason: String, evidence_hash: String,) -> u64
 pub fn rate_groomer(env: Env, pet_id: u64, grooming_record_id: u64, score: u32) -> bool
 pub fn reactivate_tag(env: Env, tag_id: BytesN<32>) -> bool
+pub fn record_nonce_use(env: Env, pet_id: u64, key_id: String, nonce: Bytes) -> bool
 pub fn register_breeding_pair(env: Env, sire_id: u64, dam_id: u64, breeding_date: u64, notes: String, max_coi_bp: u32,) -> u64
+pub fn register_credential_issuer(env: Env, admin: Address, issuer: Address, public_key: BytesN<32>, key_expires_at: u64,) -> IssuerKeyVersion
 pub fn register_groomer(env: Env, admin: Address, address: Address, name: String, license_id: String,) -> bool
 pub fn register_pet(env: Env, owner: Address, name: String, birthday: String, gender: Gender, species: Species, breed: String, color: String, weight: u32, microchip_id: Option<String>, privacy_level: PrivacyLevel,) -> u64
 pub fn register_pet_owner(env: Env, owner: Address, name: String, email: String, emergency_contact: String,)
@@ -203,10 +229,18 @@ pub fn reorder_contact(env: Env, pet_id: u64, index: u32, new_priority: u32)
 pub fn require_multisig_for_transfer(env: Env, pet_id: u64, to: Address) -> u64
 pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool
 pub fn revoke_access(env: Env, pet_id: u64, grantee: Address) -> bool
+pub fn revoke_canonical_consent(env: Env, pet_id: u64, consent_hash: BytesN<32>,) -> CanonicalConsent
+pub fn revoke_certificate(env: Env, caller: Address, pet_id: u64, vaccination_id: u64, reason: String,)
+pub fn revoke_credential_issuer(env: Env, admin: Address, issuer: Address) -> CredentialIssuer
+pub fn revoke_credential_issuer_key(env: Env, admin: Address, issuer: Address, version: u32,) -> IssuerKeyVersion
+pub fn revoke_decryption_delegation(env: Env, pet_id: u64, delegate: Address) -> bool
 pub fn revoke_vaccination_certificate(env: Env, vet_or_admin: Address, pet_id: u64, cert_id: u64, reason: String,)
 pub fn revoke_vet_license(env: Env, admin: Address, vet_address: Address) -> bool
 pub fn rollback_nutrition(env: Env, pet_id: u64, target_version: u64) -> u64
 pub fn rollback_upgrade(env: Env, admin: Address)
+pub fn rotate_credential_issuer_key(env: Env, caller: Address, issuer: Address, new_public_key: BytesN<32>, key_expires_at: u64, overlap_secs: u64,) -> IssuerKeyVersion
+pub fn rotate_nonce(env: Env, pet_id: u64, key_id: String) -> Bytes
+pub fn rotate_pet_key_version(env: Env, pet_id: u64, nonce: u64) -> u32
 pub fn rotate_record_encryption(env: Env, pet_id: u64, record_id: u64, new_key_version: u32,) -> bool
 pub fn search_by_keyword(env: Env, pet_id: u64, keyword: String) -> Vec<MedicalRecord>
 pub fn search_medical_records(env: Env, pet_id: u64, filter: MedicalRecordFilter, offset: u64, limit: u32,) -> Vec<MedicalRecord>
@@ -218,6 +252,7 @@ pub fn set_emergency_contacts(env: Env, pet_id: u64, contacts: Vec<EmergencyCont
 pub fn set_error_message(env: Env, admin: Address, error_code: u32, language: String, message: String,)
 pub fn set_global_storage_quota(env: Env, admin: Address, quota: u64)
 pub fn set_max_subscriptions(env: Env, admin: Address, max: u32)
+pub fn set_nonce_max_use(env: Env, pet_id: u64, key_id: String, max_uses: u32)
 pub fn set_nutrition_version(env: Env, pet_id: u64, food_type: String, portion_size: String, frequency: String, calories_per_serving: u32, daily_target_calories: u32, restrictions: Vec<String>, allergies: Vec<String>,) -> u64
 pub fn set_pet_storage_quota(env: Env, admin: Address, pet_id: u64, quota: u64)
 pub fn set_pet_traits(env: Env, pet_id: u64, traits: Map<String, Allele>)
@@ -235,7 +270,7 @@ pub fn unarchive_pet(env: Env, pet_id: u64)
 pub fn update_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32,)
 pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: String) -> bool
 pub fn update_medical_record_notes(env: Env, record_id: u64, notes: String) -> bool
-pub fn update_multisig_signers(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32) -> bool
+pub fn update_multisig_signers(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32,) -> bool
 pub fn update_owner_profile(env: Env, owner: Address, name: String, email: String, emergency_contact: String,) -> bool
 pub fn update_pet_privacy_level(env: Env, pet_id: u64, privacy_level: PrivacyLevel) -> bool
 pub fn update_pet_profile(env: Env, id: u64, name: String, birthday: String, gender: Gender, species: Species, breed: String, color: String, weight: u32, microchip_id: Option<String>, privacy_level: PrivacyLevel,) -> bool
@@ -243,6 +278,9 @@ pub fn update_tag_message(env: Env, tag_id: BytesN<32>, message: String) -> bool
 pub fn verify_certificate(env: Env, pet_id: u64, vaccination_id: u64, cert_hash: String,) -> bool
 pub fn verify_claim_document(env: Env, claim_id: u64, doc_index: u32, content_hash: BytesN<32>,) -> bool
 pub fn verify_custody_chain(env: Env, pet_id: u64) -> CustodyVerificationResult
+pub fn verify_decryption_token(env: Env, pet_id: u64, delegate: Address) -> bool
 pub fn verify_evidence(env: Env, dispute_id: u64, evidence_id: u64, hash: BytesN<32>) -> bool
 pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool
+pub fn verify_vet_credential(env: Env, credential_id: u64) -> VetCredentialStatus
+pub fn verify_vet_with_expiry(env: Env, admin: Address, vet_address: Address, expires_at: Option<u64>,) -> bool
 pub fn vote_on_dispute(env: Env, voter: Address, dispute_id: u64, vote: DisputeVote) -> bool

@@ -85,6 +85,24 @@ fn cancel_expired_transfer_after_timeout_by_third_party_succeeds() {
 }
 
 #[test]
+fn cancel_transfer_then_retry_allows_new_offer() {
+    let (env, owner, original_recipient, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let replacement_recipient = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &original_recipient);
+    client.cancel_transfer(&pet_id);
+    client.initiate_transfer(&pet_id, &replacement_recipient);
+
+    let transfer = client.get_pending_transfer(&pet_id).unwrap();
+    assert_eq!(transfer.from, owner);
+    assert_eq!(transfer.to, replacement_recipient);
+    assert!(!client.get_escrowed_transfer(&pet_id).is_some());
+}
+
+#[test]
 fn accept_transfer_before_custom_timeout_still_works() {
     let (env, owner, new_owner, pet_id) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
@@ -100,6 +118,28 @@ fn accept_transfer_before_custom_timeout_still_works() {
     let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
     assert_eq!(escrowed.from, owner);
     assert_eq!(escrowed.to, new_owner);
+}
+
+#[test]
+fn initiate_transfer_fails_when_pet_is_already_in_escrow() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let replacement_owner = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    let result = client.try_initiate_transfer(&pet_id, &replacement_owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::TransferAlreadyPending as u32,
+        )))
+    );
+    assert!(client.get_escrowed_transfer(&pet_id).is_some());
+    assert_eq!(client.get_current_owner(&pet_id), owner);
 }
 
 #[test]
