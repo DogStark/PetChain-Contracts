@@ -374,6 +374,8 @@ pub fn get_escrow(env: &Env, transfer_id: u64) -> Option<EscrowEntry> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     // Threat-model note: all auth, token, and state-transition paths are tested
     // below. Terminal states are written before token transfers (issues #1183, #1184)
     // to prevent double-settlement under reentrancy or retry. init_escrow_config

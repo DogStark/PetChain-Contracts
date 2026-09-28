@@ -31,6 +31,8 @@ pub mod escrow;
 mod test;
 #[cfg(test)]
 mod test_cross_contract;
+#[cfg(test)]
+mod test_state_machine;
 mod vet_registry;
 
 /// ======================================================
@@ -469,6 +471,18 @@ fn clear_trusted_update_approvals(env: &Env, admins: &Vec<Address>, new_address:
                 proposal: new_address.clone(),
                 approver: admin,
             }));
+    }
+}
+
+/// Ownership must not move by any other path while an escrowed transfer
+/// (possibly disputed) is open.
+fn require_no_escrow(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
     }
 }
 
@@ -1101,6 +1115,7 @@ impl PetOwnershipContract {
         if pet.current_owner != transfer.from {
             panic_with_error!(env, ContractError::Unauthorized);
         }
+        require_no_escrow(&env, pet_id);
 
         let escrowed = EscrowedTransfer {
             pet_id,
@@ -1387,6 +1402,7 @@ impl PetOwnershipContract {
             {
                 panic_with_error!(env, ContractError::TransferAlreadyPending);
             }
+            require_no_escrow(&env, pet_id);
         }
 
         // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
@@ -1439,6 +1455,7 @@ impl PetOwnershipContract {
                 panic_with_error!(env, ContractError::InvalidBatch);
             }
             seen_ids.push_back(pet_id);
+            require_no_escrow(&env, pet_id);
 
             let pet = get_pet(&env, pet_id);
             match expected_owner {
