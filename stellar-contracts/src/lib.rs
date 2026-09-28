@@ -250,6 +250,8 @@ mod test_pet_birthday_validation;
 #[cfg(test)]
 mod test_search_medical_records;
 #[cfg(test)]
+mod test_storage_metrics;
+#[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_verify_claim_document;
@@ -466,6 +468,8 @@ const MAX_SIGHTING_DESC_LEN: u32 = 500;
 
 // --- STORAGE QUOTA CONSTANTS ---
 const DEFAULT_STORAGE_QUOTA: u64 = 1000; // Default max storage entries per pet
+/// Max record slots `get_storage_metrics` examines per call (Issue #1258).
+const MAX_STORAGE_METRICS_SCAN: u32 = 100;
 
 // --- INPUT VALIDATION MIDDLEWARE ---
 
@@ -1757,6 +1761,28 @@ pub struct StorageUsage {
     pub pet_id: u64,
     pub current_count: u64,
     pub quota: u64,
+}
+
+/// Storage-rent and cleanup observability for one pet (Issue #1258).
+/// Holds counts only, never record contents.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageMetrics {
+    pub pet_id: u64,
+    /// Entries counted against the pet's storage quota.
+    pub used: u64,
+    /// Effective cap (per-pet override or global default).
+    pub quota: u64,
+    /// `quota - used`, saturating at 0 (0 means further writes are rejected).
+    pub remaining: u64,
+    /// Medical-record index slots allocated for the pet.
+    pub medical_record_slots: u64,
+    /// Soft-deleted records in the scanned slots that can be purged now.
+    pub cleanup_backlog: u64,
+    /// Soft-deleted records in the scanned slots still inside retention.
+    pub pending_retention: u64,
+    /// Last slot scanned; pass back as `cursor` to continue. `0` = scan complete.
+    pub next_cursor: u64,
 }
 
 // --- LOST PET ALERT SYSTEM ---
@@ -5474,6 +5500,55 @@ impl PetChainContract {
             pet_id,
             current_count,
             quota,
+        }
+    }
+
+    /// Read-only storage and cleanup metrics for a pet (Issue #1258).
+    ///
+    /// Reports usage against the configured cap plus the soft-deleted record
+    /// backlog that `purge_deleted_records_bounded` would remove. The backlog
+    /// scan is bounded: it examines at most `limit` (capped at
+    /// `MAX_STORAGE_METRICS_SCAN`) slots after `cursor`. Repeat with
+    /// `next_cursor` until it is `0` and sum the per-page backlog counts.
+    pub fn get_storage_metrics(env: Env, pet_id: u64, cursor: u64, limit: u32) -> StorageMetrics {
+        let usage = Self::get_storage_usage(env.clone(), pet_id);
+        let slots: u64 = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::PetMedicalRecordCount(pet_id))
+            .unwrap_or(0);
+        let retention_period = Self::get_retention_period(env.clone());
+        let now = env.ledger().timestamp();
+
+        let end = slots.min(cursor.saturating_add(limit.min(MAX_STORAGE_METRICS_SCAN) as u64));
+        let (mut cleanup_backlog, mut pending_retention) = (0u64, 0u64);
+        for slot in cursor.saturating_add(1)..=end {
+            let deleted_at = env
+                .storage()
+                .instance()
+                .get::<MedicalKey, u64>(&MedicalKey::PetMedicalRecordIndex((pet_id, slot)))
+                .and_then(|id| {
+                    env.storage()
+                        .instance()
+                        .get::<MedicalKey, MedicalRecord>(&MedicalKey::MedicalRecord(id))
+                })
+                .and_then(|record| record.deleted_at);
+            match deleted_at {
+                Some(at) if now >= at.saturating_add(retention_period) => cleanup_backlog += 1,
+                Some(_) => pending_retention += 1,
+                None => {}
+            }
+        }
+
+        StorageMetrics {
+            pet_id,
+            used: usage.current_count,
+            quota: usage.quota,
+            remaining: usage.quota.saturating_sub(usage.current_count),
+            medical_record_slots: slots,
+            cleanup_backlog,
+            pending_retention,
+            next_cursor: if end < slots { end } else { 0 },
         }
     }
 
@@ -11564,7 +11639,9 @@ impl PetChainContract {
     }
 
     fn append_normalized_identity_field(output: &mut Bytes, value: &String) {
-        let bytes = value.to_bytes();
+        // soroban_sdk::String has no byte accessor; its XDR is an 8-byte
+        // ScVal header (type tag + length) followed by the raw UTF-8 bytes.
+        let bytes = value.clone().to_xdr(output.env()).slice(8..8 + value.len());
         let mut start = 0;
         let mut end = bytes.len();
 
