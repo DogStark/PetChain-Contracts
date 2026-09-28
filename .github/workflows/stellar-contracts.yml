@@ -58,6 +58,37 @@ jobs:
         working-directory: stellar-contracts
         run: ./scripts/generate_abi_snapshot.sh --check
 
+  cross-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      # Deploys the main, ownership/adoption/escrow and vet-registry contracts
+      # into one local Soroban env (Issue #1253).
+      # See stellar-contracts/docs/cross-contract-compat.md.
+      - name: Build main contract WASM
+        working-directory: stellar-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Run cross-contract compatibility tests
+        working-directory: stellar-contracts/contracts/pet-transfer-adoption
+        run: |
+          export PETCHAIN_MAIN_WASM=$(find "$GITHUB_WORKSPACE/target" "$GITHUB_WORKSPACE/stellar-contracts/target" \
+            -path '*wasm32-unknown-unknown/release/petchain_stellar.wasm' 2>/dev/null | head -n 1)
+          test -n "$PETCHAIN_MAIN_WASM" || { echo "main contract WASM not found" >&2; exit 1; }
+          # soroban-env-host accepts any ed25519-dalek >= 2; keep it on the 2.x
+          # line that soroban-sdk's testutils are built against.
+          cargo generate-lockfile
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.1.1 2>/dev/null || true
+          cargo test test_cross_contract -- --include-ignored
+
   coverage:
     runs-on: ubuntu-latest
     steps:
