@@ -70,4 +70,66 @@ describe("PetChainRegistry medical-record commitments", function () {
     await expect(registry.connect(other).correctMedicalRecord(recordId, "hack", "hack", ""))
       .to.be.revertedWith("PetChainRegistry: not authorized");
   });
+
+  describe("admin quorum boundaries", function () {
+    const ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
+
+    async function adminCount() {
+      return (await registry.getRoleMemberCount(ADMIN_ROLE)).toNumber();
+    }
+
+    async function threshold() {
+      return (await registry.adminThreshold()).toNumber();
+    }
+
+    it("keeps a single recovery admin and a threshold of one", async function () {
+      expect(await adminCount()).to.equal(1);
+      expect(await threshold()).to.equal(1);
+      expect(await registry.hasRole(ADMIN_ROLE, admin.address)).to.equal(true);
+    });
+
+    it("never allows removing the last recovery administrator", async function () {
+      await expect(registry.connect(admin).removeAdmin(admin.address))
+        .to.be.revertedWith("PetChainRegistry: last admin");
+      expect(await adminCount()).to.equal(1);
+    });
+
+    it("rejects thresholds of zero or greater than the admin count", async function () {
+      await expect(registry.connect(admin).setAdminThreshold(0))
+        .to.be.revertedWith("PetChainRegistry: invalid threshold");
+      await expect(registry.connect(admin).setAdminThreshold(2))
+        .to.be.revertedWith("PetChainRegistry: invalid threshold");
+      expect(await threshold()).to.equal(1);
+    });
+
+    it("supports two admins with threshold equal to the admin count", async function () {
+      await registry.connect(admin).addAdmin(other.address);
+      expect(await adminCount()).to.equal(2);
+      await registry.connect(admin).setAdminThreshold(2);
+      expect(await threshold()).to.equal(2);
+      await expect(registry.connect(admin).setAdminThreshold(3))
+        .to.be.revertedWith("PetChainRegistry: invalid threshold");
+    });
+
+    it("emits old and new membership and threshold on changes", async function () {
+      await expect(registry.connect(admin).addAdmin(other.address))
+        .to.emit(registry, "AdminAdded")
+        .withArgs(other.address, admin.address);
+      await expect(registry.connect(admin).setAdminThreshold(2))
+        .to.emit(registry, "AdminThresholdChanged")
+        .withArgs(1, 2);
+      await expect(registry.connect(admin).removeAdmin(other.address))
+        .to.emit(registry, "AdminRemoved")
+        .withArgs(other.address, admin.address);
+    });
+
+    it("prevents replaying a pending admin change", async function () {
+      await registry.connect(admin).proposeAdminChange(other.address, true);
+      const pendingId = await registry.pendingAdminChangeId();
+      await registry.connect(admin).executeAdminChange(pendingId);
+      expect(await registry.hasRole(ADMIN_ROLE, other.address)).to.equal(true);
+      await expect(registry.connect(admin).executeAdminChange(pendingId))
+        .to.be.revertedWith("PetChainRegistry: change not pending");
+    });
+  });
 });

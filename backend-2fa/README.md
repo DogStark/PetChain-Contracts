@@ -193,3 +193,10 @@ Compatible authenticator apps: Google Authenticator, Authy, Microsoft Authentica
 ## License
 
 MIT
+
+## Canonical crate (Issue #1217)
+
+`backend-2fa` is the only 2FA backend crate (workspace member, built by `.github/workflows/backend-2fa.yml`).
+The former `backend-2fa-implementation/` directory was an unbuildable stale stub (no `Cargo.toml`, not in the
+workspace or CI) and was removed. Its one unique piece, the advisory-lock migration runner, now lives in
+`src/migration_lock.rs`; its older traceparent parser and stub `lib.rs` were superseded by the canonical versions.
