@@ -639,4 +639,38 @@ fn test_contract_error_discriminants() {
     assert_eq!(ContractError::RecordAlreadyDeleted as u32, 161);
     assert_eq!(ContractError::RetentionPeriodNotMet as u32, 162);
     assert_eq!(ContractError::RecordNotFound as u32, 163);
+    assert_eq!(ContractError::DisputeNotFound as u32, 164);
+    assert_eq!(ContractError::DisputeNotOpenForVoting as u32, 165);
+    assert_eq!(ContractError::NotDisputeStakeholder as u32, 166);
+    assert_eq!(ContractError::NotInEvidencePhase as u32, 167);
+    assert_eq!(ContractError::NotDisputeParty as u32, 168);
+    assert_eq!(ContractError::InvalidTimestamp as u32, 169);
+    assert_eq!(ContractError::StaleMigration as u32, 170);
+    assert_eq!(ContractError::VetCredentialsExpired as u32, 171);
+    assert_eq!(ContractError::CertificateNotFound as u32, 172);
+    assert_eq!(ContractError::CertificateRevoked as u32, 173);
+    assert_eq!(ContractError::CertificateExpired as u32, 174);
+    assert_eq!(ContractError::CertificateHashConflict as u32, 175);
+    assert_eq!(ContractError::NonceReused as u32, 176);
+    assert_eq!(ContractError::NotificationExpired as u32, 177);
+    assert_eq!(ContractError::NotificationAlreadySent as u32, 178);
+    assert_eq!(ContractError::UnknownEmergencyRecipient as u32, 179);
+    assert_eq!(ContractError::ConsentNotFound as u32, 180);
+    assert_eq!(ContractError::ConsentVersionMismatch as u32, 181);
+    assert_eq!(ContractError::IssuerAlreadyRegistered as u32, 182);
+    assert_eq!(ContractError::IssuerNotFound as u32, 183);
+    assert_eq!(ContractError::IssuerRevoked as u32, 184);
+    assert_eq!(ContractError::IssuerKeyVersionNotFound as u32, 185);
+    assert_eq!(ContractError::IssuerKeyVersionInactive as u32, 186);
+    assert_eq!(ContractError::IssuerKeyReused as u32, 187);
+    assert_eq!(ContractError::RevokedConsentReplay as u32, 188);
+}
+
+#[test]
+fn test_petchain_error_discriminants_are_stable() {
+    assert_eq!(PetChainError::NonceReused as u32, 1);
+    assert_eq!(PetChainError::SelfLineage as u32, 2);
+    assert_eq!(PetChainError::CircularLineage as u32, 3);
+    assert_eq!(PetChainError::KeywordTooLong as u32, 4);
+    assert_eq!(PetChainError::TooManySearchTokens as u32, 5);
 }
