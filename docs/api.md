@@ -120,9 +120,101 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_custody_chain` | Returns the chain-of-custody log for a pet (chronological, append-only, capped at 100 entries) |
 | `verify_custody_chain` | Checks chain-of-custody internal consistency (links, creator, current owner) |
 | `get_custody_chain_digest` | Returns the canonical SHA-256 digest of the custody chain (domain, version, pet ID, sequence, entries in order) for completeness/ordering proofs |
+| `get_custody_history_page` | Returns a single page of custody history with boundary digests (see below) |
 | `get_access_logs` | Returns access logs for a pet (owner/admin only) |
 
 > **Audit note:** All `log_access` (storage write) calls were removed from the above functions. Write functions (`add_medical_record`, `update_pet_profile`, `grant_access`, `revoke_access`, `add_attachment`, etc.) retain their access log writes.
+
+---
+
+## Custody History Pagination Proofs (Issue #1339)
+
+Custody history consumers must be able to verify that a page belongs to a
+single chain and that no entries were skipped between pages. To make this
+possible, every custody history page exposes **boundary digests** that bind the
+page to its position in the chain.
+
+### Page shape
+
+`get_custody_history_page(pet_id, cursor, limit)` returns a page with the
+following fields:
+
+| Field | Description |
+|---|---|
+| `entries` | The custody entries in this page, in chain order |
+| `prev_digest` | Digest of the entry immediately preceding this page (`None` for the first page) |
+| `next_digest` | Digest of the entry immediately following this page (`None` for the terminal page) |
+| `page_digest` | Canonical digest over `(domain, version, pet_id, start_seq, end_seq, entries)` |
+| `start_seq` / `end_seq` | Inclusive sequence range covered by this page |
+| `is_terminal` | `true` iff this page is the last page of the chain |
+
+### Verification rules
+
+A consumer verifies a page against the expected chain as follows:
+
+1. **Chain membership.** Recompute `page_digest` from the returned entries and
+   compare it to the returned `page_digest`. A mismatch means the page was
+   tampered with.
+2. **Linkage.** For consecutive pages `P` and `Q`, require
+   `P.next_digest == Q.prev_digest` and `Q.start_seq == P.end_seq + 1`. This
+   proves no entries were skipped and that the pages belong to the same chain.
+3. **Ordering.** `start_seq` must be strictly greater than the previous page's
+   `end_seq`; out-of-order pages fail the linkage check.
+4. **Empty pages.** An empty page has `entries == []`, `start_seq == end_seq`,
+   and `page_digest` equal to the canonical digest of an empty range. An empty
+   page is only valid when it is also terminal.
+5. **Terminal pages.** The terminal page has `next_digest == None` and
+   `is_terminal == true`. A non-terminal page with `next_digest == None` is
+   invalid, and a terminal page with a non-`None` `next_digest` is invalid.
+
+### Proof test plan
+
+Generated custody history fixtures and proof tests cover:
+
+- **Consecutive pages verify.** For a generated chain, every adjacent page pair
+  satisfies the linkage rule and each `page_digest` recomputes correctly.
+- **Tampered pages fail.** Mutating an entry, `start_seq`, or `page_digest`
+  causes verification to fail.
+- **Out-of-order pages fail.** Swapping two pages or skipping a page breaks the
+  linkage rule.
+- **Empty and terminal pages are unambiguous.** An empty page is accepted only
+  when terminal; a terminal page is accepted only when `next_digest == None`.
+
+---
+
+## Batch-Operation Atomicity Policy (Issue #1334)
+
+Batch write operations (e.g. `get_pet_full_profile_batch` and any future
+multi-item write entrypoints) follow a single, documented atomicity model:
+
+- **All-or-nothing.** A batch is committed only if *every* item succeeds. If
+  any item fails validation or authorization, the entire batch is rolled back
+  and no storage mutation from that batch is persisted. There is no partial
+  commit path.
+- **No observable partial state.** Because a failed batch reverts the whole
+  transaction, no partial ownership, custody, or consent state is ever
+  observable — neither to the caller nor to subsequent reads. A failed batch
+  leaves ownership and consent exactly as they were before the call.
+- **Per-item results are safe-only.** Per-item results are exposed only on
+  full success, or via non-mutating preview/read helpers. A failing batch
+  returns a single error and never a mix of applied and rejected items.
+- **Bounded item limits.** Every batch entrypoint enforces a documented
+  maximum item count (`MAX_BATCH_ITEMS`). Requests exceeding the limit are
+  rejected before any item is processed, so a batch can never be used to
+  bypass per-transaction resource limits.
+
+### Batch test plan
+
+Batch success, failure, and limit behavior is covered by tests that assert
+state snapshots before and after each call:
+
+- **Success:** a valid batch applies all items and the post-state snapshot
+  reflects every mutation.
+- **Failure:** a batch containing one invalid item reverts entirely; the
+  post-state snapshot is byte-for-byte identical to the pre-state snapshot
+  (no partial ownership or consent state).
+- **Limit:** a batch exceeding `MAX_BATCH_ITEMS` is rejected and the state
+  snapshot is unchanged.
 
 ---
 
@@ -150,6 +242,12 @@ owner, the record's vet, or an admin may delete) and publishes a
 `MedicalRecordDeleted` audit event. Purging is split into a bounded,
 resumable `purge_deleted_records_bounded` (Issue #1172) so large pets can be
 drained without hitting transaction resource limits.
+
+Cursor pagination is bounded by policy: `get_pet_medical_records_cursor`
+accepts an opaque cursor and a page size that is clamped to a maximum, so a
+single request cannot scan an unbounded number of records. Callers should
+follow the returned cursor until it is exhausted rather than requesting
+arbitrarily large pages.
 
 **Compatibility / migration notes:**
 - `set_max_subscriptions_per_address` was renamed to `set_max_subscriptions`
@@ -187,5 +285,3 @@ For implementation details, read the crate sources in `backend-2fa/src/`.
 ### Error response format
 
 Backend 2FA endpoints return structured J
-
-/* … truncated 5440 chars — edit only what you need near the top … */

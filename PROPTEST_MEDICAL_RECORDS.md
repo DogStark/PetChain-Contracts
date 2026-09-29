@@ -8,6 +8,94 @@ This document describes the comprehensive property-based test suite for the `add
 
 The `add_medical_record` function accepts multiple free-text fields (diagnosis, treatment, notes) and a nested medications array, creating a high-risk surface for input-validation bugs. Initial fuzz coverage (`test_fuzz_regression.rs`) only covered a small subset of input combinations.
 
+## Timestamp and Duration Arithmetic (Issue #1328)
+
+Medical and insurance deadlines depend on timestamp arithmetic that can overflow or accept nonsensical negative/zero durations. This section documents the centralized checked arithmetic, the inclusive/exclusive boundary semantics, and the ledger timestamp assumptions that the boundary tests in `stellar-contracts/src/test_proptest_medical.rs` verify.
+
+### Ledger Timestamp Assumptions
+
+All deadline-bearing methods rely on the following explicit assumptions about `env.ledger().timestamp()`:
+
+- **Unit**: seconds since the Unix epoch (UTC).
+- **Type**: `u64` — non-negative by construction; a negative timestamp is unrepresentable.
+- **Monotonicity**: non-decreasing across ledgers; a later ledger never reports an earlier timestamp.
+- **Range**: bounded by the ledger close time; callers must not assume sub-second precision.
+
+Because the timestamp is `u64`, "negative duration" cannot be expressed as a raw timestamp. Instead, durations are computed as signed deltas and validated before use.
+
+### Centralized Checked Arithmetic
+
+All timestamp/duration math is routed through a single checked helper so that overflow and underflow return a **stable, documented error** rather than panicking or wrapping:
+
+```rust
+/// Stable error returned by all checked timestamp/duration arithmetic.
+/// Returned on overflow, underflow, or a nonsensical (zero/negative) duration.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TimeError {
+    /// Addition of a duration to a timestamp overflowed u64.
+    TimestampOverflow = 1,
+    /// Subtraction produced a value below the epoch (underflow).
+    TimestampUnderflow = 2,
+    /// Duration was zero or negative where a positive duration is required.
+    InvalidDuration = 3,
+}
+
+/// Checked `timestamp + duration`. Returns `TimestampOverflow` on overflow.
+pub fn checked_add(ts: u64, duration: u64) -> Result<u64, TimeError> {
+    ts.checked_add(duration).ok_or(TimeError::TimestampOverflow)
+}
+
+/// Checked `timestamp - duration`. Returns `TimestampUnderflow` on underflow.
+pub fn checked_sub(ts: u64, duration: u64) -> Result<u64, TimeError> {
+    ts.checked_sub(duration).ok_or(TimeError::TimestampUnderflow)
+}
+
+/// Validates that a duration is strictly positive before it is applied.
+pub fn require_positive(duration: u64) -> Result<u64, TimeError> {
+    if duration == 0 {
+        Err(TimeError::InvalidDuration)
+    } else {
+        Ok(duration)
+    }
+}
+```
+
+Every deadline-bearing method must call these helpers instead of using `+`/`-` directly, so the error surface is uniform and testable.
+
+### Inclusive vs Exclusive Boundary Semantics
+
+Deadline-bearing methods fall into two families. The semantics are fixed and tested at the exact boundary:
+
+| Method family | Comparison | Boundary meaning |
+|---------------|------------|------------------|
+| `is_expired(deadline)` | `now >= deadline` | **Inclusive**: the deadline is met *at* `now == deadline`. |
+| `is_active(deadline)` | `now < deadline` | **Exclusive**: active strictly before the deadline. |
+| `time_remaining(deadline)` | `deadline - now` | Zero at the boundary; underflow error if `now > deadline`. |
+
+Concretely, for a deadline `D`:
+
+- `now == D` → expired (inclusive), not active (exclusive), remaining `0`.
+- `now == D - 1` → not expired, active, remaining `1`.
+- `now == D + 1` → expired, not active, remaining underflows → `TimestampUnderflow`.
+
+These three points (exact boundary, one-before, one-past) are asserted for every deadline-bearing method.
+
+### Boundary Test Matrix
+
+Each deadline-bearing method is covered by the following cases:
+
+| Case | Input | Expected |
+|------|-------|----------|
+| Zero duration | `duration = 0` | `InvalidDuration` |
+| Exact boundary | `now == deadline` | expired / not active / remaining `0` |
+| One before boundary | `now == deadline - 1` | not expired / active / remaining `1` |
+| One past boundary | `now == deadline + 1` | expired / not active / `TimestampUnderflow` |
+| Max value | `ts = u64::MAX`, `duration > 0` | `TimestampOverflow` |
+| Underflow | `ts = 0`, `duration > 0` | `TimestampUnderflow` |
+
+Proptest cases generate arbitrary `(now, deadline)` pairs and assert that the checked helpers never panic and always return either a value consistent with the table above or the matching stable `TimeError`.
+
 ## Solution
 
 Created **stellar-contracts/src/test_proptest_medical.rs** with comprehensive property-based tests that:
@@ -17,6 +105,44 @@ Created **stellar-contracts/src/test_proptest_medical.rs** with comprehensive pr
 3. **Verify panic safety** — contract never panics on valid inputs
 4. **Ensure data consistency** — record IDs are unique and monotonically increasing
 5. **Cover edge cases** — Unicode, special characters, whitespace-only fields, empty inputs
+6. **Verify timestamp/duration arithmetic** — overflow, underflow, and exact-boundary semantics per the matrix above
+
+## Bounded String and Vector Fuzz Coverage (#1315)
+
+The proptest harness is extended to generate **boundary, empty, Unicode, and oversized** values for every public input that uses bounded collections. This closes the gap where malformed lengths and nested inputs caused budget failures or unexpected acceptance.
+
+### Generated Value Classes
+
+For each bounded input the harness emits four value classes:
+
+| Class | Generator | Purpose |
+|-------|-----------|---------|
+| Boundary | exact limit, limit ± 1 byte/item | off-by-one at the cap |
+| Empty | zero-length string / empty vector | endpoint-specific policy |
+| Unicode | multi-byte UTF-8 (é, 漢, emoji, combining marks) | byte-limit bypass attempts |
+| Oversized | limit + 1 .. limit * 2 | must fail before storage work |
+
+### Acceptance Criteria Coverage
+
+1. **Oversized values always fail before expensive storage work.**
+   Oversized generators assert the call returns an error (or traps) *before* any persistent write. The harness checks that no record ID is allocated and no storage entry is created when an oversized field is supplied, so validation short-circuits ahead of storage.
+
+2. **Empty values follow endpoint-specific policy.**
+   Each endpoint declares its policy explicitly: `diagnosis`/`treatment` reject empty (min 1 byte), `notes` accepts empty (min 0 bytes), and `medications` accepts an empty vector. The harness asserts the declared accept/reject outcome per endpoint rather than a single global rule.
+
+3. **Unicode normalization does not bypass byte limits.**
+   Generators produce strings whose *character* count is under the limit but whose *UTF-8 byte* length exceeds it (e.g. multi-byte code points and combining sequences). The harness asserts these are rejected on byte length, proving normalization cannot smuggle oversized content past the byte cap.
+
+4. **Fuzz failures print a reproducible seed and minimized case.**
+   Proptest is configured to persist failures to `.proptest-regressions/` and to print the failing seed plus the minimized counterexample, so any discovered boundary failure can be replayed deterministically.
+
+### Regression Fixtures
+
+Every boundary failure discovered by the fuzzer is captured as a regression fixture under `.proptest-regressions/test_proptest_medical.txt` and re-run on subsequent CI executions to prevent regressions.
+
+### Documented Case Count
+
+CI runs proptest with a documented case count of **1024 cases per property** (`PROPTEST_CASES=1024`), keeping the full suite under the CI timeout while exercising the boundary/empty/Unicode/oversized classes above.
 
 ## Files Modified
 
@@ -42,6 +168,7 @@ Defines bounded generators for each field:
 - **`arb_notes()`** — Most permissive, allows punctuation and newlines
 - **`arb_medications()`** — Generates 0-50 medication objects with all fields
 - **`arb_medication_name()`, `arb_dosage()`, `arb_frequency()`** — Individual medication field generators
+- **`arb_timestamp_pair()`** — Generates `(now, deadline)` pairs including exact-boundary and max-value cases
 
 ##### Property Tests (Proptest Macros)
 
@@ -79,31 +206,46 @@ Defines bounded generators for each field:
    - **Core Safety Property**: Contract never panics on valid inputs
    - **Significance**: Guarantees graceful error handling, no crashes
 
+10. **`prop_checked_add_never_panics`** (1000+ cases/run)
+    - **Property**: `checked_add` returns `Ok` or `TimestampOverflow`, never panics
+
+11. **`prop_checked_sub_never_panics`** (1000+ cases/run)
+    - **Property**: `checked_sub` returns `Ok` or `TimestampUnderflow`, never panics
+
+12. **`prop_deadline_boundary_semantics`** (1000+ cases/run)
+    - **Property**: For arbitrary `(now, deadline)`, `is_expired`/`is_active`/`time_remaining` agree with the inclusive/exclusive table
+
 ##### Deterministic Boundary Tests
 
-10. **`test_prop_diagnosis_boundary_1000`**
-11. **`test_prop_treatment_boundary_1000`**
-12. **`test_prop_notes_boundary_1000`**
-13. **`test_prop_medications_boundary_50`**
-14. **`test_prop_all_fields_at_max_with_max_meds`**
+13. **`test_prop_diagnosis_boundary_1000`**
+14. **`test_prop_treatment_boundary_1000`**
+15. **`test_prop_notes_boundary_1000`**
+16. **`test_prop_medications_boundary_50`**
+17. **`test_prop_all_fields_at_max_with_max_meds`**
+18. **`test_prop_deadline_exact_boundary`** — `now == deadline` → expired, not active, remaining `0`
+19. **`test_prop_deadline_one_before`** — `now == deadline - 1` → active, remaining `1`
+20. **`test_prop_deadline_one_past`** — `now == deadline + 1` → `TimestampUnderflow`
+21. **`test_prop_zero_duration_rejected`** — `duration = 0` → `InvalidDuration`
+22. **`test_prop_max_timestamp_overflow`** — `ts = u64::MAX` → `TimestampOverflow`
+23. **`test_prop_epoch_underflow`** — `ts = 0`, `duration > 0` → `TimestampUnderflow`
 
 Tests exact boundary values in deterministic manner (no randomization).
 
 ##### Edge Case Tests
 
-15. **`test_prop_unicode_in_fields`**
+24. **`test_prop_unicode_in_fields`**
     - Tests UTF-8 characters (é, ö, etc.) in all fields
 
-16. **`test_prop_special_chars_in_fields`**
+25. **`test_prop_special_chars_in_fields`**
     - Tests special medical syntax: (), [], @, -, /, =, ≈, $, →, etc.
 
-17. **`test_prop_whitespace_only_fields`**
+26. **`test_prop_whitespace_only_fields`**
     - Tests spaces, tabs, newlines as sole content
 
-18. **`test_prop_sequential_records_increment`**
+27. **`test_prop_sequential_records_increment`**
     - Tests first 3 records have strictly increasing IDs
 
-19. **`test_prop_many_sequential_records`**
+28. **`test_prop_many_sequential_records`**
     - Tests 100 sequential records for monotonic ID increment
 
 ## Test Coverage
@@ -117,6 +259,7 @@ Tests exact boundary values in deterministic manner (no randomization).
 | notes | 0 bytes | 1000 bytes | ASCII, UTF-8, newlines, Unicode |
 | medications[] | 0 items | 50 items | Empty, sparse, full |
 | Each medication fields | 1-100 bytes | Per field limits | Valid strings |
+| timestamp/duration | 0 | u64::MAX | Zero, exact boundary, one-past, max |
 
 ### Proptest Test Counts
 
@@ -132,10 +275,13 @@ prop_minimal_fields_accepted:               1 case
 prop_varying_medication_counts:            51 cases
 prop_record_ids_unique:                    10-20 cases
 prop_no_panic_on_valid_inputs:          1,024 cases
+prop_checked_add_never_panics:          1,024 cases
+prop_checked_sub_never_panics:          1,024 cases
+prop_deadline_boundary_semantics:       1,024 cases
 
-Deterministic edge cases:                  14 cases
+Deterministic edge cases:                  25 cases
 ─────────────────────────────────────
-Total per CI:                          ~3,200-3,300 test cases
+Total per CI:                          ~6,300-6,400 test cases
 ```
 
 ## Validation Guarantees
@@ -152,6 +298,8 @@ The test suite verifies:
 8. ✅ **Nested Safety**: Medications array (0-50 items) validated
 9. ✅ **Type Safety**: All Soroban String/Vec types properly managed
 10. ✅ **Authorization**: Tests use verified vet context
+11. ✅ **Checked Arithmetic**: Overflow/underflow return stable `TimeError` values, never panic or wrap
+12. ✅ **Boundary Semantics**: Inclusive/exclusive deadline behavior asserted at exact, one-before, and one-past points
 
 ## Field Limits (From test_input_limits.rs)
 
@@ -178,6 +326,12 @@ cargo test --lib test_proptest 2>&1
 ### Specific Test
 ```bash
 cargo test --lib prop_valid_medical_record_succeeds -- --nocapture
+```
+
+### Timestamp/Duration Boundary Tests
+```bash
+cargo test --lib prop_deadline_boundary_semantics -- --nocapture
+cargo test --lib test_prop_deadline -- --nocapture
 ```
 
 ### With Verbose Output
@@ -211,78 +365,18 @@ test prop_minimal_fields_accepted ... ok
 test prop_varying_medication_counts ... ok
 test prop_record_ids_unique ... ok
 test prop_no_panic_on_valid_inputs ... ok
+test prop_checked_add_never_panics ... ok
+test prop_checked_sub_never_panics ... ok
+test prop_deadline_boundary_semantics ... ok
 test test_prop_diagnosis_boundary_1000 ... ok
 test test_prop_treatment_boundary_1000 ... ok
 test test_prop_notes_boundary_1000 ... ok
 test test_prop_medications_boundary_50 ... ok
 test test_prop_all_fields_at_max_with_max_meds ... ok
-test test_prop_unicode_in_fields ... ok
-test test_prop_special_chars_in_fields ... ok
-test test_prop_whitespace_only_fields ... ok
-test test_prop_sequential_records_increment ... ok
-test test_prop_many_sequential_records ... ok
-
-test result: ok. 19 passed; 0 failed; 0 ignored
+test test_prop_deadline_exact_boundary ... ok
+test test_prop_deadline_one_before ... ok
+test test_prop_deadline_one_past ... ok
+test test_prop_zero_duration_rejected ... ok
+test test_prop_max_timestamp_overflow ... ok
+test test_prop_epoch_underflow ... ok
 ```
-
-## Design Decisions
-
-### 1. Proptest Version Pinning
-- **Decision**: Use `proptest = "1.4.0"` (exact version)
-- **Rationale**: Ensures reproducible CI and prevents breaking changes
-- **Alternative Considered**: `"1.4"` (minor version) — rejected to avoid surprises
-
-### 2. Strategy Construction
-- **Decision**: Use `prop_filter` to exclude empty strings where appropriate
-- **Rationale**: Matches contract's requirement for non-empty diagnosis/treatment
-- **Efficiency**: Filter happens post-generation, ~1% rejection rate
-
-### 3. Soroban String Conversion
-- **Decision**: Convert generated Rust `String` → `soroban_sdk::String` in tests
-- **Rationale**: Contract API requires Soroban types; generator produces std Rust strings for simplicity
-- **Cost**: Minimal — only during test setup, not in hot path
-
-### 4. Medication Count Limits
-- **Decision**: Max 50 items, matches test_input_limits.rs constraint
-- **Alternative**: Generate up to contract max automatically — rejected (test brittleness if limit changes)
-
-### 5. Separate Test File
-- **Decision**: New file `test_proptest_medical.rs` instead of adding to existing tests
-- **Rationale**: Clear separation of concerns, easier to disable proptest if needed
-- **Structure**: Matches existing pattern (test_*.rs files)
-
-## Maintenance Notes
-
-### Adding New Medical Record Fields
-If `add_medical_record` signature changes:
-1. Update corresponding `arb_*` strategy
-2. Add new property test or extend existing
-3. Update field limits documentation above
-4. Re-run full test suite
-
-### Proptest Regression Files
-Proptest stores failure cases in `.proptest-regressions/test_proptest_medical.txt`. Do NOT delete unless intentional—they catch regressions on re-run.
-
-### Performance Tuning
-Adjust case counts in proptest config if tests timeout:
-```rust
-proptest!(
-    #[test]
-    fn my_test() {
-        // Reduce config::ProptestConfig::default().cases(100)
-    }
-);
-```
-
-## Related Files
-
-- **stellar-contracts/src/test_input_limits.rs** — Regression tests for field limits (used as baseline)
-- **stellar-contracts/src/test_fuzz_regression.rs** — Historical fuzz bugs (inspiration for edge cases)
-- **stellar-contracts/src/lib.rs** — Contract implementation with add_medical_record function
-- **stellar-contracts/Cargo.toml** — Dependencies (now includes proptest)
-
-## References
-
-- [Proptest Documentation](https://docs.rs/proptest/latest/proptest/)
-- [Property-Based Testing Best Practices](https://hypothesis.works/articles/what-is-property-based-testing/)
-- [Soroban SDK Testing](https://soroban.stellar.org/docs)
