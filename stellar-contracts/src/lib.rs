@@ -1656,6 +1656,8 @@ pub enum SystemKey {
     AdminQuorumPercent,
     PendingConfig, // Issue #626: Three-phase bootstrap
     Proposal(u64),
+    /// SHA-256 commitment over the XDR of a proposal's `ProposalAction` (#1209).
+    ProposalCommitment(u64),
     ProposalCount,
     PendingThresholdChange, // Issue #815: full-quorum threshold changes
 
@@ -4058,6 +4060,11 @@ impl PetChainContract {
             .get::<MedicalKey, LabResult>(&MedicalKey::LabResult(lab_id))
     }
 
+    /// Hash of the canonical (XDR) encoding of a proposal action.
+    fn action_commitment(env: &Env, action: &ProposalAction) -> BytesN<32> {
+        env.crypto().sha256(&action.clone().to_xdr(env)).into()
+    }
+
     fn propose_action(env: Env, proposer: Address, action: ProposalAction, ttl: u64) -> u64 {
         proposer.require_auth();
         if !Self::is_admin_address(&env, &proposer) {
@@ -4106,6 +4113,10 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&SystemKey::Proposal(proposal_id), &proposal);
+        env.storage().instance().set(
+            &SystemKey::ProposalCommitment(proposal_id),
+            &Self::action_commitment(&env, &proposal.action),
+        );
         env.storage()
             .instance()
             .set(&SystemKey::ProposalCount, &proposal_id);
@@ -4227,6 +4238,17 @@ impl PetChainContract {
 
         if proposal.executed {
             panic_with_error!(&env, ContractError::InvalidState);
+        }
+        // Verify the action still matches what voters approved (#1209).
+        // Proposals created before this commitment existed have none and skip the check.
+        if let Some(committed) = env
+            .storage()
+            .instance()
+            .get::<SystemKey, BytesN<32>>(&SystemKey::ProposalCommitment(proposal_id))
+        {
+            if committed != Self::action_commitment(&env, &proposal.action) {
+                panic_with_error!(&env, ContractError::InvalidState);
+            }
         }
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
@@ -16769,6 +16791,16 @@ mod test_lab_result_anomaly {
 
 #[cfg(test)]
 mod test_breeding_coi;
+
+#[allow(dead_code)]
+mod insurance_ledger;
+#[allow(dead_code)]
+mod insurance_validation;
+#[allow(dead_code)]
+mod insurance_appeal_rules;
+
+#[cfg(test)]
+mod test_proposal_commitment;
 
 // #[cfg(test)]
 // mod test_cross_domain_deletion_invariants;
