@@ -2,14 +2,17 @@ name: Celo Contracts CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - 'celo-contracts/**'
+      - '.github/workflows/celo-contracts.yml'
   pull_request:
-
-permissions: read-all
+    paths:
+      - 'celo-contracts/**'
+      - '.github/workflows/celo-contracts.yml'
 
 jobs:
-  smoke-test:
+  build-and-test:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -17,10 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: '20'
+          cache: 'npm'
           cache-dependency-path: celo-contracts/package-lock.json
 
       - name: Install dependencies
@@ -31,6 +35,61 @@ jobs:
 
       - name: Run tests
         run: npx hardhat test
+
+  rust-gates:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: celo-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned, reproducible Rust toolchain (see celo-contracts/rust-toolchain.toml).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.79.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            celo-contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('celo-contracts/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Formatting gate: fails on any unformatted Rust source.
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Clippy gate with an explicit, documented deny list.
+      # Denied lints are scoped to correctness/security-relevant warnings so that
+      # ABI or security regressions cannot hide behind warnings. Any additional
+      # allow is documented inline below.
+      - name: cargo clippy (denied warnings)
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::correctness \
+            -D clippy::suspicious \
+            -D clippy::perf \
+            -D clippy::unwrap_used \
+            -D clippy::expect_used \
+            -D clippy::panic \
+            -D clippy::arithmetic_side_effects \
+            -A clippy::too_many_arguments \
+            -A clippy::module_name_repetitions
+
+      # Per-crate compile and test steps for each workspace member.
+      - name: cargo build (workspace)
+        run: cargo build --workspace --all-features --locked
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace --all-features --locked
 
       - name: Deploy dry run on local network
         run: npx hardhat run scripts/deploy.js --network hardhat

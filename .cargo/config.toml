@@ -1,3 +1,17 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-clang"
 ar = "x86_64-w64-mingw32-ar"
+
+# Denied-warning policy for the Rust contract workspace (issue #1348).
+# These lints are enforced by `cargo clippy -- -D warnings` in CI so that
+# warnings cannot hide ABI or security regressions. The list is intentionally
+# small and documented; add new denials here with a rationale comment.
+[target.'cfg(all())']
+rustflags = [
+    # Treat every warning as an error so CI fails on any new warning.
+    "-D", "warnings",
+    # Deny unsafe code in contract crates unless explicitly opted in.
+    "-D", "unsafe_code",
+    # Deny unused results that could silently drop errors.
+    "-D", "unused_must_use",
+]
