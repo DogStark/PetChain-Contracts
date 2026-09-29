@@ -135,6 +135,9 @@ MIT
 
 ## Handsoff notes
 
+<!-- handsoff-issue-1305 -->
+- #1305: [Contracts] Add Stellar storage-key namespace collision tests
+
 <!-- handsoff-issue-1307 -->
 - #1307: [Contracts] Add cursor invalidation tests after deletion and state transitions
 
