@@ -1,13 +1,53 @@
+const fs = require("fs");
+const path = require("path");
 const hre = require("hardhat");
 
-// Usage: CONTRACT_ADDRESS=0x... npx hardhat run scripts/register-pet.js --network <alfajores|celo|hardhat>
+// Usage: npx hardhat run scripts/register-pet.js --network <alfajores|celo|hardhat>
+// The deployed address is read from the chain-specific deployment manifest.
 //
 // Optional env overrides:
-//   OWNER_ADDRESS  - owner of the pet record (defaults to the signer)
-//   VET_ADDRESS    - vet address recorded for the pet (defaults to the signer)
-//   CHIP_ID        - unique chip identifier (defaults to a deterministic value)
+//   CONTRACT_ADDRESS - overrides the address from the deployment manifest
+//   OWNER_ADDRESS    - owner of the pet record (defaults to the signer)
+//   VET_ADDRESS      - vet address recorded for the pet (defaults to the signer)
+//   CHIP_ID          - unique chip identifier (defaults to a deterministic value)
+const MANIFEST_PATH = path.join(__dirname, "..", "deployments", "PetChainRegistry.json");
+
+function loadManifest() {
+  if (!fs.existsSync(MANIFEST_PATH)) {
+    throw new Error(
+      `Missing deployment manifest at ${MANIFEST_PATH}. Deploy the contract first.`
+    );
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+  } catch (error) {
+    throw new Error(`Stale or malformed deployment manifest: ${error.message}`);
+  }
+
+  if (!manifest || !manifest.address || !manifest.chainId) {
+    throw new Error("Deployment manifest is missing address or chainId");
+  }
+
+  return manifest;
+}
+
 async function main() {
-  const contractAddress = process.env.CONTRACT_ADDRESS;
+  const manifest = loadManifest();
+
+  const network = await hre.ethers.provider.getNetwork();
+  const activeChainId = Number(network.chainId);
+  const manifestChainId = Number(manifest.chainId);
+
+  if (activeChainId !== manifestChainId) {
+    throw new Error(
+      `Manifest chainId ${manifestChainId} does not match active chainId ${activeChainId}. ` +
+        "Refusing to use a manifest from a different chain."
+    );
+  }
+
+  const contractAddress = process.env.CONTRACT_ADDRESS || manifest.address;
   if (!contractAddress) {
     throw new Error("Set CONTRACT_ADDRESS to the deployed PetChainRegistry address");
   }

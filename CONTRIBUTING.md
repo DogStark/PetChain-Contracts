@@ -47,6 +47,28 @@ Thank you for your interest in contributing to PetChain! This guide will help yo
 - Update documentation if needed
 - Follow the code style guidelines
 
+## ABI Snapshot & Diff Tools
+
+The contract's public ABI is tracked in `stellar-contracts/abi-snapshot.txt`
+and can be regenerated with:
+
+```bash
+cd stellar-contracts
+./scripts/generate_abi_snapshot.sh          # regenerate snapshot
+./scripts/generate_abi_snapshot.sh --check  # verify snapshot is up to date
+./scripts/generate_abi_snapshot.sh --diff   # check for breaking changes
+```
+
+To compare two snapshots and get a categorized compatibility summary:
+
+```bash
+python3 scripts/abi_diff.py <old-snapshot> <new-snapshot>
+```
+
+The diff tool groups changes by category (methods, events, errors, types)
+and labels each as additive or breaking. CI requires a migration note in
+`docs/abi-migrations.md` for every breaking change.
+
 ## Testing
 
 ### Running Tests
