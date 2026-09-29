@@ -7,8 +7,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "lint": "solhint 'contracts/**/*.sol'",
-    "smoke:deploy": "hardhat run scripts/smoke-deploy.js",
-    "release:artifacts": "npm run compile && npm run smoke:deploy"
+    "gas:snapshot": "hardhat test test/gas.registry.test.js",
+    "gas:check": "hardhat test test/gas.registry.test.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

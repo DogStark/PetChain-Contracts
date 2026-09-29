@@ -10,7 +10,7 @@ describe("PetChainRegistry", function () {
   beforeEach(async function () {
     [admin, owner, other, vet] = await ethers.getSigners();
     const Factory = await ethers.getContractFactory("PetChainRegistry");
-    registry = await Factory.deploy();
+    registry = await Factory.deploy(admin.address, network.config.chainId);
 
     // Register and verify a vet
     await registry.connect(vet).registerVet("LIC-001", "General Practice");

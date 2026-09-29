@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to immutable commit SHAs while still receiving
+  # reviewed upgrade PRs. Dependabot rewrites the pinned SHA and refreshes the
+  # trailing `# vX.Y.Z` comment so the change stays reviewable.
+  #
+  # Ownership: the repository maintainers listed in CODEOWNERS review and merge
+  # these PRs. Do not merge an Actions bump without confirming the new SHA
+  # resolves to the expected upstream release tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"

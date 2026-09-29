@@ -1,0 +1,227 @@
+name: Stellar Contracts Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  STELLAR_NETWORK: testnet
+  STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+  STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Build contracts (release)
+        working-directory: stellar-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Find WASM artifact
+        id: wasm
+        working-directory: stellar-contracts
+        run: |
+          WASM_PATH=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name "*.wasm" | head -n 1)
+          if [ -z "$WASM_PATH" ]; then
+            echo "No WASM artifact found" >&2
+            exit 1
+          fi
+          echo "path=$WASM_PATH" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$WASM_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SHA-256 checksums
+        working-directory: stellar-contracts
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="release-artifacts"
+          mkdir -p "$RELEASE_DIR"
+
+          # Copy WASM artifact
+          WASM_PATH=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name "*.wasm" | head -n 1)
+          cp "$WASM_PATH" "$RELEASE_DIR/"
+
+          # Copy ABI snapshot
+          cp abi-snapshot.txt "$RELEASE_DIR/"
+
+          # Copy deployment manifest
+          cp deployment-manifest.json "$RELEASE_DIR/"
+
+          # Copy bindings manifest
+          cp bindings-manifest.json "$RELEASE_DIR/"
+
+          # Generate checksums for all artifacts
+          cd "$RELEASE_DIR"
+          sha256sum *.wasm abi-snapshot.txt deployment-manifest.json bindings-manifest.json > checksums.txt
+
+          echo "Checksums:"
+          cat checksums.txt
+
+      - name: Generate provenance manifest
+        id: provenance
+        working-directory: stellar-contracts
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="release-artifacts"
+          TAG="${GITHUB_REF#refs/tags/}"
+          COMMIT_SHA="${GITHUB_SHA}"
+          COMMIT_SHORT="${COMMIT_SHA:0:7}"
+
+          # Gather toolchain info
+          RUST_VERSION=$(rustc --version)
+          WASM_TARGET="wasm32-unknown-unknown"
+          CARGO_VERSION=$(cargo --version | awk '{print $2}')
+
+          # Compute checksums
+          WASM_FILE=$(find "$RELEASE_DIR" -maxdepth 1 -name "*.wasm" | head -n 1)
+          WASM_CHECKSUM=$(sha256sum "$WASM_FILE" | awk '{print $1}')
+          WASM_SIZE=$(stat -c%s "$WASM_FILE")
+          ABI_CHECKSUM=$(sha256sum "$RELEASE_DIR/abi-snapshot.txt" | awk '{print $1}')
+          MANIFEST_CHECKSUM=$(sha256sum "$RELEASE_DIR/deployment-manifest.json" | awk '{print $1}')
+          BINDINGS_CHECKSUM=$(sha256sum "$RELEASE_DIR/bindings-manifest.json" | awk '{print $1}')
+
+          cat > "$RELEASE_DIR/provenance.json" <<EOF
+          {
+            "release": {
+              "tag": "${TAG}",
+              "commit": "${COMMIT_SHA}",
+              "commit_short": "${COMMIT_SHORT}",
+              "built_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            },
+            "toolchain": {
+              "rust": "${RUST_VERSION}",
+              "cargo": "${CARGO_VERSION}",
+              "wasm_target": "${WASM_TARGET}",
+              "stellar_cli": "$(stellar --version 2>/dev/null || echo "unknown")"
+            },
+            "artifacts": {
+              "wasm": {
+                "file": "$(basename "$WASM_FILE")",
+                "sha256": "${WASM_CHECKSUM}",
+                "size_bytes": ${WASM_SIZE}
+              },
+              "abi_snapshot": {
+                "file": "abi-snapshot.txt",
+                "sha256": "${ABI_CHECKSUM}"
+              },
+              "deployment_manifest": {
+                "file": "deployment-manifest.json",
+                "sha256": "${MANIFEST_CHECKSUM}"
+              },
+              "bindings_manifest": {
+                "file": "bindings-manifest.json",
+                "sha256": "${BINDINGS_CHECKSUM}"
+              }
+            },
+            "source": {
+              "repository": "${{ github.server_url }}/${{ github.repository }}",
+              "workflow": "${{ github.workflow }}",
+              "run_id": "${{ github.run_id }}"
+            }
+          }
+          EOF
+
+          echo "Provenance manifest written"
+          cat "$RELEASE_DIR/provenance.json"
+
+      - name: Check for secrets in artifacts
+        working-directory: stellar-contracts
+        run: bash scripts/check_no_secrets.sh release-artifacts
+
+      - name: Package release archive
+        working-directory: stellar-contracts
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          ARCHIVE_NAME="petchain-stellar-release-${TAG}"
+          tar -czf "${ARCHIVE_NAME}.tar.gz" \
+            --exclude='*.json' \
+            --exclude='checksums.txt' \
+            --exclude='provenance.json' \
+            release-artifacts/
+          # Also create a separate archive with all files for verification
+          tar -czf "${ARCHIVE_NAME}-with-manifests.tar.gz" release-artifacts/
+          echo "Archives created:"
+          ls -lh "${ARCHIVE_NAME}"*.tar.gz
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stellar-release-${{ github.ref_name }}
+          path: |
+            stellar-contracts/release-artifacts/checksums.txt
+            stellar-contracts/release-artifacts/provenance.json
+            stellar-contracts/release-artifacts/*.wasm
+            stellar-contracts/release-artifacts/abi-snapshot.txt
+            stellar-contracts/release-artifacts/deployment-manifest.json
+            stellar-contracts/release-artifacts/bindings-manifest.json
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body_path: stellar-contracts/release-artifacts/provenance.json
+          files: |
+            stellar-contracts/release-artifacts/checksums.txt
+            stellar-contracts/release-artifacts/provenance.json
+            stellar-contracts/release-artifacts/*.wasm
+            stellar-contracts/release-artifacts/abi-snapshot.txt
+            stellar-contracts/release-artifacts/deployment-manifest.json
+            stellar-contracts/release-artifacts/bindings-manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  reproducibility-check:
+    runs-on: ubuntu-latest
+    needs: build-and-verify
+    steps:
+      - name: Checkout repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Run clean-checkout reproducibility test
+        working-directory: stellar-contracts
+        run: bash scripts/clean_checkout_test.sh
+
+      - name: Verify release checksums against provenance
+        working-directory: stellar-contracts
+        run: bash scripts/verify_release.sh ${{ github.ref_name }}
+
+      - name: Upload verification result
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-verification-${{ github.ref_name }}
+          path: |
+            stellar-contracts/release-artifacts/
+          retention-days: 90
