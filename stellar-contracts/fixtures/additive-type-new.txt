@@ -1,0 +1,10 @@
+# Methods
+pub fn add_pet(env: Env, owner: Address, name: String) -> u64
+
+# Events
+
+# Errors
+
+# Types
+Pet
+BreedMetadata
