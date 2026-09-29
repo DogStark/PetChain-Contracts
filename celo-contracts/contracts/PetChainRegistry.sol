@@ -210,9 +210,25 @@ contract PetChainRegistry is Pausable {
     // Constructor
     // -------------------------------------------------------------------------
 
-    /// @notice Deploys the registry and sets the deployer as admin.
-    constructor() {
-        admin = msg.sender;
+    /// @notice Chain id the registry was deployed to; immutable after deployment.
+    uint256 public immutable deploymentChainId;
+
+    /// @notice Deploys the registry after validating deployment configuration.
+    /// @param initialAdmin    Initial admin address (non-zero).
+    /// @param expectedChainId Chain id the deployer intends to target; must equal
+    ///                        `block.chainid` and be a supported chain.
+    constructor(address initialAdmin, uint256 expectedChainId) {
+        require(initialAdmin != address(0), "PetChainRegistry: zero admin");
+        require(expectedChainId == block.chainid, "PetChainRegistry: wrong chain");
+        require(isSupportedChainId(expectedChainId), "PetChainRegistry: unsupported chain");
+        admin = initialAdmin;
+        deploymentChainId = expectedChainId;
+    }
+
+    /// @notice Whether `chainId` is a supported deployment target
+    ///         (Hardhat local 31337, Celo Alfajores 44787, Celo mainnet 42220).
+    function isSupportedChainId(uint256 chainId) public pure returns (bool) {
+        return chainId == 31337 || chainId == 44787 || chainId == 42220;
     }
 
     // -------------------------------------------------------------------------
@@ -247,7 +263,7 @@ contract PetChainRegistry is Pausable {
     // -------------------------------------------------------------------------
 
     /// @notice Register the caller as a vet with the given licence and specialization.
-    /// @dev    Licence uniqueness is enforced case-insensitively.
+    /// @dev    Licence uniqueness is enforced on the canonical form (see normalizeIdentifier).
     /// @param licenseNumber  Professional licence number (non-empty).
     /// @param specialization Area of specialization.
     function registerVet(string calldata licenseNumber, string calldata specialization) external whenNotPaused {
@@ -281,21 +297,31 @@ contract PetChainRegistry is Pausable {
         emit VetRegistered(msg.sender, licenseNumber);
     }
 
-    /// @notice Upper-cases an ASCII licence string and hashes it for case-insensitive uniqueness.
-    /// @param licenseNumber The raw licence number string.
-    /// @return Keccak256 hash of the upper-cased licence bytes.
-    function _normalizeLicenseKey(string memory licenseNumber) internal pure returns (bytes32) {
-        bytes memory raw = bytes(licenseNumber);
-        bytes memory normalized = new bytes(raw.length);
+    /// @notice Canonical form of an identifier (licence, chip or QR tag id) (issue #1325).
+    /// @dev    Rules: ASCII spaces are removed, ASCII a-z is upper-cased, any other byte
+    ///         outside printable ASCII (0x21-0x7E) — control characters and all non-ASCII
+    ///         UTF-8 — is rejected, and the canonical length must be 1..MAX_SHORT_LEN.
+    ///         Distinct canonical strings are never merged, so keys cannot collide.
+    /// @param id Raw identifier.
+    /// @return   Canonical identifier string.
+    function normalizeIdentifier(string memory id) public pure returns (string memory) {
+        bytes memory raw = bytes(id);
+        bytes memory out = new bytes(raw.length);
+        uint256 n;
         for (uint256 i = 0; i < raw.length; i++) {
             bytes1 c = raw[i];
-            if (c >= 0x61 && c <= 0x7A) { // 'a'-'z'
-                normalized[i] = bytes1(uint8(c) - 32);
-            } else {
-                normalized[i] = c;
-            }
+            if (c == 0x20) continue;
+            require(c >= 0x21 && c <= 0x7E, "PetChainRegistry: invalid identifier character");
+            out[n++] = (c >= 0x61 && c <= 0x7A) ? bytes1(uint8(c) - 32) : c;
         }
-        return keccak256(normalized);
+        require(n > 0 && n <= MAX_SHORT_LEN, "PetChainRegistry: invalid identifier length");
+        assembly ("memory-safe") { mstore(out, n) }
+        return string(out);
+    }
+
+    /// @notice Hash of the canonical licence string, used for case/space-insensitive uniqueness.
+    function _normalizeLicenseKey(string memory licenseNumber) internal pure returns (bytes32) {
+        return keccak256(bytes(normalizeIdentifier(licenseNumber)));
     }
 
     /// @notice Update the calling vet's own specialization.
@@ -368,27 +394,25 @@ contract PetChainRegistry is Pausable {
         require(to != address(0), "PetChainRegistry: zero address");
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         address from = pets[petId].owner;
+        require(to != from, "PetChainRegistry: self transfer");
 
-        // Remove petId from the previous owner's array (swap-and-pop)
-        uint256[] storage fromPets = _ownerPets[from];
-        for (uint256 i = 0; i < fromPets.length; i++) {
-            if (fromPets[i] == petId) {
-                fromPets[i] = fromPets[fromPets.length - 1];
-                fromPets.pop();
-                break;
-            }
-        }
-
+        // All validation above; state writes below (issue #1326).
+        _removeOwnerPet(from, petId);
         pets[petId].owner = to;
         _ownerPets[to].push(petId);
         emit PetTransferred(petId, from, to);
     }
 
     /// @notice Deactivate a pet. Only callable by the pet's owner.
+    /// @dev    Retention policy (issue #1324): the pet is removed from the owner's
+    ///         active index (`getPetsByOwner*`), so the index stays bounded by live pets.
+    ///         `pets(petId)` (last owner), medical records and their commitments are kept
+    ///         for historical ownership and commitment proofs.
     /// @param petId ID of the pet to deactivate.
     function deactivatePet(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
         require(pets[petId].active, "PetChainRegistry: already inactive");
         pets[petId].active = false;
+        _removeOwnerPet(msg.sender, petId);
         emit PetDeactivated(petId);
     }
 
@@ -397,7 +421,20 @@ contract PetChainRegistry is Pausable {
     function reactivatePet(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
         require(!pets[petId].active, "PetChainRegistry: already active");
         pets[petId].active = true;
+        _ownerPets[msg.sender].push(petId);
         emit PetReactivated(petId);
+    }
+
+    /// @dev Swap-and-pop `petId` out of `owner`'s index; no-op if absent (idempotent).
+    function _removeOwnerPet(address owner, uint256 petId) private {
+        uint256[] storage ids = _ownerPets[owner];
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (ids[i] == petId) {
+                ids[i] = ids[ids.length - 1];
+                ids.pop();
+                return;
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
