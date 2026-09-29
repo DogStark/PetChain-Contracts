@@ -116,6 +116,9 @@ MIT
 <!-- handsoff-issue-1261 -->
 - #1261: [backend-2fa] Add webhook signature key versioning
 
+<!-- handsoff-issue-1304 -->
+- #1304: [Contracts] Add Celo invariant tests for registry pause and recovery behavior
+
 <!-- handsoff-issue-1320 -->
 - #1320: [Contracts] Add Celo event indexing compatibility fixtures
 
