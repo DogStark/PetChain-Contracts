@@ -11652,7 +11652,8 @@ impl PetChainContract {
             end -= 1;
         }
 
-        for byte in (end - start).to_be_bytes() {
+        let length = end - start;
+        for byte in length.to_be_bytes() {
             output.push_back(byte);
         }
         for index in start..end {
