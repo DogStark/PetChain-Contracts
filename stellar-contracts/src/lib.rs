@@ -16802,5 +16802,8 @@ mod insurance_appeal_rules;
 #[cfg(test)]
 mod test_proposal_commitment;
 
+#[cfg(test)]
+mod test_simulation_fixtures;
+
 // #[cfg(test)]
 // mod test_cross_domain_deletion_invariants;
