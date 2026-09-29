@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: celo-contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: celo-contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned, reproducible Rust toolchain (see celo-contracts/rust-toolchain.toml).
       - name: Install Rust toolchain
@@ -136,7 +136,7 @@ jobs:
   cross-network-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
