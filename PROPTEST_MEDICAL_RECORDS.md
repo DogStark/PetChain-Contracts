@@ -107,6 +107,43 @@ Created **stellar-contracts/src/test_proptest_medical.rs** with comprehensive pr
 5. **Cover edge cases** — Unicode, special characters, whitespace-only fields, empty inputs
 6. **Verify timestamp/duration arithmetic** — overflow, underflow, and exact-boundary semantics per the matrix above
 
+## Bounded String and Vector Fuzz Coverage (#1315)
+
+The proptest harness is extended to generate **boundary, empty, Unicode, and oversized** values for every public input that uses bounded collections. This closes the gap where malformed lengths and nested inputs caused budget failures or unexpected acceptance.
+
+### Generated Value Classes
+
+For each bounded input the harness emits four value classes:
+
+| Class | Generator | Purpose |
+|-------|-----------|---------|
+| Boundary | exact limit, limit ± 1 byte/item | off-by-one at the cap |
+| Empty | zero-length string / empty vector | endpoint-specific policy |
+| Unicode | multi-byte UTF-8 (é, 漢, emoji, combining marks) | byte-limit bypass attempts |
+| Oversized | limit + 1 .. limit * 2 | must fail before storage work |
+
+### Acceptance Criteria Coverage
+
+1. **Oversized values always fail before expensive storage work.**
+   Oversized generators assert the call returns an error (or traps) *before* any persistent write. The harness checks that no record ID is allocated and no storage entry is created when an oversized field is supplied, so validation short-circuits ahead of storage.
+
+2. **Empty values follow endpoint-specific policy.**
+   Each endpoint declares its policy explicitly: `diagnosis`/`treatment` reject empty (min 1 byte), `notes` accepts empty (min 0 bytes), and `medications` accepts an empty vector. The harness asserts the declared accept/reject outcome per endpoint rather than a single global rule.
+
+3. **Unicode normalization does not bypass byte limits.**
+   Generators produce strings whose *character* count is under the limit but whose *UTF-8 byte* length exceeds it (e.g. multi-byte code points and combining sequences). The harness asserts these are rejected on byte length, proving normalization cannot smuggle oversized content past the byte cap.
+
+4. **Fuzz failures print a reproducible seed and minimized case.**
+   Proptest is configured to persist failures to `.proptest-regressions/` and to print the failing seed plus the minimized counterexample, so any discovered boundary failure can be replayed deterministically.
+
+### Regression Fixtures
+
+Every boundary failure discovered by the fuzzer is captured as a regression fixture under `.proptest-regressions/test_proptest_medical.txt` and re-run on subsequent CI executions to prevent regressions.
+
+### Documented Case Count
+
+CI runs proptest with a documented case count of **1024 cases per property** (`PROPTEST_CASES=1024`), keeping the full suite under the CI timeout while exercising the boundary/empty/Unicode/oversized classes above.
+
 ## Files Modified
 
 ### 1. stellar-contracts/Cargo.toml

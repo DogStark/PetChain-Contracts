@@ -267,3 +267,51 @@ fn verify_custody_chain_detects_current_owner_mismatch() {
     assert!(!result.valid);
     assert_eq!(result.gap_at, Some(1));
 }
+
+// -------------------------------------------------------
+// Append-only ancestry / cycle prevention (#1195)
+// -------------------------------------------------------
+
+#[test]
+fn custody_chain_stays_contiguous_and_monotonic() {
+    let env = Env::default();
+    let (client, owner, new_owner) = setup(&env);
+    let third = Address::generate(&env);
+    let pet_id = register_pet(&client, &env, &owner);
+    client.transfer_pet_ownership(&pet_id, &new_owner, &0);
+    client.accept_pet_transfer(&pet_id);
+    client.transfer_pet_ownership(&pet_id, &third, &0);
+    client.accept_pet_transfer(&pet_id);
+    let chain = client.get_custody_chain(&pet_id);
+    for i in 1..chain.len() {
+        let (p, c) = (chain.get(i - 1).unwrap(), chain.get(i).unwrap());
+        assert_eq!(p.to, c.from);
+        assert!(c.timestamp >= p.timestamp);
+        assert!(c.from != c.to);
+    }
+    assert!(client.verify_custody_chain(&pet_id).valid);
+}
+
+#[test]
+#[should_panic]
+fn custody_append_rejects_self_link() {
+    let env = Env::default();
+    let (client, owner, _) = setup(&env);
+    let pet_id = register_pet(&client, &env, &owner);
+    env.as_contract(&client.address, || {
+        PetChainContract::append_custody_entry(&env, pet_id, owner.clone(), owner.clone(), TransferType::Direct);
+    });
+}
+
+#[test]
+#[should_panic]
+fn custody_append_rejects_broken_ancestry() {
+    let env = Env::default();
+    let (client, owner, new_owner) = setup(&env);
+    let stranger = Address::generate(&env);
+    let pet_id = register_pet(&client, &env, &owner);
+    env.as_contract(&client.address, || {
+        PetChainContract::append_custody_entry(&env, pet_id, owner.clone(), new_owner.clone(), TransferType::Direct);
+        PetChainContract::append_custody_entry(&env, pet_id, stranger.clone(), owner.clone(), TransferType::Direct);
+    });
+}
