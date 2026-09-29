@@ -1,0 +1,7 @@
+# Methods
+pub fn add_pet(env: Env, owner: Address, name: String) -> u64
+
+# Events
+
+# Errors
+ContractError::PetNotFound = 1

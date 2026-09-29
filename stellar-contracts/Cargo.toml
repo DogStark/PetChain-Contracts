@@ -13,3 +13,11 @@ soroban-sdk = "21.7.7"
 soroban-sdk = { version = "21.7.7", features = ["testutils"] }
 proptest = "1.4.0"
 serde_json = "1.0"
+
+[[test]]
+name = "storage_compat"
+path = "tests/storage_compat.rs"
+
+[[test]]
+name = "ownership_transfer_cascade"
+path = "tests/ownership_transfer_cascade.rs"
