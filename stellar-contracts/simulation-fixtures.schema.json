@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/DogStark/PetChain-Contracts/blob/main/stellar-contracts/simulation-fixtures.schema.json",
+  "title": "PetChain Simulation Fixtures",
+  "description": "Schema for deterministic transaction simulation fixtures used by client repositories for pre-signing UX.",
+  "type": "object",
+  "required": ["fixture_version", "simulations"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "fixture_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of the fixture format."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp when the fixtures were generated."
+    },
+    "source_commit": {
+      "type": "string",
+      "description": "Git commit hash or HEAD reference used to generate these fixtures."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the fixture set."
+    },
+    "simulations": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["fixture_id", "description", "function", "params", "expected"],
+        "additionalProperties": false,
+        "properties": {
+          "fixture_id": {
+            "type": "string",
+            "description": "Unique identifier for this simulation fixture."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of what this simulation tests."
+          },
+          "function": {
+            "type": "string",
+            "description": "Name of the contract function being simulated."
+          },
+          "params": {
+            "type": "object",
+            "description": "Input parameters for the simulated function call.",
+            "additionalProperties": true
+          },
+          "expected": {
+            "type": "object",
+            "required": ["result"],
+            "additionalProperties": false,
+            "properties": {
+              "result": {
+                "type": "string",
+                "enum": ["success", "failure"],
+                "description": "Whether the simulated transaction succeeds or fails."
+              },
+              "return_value": {
+                "type": "object",
+                "description": "Expected return value on success."
+              },
+              "error_code": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "ContractError discriminant code when result is failure."
+              },
+              "error_name": {
+                "type": "string",
+                "description": "ContractError variant name corresponding to error_code."
+              },
+              "error_type": {
+                "type": "string",
+                "enum": ["resource_exhaustion"],
+                "description": "Non-contract error type (e.g. resource_exhaustion for budget failures)."
+              },
+              "resource_estimates": {
+                "type": "object",
+                "required": ["steps", "memory_bytes", "read_entries", "write_entries"],
+                "additionalProperties": false,
+                "properties": {
+                  "steps": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Estimated compute steps consumed by the transaction."
+                  },
+                  "memory_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Estimated memory usage in bytes."
+                  },
+                  "read_entries": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Estimated number of storage entries read."
+                  },
+                  "write_entries": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Estimated number of storage entries written."
+                  },
+                  "exceeds_budget": {
+                    "type": "boolean",
+                    "description": "Whether the estimated steps exceed the Soroban budget limit."
+                  },
+                  "budget_limit_steps": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The Soroban step budget limit for reference."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

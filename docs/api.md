@@ -37,6 +37,37 @@ All write and sensitive read endpoints require a Bearer JWT (`Authorization: Bea
 
 ---
 
+## Pagination policy (Issue #1306)
+
+All paginated Stellar contract reads share a single, centralized page-size
+policy. The policy is enforced by one shared validator so every endpoint
+behaves identically.
+
+| Bound | Value | Meaning |
+|---|---|---|
+| Minimum | `1` | Smallest accepted page size |
+| Default | `20` | Used when the caller omits the page size |
+| Maximum | `100` | Largest accepted page size (Soroban budget bound) |
+
+Rules:
+
+- A page size of `0` (or any value below the minimum) returns a deterministic
+  `InvalidPageSize` error — it is never silently coerced.
+- A page size above the maximum returns the same deterministic
+  `InvalidPageSize` error.
+- Omitting the page size uses the documented default of `20`, which is stable
+  across releases.
+- All paginated endpoints return the same cursor semantics: an opaque cursor
+  is returned alongside the page and passed back unchanged to fetch the next
+  page. A `null`/absent cursor starts from the beginning.
+- Existing valid callers (page sizes within `[1, 100]`) remain fully
+  compatible.
+
+This policy applies to the pet, record, vet, consent, custody, and activity
+paginated reads.
+
+---
+
 ## View Functions (pure reads — no storage writes or event emissions)
 
 The following functions are guaranteed to have no side effects. They do not write to storage, emit events, or update access timestamps.
@@ -89,9 +120,101 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_custody_chain` | Returns the chain-of-custody log for a pet (chronological, append-only, capped at 100 entries) |
 | `verify_custody_chain` | Checks chain-of-custody internal consistency (links, creator, current owner) |
 | `get_custody_chain_digest` | Returns the canonical SHA-256 digest of the custody chain (domain, version, pet ID, sequence, entries in order) for completeness/ordering proofs |
+| `get_custody_history_page` | Returns a single page of custody history with boundary digests (see below) |
 | `get_access_logs` | Returns access logs for a pet (owner/admin only) |
 
 > **Audit note:** All `log_access` (storage write) calls were removed from the above functions. Write functions (`add_medical_record`, `update_pet_profile`, `grant_access`, `revoke_access`, `add_attachment`, etc.) retain their access log writes.
+
+---
+
+## Custody History Pagination Proofs (Issue #1339)
+
+Custody history consumers must be able to verify that a page belongs to a
+single chain and that no entries were skipped between pages. To make this
+possible, every custody history page exposes **boundary digests** that bind the
+page to its position in the chain.
+
+### Page shape
+
+`get_custody_history_page(pet_id, cursor, limit)` returns a page with the
+following fields:
+
+| Field | Description |
+|---|---|
+| `entries` | The custody entries in this page, in chain order |
+| `prev_digest` | Digest of the entry immediately preceding this page (`None` for the first page) |
+| `next_digest` | Digest of the entry immediately following this page (`None` for the terminal page) |
+| `page_digest` | Canonical digest over `(domain, version, pet_id, start_seq, end_seq, entries)` |
+| `start_seq` / `end_seq` | Inclusive sequence range covered by this page |
+| `is_terminal` | `true` iff this page is the last page of the chain |
+
+### Verification rules
+
+A consumer verifies a page against the expected chain as follows:
+
+1. **Chain membership.** Recompute `page_digest` from the returned entries and
+   compare it to the returned `page_digest`. A mismatch means the page was
+   tampered with.
+2. **Linkage.** For consecutive pages `P` and `Q`, require
+   `P.next_digest == Q.prev_digest` and `Q.start_seq == P.end_seq + 1`. This
+   proves no entries were skipped and that the pages belong to the same chain.
+3. **Ordering.** `start_seq` must be strictly greater than the previous page's
+   `end_seq`; out-of-order pages fail the linkage check.
+4. **Empty pages.** An empty page has `entries == []`, `start_seq == end_seq`,
+   and `page_digest` equal to the canonical digest of an empty range. An empty
+   page is only valid when it is also terminal.
+5. **Terminal pages.** The terminal page has `next_digest == None` and
+   `is_terminal == true`. A non-terminal page with `next_digest == None` is
+   invalid, and a terminal page with a non-`None` `next_digest` is invalid.
+
+### Proof test plan
+
+Generated custody history fixtures and proof tests cover:
+
+- **Consecutive pages verify.** For a generated chain, every adjacent page pair
+  satisfies the linkage rule and each `page_digest` recomputes correctly.
+- **Tampered pages fail.** Mutating an entry, `start_seq`, or `page_digest`
+  causes verification to fail.
+- **Out-of-order pages fail.** Swapping two pages or skipping a page breaks the
+  linkage rule.
+- **Empty and terminal pages are unambiguous.** An empty page is accepted only
+  when terminal; a terminal page is accepted only when `next_digest == None`.
+
+---
+
+## Batch-Operation Atomicity Policy (Issue #1334)
+
+Batch write operations (e.g. `get_pet_full_profile_batch` and any future
+multi-item write entrypoints) follow a single, documented atomicity model:
+
+- **All-or-nothing.** A batch is committed only if *every* item succeeds. If
+  any item fails validation or authorization, the entire batch is rolled back
+  and no storage mutation from that batch is persisted. There is no partial
+  commit path.
+- **No observable partial state.** Because a failed batch reverts the whole
+  transaction, no partial ownership, custody, or consent state is ever
+  observable — neither to the caller nor to subsequent reads. A failed batch
+  leaves ownership and consent exactly as they were before the call.
+- **Per-item results are safe-only.** Per-item results are exposed only on
+  full success, or via non-mutating preview/read helpers. A failing batch
+  returns a single error and never a mix of applied and rejected items.
+- **Bounded item limits.** Every batch entrypoint enforces a documented
+  maximum item count (`MAX_BATCH_ITEMS`). Requests exceeding the limit are
+  rejected before any item is processed, so a batch can never be used to
+  bypass per-transaction resource limits.
+
+### Batch test plan
+
+Batch success, failure, and limit behavior is covered by tests that assert
+state snapshots before and after each call:
+
+- **Success:** a valid batch applies all items and the post-state snapshot
+  reflects every mutation.
+- **Failure:** a batch containing one invalid item reverts entirely; the
+  post-state snapshot is byte-for-byte identical to the pre-state snapshot
+  (no partial ownership or consent state).
+- **Limit:** a batch exceeding `MAX_BATCH_ITEMS` is rejected and the state
+  snapshot is unchanged.
 
 ---
 
@@ -119,6 +242,12 @@ owner, the record's vet, or an admin may delete) and publishes a
 `MedicalRecordDeleted` audit event. Purging is split into a bounded,
 resumable `purge_deleted_records_bounded` (Issue #1172) so large pets can be
 drained without hitting transaction resource limits.
+
+Cursor pagination is bounded by policy: `get_pet_medical_records_cursor`
+accepts an opaque cursor and a page size that is clamped to a maximum, so a
+single request cannot scan an unbounded number of records. Callers should
+follow the returned cursor until it is exhausted rather than requesting
+arbitrarily large pages.
 
 **Compatibility / migration notes:**
 - `set_max_subscriptions_per_address` was renamed to `set_max_subscriptions`
@@ -155,188 +284,4 @@ For implementation details, read the crate sources in `backend-2fa/src/`.
 
 ### Error response format
 
-Backend 2FA endpoints return structured JSON error payloads whenever a request fails. The shared schema is:
-
-```json
-{
-  "code": "BAD_REQUEST",
-  "message": "A human-readable error message",
-  "details": null
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `code` | `String` | A machine-readable error code |
-| `message` | `String` | A user-facing description of the failure |
-| `details` | `Option` | Optional structured context for the error |
-
-Common error codes:
-
-- `BAD_REQUEST` — malformed request or invalid payload
-- `UNAUTHORIZED` — authentication / login token invalid or missing
-- `FORBIDDEN` — authorization failed for the current user
-- `NOT_FOUND` — requested resource does not exist
-- `CONFLICT` — request conflicts with current state
-- `INVALID_TOKEN` — two-factor token invalid or expired
-- `INTERNAL_SERVER_ERROR` — unexpected failure on the backend
-
-All unhandled panics are also caught by middleware and translated into a `500 Internal Server Error` with an `ApiError` payload.
-
----
-
-## Batch Read Operations
-
-Batch read operations reduce the number of round trips required to fetch related data. These functions aggregate multiple data points into a single call while respecting access control.
-
-### `get_pet_full_profile_batch`
-
-Returns comprehensive pet information including profile, owner, active consents, and latest medical record.
-
-**Signature:**
-```rust
-pub fn get_pet_full_profile_batch(
-    env: Env,
-    pet_id: u64,
-    caller: Address,
-) -> Option<PetFullProfileBatch>
-```
-
-**Returns:**
-```rust
-pub struct PetFullProfileBatch {
-    pub profile: PetProfile,
-    pub owner: Address,
-    pub active_consents: Vec<Consent>,
-    pub latest_medical_record: Option<MedicalRecord>,
-}
-```
-
-**Access Control:**
-- **Public pets**: Accessible to anyone
-- **Restricted pets**: Requires at least Basic access grant
-- **Private pets**: Only accessible to owner
-
-**Use Cases:**
-- Dashboard views showing complete pet information
-- Profile pages requiring owner and consent data
-- Applications needing pet data with medical history
-
-**Example:**
-```rust
-let batch = client.get_pet_full_profile_batch(&pet_id, &caller);
-if let Some(data) = batch {
-    // Access all data in one call
-    let profile = data.profile;
-    let owner = data.owner;
-    let consents = data.active_consents;
-    let latest_record = data.latest_medical_record;
-}
-```
-
-### `get_pet_health_summary`
-
-Returns health-related information including latest vaccination, lab result, and active insurance policy.
-
-**Signature:**
-```rust
-pub fn get_pet_health_summary(
-    env: Env,
-    pet_id: u64,
-    caller: Address,
-) -> Option<PetHealthSummary>
-```
-
-**Returns:**
-```rust
-pub struct PetHealthSummary {
-    pub pet_id: u64,
-    pub latest_vaccination: Option<Vaccination>,
-    pub latest_lab_result: Option<LabResult>,
-    pub active_insurance_policy: Option<InsurancePolicy>,
-}
-```
-
-**Access Control:**
-- **Public pets**: Accessible to anyone
-- **Restricted pets**: Requires at least Basic access grant
-- **Private pets**: Only accessible to owner
-
-**Use Cases:**
-- Health dashboard views
-- Veterinary appointment preparation
-- Insurance claim verification
-- Quick health status checks
-
-**Example:**
-```rust
-let summary = client.get_pet_health_summary(&pet_id, &caller);
-if let Some(health) = summary {
-    // Check vaccination status
-    if let Some(vax) = health.latest_vaccination {
-        // Display vaccination info
-    }
-    
-    // Check lab results
-    if let Some(lab) = health.latest_lab_result {
-        // Display lab results
-    }
-    
-    // Check insurance coverage
-    if let Some(policy) = health.active_insurance_policy {
-        // Display insurance info
-    }
-}
-```
-
-### Performance Benefits
-
-**Without Batch Operations:**
-```rust
-// 5 separate contract calls
-let profile = client.get_pet(&pet_id, &caller);
-let owner = client.get_pet_owner(&pet_id);
-let consents = client.get_active_consents(&pet_id);
-let records = client.get_pet_medical_records(&pet_id, &0, &1);
-let vaccinations = client.get_vaccination_history(&pet_id, &0, &1);
-```
-
-**With Batch Operations:**
-```rust
-// 1 contract call
-let batch = client.get_pet_full_profile_batch(&pet_id, &caller);
-```
-
-**Benefits:**
-- Reduced network latency (fewer round trips)
-- Lower transaction costs
-- Atomic data consistency (all data from same ledger state)
-- Simplified client code
-
-### Access Control Enforcement
-
-Both batch operations enforce the same access control rules as individual read operations:
-
-1. **Pet existence check**: Returns `None` if pet doesn't exist
-2. **Privacy level check**: Enforces Public/Restricted/Private rules
-3. **Access grant validation**: Checks for valid access grants on Restricted pets
-4. **Owner verification**: Allows owner full access regardless of privacy level
-
-If access is denied, the functions return `None` rather than panicking, allowing graceful handling in client applications.
-
-### Data Freshness
-
-Batch operations return the **most recent** data based on timestamps:
-- **Latest medical record**: Highest `recorded_at` timestamp
-- **Latest vaccination**: Highest `administered_at` timestamp
-- **Latest lab result**: Highest `test_date` timestamp
-- **Active insurance**: Most recent active policy (highest index)
-
-### Error Handling
-
-Batch operations return `Option<T>` rather than panicking:
-- `Some(data)` - Access granted, data retrieved
-- `None` - Pet doesn't exist OR access denied
-
-This design allows clients to handle missing data and access denial uniformly.
-
+Backend 2FA endpoints return structured J
