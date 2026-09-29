@@ -16,3 +16,7 @@ proptest = "1.4.0"
 [[test]]
 name = "storage_compat"
 path = "tests/storage_compat.rs"
+
+[[test]]
+name = "ownership_transfer_cascade"
+path = "tests/ownership_transfer_cascade.rs"
