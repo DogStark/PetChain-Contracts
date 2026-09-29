@@ -142,15 +142,31 @@ jobs:
       - name: Check error registry snapshot is up to date
         working-directory: stellar-contracts
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
   error-registry:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Guards the Soroban storage schema version (Issue #1333). The check
+      # fails when the declared schema version is bumped without adding a
+      # matching old-version fixture snapshot under
+      # stellar-contracts/tests/fixtures/storage/, so upgrade tests always
+      # have a supported fixture to read.
+      - name: Check storage schema version has fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Guards the Soroban storage schema version (Issue #1333). The check
+      # fails when the declared schema version is bumped without adding a
+      # matching old-version fixture snapshot under
+      # stellar-contracts/tests/fixtures/storage/, so upgrade tests always
+      # have a supported fixture to read.
+      - name: Check storage schema version has fixtures
+        working-directory: stellar-contracts
+        run: ./scripts/check_schema_version.sh
 
       # Generates the deterministic error registry from the contract source
       # (Issue #1330) and fails if the committed snapshot is stale. This keeps
@@ -206,6 +222,24 @@ jobs:
           else
             python3 scripts/check_error_compat.py
           fi
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      # Deploys the main, ownership/adoption/escrow and vet-registry contracts
+      # into one local Soroban env (Issue #1253).
+      # See stellar-contra
 
   coverage:
     runs-on: ubuntu-latest
