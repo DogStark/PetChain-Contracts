@@ -111,6 +111,12 @@ MIT
 
 ## Handsoff notes
 
+<!-- handsoff-issue-1311 -->
+- #1311: [Contracts] Add emergency-contact priority and duplicate invariant tests
+
+<!-- handsoff-issue-1312 -->
+- #1312: [Contracts] Add insurance claim evidence lifecycle and expiry tests
+
 <!-- handsoff-issue-1313 -->
 - #1313: [Contracts] Add Soroban persistent-storage TTL extension failure handling
 
