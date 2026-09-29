@@ -203,6 +203,9 @@ fn escrowed_transfer_state_machine() {
     assert_eq!(last_event_topic(&d.env), Symbol::new(&d.env, "xfer_escr"));
     assert_eq!(d.ownership.get_current_owner(&7), owner);
 
+    d.ownership.confirm_custody(&7, &owner);
+    d.ownership.confirm_custody(&7, &buyer);
+
     assert_eq!(
         d.ownership.try_finalize_transfer(&7),
         Err(Ok(contract_error(13)))
