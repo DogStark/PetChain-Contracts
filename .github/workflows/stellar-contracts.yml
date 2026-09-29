@@ -183,6 +183,15 @@ jobs:
         working-directory: stellar-contracts
         run: cargo test
 
+      # Issue #1215: dispute evidence canonicalization. The canonical byte
+      # encoding (domain separator + version tag) and its golden vectors are
+      # pinned by the `evidence_canonicalization` test module. Run it as a
+      # dedicated, named step so a regression in the byte representation or
+      # resulting hash fails CI with an obvious signal.
+      - name: Test dispute evidence canonicalization golden vectors
+        working-directory: stellar-contracts
+        run: cargo test evidence_canonicalization -- --nocapture
+
   # Issue #1230: generate a CycloneDX SBOM, checksums, build metadata, and a
   # signed SLSA-style provenance attestation for the deployable WASM artifact.
   # The SBOM is derived from the locked dependency graph (Cargo.lock) so the

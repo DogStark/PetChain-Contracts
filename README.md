@@ -66,6 +66,12 @@ MIT
 <!-- handsoff-issue-1200 -->
 - #1200: [stellar-contracts] Minimize public emergency-profile data
 
+<!-- handsoff-issue-1212 -->
+- #1212: [stellar-contracts] Add governance timelock and cancellation policy
+
+<!-- handsoff-issue-1213 -->
+- #1213: [stellar-contracts] Secure contract-upgrade authorization and hash binding
+
 <!-- handsoff-issue-1227 -->
 - #1227: [backend-2fa] Enforce TOTP replay protection atomically
 
