@@ -37,6 +37,37 @@ All write and sensitive read endpoints require a Bearer JWT (`Authorization: Bea
 
 ---
 
+## Pagination policy (Issue #1306)
+
+All paginated Stellar contract reads share a single, centralized page-size
+policy. The policy is enforced by one shared validator so every endpoint
+behaves identically.
+
+| Bound | Value | Meaning |
+|---|---|---|
+| Minimum | `1` | Smallest accepted page size |
+| Default | `20` | Used when the caller omits the page size |
+| Maximum | `100` | Largest accepted page size (Soroban budget bound) |
+
+Rules:
+
+- A page size of `0` (or any value below the minimum) returns a deterministic
+  `InvalidPageSize` error — it is never silently coerced.
+- A page size above the maximum returns the same deterministic
+  `InvalidPageSize` error.
+- Omitting the page size uses the documented default of `20`, which is stable
+  across releases.
+- All paginated endpoints return the same cursor semantics: an opaque cursor
+  is returned alongside the page and passed back unchanged to fetch the next
+  page. A `null`/absent cursor starts from the beginning.
+- Existing valid callers (page sizes within `[1, 100]`) remain fully
+  compatible.
+
+This policy applies to the pet, record, vet, consent, custody, and activity
+paginated reads.
+
+---
+
 ## View Functions (pure reads — no storage writes or event emissions)
 
 The following functions are guaranteed to have no side effects. They do not write to storage, emit events, or update access timestamps.
@@ -202,6 +233,55 @@ The primary contract lives in `stellar-contracts/src/lib.rs` and exposes functio
 - multisig administration and upgrade proposals
 
 **Medical-record soft-delete & pagination (Issues #1170–#1173):**
-Medical-record reads are delegated through a shared soft
+Medical-record reads are delegated through a shared soft-delete filter so a
+soft-deleted record never resurfaces in `get_medical_record`,
+`get_pet_medical_records`, `get_pet_medical_records_cursor`,
+`search_medical_records`, `search_by_keyword`, or
+`get_pet_full_profile_batch`. Deletion preserves provenance (only the pet
+owner, the record's vet, or an admin may delete) and publishes a
+`MedicalRecordDeleted` audit event. Purging is split into a bounded,
+resumable `purge_deleted_records_bounded` (Issue #1172) so large pets can be
+drained without hitting transaction resource limits.
 
-/* … truncated 1763 chars — edit only what you need near the top … */
+Cursor pagination is bounded by policy: `get_pet_medical_records_cursor`
+accepts an opaque cursor and a page size that is clamped to a maximum, so a
+single request cannot scan an unbounded number of records. Callers should
+follow the returned cursor until it is exhausted rather than requesting
+arbitrarily large pages.
+
+**Compatibility / migration notes:**
+- `set_max_subscriptions_per_address` was renamed to `set_max_subscriptions`
+  because the previous name (33 chars) exceeded Soroban's 32-char contract
+  function-name limit, which prevented the contract from compiling. Callers
+  must target the new name.
+- The `ProposalNotFound` contract error discriminant moved from `39` to `42`
+  to resolve a collision with `InvalidNonce`; `ProposalAlreadyExecuted`
+  remains `38`. Error-code consumers should rely on the symbol, not the raw
+  discriminant.
+
+### Transfer and adoption contract
+
+The transfer-focused contract lives in `stellar-contracts/contracts/pet-transfer-adoption/src/lib.rs` and handles:
+
+- pet creation
+- transfer initiation and acceptance
+- transfer cancellation and reclaim flows
+- ownership history tracking
+
+## Backend 2FA
+
+The backend crate provides:
+
+- 2FA enrollment
+- token verification and activation
+- login-time token checks
+- disable and recovery flows
+- request tracing middleware
+- in-memory and Redis-backed rate limiting
+- standardized JSON error responses via `ApiError`
+
+For implementation details, read the crate sources in `backend-2fa/src/`.
+
+### Error response format
+
+Backend 2FA endpoints return structured J
