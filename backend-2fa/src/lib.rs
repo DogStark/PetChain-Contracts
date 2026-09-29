@@ -7,6 +7,7 @@ pub mod health;
 pub mod ip_access;
 pub mod leaderboard;
 pub mod metrics;
+pub mod migration_lock;
 pub mod migrations;
 pub mod rate_limit_middleware;
 pub mod rate_limiter;

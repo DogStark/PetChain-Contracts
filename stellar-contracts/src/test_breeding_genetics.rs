@@ -58,7 +58,7 @@ fn test_set_and_get_pet_traits() {
 
 #[test]
 fn test_get_pet_traits_empty_when_not_set() {
-    let (env, client, _owner, sire_id, _dam_id) = setup();
+    let (_env, client, _owner, sire_id, _dam_id) = setup();
     let traits = client.get_pet_traits(&sire_id);
     assert_eq!(traits.len(), 0);
 }
@@ -109,10 +109,7 @@ fn test_dominant_recessive_gives_75_percent() {
     );
 
     let predicted = client.compute_offspring_traits(&record_id);
-    assert_eq!(
-        predicted.get(String::from_str(&env, "size")),
-        Some(7500u32)
-    );
+    assert_eq!(predicted.get(String::from_str(&env, "size")), Some(7500u32));
 }
 
 #[test]
@@ -230,8 +227,5 @@ fn test_multiple_traits_computed_correctly() {
         predicted.get(String::from_str(&env, "coat_color")),
         Some(7500u32)
     );
-    assert_eq!(
-        predicted.get(String::from_str(&env, "size")),
-        Some(0u32)
-    );
+    assert_eq!(predicted.get(String::from_str(&env, "size")), Some(0u32));
 }

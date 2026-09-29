@@ -19,6 +19,7 @@ soroban-sdk = { version = "21.7.7", features = ["testutils"] }
 # and the two copies can't interoperate in testutils. Cap it so the whole
 # graph unifies on one 2.x release.
 ed25519-dalek = "2"
+proptest = "1.4.0"
 
 [profile.release]
 opt-level = "z"

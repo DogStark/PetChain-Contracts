@@ -1,6 +1,6 @@
 // Tests for cursor-based access-grant enumeration (Issue #1161).
 use crate::{AccessLevel, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String};
 
 fn setup(env: &Env) -> (PetChainContractClient<'_>, Address, u64) {
     env.mock_all_auths();
