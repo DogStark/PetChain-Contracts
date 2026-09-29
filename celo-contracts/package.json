@@ -6,10 +6,13 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "lint": "solhint 'contracts/**/*.sol'"
+    "lint": "solhint 'contracts/**/*.sol'",
+    "smoke:deploy": "hardhat run scripts/smoke-deploy.js",
+    "release:artifacts": "npm run compile && npm run smoke:deploy"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "fast-check": "^3.23.2",
     "hardhat": "^2.22.0",
     "solhint": "^5.0.0"
   },
