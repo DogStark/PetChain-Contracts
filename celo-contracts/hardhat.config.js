@@ -85,6 +85,15 @@ module.exports = {
     ),
     celo: networkConfig("celo", "https://forno.celo.org", CHAIN_IDS.celo),
   },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS === "true",
+    currency: "USD",
+    outputFile: process.env.GAS_REPORT_FILE || undefined,
+    noColors: Boolean(process.env.GAS_REPORT_FILE),
+  },
+  mocha: {
+    timeout: 120000,
+  },
   etherscan: {
     apiKey: {
       alfajores: CELOSCAN_API_KEY || "",
