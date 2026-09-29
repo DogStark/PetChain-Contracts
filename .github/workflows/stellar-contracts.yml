@@ -65,6 +65,32 @@ jobs:
         working-directory: stellar-contracts
         run: ./scripts/generate_abi_snapshot.sh --check
 
+  abi-diff:
+    runs-on: ubuntu-latest
+    needs: abi-snapshot
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Detects breaking changes in the contract's public ABI and
+      # requires a migration note in docs/abi-migrations.md when
+      # breaking changes are present (Issue #1351).
+      - name: Check for breaking ABI changes
+        working-directory: stellar-contracts
+        run: |
+          # Regenerate the snapshot from the current source
+          ./scripts/generate_abi_snapshot.sh
+          # Diff the regenerated snapshot against the committed one
+          if ! ./scripts/generate_abi_snapshot.sh --diff; then
+            echo ""
+            echo "ERROR: breaking ABI changes detected without a migration note."
+            echo "Add an entry to docs/abi-migrations.md describing the change"
+            echo "and its ledger-compatibility impact, then regenerate the snapshot:"
+            echo "  ./scripts/generate_abi_snapshot.sh"
+            exit 1
+          fi
+          echo "No breaking ABI changes detected."
+
   error-compat:
     runs-on: ubuntu-latest
     steps:
@@ -86,7 +112,7 @@ jobs:
             python3 scripts/check_error_compat.py
           fi
 
-  cross-contract:
+  coverage:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
