@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
 - Pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) to standardize contributor submissions
+- Claim-document status/version semantics (#1341): documents are `Active`, `Superseded` or `Revoked`; revoked documents stay auditable but their digest is burned and can never back a new approval; settled claims are immutable and `settlement_has_revoked_documents` flags later revocations
+- Breeding eligibility and cooldown invariants (#1342): `record_mating` enforces active status, sex/species compatibility, minimum age, per-parent cooldowns (inclusive at the exact boundary), COI threshold and both owners' consent through one evaluator (`check_breeding_eligibility`); replays of the same mating are idempotent
+- Health-score input provenance (#1343): `record_health_score` binds each score to a canonical input digest, algorithm version, scorer and timestamp; identical inputs are deterministic and no algorithm version can overwrite another's history
+- Confirmed, audited data-retention purge (#1344): `purge_records_confirmed` requires owner/admin role, a per-account nonce and a scope-binding confirmation digest, honors admin purge holds, and emits an audit event with only a count and records digest
 - Canonical chain-of-custody digest (`get_custody_chain_digest`) so consumers can prove a returned custody history is complete and ordered: SHA-256 hash chain over domain, version, pet ID, sequence, and every entry in canonical order, with published test vectors and tamper cases
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
 
@@ -43,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New errors: `CertificateNotFound` (47), `CertificateRevoked` (48),
   `CertificateExpired` (49), `VetCredentialsExpired` (50),
   `CertificateHashConflict` (51).
+  Correction: `CertificateNotFound` is **171**, because 47 is
+  `ProposalNotFound`. These variants were lost in a merge and have been
+  restored (see `stellar-contracts/docs/abi-migrations.md`).
 
 ## [0.1.0] - 2024-XX-XX
 
