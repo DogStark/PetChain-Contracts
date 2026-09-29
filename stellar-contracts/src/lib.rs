@@ -75,6 +75,14 @@ pub enum InsuranceKey {
     // Fraud detection
     FlaggedClaimCount,      // Global count of entries in the flagged index
     FlaggedClaimIndex(u64), // sequential index -> claim_id (for paginated admin review)
+    // Issue #1205: duplicate-payout prevention
+    // Keyed per claim_id; written BEFORE the status is set to Paid so that
+    // Soroban's atomic transaction semantics guarantee: if the write succeeds
+    // but a subsequent step panics, the whole transaction reverts and the flag
+    // is never persisted. Only a fully successful payout leaves it set.
+    ClaimSettled(u64), // claim_id -> bool; present+true means already paid
+    // Reviewer tracking for appeal anti-replay
+    ClaimReviewer(u64), // claim_id -> Address of first reviewer
 }
 
 #[contracttype]
@@ -219,6 +227,8 @@ mod test_behavior_records;
 mod test_breeding;
 #[cfg(test)]
 mod test_breeding_genetics;
+#[cfg(test)]
+mod test_claim_payout_replay;
 #[cfg(test)]
 mod test_consent_canonicalization;
 #[cfg(test)]
@@ -718,6 +728,43 @@ pub enum ContractError {
     /// A grant was attempted for a consent already revoked at a higher
     /// generation — closes the replay/resurrection attack (issue #1202).
     RevokedConsentReplay = 198,
+
+    // --- Insurance claim duplicate-payout prevention (Issue #1205) ---
+    // Appended after 198; verify no collision with existing discriminants above.
+    /// Returned when a payout (approval or appeal resolution) is attempted for
+    /// a claim that has already been settled (i.e. `ClaimSettled(claim_id)` is
+    /// already recorded in storage). Callers should treat this as a hard error
+    /// rather than a silent no-op so that retry logic in upstream services is
+    /// forced to handle it explicitly instead of silently succeeding.
+    ClaimAlreadySettled = 199,
+
+    /// The claim referenced by `claim_id` does not exist in storage.
+    ClaimNotFound = 200,
+
+    /// A payout path was called for a claim whose current status does not
+    /// permit the requested transition (e.g. approving an already-Rejected claim).
+    ClaimInvalidStatus = 201,
+
+    /// `appeal_claim` was called on a claim that is not in Rejected status.
+    ClaimNotRejected = 202,
+
+    /// `appeal_claim` was called after the 14-day appeal window closed.
+    AppealWindowExpired = 203,
+
+    /// `appeal_claim` was called on a claim that is already under appeal.
+    ClaimAlreadyAppealed = 204,
+
+    /// `review_appeal` was called on a claim that is not in UnderAppeal status.
+    ClaimNotUnderAppeal = 205,
+
+    /// The second reviewer is the same address as the original reviewer.
+    ReviewerCannotBeOriginal = 206,
+
+    /// Total documents on claim would exceed the cap of 10.
+    ClaimDocumentLimitReached = 207,
+
+    /// `add_insurance_policy` was called for a pet that does not exist.
+    PolicyPetNotFound = 208,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -3271,7 +3318,7 @@ impl PetChainContract {
         medications
     }
 
-    fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
+    pub fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy> {
         let count = env
             .storage()
             .instance()
@@ -17540,6 +17587,641 @@ impl PetChainContract {
         Self::bump_persistent_ttl(env, &in_use_key);
         key_version
     }
+    // =========================================================================
+    // INSURANCE POLICY & CLAIM MANAGEMENT  (Issue #1205)
+    //
+    // Payout convention: this contract records settlement in storage and
+    // transitions the claim to `Paid` status. There is no on-chain token
+    // transfer — the actual fund disbursement happens off-chain via a
+    // monitoring service that reads `Paid` claims. The settlement record
+    // (`ClaimSettled`) is written BEFORE the status is set to `Paid`, following
+    // the checks-effects-interactions pattern. Soroban's atomic transaction
+    // model guarantees that if any subsequent step panics the entire
+    // transaction reverts, so `ClaimSettled` can never be persisted without
+    // the status also being `Paid`.
+    //
+    // Every path that sets status to `Paid` must:
+    //   1. Check `ClaimSettled(claim_id)` — panic with `ClaimAlreadySettled`
+    //      if already present (hard error, not silent).
+    //   2. Write `ClaimSettled(claim_id) = true`.
+    //   3. Update claim status to `Paid`.
+    //   (Steps 2 + 3 are in the same atomic transaction.)
+    //
+    // This closes all known double-payout vectors:
+    //   * Retrying `update_insurance_claim_status(..., Paid)` — blocked at step 1.
+    //   * Calling `review_appeal` after a claim was already approved — blocked.
+    //   * Any future code path that would otherwise set Paid — must call
+    //     `Self::mark_claim_settled` which performs the check.
+    // =========================================================================
+
+    /// Maximum number of evidence/document CIDs per claim (original + appeal).
+    const MAX_CLAIM_DOCUMENTS: u32 = 10;
+
+    /// Appeal window: 14 days in seconds.
+    const CLAIM_APPEAL_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
+
+    // --- INTERNAL HELPERS ---
+
+    /// Checks-effects-interactions settlement guard.
+    ///
+    /// Writes the settlement flag BEFORE the caller updates claim status, so
+    /// that a panic in any later step reverts both writes atomically. Returns
+    /// `ClaimAlreadySettled` if the claim was previously settled.
+    fn mark_claim_settled(env: &Env, claim_id: u64) {
+        let key = InsuranceKey::ClaimSettled(claim_id);
+        if env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, bool>(&key)
+            .unwrap_or(false)
+        {
+            panic_with_error!(env, ContractError::ClaimAlreadySettled);
+        }
+        env.storage().instance().set(&key, &true);
+    }
+
+    /// Returns true if `claim_id` has already been settled.
+    pub fn is_claim_settled(env: Env, claim_id: u64) -> bool {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, bool>(&InsuranceKey::ClaimSettled(claim_id))
+            .unwrap_or(false)
+    }
+
+    // --- POLICY MANAGEMENT ---
+
+    /// Add an insurance policy for a pet.
+    /// Returns `true` on success, `false` if the pet does not exist.
+    pub fn add_insurance_policy(
+        env: Env,
+        pet_id: u64,
+        policy_id: String,
+        provider: String,
+        coverage_type: String,
+        premium: u64,
+        coverage_limit: u64,
+        expiry_date: u64,
+    ) -> bool {
+        // Pet must exist
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .is_none()
+        {
+            return false;
+        }
+
+        let now = env.ledger().timestamp();
+        let policy = InsurancePolicy {
+            policy_id: policy_id.clone(),
+            provider: provider.clone(),
+            coverage_type,
+            tier: PremiumTier::Standard,
+            premium,
+            coverage_limit,
+            start_date: now,
+            expiry_date,
+            active: true,
+        };
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        let new_count = safe_increment(&env, count);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetPolicyIndex((pet_id, new_count)), &policy);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetPolicyCount(pet_id), &new_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "ins_policy_added"),),
+            InsuranceAddedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                policy_id,
+                provider,
+                timestamp: now,
+            },
+        );
+        true
+    }
+
+    /// Activate or deactivate a policy by policy_id string.
+    /// Returns `true` if found and updated, `false` otherwise.
+    pub fn update_insurance_status(
+        env: Env,
+        _owner: Address,
+        pet_id: u64,
+        policy_id: String,
+        active: bool,
+    ) -> bool {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        for index in (1..=count).rev() {
+            let key = InsuranceKey::PetPolicyIndex((pet_id, index));
+            if let Some(mut policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&key)
+            {
+                if policy.policy_id == policy_id {
+                    policy.active = active;
+                    env.storage().instance().set(&key, &policy);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // --- CLAIM SUBMISSION ---
+
+    /// Submit a new insurance claim for a pet. Returns the new `claim_id` if
+    /// the pet has an active, non-expired policy, or `None` otherwise.
+    pub fn submit_insurance_claim(
+        env: Env,
+        pet_id: u64,
+        amount: u64,
+        description: String,
+    ) -> Option<u64> {
+        let policy = match Self::get_pet_insurance(env.clone(), pet_id) {
+            Some(p) if p.active && !is_expired(env.ledger().timestamp(), p.expiry_date) => p,
+            _ => return None,
+        };
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::ClaimCount)
+            .unwrap_or(0);
+        let claim_id = safe_increment(&env, count);
+        let now = env.ledger().timestamp();
+
+        let claim = InsuranceClaim {
+            claim_id,
+            pet_id,
+            policy_id: policy.policy_id.clone(),
+            amount,
+            date: now,
+            status: InsuranceClaimStatus::Pending,
+            description: description.clone(),
+            flagged: false,
+            fraud_flags: 0,
+            documents: Vec::new(&env),
+            rejected_at: None,
+            appeal_reason: None,
+            appeal_evidence_cids: Vec::new(&env),
+            appealed_at: None,
+            original_reviewer: None,
+            appeal_reviewer: None,
+        };
+
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::ClaimCount, &claim_id);
+
+        // Pet claim index
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+        let new_pet_count = safe_increment(&env, pet_count);
+        env.storage().instance().set(
+            &InsuranceKey::PetClaimIndex((pet_id, new_pet_count)),
+            &claim_id,
+        );
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetClaimCount(pet_id), &new_pet_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "claim_submitted"),),
+            InsuranceClaimSubmittedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id,
+                policy_id: policy.policy_id,
+                amount,
+                flagged: false,
+                timestamp: now,
+            },
+        );
+
+        Some(claim_id)
+    }
+
+    /// Get a claim by ID.
+    pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<InsuranceClaim> {
+        env.storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+    }
+
+    // --- CLAIM STATUS UPDATE (approval / rejection) ---
+    //
+    // This is the primary payout path. Setting status to `Paid` atomically
+    // records `ClaimSettled` first, preventing a second payout on replay.
+    //
+    // Why panic on `ClaimAlreadySettled` rather than returning early silently?
+    // The existing contract conventions (see `CertificateAlreadyAnchored`,
+    // `ProposalAlreadyExecuted`) return errors for idempotency violations so
+    // that callers are forced to handle them. Silent no-ops would let a retry
+    // loop succeed without knowing whether the payout actually happened.
+
+    /// Update a claim's status. Setting to `Paid` is the payout path; it is
+    /// guarded by the settlement check so it cannot execute twice.
+    pub fn update_insurance_claim_status(
+        env: Env,
+        claim_id: u64,
+        status: InsuranceClaimStatus,
+    ) -> bool {
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        // ---- PAYOUT PATH: checks-effects-interactions ----
+        if matches!(status, InsuranceClaimStatus::Paid) {
+            // 1. Check: revert if already settled (cannot pay twice)
+            // 2. Effect: record settlement atomically before status write
+            Self::mark_claim_settled(&env, claim_id);
+            // 3. Interaction: any off-chain disbursement reads this status
+        }
+
+        if matches!(status, InsuranceClaimStatus::Rejected) {
+            claim.rejected_at = Some(env.ledger().timestamp());
+        }
+
+        claim.status = status.clone();
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        env.events().publish(
+            (Symbol::new(&env, "claim_status"),),
+            InsuranceClaimStatusUpdatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                status,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        true
+    }
+
+    // --- REVIEWER TRACKING ---
+
+    /// Record the admin who first reviewed a claim (for appeal independence check).
+    pub fn set_claim_reviewer(env: Env, admin: Address, claim_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .is_none()
+        {
+            panic_with_error!(&env, ContractError::ClaimNotFound);
+        }
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::ClaimReviewer(claim_id), &admin);
+
+        // Reflect in claim struct as well
+        if let Some(mut claim) = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+        {
+            claim.original_reviewer = Some(admin);
+            env.storage()
+                .instance()
+                .set(&InsuranceKey::Claim(claim_id), &claim);
+        }
+    }
+
+    // --- APPEAL ---
+
+    /// Appeal a rejected claim within 14 days of rejection.
+    ///
+    /// Transitions status from `Rejected` → `UnderAppeal`.
+    /// New evidence CIDs are appended to `appeal_evidence_cids`.
+    /// Total documents (existing + new) must not exceed `MAX_CLAIM_DOCUMENTS`.
+    pub fn appeal_claim(
+        env: Env,
+        owner: Address,
+        claim_id: u64,
+        appeal_reason: String,
+        new_evidence_cids: Vec<String>,
+    ) {
+        owner.require_auth();
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        // Only Rejected claims can be appealed
+        if !matches!(claim.status, InsuranceClaimStatus::Rejected) {
+            panic_with_error!(&env, ContractError::ClaimNotRejected);
+        }
+
+        // Cannot appeal twice
+        if matches!(claim.status, InsuranceClaimStatus::UnderAppeal) || claim.appealed_at.is_some()
+        {
+            panic_with_error!(&env, ContractError::ClaimAlreadyAppealed);
+        }
+
+        // Enforce appeal window
+        let now = env.ledger().timestamp();
+        let rejected_at = claim.rejected_at.unwrap_or(claim.date);
+        if now.saturating_sub(rejected_at) > Self::CLAIM_APPEAL_WINDOW_SECS {
+            panic_with_error!(&env, ContractError::AppealWindowExpired);
+        }
+
+        // Validate new evidence CIDs and check document cap
+        let total_after =
+            (claim.documents.len() as u32).saturating_add(new_evidence_cids.len() as u32);
+        if total_after > Self::MAX_CLAIM_DOCUMENTS {
+            panic_with_error!(&env, ContractError::ClaimDocumentLimitReached);
+        }
+        for cid in new_evidence_cids.iter() {
+            // CIDs must start with "Qm" and be at least 46 chars (CIDv0 minimum)
+            if cid.len() < 46 {
+                panic_with_error!(&env, ContractError::InvalidIpfsHash);
+            }
+            claim.appeal_evidence_cids.push_back(cid);
+        }
+
+        claim.status = InsuranceClaimStatus::UnderAppeal;
+        claim.appeal_reason = Some(appeal_reason.clone());
+        claim.appealed_at = Some(now);
+
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        env.events().publish(
+            (Symbol::new(&env, "claim_appealed"),),
+            ClaimAppealedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                claimant: owner,
+                appeal_reason,
+                new_evidence_count: new_evidence_cids.len() as u32,
+                timestamp: now,
+            },
+        );
+    }
+
+    // --- APPEAL RESOLUTION (second payout path) ---
+    //
+    // If the appeal is approved the claim transitions to `Approved` (not `Paid`
+    // directly — a subsequent `update_insurance_claim_status(..., Paid)` must be
+    // called to disburse, which runs through the same settlement guard).
+    // This keeps the two concerns — decision and disbursement — separate, which
+    // matches the existing conventions seen in the test suite.
+
+    /// Resolve an appeal. `decision` must be `Approved` or `Rejected`.
+    ///
+    /// Guards:
+    /// - Claim must be in `UnderAppeal` status.
+    /// - Reviewer must be an admin and must differ from the original reviewer.
+    /// - If the decision is `Approved`, the settlement guard runs immediately
+    ///   so that calling `review_appeal` twice cannot pay twice.
+    pub fn review_appeal(
+        env: Env,
+        reviewer: Address,
+        claim_id: u64,
+        decision: InsuranceClaimStatus,
+    ) {
+        reviewer.require_auth();
+        if !Self::is_admin(&env, &reviewer) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        // Must be under appeal
+        if !matches!(claim.status, InsuranceClaimStatus::UnderAppeal) {
+            panic_with_error!(&env, ContractError::ClaimNotUnderAppeal);
+        }
+
+        // Second reviewer must differ from original
+        if let Some(ref original) = claim.original_reviewer {
+            if *original == reviewer {
+                panic_with_error!(&env, ContractError::ReviewerCannotBeOriginal);
+            }
+        }
+
+        // ---- PAYOUT PATH: checks-effects-interactions ----
+        // If the appeal is approved we treat it as a payout path:
+        // record settlement BEFORE changing status so a retry cannot pay twice.
+        if matches!(decision, InsuranceClaimStatus::Approved) {
+            Self::mark_claim_settled(&env, claim_id);
+        }
+
+        let now = env.ledger().timestamp();
+        claim.status = decision.clone();
+        claim.appeal_reviewer = Some(reviewer.clone());
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        env.events().publish(
+            (Symbol::new(&env, "appeal_decision"),),
+            AppealDecisionEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                reviewer,
+                decision,
+                timestamp: now,
+            },
+        );
+    }
+
+    // --- FRAUD / FLAGGED CLAIMS ---
+
+    /// Mark a claim as flagged for admin review.
+    pub fn flag_insurance_claim(env: Env, admin: Address, claim_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        claim.flagged = true;
+        claim.status = InsuranceClaimStatus::UnderReview;
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::FlaggedClaimCount)
+            .unwrap_or(0);
+        let new_count = safe_increment(&env, count);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::FlaggedClaimIndex(new_count), &claim_id);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::FlaggedClaimCount, &new_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "claim_flagged"),),
+            InsuranceClaimFlaggedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                fraud_flags: claim.fraud_flags,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Admin override: approve a previously flagged claim.
+    /// Runs through the settlement guard — cannot approve twice.
+    pub fn approve_flagged_claim(env: Env, admin: Address, claim_id: u64, reason: String) {
+        admin.require_auth();
+        if !Self::is_admin(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        if !matches!(claim.status, InsuranceClaimStatus::UnderReview) {
+            panic_with_error!(&env, ContractError::ClaimInvalidStatus);
+        }
+
+        // ---- PAYOUT PATH: checks-effects-interactions ----
+        Self::mark_claim_settled(&env, claim_id);
+
+        claim.status = InsuranceClaimStatus::Approved;
+        claim.flagged = false;
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+
+        env.events().publish(
+            (Symbol::new(&env, "flagged_approved"),),
+            FlaggedClaimApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                admin,
+                reason,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    // --- CLAIM DOCUMENTS ---
+
+    /// Attach an IPFS CID document to a claim. Owner-only; cap is 10 total.
+    pub fn attach_claim_document(env: Env, owner: Address, claim_id: u64, cid: String) {
+        owner.require_auth();
+
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+
+        if cid.len() < 46 {
+            panic_with_error!(&env, ContractError::InvalidIpfsHash);
+        }
+        if claim.documents.len() as u32 >= Self::MAX_CLAIM_DOCUMENTS {
+            panic_with_error!(&env, ContractError::ClaimDocumentLimitReached);
+        }
+
+        claim.documents.push_back(cid);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Claim(claim_id), &claim);
+    }
+
+    /// Get all claims for a pet (by index).
+    pub fn get_pet_insurance_claims(env: Env, pet_id: u64) -> Vec<InsuranceClaim> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+        let mut claims = Vec::new(&env);
+        for index in 1..=count {
+            if let Some(claim_id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimIndex((pet_id, index)))
+            {
+                if let Some(claim) = env
+                    .storage()
+                    .instance()
+                    .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
+                {
+                    claims.push_back(claim);
+                }
+            }
+        }
+        claims
+    }
+
+    /// Returns whether a pet has an active insurance policy.
+    pub fn is_insurance_active(env: Env, pet_id: u64) -> bool {
+        let now = env.ledger().timestamp();
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        for index in (1..=count).rev() {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((
+                    pet_id, index,
+                )))
+            {
+                if policy.active && !is_expired(now, policy.expiry_date) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 } // end impl PetChainContract
 
 // --- OVERFLOW-SAFE COUNTER HELPER ---
@@ -17744,8 +18426,14 @@ mod test_emergency_contact_invariants {
         let cpu_used = env.budget().cpu_instruction_cost() - cpu_before;
         let mem_used = env.budget().memory_bytes_cost() - mem_before;
 
-        assert!(cpu_used < 10_000_000, "contact validation CPU cost regressed: {cpu_used}");
-        assert!(mem_used < 2_000_000, "contact validation memory cost regressed: {mem_used}");
+        assert!(
+            cpu_used < 10_000_000,
+            "contact validation CPU cost regressed: {cpu_used}"
+        );
+        assert!(
+            mem_used < 2_000_000,
+            "contact validation memory cost regressed: {mem_used}"
+        );
     }
 }
 

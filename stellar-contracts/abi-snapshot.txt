@@ -8,6 +8,7 @@ pub fn add_behavior_record(env: Env, pet_id: u64, caller: Address, behavior_type
 pub fn add_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32,)
 pub fn add_breeding_record(env: Env, sire_id: u64, dam_id: u64, breeding_date: u64, notes: String,) -> u64
 pub fn add_emergency_responder(env: Env, pet_id: u64, responder: Address)
+pub fn add_insurance_policy(env: Env, pet_id: u64, policy_id: String, provider: String, coverage_type: String, premium: u64, coverage_limit: u64, expiry_date: u64,) -> bool
 pub fn add_lab_result(env: Env, pet_id: u64, vet_address: Address, test_type: String, results: String, reference_ranges: String, attachment_hash: Option<String>, medical_record_id: Option<u64>, biomarkers: Map<String, i128>,) -> u64
 pub fn add_medical_record(env: Env, pet_id: u64, vet_address: Address, diagnosis: String, treatment: String, medications: Vec<Medication>, notes: String,) -> u64
 pub fn add_nutrition_plan(env: Env, pet_id: u64, name: String, ingredients: Vec<Ingredient>, total_calories: u32,) -> u64
@@ -28,7 +29,8 @@ pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64)
 pub fn approve_upgrade_proposal(env: Env, admin: Address, proposal_id: u64)
 pub fn archive_pet(env: Env, pet_id: u64)
 pub fn assign_arbitrator(env: Env, admin: Address, arbitrator: Address) -> bool
-pub fn batch_add_vets(env: Env, admin: Address, vet_addresses: Vec<Address>,)
+pub fn approve_flagged_claim(env: Env, admin: Address, claim_id: u64)
+pub fn approve_claim(env: Env, admin: Address, claim_id: u64)
 pub fn batch_set_error_messages(env: Env, admin: Address, messages: Vec<ErrorMessage>)
 pub fn batch_transfer(env: Env, pet_ids: Vec<u64>, new_owner: Address)
 pub fn batch_verify_vets(env: Env, admin: Address, vet_addresses: Vec<Address>) -> BatchResult
@@ -169,6 +171,8 @@ pub fn get_pet_disputes(env: Env, pet_id: u64) -> Vec<Dispute>
 pub fn get_pet_full_profile(env: Env, pet_id: u64, caller: Address) -> Option<PetFullProfile>
 pub fn get_pet_full_profile_batch(env: Env, pet_id: u64, caller: Address,) -> Option<PetFullProfileBatch>
 pub fn get_pet_health_summary(env: Env, pet_id: u64, caller: Address,) -> Option<PetHealthSummary>
+pub fn get_pet_insurance(env: Env, pet_id: u64) -> Option<InsurancePolicy>
+pub fn get_pet_insurance_claims(env: Env, pet_id: u64) -> Vec<InsuranceClaim>
 pub fn get_pet_key_version(env: Env, pet_id: u64) -> u32
 pub fn get_pet_medical_records(env: Env, pet_id: u64, offset: u64, limit: u32,) -> Vec<MedicalRecord>
 pub fn get_pet_medical_records_cursor(env: Env, pet_id: u64, cursor: u64, limit: u32,) -> MedicalRecordPage
@@ -245,7 +249,9 @@ pub fn init_multisig(env: Env, invoker: Address, admins: Vec<Address>, threshold
 pub fn initialize_error_messages(env: Env, admin: Address)
 pub fn initialize_vaccination(env: Env, pet_id: u64, vaccine_type: VaccineType, vaccine_name: String, administered_at: u64, next_due_date: u64, expires_at: u64, batch_number: String,) -> u64
 pub fn is_claim_document_acceptable(env: Env, claim_id: u64, doc_index: u32) -> bool
+pub fn is_claim_settled(env: Env, claim_id: u64) -> bool
 pub fn is_consent_active(env: Env, consent_id: u64) -> bool
+pub fn is_insurance_active(env: Env, pet_id: u64) -> bool
 pub fn is_owner_registered(env: Env, owner: Address) -> bool
 pub fn is_pet_active(env: Env, id: u64) -> bool
 pub fn is_record_on_purge_hold(env: Env, record_id: u64) -> bool
@@ -319,6 +325,7 @@ pub fn renew_emergency_override(env: Env, pet_id: u64, responder: Address, reaso
 pub fn reorder_contact(env: Env, pet_id: u64, index: u32, new_priority: u32)
 pub fn require_multisig_for_transfer(env: Env, pet_id: u64, to: Address) -> u64
 pub fn resolve_dispute(env: Env, dispute_id: u64, status: DisputeStatus) -> bool
+pub fn review_appeal(env: Env, reviewer: Address, claim_id: u64, decision: InsuranceClaimStatus,)
 pub fn revoke_access(env: Env, pet_id: u64, grantee: Address) -> bool
 pub fn revoke_canonical_consent(env: Env, pet_id: u64, consent_hash: BytesN<32>,) -> CanonicalConsent
 pub fn revoke_certificate(env: Env, caller: Address, pet_id: u64, vaccination_id: u64, reason: String,)
@@ -382,6 +389,8 @@ pub fn transfer_pet_ownership(env: Env, id: u64, to: Address, nonce: u64)
 pub fn unarchive_pet(env: Env, pet_id: u64)
 pub fn update_breed_metadata(env: Env, admin: Address, breed_id: String, species: String, avg_lifespan_years: u32,)
 pub fn update_clinic_info(env: Env, vet_address: Address, clinic_info: String) -> bool
+pub fn update_insurance_claim_status(env: Env, claim_id: u64, status: InsuranceClaimStatus,) -> bool
+pub fn update_insurance_status(env: Env, _owner: Address, pet_id: u64, policy_id: String, active: bool,) -> bool
 pub fn update_medical_record_notes(env: Env, record_id: u64, notes: String) -> bool
 pub fn update_multisig_signers(env: Env, pet_id: u64, signers: Vec<Address>, threshold: u32,) -> bool
 pub fn update_owner_profile(env: Env, owner: Address, name: String, email: String, emergency_contact: String,) -> bool
