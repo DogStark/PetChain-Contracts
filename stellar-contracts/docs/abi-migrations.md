@@ -37,6 +37,11 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-09-24 — Error compatibility policy (#1255)
+
+- All contract error codes are now pinned in `error-codes.json` and checked
+  in CI; see [error-compatibility.md](error-compatibility.md).
+
 ### 2026-09-27 — Emergency notification replay protection, consent canonicalization, vet credential issuer rotation (#1338, #1337, #1336)
 
 **New public functions** (all additive, no existing signature changed):
@@ -77,6 +82,18 @@ existing ones, since off-chain integrators match on the numeric code.
 - Regenerated `abi-snapshot.txt`, which had drifted again (e.g.
   `anchor_certificate_idempotent`, `rotate_pet_key_version`,
   `migrate_microchip_index` were missing).
+
+### 2026-09-24 — Storage-rent and cleanup observability (#1258)
+
+**New public ABI (intentional, additive):**
+- Added read-only `get_storage_metrics(env, pet_id, cursor, limit) ->
+  StorageMetrics` and the `StorageMetrics` contract type. It reports quota
+  usage, the configured cap, remaining headroom, medical-record slots, and the
+  soft-delete cleanup backlog (purgeable now vs. still in retention). Only
+  counts are returned, never record contents. The backlog scan is bounded to
+  `MAX_STORAGE_METRICS_SCAN` (100) slots per call and resumable via
+  `next_cursor`, mirroring `purge_deleted_records_bounded`.
+- No storage keys or existing signatures changed.
 
 ### 2026-08-29 — Custody-history digest + repair of pre-existing ABI drift (#1254)
 

@@ -37,6 +37,9 @@ pub mod escrow;
 mod test;
 #[cfg(test)]
 mod test_cross_contract;
+#[cfg(test)]
+mod test_error_codes;
+mod test_state_machine;
 mod vet_registry;
 
 /// ======================================================
@@ -532,52 +535,16 @@ fn require_no_escrow(env: &Env, pet_id: u64) {
     }
 }
 
-/// Moves ownership of an escrowed pet to `escrowed.to` and clears the escrow.
-fn complete_escrowed_transfer(env: &Env, escrowed: &EscrowedTransfer) {
-    let pet_id = escrowed.pet_id;
-    let now = env.ledger().timestamp();
-    let mut pet = get_pet(env, pet_id);
-    if pet.current_owner != escrowed.from {
-        panic_with_error!(env, ContractError::Unauthorized);
+/// Ownership must not move by any other path while an escrowed transfer
+/// (possibly disputed) is awaiting confirmation or arbitration.
+fn require_no_escrow(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
     }
-
-    // Update ownership history
-    let mut history = get_history(env, pet_id);
-    if history.len() == 0 {
-        panic_with_error!(env, ContractError::EmptyOwnershipHistory);
-    }
-    let last = history.len() - 1;
-    let mut prev = history
-        .get(last)
-        .unwrap_or_else(|| panic_with_error!(env, ContractError::MissingOwnershipRecord));
-    prev.relinquished_at = Some(now);
-    history.set(last, prev);
-    history.push_back(OwnershipRecord {
-        owner: escrowed.to.clone(),
-        acquired_at: now,
-        relinquished_at: None,
-    });
-
-    remove_pet_from_owner(env, &escrowed.from, pet_id);
-    add_pet_to_owner(env, &escrowed.to, pet_id);
-    pet.current_owner = escrowed.to.clone();
-
-    save_pet(env, &pet);
-    save_history(env, pet_id, &history);
-    clear_escrow(env, pet_id);
-
-    append_custody_entry(
-        env,
-        pet_id,
-        escrowed.from.clone(),
-        escrowed.to.clone(),
-        TransferType::Direct,
-    );
-
-    env.events().publish(
-        (EVT_TRANSFER_FINALIZED, pet_id),
-        (escrowed.from.clone(), escrowed.to.clone()),
-    );
 }
 
 fn get_adoption_admin(env: &Env) -> Address {
