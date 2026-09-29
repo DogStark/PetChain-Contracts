@@ -110,7 +110,7 @@ fn test_split_vote_does_not_resolve_dispute() {
 
 #[test]
 fn test_admin_override_resolves_without_votes() {
-    let (_env, client, admin, owner, _target, dispute_id) = setup();
+    let (_env, client, _admin, owner, _target, dispute_id) = setup();
 
     // Owner casts a single vote; threshold is not met.
     client.vote_on_dispute(&owner, &dispute_id, &DisputeVote::Approve);

@@ -6,9 +6,15 @@
 //!   3. `refund_fee()` — full amount back to buyer (Held or Disputed state)
 //!   4. `admin_resolve_dispute()` — admin ruling from Disputed state (buyer, seller, or split)
 //!
-//! Platform fee: configurable basis points (e.g. 250 = 2.50%)
-//!   platform_fee   = amount * fee_bps / 10_000
+//! Platform fee: configurable basis points (e.g. 250 = 2.50%), at most
+//! `MAX_FEE_BPS` (10_000 = 100%)
+//!   platform_fee   = floor(amount * fee_bps / 10_000)
 //!   seller_amount  = amount - platform_fee
+//!
+//! Rounding: the platform fee (and the seller's share of a dispute split) is
+//! rounded down to a whole stroop, so any sub-stroop remainder goes to the
+//! seller (or, for a split, the buyer) and the two parts always sum to
+//! `amount`. The math is overflow-free for every non-negative `i128` amount.
 //!
 //! Storage keys added (no conflict with existing DataKey variants):
 //!   DataKey::EscrowEntry(transfer_id) → EscrowEntry
@@ -78,16 +84,49 @@ pub enum EscrowDataKey {
 
 // ─── Fee helpers ──────────────────────────────────────────────────────────────
 
-pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> i128 {
-    // Split before multiplying so a valid token amount near i128::MAX cannot
-    // overflow even though the resulting fee is representable.
-    let whole = amount / 10_000;
-    let remainder = amount % 10_000;
-    whole * fee_bps as i128 + remainder * fee_bps as i128 / 10_000
+/// Basis-point denominator: 10_000 bps = 100%.
+pub const BPS_DENOMINATOR: u32 = 10_000;
+
+/// Upper bound for the platform fee and for a dispute split share (100%).
+pub const MAX_FEE_BPS: u32 = BPS_DENOMINATOR;
+
+/// `floor(amount * bps / 10_000)`, exact for every non-negative `i128`.
+///
+/// `amount` is split into whole multiples of 10_000 and a remainder, so no
+/// intermediate value exceeds `amount` (the remainder product stays below
+/// 10^8) and `i128::MAX` is handled without overflow.
+///
+/// Errors: `InvalidAmount` if `amount` is negative, `FeeBpsTooHigh` if `bps`
+/// exceeds `MAX_FEE_BPS`.
+pub fn bps_share(amount: i128, bps: u32) -> Result<i128, EscrowError> {
+    if amount < 0 {
+        return Err(EscrowError::InvalidAmount);
+    }
+    if bps > MAX_FEE_BPS {
+        return Err(EscrowError::FeeBpsTooHigh);
+    }
+    let (denom, bps) = (BPS_DENOMINATOR as i128, bps as i128);
+    let whole = (amount / denom)
+        .checked_mul(bps)
+        .ok_or(EscrowError::InvalidAmount)?;
+    let remainder = (amount % denom)
+        .checked_mul(bps)
+        .ok_or(EscrowError::InvalidAmount)?
+        / denom;
+    whole
+        .checked_add(remainder)
+        .ok_or(EscrowError::InvalidAmount)
+}
 }
 
-pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
-    amount - compute_platform_fee(amount, fee_bps)
+/// Platform fee for `amount`, rounded down to a whole stroop.
+pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
+    bps_share(amount, fee_bps)
+}
+
+/// `amount` minus the platform fee; the two always sum to `amount`.
+pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
+    Ok(amount - compute_platform_fee(amount, fee_bps)?)
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -97,7 +136,7 @@ pub fn compute_seller_amount(amount: i128, fee_bps: u32) -> i128 {
 /// Issue #1185: restricted to admin-only on first call (caller must be fee_recipient)
 /// and validates that token_address is a non-zero contract address.
 pub fn init_escrow_config(env: &Env, fee_bps: u32, fee_recipient: Address, token_address: Address) {
-    if fee_bps > 10_000 {
+    if fee_bps > MAX_FEE_BPS {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
     }
     // Issue #1185: require auth from the fee_recipient (who becomes admin)
@@ -159,7 +198,7 @@ fn token_client(env: &Env) -> token::Client<'_> {
 /// Existing in-flight escrows are NOT retroactively updated (they capture fee_bps at deposit time).
 /// Closes issue #1005.
 pub fn update_fee_config(env: &Env, new_fee_bps: u32, new_fee_recipient: Address) {
-    if new_fee_bps > 10_000 {
+    if new_fee_bps > MAX_FEE_BPS {
         panic_with_error!(env, EscrowError::FeeBpsTooHigh);
     }
 
@@ -233,11 +272,12 @@ pub fn finalize_transfer(env: &Env, transfer_id: u64) {
     if entry.status != EscrowStatus::Held {
         panic_with_error!(env, EscrowError::InvalidEscrowState);
     }
+    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps)
+        .unwrap_or_else(|err| panic_with_error!(env, err));
+    let seller_amount = entry.amount - platform_fee;
     // Issue #1183: mark terminal state before any token transfer
     entry.status = EscrowStatus::Released;
     env.storage().persistent().set(&key, &entry);
-    let platform_fee = compute_platform_fee(entry.amount, entry.platform_fee_bps);
-    let seller_amount = entry.amount - platform_fee;
     let contract = env.current_contract_address();
     let client = token_client(env);
     client.transfer(&contract, &entry.seller, &seller_amount);
@@ -336,10 +376,8 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
         DisputeDecision::RefundBuyer => (0, entry.amount),
         DisputeDecision::PaySeller => (entry.amount, 0),
         DisputeDecision::Split(seller_bps) => {
-            if seller_bps > 10_000 {
-                panic_with_error!(env, EscrowError::FeeBpsTooHigh);
-            }
-            let seller_amount = entry.amount * seller_bps as i128 / 10_000;
+            let seller_amount = bps_share(entry.amount, seller_bps)
+                .unwrap_or_else(|err| panic_with_error!(env, err));
             (seller_amount, entry.amount - seller_amount)
         }
     };
@@ -378,6 +416,8 @@ pub fn get_escrow(env: &Env, transfer_id: u64) -> Option<EscrowEntry> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     // Threat-model note: all auth, token, and state-transition paths are tested
     // below. Terminal states are written before token transfers (issues #1183, #1184)
     // to prevent double-settlement under reentrancy or retry. init_escrow_config
@@ -539,8 +579,8 @@ mod tests {
 
     #[test]
     fn fee_calculation_correct() {
-        assert_eq!(compute_platform_fee(10_000_000, 250), 250_000);
-        assert_eq!(compute_seller_amount(10_000_000, 250), 9_750_000);
+        assert_eq!(compute_platform_fee(10_000_000, 250), Ok(250_000));
+        assert_eq!(compute_seller_amount(10_000_000, 250), Ok(9_750_000));
     }
 
     #[test]
@@ -696,8 +736,8 @@ mod tests {
 
     #[test]
     fn zero_fee_bps_full_amount_to_seller() {
-        assert_eq!(compute_platform_fee(10_000_000, 0), 0);
-        assert_eq!(compute_seller_amount(10_000_000, 0), 10_000_000);
+        assert_eq!(compute_platform_fee(10_000_000, 0), Ok(0));
+        assert_eq!(compute_seller_amount(10_000_000, 0), Ok(10_000_000));
     }
 
     // ── Issue #1001: real token transfers on deposit / finalize / refund ─────
@@ -1041,18 +1081,796 @@ mod tests {
         });
     }
 
+    // ── Issue #1186: fee bounds and rounding ─────────────────────────────────
+
+    /// The fee is floored to a whole stroop; the remainder stays with the seller.
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn admin_resolve_dispute_rejects_replay() {
+    fn fee_rounds_down_at_stroop_level() {
+        let cases: [(i128, u32, i128); 10] = [
+            (0, 250, 0),
+            (1, 250, 0),
+            (39, 250, 0),
+            (40, 250, 1),
+            (79, 250, 1),
+            (80, 250, 2),
+            (9_999, 1, 0),
+            (10_000, 1, 1),
+            (1, 9_999, 0),
+            (1, MAX_FEE_BPS, 1),
+        ];
+        for (amount, bps, fee) in cases {
+            assert_eq!(compute_platform_fee(amount, bps), Ok(fee));
+            assert_eq!(compute_seller_amount(amount, bps), Ok(amount - fee));
+        }
+    }
+
+    /// For amounts where the direct product cannot overflow, the result equals
+    /// the plain `amount * bps / 10_000` formula, and fee + seller == amount.
+    #[test]
+    fn fee_matches_direct_formula_and_conserves_amount() {
+        for bps in [0, 1, 250, 3_333, 9_999, MAX_FEE_BPS] {
+            for amount in (0..=30_000).chain([i64::MAX as i128 - 1, i64::MAX as i128]) {
+                let fee = compute_platform_fee(amount, bps).unwrap();
+                assert_eq!(fee, amount * bps as i128 / 10_000);
+                assert_eq!(fee + compute_seller_amount(amount, bps).unwrap(), amount);
+            }
+        }
+    }
+
+    /// Exact results at `i128::MAX`, where `amount * bps` would overflow.
+    #[test]
+    fn fee_is_exact_at_maximum_amount() {
+        let cases: [(u32, i128); 5] = [
+            (0, 0),
+            (1, 17_014_118_346_046_923_173_168_730_371_588_410),
+            (250, 4_253_529_586_511_730_793_292_182_592_897_102_643),
+            (9_999, 170_124_169_342_123_184_808_514_134_985_512_517_316),
+            (MAX_FEE_BPS, i128::MAX),
+        ];
+        for (bps, fee) in cases {
+            assert_eq!(compute_platform_fee(i128::MAX, bps), Ok(fee));
+            assert_eq!(compute_seller_amount(i128::MAX, bps), Ok(i128::MAX - fee));
+        }
+    }
+
+    #[test]
+    fn fee_rejects_out_of_range_inputs() {
+        for bps in [MAX_FEE_BPS + 1, u32::MAX] {
+            assert_eq!(
+                compute_platform_fee(100, bps),
+                Err(EscrowError::FeeBpsTooHigh)
+            );
+            assert_eq!(
+                compute_seller_amount(100, bps),
+                Err(EscrowError::FeeBpsTooHigh)
+            );
+        }
+        for amount in [-1, i128::MIN] {
+            assert_eq!(
+                compute_platform_fee(amount, 250),
+                Err(EscrowError::InvalidAmount)
+            );
+        }
+    }
+
+    /// Exact boundary: a 100% fee is accepted and pays the seller nothing.
+    #[test]
+    fn finalize_at_max_fee_bps_pays_everything_to_platform() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, MAX_FEE_BPS, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 300, c.buyer.clone(), c.seller.clone(), 1_000_001);
+            finalize_transfer(&c.env, 300);
+        });
+        assert_eq!(c.balance(&c.seller), 0);
+        assert_eq!(c.balance(&c.platform), 1_000_001);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Stroop-level rounding end to end: the sub-stroop remainder goes to the seller.
+    #[test]
+    fn finalize_rounds_fee_down_to_whole_stroop() {
         let c = setup();
         c.run(|| {
             init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
-            deposit_fee(&c.env, 204, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            deposit_fee(&c.env, 301, c.buyer.clone(), c.seller.clone(), 79);
+            finalize_transfer(&c.env, 301);
+        });
+        assert_eq!(c.balance(&c.platform), 1);
+        assert_eq!(c.balance(&c.seller), 78);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// The largest amount a Stellar asset can hold settles without overflow
+    /// and without losing or creating a stroop.
+    #[test]
+    fn finalize_conserves_maximum_token_amount() {
+        let c = setup();
+        let amount = i64::MAX as i128;
+        StellarAssetClient::new(&c.env, &c.token).mint(&c.buyer, &(amount - 1_000_000_000));
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 302, c.buyer.clone(), c.seller.clone(), amount);
+            finalize_transfer(&c.env, 302);
+        });
+        assert_eq!(c.balance(&c.platform), 230_584_300_921_369_395);
+        assert_eq!(c.balance(&c.seller), 8_992_787_735_933_406_412);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// A split rounds the seller's share down; the buyer gets the remainder.
+    #[test]
+    fn admin_resolve_dispute_split_rounds_seller_share_down() {
+        let c = setup();
+        let before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 303, c.buyer.clone(), c.seller.clone(), 3);
         });
         c.run(|| {
-            dispute_transfer(&c.env, 204, c.buyer.clone());
-            admin_resolve_dispute(&c.env, 204, DisputeDecision::RefundBuyer);
-            admin_resolve_dispute(&c.env, 204, DisputeDecision::RefundBuyer);
+            dispute_transfer(&c.env, 303, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 303, DisputeDecision::Split(5_000));
         });
+        assert_eq!(c.balance(&c.seller), 1);
+        assert_eq!(c.balance(&c.buyer), before - 1);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn admin_resolve_dispute_rejects_split_over_max_bps() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 304, c.buyer.clone(), c.seller.clone(), 1_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 304, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 304, DisputeDecision::Split(MAX_FEE_BPS + 1));
+        });
+    }
+
+    /// Only the stored admin may change the fee.
+    #[test]
+    #[should_panic(expected = "Error(Auth, InvalidAction)")]
+    fn update_fee_config_requires_admin_auth() {
+        let c = setup();
+        c.run(|| init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone()));
+        c.env.mock_auths(&[]);
+        c.run(|| update_fee_config(&c.env, 100, c.platform.clone()));
+    }
+
+    // ── Issue #1256: invariant tests for escrow asset conservation ──────────
+
+    /// Helper: returns (buyer, seller, platform, contract) balances.
+    fn all_balances(c: &Ctx) -> (i128, i128, i128, i128) {
+        (
+            c.balance(&c.buyer),
+            c.balance(&c.seller),
+            c.balance(&c.platform),
+            c.balance(&c.contract),
+        )
+    }
+
+    /// Invariant: the sum of buyer + seller + platform + contract balances
+    /// is preserved across every escrow operation (value conservation).
+    #[test]
+    fn invariant_total_supply_preserved_on_deposit_and_finalize() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 300, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 300);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_deposit_and_refund() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 301, c.buyer.clone(), c.seller.clone(), 5_000_000);
+            refund_fee(&c.env, 301);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_cancel_expired() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 302, c.buyer.clone(), c.seller.clone(), 7_000_000);
+            c.env.ledger().with_mut(|l| l.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1);
+            cancel_expired_escrow(&c.env, 302);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_dispute_and_refund() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 100, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 303, c.buyer.clone(), c.seller.clone(), 4_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 303, c.buyer.clone());
+            refund_fee(&c.env, 303);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_admin_resolve_refund() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 304, c.buyer.clone(), c.seller.clone(), 8_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 304, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 304, DisputeDecision::RefundBuyer);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_admin_resolve_pay_seller() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 305, c.buyer.clone(), c.seller.clone(), 6_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 305, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 305, DisputeDecision::PaySeller);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    #[test]
+    fn invariant_total_supply_preserved_on_admin_resolve_split() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 306, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 306, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 306, DisputeDecision::Split(4_000));
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    /// Buyer, seller, and platform each receive the correct amount after finalize.
+    #[test]
+    fn invariant_finalize_distributes_exact_amounts() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 310, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 310);
+        });
+        assert_eq!(c.balance(&c.buyer), buyer_before - 10_000_000);
+        assert_eq!(c.balance(&c.seller), 9_750_000);
+        assert_eq!(c.balance(&c.platform), 250_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Refund returns exactly the deposited amount to the buyer.
+    #[test]
+    fn invariant_refund_returns_exact_amount() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 311, c.buyer.clone(), c.seller.clone(), 7_500_000);
+            refund_fee(&c.env, 311);
+        });
+        assert_eq!(c.balance(&c.buyer), buyer_before);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Cancel expired returns exactly the deposited amount to the buyer.
+    #[test]
+    fn invariant_cancel_expired_returns_exact_amount() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 312, c.buyer.clone(), c.seller.clone(), 3_300_000);
+            c.env.ledger().with_mut(|l| l.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1);
+            cancel_expired_escrow(&c.env, 312);
+        });
+        assert_eq!(c.balance(&c.buyer), buyer_before);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Admin resolve split distributes the exact split between buyer and seller.
+    #[test]
+    fn invariant_admin_split_distributes_exact_amounts() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 313, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 313, c.buyer.clone());
+            // 6000 bps = 60% to seller
+            admin_resolve_dispute(&c.env, 313, DisputeDecision::Split(6_000));
+        });
+        assert_eq!(c.balance(&c.seller), 6_000_000);
+        assert_eq!(c.balance(&c.buyer), buyer_before - 10_000_000 + 4_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Failure paths leave balances unchanged.
+    #[test]
+    fn invariant_finalize_on_missing_entry_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        // Transfer 999 was never deposited; should panic
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                finalize_transfer(&c.env, 999);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    #[test]
+    fn invariant_refund_on_missing_entry_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                refund_fee(&c.env, 999);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    #[test]
+    fn invariant_dispute_on_missing_entry_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                dispute_transfer(&c.env, 999, c.buyer.clone());
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    #[test]
+    fn invariant_double_finalize_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 320, c.buyer.clone(), c.seller.clone(), 5_000_000);
+            finalize_transfer(&c.env, 320);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                finalize_transfer(&c.env, 320);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    #[test]
+    fn invariant_double_refund_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 321, c.buyer.clone(), c.seller.clone(), 5_000_000);
+            refund_fee(&c.env, 321);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                refund_fee(&c.env, 321);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// Deposit with invalid amount (0) leaves balances unchanged.
+    #[test]
+    fn invariant_zero_amount_deposit_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                deposit_fee(&c.env, 322, c.buyer.clone(), c.seller.clone(), 0);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// Deposit with negative amount leaves balances unchanged.
+    #[test]
+    fn invariant_negative_amount_deposit_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                deposit_fee(&c.env, 323, c.buyer.clone(), c.seller.clone(), -100);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// Re-initialisation rejection leaves config and balances unchanged.
+    #[test]
+    fn invariant_reinit_rejection_leaves_balances_unchanged() {
+        let c = setup();
+        let before = all_balances(&c);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                init_escrow_config(&c.env, 100, c.platform.clone(), c.token.clone());
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+        // Original config preserved
+        c.run(|| assert_eq!(get_fee_bps(&c.env), 250));
+    }
+
+    /// Partial progress: after deposit (Held), only buyer's balance changes.
+    #[test]
+    fn invariant_partial_progress_after_deposit() {
+        let c = setup();
+        let seller_before = c.balance(&c.seller);
+        let platform_before = c.balance(&c.platform);
+        let contract_before = c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 330, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        assert_eq!(c.balance(&c.seller), seller_before);
+        assert_eq!(c.balance(&c.platform), platform_before);
+        assert_eq!(c.balance(&c.contract), contract_before + 10_000_000);
+    }
+
+    /// Partial progress: after dispute, balances unchanged from post-deposit state.
+    #[test]
+    fn invariant_partial_progress_after_dispute() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 331, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        let mid = all_balances(&c);
+        c.run(|| {
+            dispute_transfer(&c.env, 331, c.buyer.clone());
+        });
+        assert_eq!(all_balances(&c), mid);
+    }
+
+    /// Repeated calls: multiple sequential escrows conserve total value.
+    #[test]
+    fn invariant_repeated_escrows_conserve_total_value() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            // First escrow: finalize
+            deposit_fee(&c.env, 340, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 340);
+            // Second escrow: refund
+            deposit_fee(&c.env, 341, c.buyer.clone(), c.seller.clone(), 5_000_000);
+            refund_fee(&c.env, 341);
+            // Third escrow: dispute + split
+            deposit_fee(&c.env, 342, c.buyer.clone(), c.seller.clone(), 3_000_000);
+        });
+        c.run(|| {
+            dispute_transfer(&c.env, 342, c.buyer.clone());
+            admin_resolve_dispute(&c.env, 342, DisputeDecision::Split(5_000));
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+    }
+
+    /// Fee correctness across different fee_bps values: zero fee.
+    #[test]
+    fn invariant_zero_fee_full_amount_to_seller() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 0, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 350, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 350);
+        });
+        assert_eq!(c.balance(&c.seller), 10_000_000);
+        assert_eq!(c.balance(&c.platform), 0);
+        assert_eq!(c.balance(&c.buyer), buyer_before - 10_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Fee correctness: 100% fee (10000 bps) — all goes to platform.
+    #[test]
+    fn invariant_full_fee_entire_amount_to_platform() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 10_000, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 351, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 351);
+        });
+        assert_eq!(c.balance(&c.seller), 0);
+        assert_eq!(c.balance(&c.platform), 10_000_000);
+        assert_eq!(c.balance(&c.buyer), buyer_before - 10_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Fee correctness: 50% fee (5000 bps).
+    #[test]
+    fn invariant_half_fee_split_correct() {
+        let c = setup();
+        let buyer_before = c.balance(&c.buyer);
+        c.run(|| {
+            init_escrow_config(&c.env, 5_000, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 352, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 352);
+        });
+        assert_eq!(c.balance(&c.seller), 5_000_000);
+        assert_eq!(c.balance(&c.platform), 5_000_000);
+        assert_eq!(c.balance(&c.buyer), buyer_before - 10_000_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Repeated deposit-finalize-refund cycles: contract always returns to 0.
+    #[test]
+    fn invariant_contract_balance_zero_after_terminal_states() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        for id in 360..370 {
+            c.run(|| {
+                deposit_fee(&c.env, id, c.buyer.clone(), c.seller.clone(), 1_000_000);
+            });
+        }
+        // Finalize half, refund half
+        for id in 360..365 {
+            c.run(|| {
+                finalize_transfer(&c.env, id);
+            });
+        }
+        for id in 365..370 {
+            c.run(|| {
+                refund_fee(&c.env, id);
+            });
+        }
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Invalid token/amount combinations: negative amount on finalize of nonexistent escrow
+    /// leaves balances unchanged.
+    #[test]
+    fn invariant_nonexistent_escrow_finalize_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                finalize_transfer(&c.env, 999_999);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// admin_resolve on non-disputed escrow leaves balances unchanged.
+    #[test]
+    fn invariant_admin_resolve_on_held_escrow_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 370, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                admin_resolve_dispute(&c.env, 370, DisputeDecision::RefundBuyer);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// cancel_expired_escrow on a non-expired escrow leaves balances unchanged.
+    #[test]
+    fn invariant_cancel_before_deadline_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 371, c.buyer.clone(), c.seller.clone(), 10_000_000);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                cancel_expired_escrow(&c.env, 371);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// dispute_transfer on released escrow leaves balances unchanged.
+    #[test]
+    fn invariant_dispute_after_release_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 372, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 372);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                dispute_transfer(&c.env, 372, c.buyer.clone());
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// Refund on released escrow leaves balances unchanged.
+    #[test]
+    fn invariant_refund_after_release_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 373, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 373);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                refund_fee(&c.env, 373);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// admin_resolve on released escrow leaves balances unchanged.
+    #[test]
+    fn invariant_admin_resolve_after_release_leaves_balances_unchanged() {
+        let c = setup();
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 374, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 374);
+        });
+        let before = all_balances(&c);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.run(|| {
+                admin_resolve_dispute(&c.env, 374, DisputeDecision::PaySeller);
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(all_balances(&c), before);
+    }
+
+    /// Fee integrity invariant: compute_platform_fee + compute_seller_amount == amount
+    /// for all tested fee_bps values.
+    #[test]
+    fn invariant_fee_math_conservation() {
+        let amounts = [1_000_000, 10_000_000, 999_999, 1];
+        let bps_values = [0, 1, 250, 500, 1000, 2500, 5000, 9999, 10_000];
+        for &amount in &amounts {
+            for &bps in &bps_values {
+                let fee = compute_platform_fee(amount, bps).unwrap();
+                let seller = compute_seller_amount(amount, bps).unwrap();
+                assert_eq!(fee + seller, amount, "conservation failed for amount={amount} bps={bps}");
+                assert!(fee >= 0, "fee must be non-negative");
+                assert!(seller >= 0, "seller amount must be non-negative");
+                assert!(fee <= amount, "fee must not exceed amount");
+            }
+        }
+    }
+
+    /// Large amount conservation: finalize with a very large deposit.
+    #[test]
+    fn invariant_large_amount_finalize_conserves() {
+        let c = setup();
+        let large: i128 = 1_000_000_000_000; // 1 trillion stroops
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 380, c.buyer.clone(), c.seller.clone(), large);
+            finalize_transfer(&c.env, 380);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+        assert_eq!(c.balance(&c.seller), large - large * 250 / 10_000);
+        assert_eq!(c.balance(&c.platform), large * 250 / 10_000);
+        assert_eq!(c.balance(&c.contract), 0);
+    }
+
+    /// Small amount (1 stroop) conservation.
+    #[test]
+    fn invariant_small_amount_finalize_conserves() {
+        let c = setup();
+        let initial_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 381, c.buyer.clone(), c.seller.clone(), 1);
+            finalize_transfer(&c.env, 381);
+        });
+        let final_total = c.balance(&c.buyer) + c.balance(&c.seller)
+            + c.balance(&c.platform) + c.balance(&c.contract);
+        assert_eq!(initial_total, final_total);
+        // 250 bps of 1 stroop = 0 (integer division), seller gets full 1
+        assert_eq!(c.balance(&c.seller), 1);
+        assert_eq!(c.balance(&c.platform), 0);
     }
 }
