@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
+- Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
 - Pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) to standardize contributor submissions
 - Canonical chain-of-custody digest (`get_custody_chain_digest`) so consumers can prove a returned custody history is complete and ordered: SHA-256 hash chain over domain, version, pet ID, sequence, and every entry in canonical order, with published test vectors and tamper cases

@@ -154,6 +154,7 @@ pub fn get_snapshot(env: Env, snapshot_id: u64) -> Option<StatisticsSnapshot>
 pub fn get_snapshot_count(env: Env) -> u64
 pub fn get_species_count(env: Env, species: String) -> u64
 pub fn get_stat_series(env: Env, key: String, start_ts: u64, end_ts: u64) -> Vec<StatPoint>
+pub fn get_storage_metrics(env: Env, pet_id: u64, cursor: u64, limit: u32) -> StorageMetrics
 pub fn get_storage_usage(env: Env, pet_id: u64) -> StorageUsage
 pub fn get_storage_version(env: Env) -> ContractVersion
 pub fn get_subscription(env: Env, subscription_id: u64) -> Option<EventSubscription>
