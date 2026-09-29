@@ -91,6 +91,12 @@ MIT
 <!-- handsoff-issue-1213 -->
 - #1213: [stellar-contracts] Secure contract-upgrade authorization and hash binding
 
+<!-- handsoff-issue-1223 -->
+- #1223: [backend-2fa] Version encrypted TOTP secret envelopes
+
+<!-- handsoff-issue-1224 -->
+- #1224: [backend-2fa] Add online key rotation for encrypted TOTP secrets
+
 <!-- handsoff-issue-1227 -->
 - #1227: [backend-2fa] Enforce TOTP replay protection atomically
 
