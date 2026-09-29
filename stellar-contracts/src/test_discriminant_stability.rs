@@ -36,7 +36,10 @@ fn insurance_key_tag(v: &InsuranceKey) -> &'static str {
 #[test]
 fn insurance_key_variant_tags_are_pinned() {
     assert_eq!(insurance_key_tag(&InsuranceKey::ClaimCount), "ClaimCount");
-    assert_eq!(insurance_key_tag(&InsuranceKey::FlaggedClaimCount), "FlaggedClaimCount");
+    assert_eq!(
+        insurance_key_tag(&InsuranceKey::FlaggedClaimCount),
+        "FlaggedClaimCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -50,13 +53,20 @@ fn behavior_key_tag(v: &BehaviorKey) -> &'static str {
         BehaviorKey::TrainingMilestoneCount => "TrainingMilestoneCount",
         BehaviorKey::PetMilestoneCount(_) => "PetMilestoneCount",
         BehaviorKey::PetMilestoneIndex(_) => "PetMilestoneIndex",
+        BehaviorKey::MilestonePrerequisite(_) => "MilestonePrerequisite",
     }
 }
 
 #[test]
 fn behavior_key_variant_tags_are_pinned() {
-    assert_eq!(behavior_key_tag(&BehaviorKey::BehaviorRecordCount), "BehaviorRecordCount");
-    assert_eq!(behavior_key_tag(&BehaviorKey::TrainingMilestoneCount), "TrainingMilestoneCount");
+    assert_eq!(
+        behavior_key_tag(&BehaviorKey::BehaviorRecordCount),
+        "BehaviorRecordCount"
+    );
+    assert_eq!(
+        behavior_key_tag(&BehaviorKey::TrainingMilestoneCount),
+        "TrainingMilestoneCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -75,8 +85,14 @@ fn activity_key_tag(v: &ActivityKey) -> &'static str {
 
 #[test]
 fn activity_key_variant_tags_are_pinned() {
-    assert_eq!(activity_key_tag(&ActivityKey::ActivityRecordCount), "ActivityRecordCount");
-    assert_eq!(activity_key_tag(&ActivityKey::IdempotencyWindow), "IdempotencyWindow");
+    assert_eq!(
+        activity_key_tag(&ActivityKey::ActivityRecordCount),
+        "ActivityRecordCount"
+    );
+    assert_eq!(
+        activity_key_tag(&ActivityKey::IdempotencyWindow),
+        "IdempotencyWindow"
+    );
 }
 
 #[allow(dead_code)]
@@ -97,7 +113,10 @@ fn breeding_key_tag(v: &BreedingKey) -> &'static str {
 
 #[test]
 fn breeding_key_variant_tags_are_pinned() {
-    assert_eq!(breeding_key_tag(&BreedingKey::BreedingRecordCount), "BreedingRecordCount");
+    assert_eq!(
+        breeding_key_tag(&BreedingKey::BreedingRecordCount),
+        "BreedingRecordCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -128,9 +147,18 @@ fn grooming_key_tag(v: &GroomingKey) -> &'static str {
 
 #[test]
 fn grooming_key_variant_tags_are_pinned() {
-    assert_eq!(grooming_key_tag(&GroomingKey::GroomingRecordCount), "GroomingRecordCount");
-    assert_eq!(grooming_key_tag(&GroomingKey::GroomerRatingCount), "GroomerRatingCount");
-    assert_eq!(grooming_key_tag(&GroomingKey::RecurringScheduleCount), "RecurringScheduleCount");
+    assert_eq!(
+        grooming_key_tag(&GroomingKey::GroomingRecordCount),
+        "GroomingRecordCount"
+    );
+    assert_eq!(
+        grooming_key_tag(&GroomingKey::GroomerRatingCount),
+        "GroomerRatingCount"
+    );
+    assert_eq!(
+        grooming_key_tag(&GroomingKey::RecurringScheduleCount),
+        "RecurringScheduleCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -143,7 +171,10 @@ fn error_registry_key_tag(v: &ErrorRegistryKey) -> &'static str {
 
 #[test]
 fn error_registry_key_variant_tags_are_pinned() {
-    assert_eq!(error_registry_key_tag(&ErrorRegistryKey::SupportedLanguages), "SupportedLanguages");
+    assert_eq!(
+        error_registry_key_tag(&ErrorRegistryKey::SupportedLanguages),
+        "SupportedLanguages"
+    );
 }
 
 #[allow(dead_code)]
@@ -170,9 +201,15 @@ fn nutrition_key_tag(v: &NutritionKey) -> &'static str {
 
 #[test]
 fn nutrition_key_variant_tags_are_pinned() {
-    assert_eq!(nutrition_key_tag(&NutritionKey::DietPlanCount), "DietPlanCount");
+    assert_eq!(
+        nutrition_key_tag(&NutritionKey::DietPlanCount),
+        "DietPlanCount"
+    );
     assert_eq!(nutrition_key_tag(&NutritionKey::WeightCount), "WeightCount");
-    assert_eq!(nutrition_key_tag(&NutritionKey::NutritionPlanCount), "NutritionPlanCount");
+    assert_eq!(
+        nutrition_key_tag(&NutritionKey::NutritionPlanCount),
+        "NutritionPlanCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -198,6 +235,7 @@ fn data_key_tag(v: &DataKey) -> &'static str {
         DataKey::AccessGrantIndex(_) => "AccessGrantIndex",
         DataKey::PetDelegationCount(_) => "PetDelegationCount",
         DataKey::DecryptionToken(_) => "DecryptionToken",
+        DataKey::PetKeyVersion(_) => "PetKeyVersion",
         DataKey::EmergencyAccessLogs(_) => "EmergencyAccessLogs",
         DataKey::EmergencyAuditLog(_) => "EmergencyAuditLog",
         DataKey::EmergencyResponders(_) => "EmergencyResponders",
@@ -214,6 +252,8 @@ fn data_key_tag(v: &DataKey) -> &'static str {
         DataKey::NonceUsage(_) => "NonceUsage",
         DataKey::RetentionPeriod => "RetentionPeriod",
         DataKey::MaxSubscriptionsPerAddress => "MaxSubscriptionsPerAddress",
+        DataKey::MicrochipIndex(_) => "MicrochipIndex",
+        DataKey::VetCredentialsExpiry(_) => "VetCredentialsExpiry",
     }
 }
 
@@ -223,9 +263,15 @@ fn data_key_variant_tags_are_pinned() {
     assert_eq!(data_key_tag(&DataKey::VetCount), "VetCount");
     assert_eq!(data_key_tag(&DataKey::Admin), "Admin");
     assert_eq!(data_key_tag(&DataKey::ContractVersion), "ContractVersion");
-    assert_eq!(data_key_tag(&DataKey::GlobalStorageQuota), "GlobalStorageQuota");
+    assert_eq!(
+        data_key_tag(&DataKey::GlobalStorageQuota),
+        "GlobalStorageQuota"
+    );
     assert_eq!(data_key_tag(&DataKey::RetentionPeriod), "RetentionPeriod");
-    assert_eq!(data_key_tag(&DataKey::MaxSubscriptionsPerAddress), "MaxSubscriptionsPerAddress");
+    assert_eq!(
+        data_key_tag(&DataKey::MaxSubscriptionsPerAddress),
+        "MaxSubscriptionsPerAddress"
+    );
 }
 
 #[allow(dead_code)]
@@ -240,7 +286,10 @@ fn treatment_key_tag(v: &TreatmentKey) -> &'static str {
 
 #[test]
 fn treatment_key_variant_tags_are_pinned() {
-    assert_eq!(treatment_key_tag(&TreatmentKey::TreatmentCount), "TreatmentCount");
+    assert_eq!(
+        treatment_key_tag(&TreatmentKey::TreatmentCount),
+        "TreatmentCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -255,7 +304,10 @@ fn subscription_key_tag(v: &SubscriptionKey) -> &'static str {
 
 #[test]
 fn subscription_key_variant_tags_are_pinned() {
-    assert_eq!(subscription_key_tag(&SubscriptionKey::SubscriptionCount), "SubscriptionCount");
+    assert_eq!(
+        subscription_key_tag(&SubscriptionKey::SubscriptionCount),
+        "SubscriptionCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -300,17 +352,37 @@ fn medical_key_tag(v: &MedicalKey) -> &'static str {
         MedicalKey::CertificateAnchor(_) => "CertificateAnchor",
         MedicalKey::ScannerRegistry => "ScannerRegistry",
         MedicalKey::RetentionPeriod => "RetentionPeriod",
+        MedicalKey::CertificateCount => "CertificateCount",
+        MedicalKey::CertificateLifecycle(_) => "CertificateLifecycle",
     }
 }
 
 #[test]
 fn medical_key_variant_tags_are_pinned() {
-    assert_eq!(medical_key_tag(&MedicalKey::LabResultCount), "LabResultCount");
-    assert_eq!(medical_key_tag(&MedicalKey::MedicalRecordCount), "MedicalRecordCount");
-    assert_eq!(medical_key_tag(&MedicalKey::MedicationCount), "MedicationCount");
-    assert_eq!(medical_key_tag(&MedicalKey::VaccinationCount), "VaccinationCount");
-    assert_eq!(medical_key_tag(&MedicalKey::ScannerRegistry), "ScannerRegistry");
-    assert_eq!(medical_key_tag(&MedicalKey::RetentionPeriod), "RetentionPeriod");
+    assert_eq!(
+        medical_key_tag(&MedicalKey::LabResultCount),
+        "LabResultCount"
+    );
+    assert_eq!(
+        medical_key_tag(&MedicalKey::MedicalRecordCount),
+        "MedicalRecordCount"
+    );
+    assert_eq!(
+        medical_key_tag(&MedicalKey::MedicationCount),
+        "MedicationCount"
+    );
+    assert_eq!(
+        medical_key_tag(&MedicalKey::VaccinationCount),
+        "VaccinationCount"
+    );
+    assert_eq!(
+        medical_key_tag(&MedicalKey::ScannerRegistry),
+        "ScannerRegistry"
+    );
+    assert_eq!(
+        medical_key_tag(&MedicalKey::RetentionPeriod),
+        "RetentionPeriod"
+    );
 }
 
 #[allow(dead_code)]
@@ -341,8 +413,14 @@ fn alert_key_tag(v: &AlertKey) -> &'static str {
 
 #[test]
 fn alert_key_variant_tags_are_pinned() {
-    assert_eq!(alert_key_tag(&AlertKey::LostPetAlertCount), "LostPetAlertCount");
-    assert_eq!(alert_key_tag(&AlertKey::ActiveLostPetAlerts), "ActiveLostPetAlerts");
+    assert_eq!(
+        alert_key_tag(&AlertKey::LostPetAlertCount),
+        "LostPetAlertCount"
+    );
+    assert_eq!(
+        alert_key_tag(&AlertKey::ActiveLostPetAlerts),
+        "ActiveLostPetAlerts"
+    );
 }
 
 #[allow(dead_code)]
@@ -352,6 +430,7 @@ fn consent_key_tag(v: &ConsentKey) -> &'static str {
         ConsentKey::ConsentCount => "ConsentCount",
         ConsentKey::PetConsentIndex(_) => "PetConsentIndex",
         ConsentKey::PetConsentCount(_) => "PetConsentCount",
+        ConsentKey::ConsentRevocationGen(_) => "ConsentRevocationGen",
     }
 }
 
@@ -408,30 +487,67 @@ fn system_key_tag(v: &SystemKey) -> &'static str {
         SystemKey::StorageVersion => "StorageVersion",
         SystemKey::AdminActivityLog(_) => "AdminActivityLog",
         SystemKey::AdminActivityCount => "AdminActivityCount",
+        SystemKey::PetTransferOffer(_) => "PetTransferOffer",
+        SystemKey::EmergencyOverride(_) => "EmergencyOverride",
+        SystemKey::StorageSchemaVersion => "StorageSchemaVersion",
+        SystemKey::ProposalEligibleSnapshot(_) => "ProposalEligibleSnapshot",
     }
 }
 
 #[test]
 fn system_key_variant_tags_are_pinned() {
-    assert_eq!(system_key_tag(&SystemKey::OwnershipRecordCount), "OwnershipRecordCount");
+    assert_eq!(
+        system_key_tag(&SystemKey::OwnershipRecordCount),
+        "OwnershipRecordCount"
+    );
     assert_eq!(system_key_tag(&SystemKey::Admins), "Admins");
     assert_eq!(system_key_tag(&SystemKey::AdminThreshold), "AdminThreshold");
-    assert_eq!(system_key_tag(&SystemKey::AdminQuorumPercent), "AdminQuorumPercent");
+    assert_eq!(
+        system_key_tag(&SystemKey::AdminQuorumPercent),
+        "AdminQuorumPercent"
+    );
     assert_eq!(system_key_tag(&SystemKey::PendingConfig), "PendingConfig");
     assert_eq!(system_key_tag(&SystemKey::ProposalCount), "ProposalCount");
-    assert_eq!(system_key_tag(&SystemKey::PendingThresholdChange), "PendingThresholdChange");
-    assert_eq!(system_key_tag(&SystemKey::AdminTimelockConfig), "AdminTimelockConfig");
-    assert_eq!(system_key_tag(&SystemKey::PetTransferProposalCount), "PetTransferProposalCount");
-    assert_eq!(system_key_tag(&SystemKey::EncryptionNonceCounter), "EncryptionNonceCounter");
+    assert_eq!(
+        system_key_tag(&SystemKey::PendingThresholdChange),
+        "PendingThresholdChange"
+    );
+    assert_eq!(
+        system_key_tag(&SystemKey::AdminTimelockConfig),
+        "AdminTimelockConfig"
+    );
+    assert_eq!(
+        system_key_tag(&SystemKey::PetTransferProposalCount),
+        "PetTransferProposalCount"
+    );
+    assert_eq!(
+        system_key_tag(&SystemKey::EncryptionNonceCounter),
+        "EncryptionNonceCounter"
+    );
     assert_eq!(system_key_tag(&SystemKey::StatCacheTTL), "StatCacheTTL");
     assert_eq!(system_key_tag(&SystemKey::LabThreshold), "LabThreshold");
-    assert_eq!(system_key_tag(&SystemKey::HealthScoreCacheTtl), "HealthScoreCacheTtl");
+    assert_eq!(
+        system_key_tag(&SystemKey::HealthScoreCacheTtl),
+        "HealthScoreCacheTtl"
+    );
     assert_eq!(system_key_tag(&SystemKey::SnapshotCount), "SnapshotCount");
-    assert_eq!(system_key_tag(&SystemKey::UpgradeProposalCount), "UpgradeProposalCount");
-    assert_eq!(system_key_tag(&SystemKey::RollbackDeadline), "RollbackDeadline");
-    assert_eq!(system_key_tag(&SystemKey::PreviousWasmHash), "PreviousWasmHash");
+    assert_eq!(
+        system_key_tag(&SystemKey::UpgradeProposalCount),
+        "UpgradeProposalCount"
+    );
+    assert_eq!(
+        system_key_tag(&SystemKey::RollbackDeadline),
+        "RollbackDeadline"
+    );
+    assert_eq!(
+        system_key_tag(&SystemKey::PreviousWasmHash),
+        "PreviousWasmHash"
+    );
     assert_eq!(system_key_tag(&SystemKey::StorageVersion), "StorageVersion");
-    assert_eq!(system_key_tag(&SystemKey::AdminActivityCount), "AdminActivityCount");
+    assert_eq!(
+        system_key_tag(&SystemKey::AdminActivityCount),
+        "AdminActivityCount"
+    );
 }
 
 #[allow(dead_code)]
@@ -509,8 +625,14 @@ fn param_key_tag(v: &ParamKey) -> &'static str {
 
 #[test]
 fn param_key_variant_tags_are_pinned() {
-    assert_eq!(param_key_tag(&ParamKey::GlobalStorageQuota), "GlobalStorageQuota");
-    assert_eq!(param_key_tag(&ParamKey::HealthScoreCacheTtl), "HealthScoreCacheTtl");
+    assert_eq!(
+        param_key_tag(&ParamKey::GlobalStorageQuota),
+        "GlobalStorageQuota"
+    );
+    assert_eq!(
+        param_key_tag(&ParamKey::HealthScoreCacheTtl),
+        "HealthScoreCacheTtl"
+    );
     assert_eq!(param_key_tag(&ParamKey::AdminThreshold), "AdminThreshold");
 }
 
@@ -538,3 +660,38 @@ fn dispute_key_variant_tags_are_pinned() {
     assert_eq!(dispute_key_tag(&DisputeKey::Arbitrator), "Arbitrator");
 }
 
+#[allow(dead_code)]
+fn emergency_notify_key_tag(v: &EmergencyNotifyKey) -> &'static str {
+    match v {
+        EmergencyNotifyKey::Request(_) => "Request",
+        EmergencyNotifyKey::Delivery(_) => "Delivery",
+    }
+}
+
+#[allow(dead_code)]
+fn consent_canon_key_tag(v: &ConsentCanonKey) -> &'static str {
+    match v {
+        ConsentCanonKey::Line(_) => "Line",
+        ConsentCanonKey::Version(_) => "Version",
+        ConsentCanonKey::Record(_) => "Record",
+    }
+}
+
+#[allow(dead_code)]
+fn issuer_key_tag(v: &IssuerKey) -> &'static str {
+    match v {
+        IssuerKey::Issuer(_) => "Issuer",
+        IssuerKey::KeyVersion(_) => "KeyVersion",
+        IssuerKey::KeyInUse(_) => "KeyInUse",
+        IssuerKey::Credential(_) => "Credential",
+        IssuerKey::CredentialCount => "CredentialCount",
+    }
+}
+
+#[test]
+fn issuer_key_variant_tags_are_pinned() {
+    assert_eq!(
+        issuer_key_tag(&IssuerKey::CredentialCount),
+        "CredentialCount"
+    );
+}

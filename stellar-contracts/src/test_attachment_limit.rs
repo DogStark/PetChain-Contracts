@@ -102,7 +102,7 @@ fn test_exceeding_cap_fails() {
     }
 
     let result = client.try_add_attachment(&record_id, &hash, &metadata(&env), &content_hash);
-    let expected = soroban_sdk::Error::from_contract_error(ContractError::StorageQuotaExceeded as u32);
+    let expected = soroban_sdk::Error::from_contract_error(ContractError::TooManyItems as u32);
     assert_eq!(result, Err(Ok(expected)));
 
     // The rejected attachment must not have been stored.

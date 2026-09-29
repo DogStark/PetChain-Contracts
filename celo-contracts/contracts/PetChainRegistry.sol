@@ -17,6 +17,11 @@ contract PetChainRegistry is Pausable {
     /// @notice Maximum byte length for long string fields (diagnosis, treatment, notes).
     uint256 public constant MAX_LONG_LEN  = 1000;
 
+    /// @notice Domain separator and schema version for medical-record commitments.
+    bytes32 public constant MEDICAL_RECORD_COMMITMENT_DOMAIN =
+        keccak256("PetChain:MedicalRecordCommitment");
+    uint8 public constant MEDICAL_RECORD_COMMITMENT_VERSION = 1;
+
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
@@ -91,10 +96,8 @@ contract PetChainRegistry is Pausable {
     mapping(uint256 => uint256) private _recordIndex; // recordId => index in _petRecords[petId]
     mapping(bytes32 => address)  private _licenseToVet;
 
-    // recordId → petId, so correctMedicalRecord can locate the record
-    mapping(uint256 => uint256) private _recordPetId;
-    // recordId → index inside _petRecords[petId]
-    mapping(uint256 => uint256) private _recordIndex;
+    // recordId → canonical commitment for the current record contents
+    mapping(uint256 => bytes32) public medicalRecordCommitments;
 
     // Ordered list of all ever-registered vet addresses (issue #926)
     address[] private _vetAddresses;
@@ -436,7 +439,10 @@ contract PetChainRegistry is Pausable {
             notes:      notes,
             timestamp:  block.timestamp
         }));
-        _recordPetId[recordId] = petId;
+        medicalRecordCommitments[recordId] = _medicalRecordCommitment(
+            recordId, petId, msg.sender, recordType, diagnosis, treatment, notes, block.timestamp,
+            MEDICAL_RECORD_COMMITMENT_VERSION
+        );
         _recordIndex[recordId] = _petRecords[petId].length - 1;
         emit MedicalRecordAdded(petId, recordId, msg.sender);
     }
@@ -484,19 +490,12 @@ contract PetChainRegistry is Pausable {
         string calldata notes
     ) external {
         uint256 petId = _recordPet[recordId];
+        require(petId != 0, "PetChainRegistry: record does not exist");
         MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
         require(rec.recordId == recordId, "PetChainRegistry: record not found");
         require(
             msg.sender == rec.vet || msg.sender == admin,
             "PetChainRegistry: not authorized"
-        );
-        uint256 petId = _recordPetId[recordId];
-        require(petId != 0, "PetChainRegistry: record does not exist");
-
-        MedicalRecord storage rec = _petRecords[petId][_recordIndex[recordId]];
-        require(
-            msg.sender == rec.vet || msg.sender == admin,
-            "PetChainRegistry: not authorised to correct record"
         );
 
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
@@ -506,22 +505,16 @@ contract PetChainRegistry is Pausable {
         require(bytes(notes).length <= MAX_LONG_LEN,
             "PetChainRegistry: notes too long");
 
-        emit MedicalRecordCorrected(
-            recordId, msg.sender,
-            rec.diagnosis, rec.treatment, rec.notes,
-            diagnosis, treatment, notes
-        );
-        rec.diagnosis = diagnosis;
-        rec.treatment = treatment;
-        rec.notes     = notes;
         string memory origDiagnosis = rec.diagnosis;
         string memory origTreatment = rec.treatment;
-        string memory origNotes     = rec.notes;
-
+        string memory origNotes = rec.notes;
         rec.diagnosis = diagnosis;
         rec.treatment = treatment;
         rec.notes     = notes;
-
+        medicalRecordCommitments[recordId] = _medicalRecordCommitment(
+            recordId, petId, rec.vet, rec.recordType, diagnosis, treatment, notes, rec.timestamp,
+            MEDICAL_RECORD_COMMITMENT_VERSION
+        );
         emit MedicalRecordCorrected(
             recordId,
             petId,
@@ -564,6 +557,93 @@ contract PetChainRegistry is Pausable {
     /// @return      Full array of MedicalRecord structs for the pet.
     function getPetRecords(uint256 petId) external view returns (MedicalRecord[] memory) {
         return _petRecords[petId];
+    }
+
+    /// @notice Verify an off-chain medical record document against its on-chain commitment.
+    /// @dev The canonical preimage is:
+    ///      domain, version, recordId, petId, vet, recordType, diagnosis, treatment,
+    ///      notes, timestamp, encoded with `abi.encode`. The caller supplies these
+    ///      canonical inputs so it does not need to reproduce Solidity serialization.
+    ///      Verification is permissionless and returns false for malformed, unknown,
+    ///      stale, or oversized input rather than reverting.
+    /// @param recordId       The committed medical record ID.
+    /// @param version        Commitment schema version; must be the current version.
+    /// @param petId          Pet ID in the off-chain document.
+    /// @param vet            Vet address in the off-chain document.
+    /// @param recordType     Record category in the off-chain document.
+    /// @param diagnosis      Diagnosis text (1-MAX_LONG_LEN bytes).
+    /// @param treatment      Treatment text (1-MAX_LONG_LEN bytes).
+    /// @param notes          Notes text (0-MAX_LONG_LEN bytes).
+    /// @param timestamp      Record creation timestamp in the off-chain document.
+    /// @param commitment     Expected on-chain commitment.
+    /// @return true when all canonical inputs match the stored record commitment.
+    function verifyMedicalRecordCommitment(
+        uint256 recordId,
+        uint8 version,
+        uint256 petId,
+        address vet,
+        RecordType recordType,
+        string calldata diagnosis,
+        string calldata treatment,
+        string calldata notes,
+        uint256 timestamp,
+        bytes32 commitment
+    ) external view returns (bool) {
+        if (version != MEDICAL_RECORD_COMMITMENT_VERSION ||
+            recordId == 0 ||
+            bytes(diagnosis).length == 0 ||
+            bytes(diagnosis).length > MAX_LONG_LEN ||
+            bytes(treatment).length == 0 ||
+            bytes(treatment).length > MAX_LONG_LEN ||
+            bytes(notes).length > MAX_LONG_LEN ||
+            uint8(recordType) > uint8(RecordType.Other)) {
+            return false;
+        }
+
+        uint256 storedPetId = _recordPet[recordId];
+        if (storedPetId == 0 || storedPetId != petId) return false;
+
+        MedicalRecord storage record = _petRecords[storedPetId][_recordIndex[recordId]];
+        if (record.recordId != recordId ||
+            record.petId != petId ||
+            record.vet != vet ||
+            record.recordType != recordType ||
+            record.timestamp != timestamp ||
+            keccak256(bytes(record.diagnosis)) != keccak256(bytes(diagnosis)) ||
+            keccak256(bytes(record.treatment)) != keccak256(bytes(treatment)) ||
+            keccak256(bytes(record.notes)) != keccak256(bytes(notes))) {
+            return false;
+        }
+
+        return medicalRecordCommitments[recordId] == commitment &&
+            _medicalRecordCommitment(
+                recordId, petId, vet, recordType, diagnosis, treatment, notes, timestamp, version
+            ) == commitment;
+    }
+
+    function _medicalRecordCommitment(
+        uint256 recordId,
+        uint256 petId,
+        address vet,
+        RecordType recordType,
+        string memory diagnosis,
+        string memory treatment,
+        string memory notes,
+        uint256 timestamp,
+        uint8 version
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(
+            MEDICAL_RECORD_COMMITMENT_DOMAIN,
+            version,
+            recordId,
+            petId,
+            vet,
+            recordType,
+            diagnosis,
+            treatment,
+            notes,
+            timestamp
+        ));
     }
 
     /// @notice Return record IDs for `petId` whose timestamp falls within [startDate, endDate].

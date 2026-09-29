@@ -86,6 +86,9 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_pets_by_species` | Returns paginated pets by species |
 | `is_custody_valid` | Returns whether temporary custody is active |
 | `get_custody_history` | Returns custody history for a pet |
+| `get_custody_chain` | Returns the chain-of-custody log for a pet (chronological, append-only, capped at 100 entries) |
+| `verify_custody_chain` | Checks chain-of-custody internal consistency (links, creator, current owner) |
+| `get_custody_chain_digest` | Returns the canonical SHA-256 digest of the custody chain (domain, version, pet ID, sequence, entries in order) for completeness/ordering proofs |
 | `get_access_logs` | Returns access logs for a pet (owner/admin only) |
 
 > **Audit note:** All `log_access` (storage write) calls were removed from the above functions. Write functions (`add_medical_record`, `update_pet_profile`, `grant_access`, `revoke_access`, `add_attachment`, etc.) retain their access log writes.

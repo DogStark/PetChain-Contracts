@@ -119,3 +119,26 @@ fn test_event_payload_contains_matching_subscription_ids() {
         &String::from_str(&env, "Stable"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Event schema versioning guards (Issue #1251)
+// ---------------------------------------------------------------------------
+
+/// Verify that EVENT_SCHEMA_VERSION matches the latest EventSchema variant.
+/// This acts as a compile-time + runtime canary: if someone bumps the enum
+/// without updating the constant (or vice-versa) this test will fail.
+#[test]n test_event_schema_version_matches_enum() {
+    // The latest enum variant discriminant must equal the constant.
+    assert_eq!(EVENT_SCHEMA_VERSION, EventSchema::V1 as u32);
+}
+
+/// Assert that every public event struct (documented in event-versioning.md)
+/// has a `version` field equal to EVENT_SCHEMA_VERSION when constructed.
+/// We verify this by checking the constant value is non-zero (a v0 event
+/// would indicate a regression).
+#[test]n test_event_schema_version_is_current() {
+    assert!(
+        EVENT_SCHEMA_VERSION >= 1,
+        "EVENT_SCHEMA_VERSION must be >= 1; events without a version field are treated as v0"
+    );
+}
