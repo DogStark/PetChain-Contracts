@@ -35,6 +35,31 @@ jobs:
       - name: Deploy dry run on local network
         run: npx hardhat run scripts/deploy.js --network hardhat
 
+      - name: Generate CycloneDX SBOM
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json
+
+      - name: Generate artifact checksums and build metadata
+        run: |
+          {
+            echo "commit=${{ github.sha }}"
+            echo "ref=${{ github.ref }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+          } > build-metadata.txt
+          find artifacts -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum > checksums.txt || true
+          sha256sum sbom.cdx.json >> checksums.txt
+
+      - name: Upload SBOM, checksums, and build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: celo-contracts-sbom
+          path: |
+            celo-contracts/sbom.cdx.json
+            celo-contracts/checksums.txt
+            celo-contracts/build-metadata.txt
+          if-no-files-found: error
+
   cross-network-release:
     runs-on: ubuntu-latest
     steps:
