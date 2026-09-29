@@ -755,5 +755,53 @@ mod test_grooming_conflict {
         client.book_grooming_slot(&groomer, &1400u64, &45u64, &pet_id, &owner);
     }
 
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_rate_groomer_rejects_name_address_mismatch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+        let contract_id = env.register_contract(None, PetChainContract);
+        let client = PetChainContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let groomer = Address::generate(&env);
+        client.init_admin(&admin);
+
+        let pet_id = client.register_pet(
+            &owner,
+            &String::from_str(&env, "Buddy"),
+            &String::from_str(&env, "2020-01-01"),
+            &Gender::Male,
+            &Species::Dog,
+            &String::from_str(&env, "Retriever"),
+            &PrivacyLevel::Public,
+        );
+
+        client.register_groomer(
+            &admin,
+            &groomer,
+            &String::from_str(&env, "Groomer Tester"),
+            &String::from_str(&env, "LIC-GRM-001"),
+        );
+
+        env.as_contract(&contract_id, || {
+            let record = GroomingRecord {
+                id: 1,
+                pet_id,
+                service_type: String::from_str(&env, "Bath"),
+                groomer: String::from_str(&env, "Wrong Groomer"),
+                groomer_address: Some(groomer.clone()),
+                date: env.ledger().timestamp(),
+                next_due: env.ledger().timestamp().saturating_add(86_400),
+                cost: 5_000,
+                notes: String::from_str(&env, ""),
+            };
+            env.storage().instance().set(&GroomingKey::GroomingRecord(1), &record);
+        });
+
+        client.rate_groomer(&pet_id, &1, &5);
+    }
 
 }

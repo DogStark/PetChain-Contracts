@@ -59,3 +59,5 @@ MIT
 
 <!-- handsoff-issue-1261 -->
 - #1261: [backend-2fa] Add webhook signature key versioning
+<!-- handsoff-issue-1320 -->
+- #1320: [Contracts] Add Celo event indexing compatibility fixtures

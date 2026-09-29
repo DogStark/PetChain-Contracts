@@ -29,6 +29,10 @@ pub const DISPUTE_WINDOW_SECONDS: u64 = 48 * 60 * 60; // 172 800 s
 pub mod escrow;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_cross_contract;
+#[cfg(test)]
+mod test_state_machine;
 mod vet_registry;
 
 /// ======================================================
@@ -282,6 +286,20 @@ fn get_pet(env: &Env, pet_id: u64) -> Pet {
         .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound))
 }
 
+fn ensure_no_active_transfer(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::PendingTransfer(pet_id))
+        || env
+            .storage()
+            .persistent()
+            .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
+    }
+}
+
 fn save_pet(env: &Env, pet: &Pet) {
     env.storage()
         .persistent()
@@ -453,6 +471,18 @@ fn clear_trusted_update_approvals(env: &Env, admins: &Vec<Address>, new_address:
                 proposal: new_address.clone(),
                 approver: admin,
             }));
+    }
+}
+
+/// Ownership must not move by any other path while an escrowed transfer
+/// (possibly disputed) is open.
+fn require_no_escrow(env: &Env, pet_id: u64) {
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::EscrowedTransfer(pet_id))
+    {
+        panic_with_error!(env, ContractError::TransferAlreadyPending);
     }
 }
 
@@ -641,13 +671,7 @@ impl PetOwnershipContract {
         {
             panic_with_error!(&env, ContractError::TransferAlreadyPending);
         }
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::PendingTransfer(pet_id))
-        {
-            panic_with_error!(&env, ContractError::TransferAlreadyPending);
-        }
+        ensure_no_active_transfer(&env, pet_id);
 
         let now = env.ledger().timestamp();
         let pending = PendingAdoption {
@@ -758,13 +782,7 @@ impl PetOwnershipContract {
         let pet = get_pet(&env, pet_id);
         pet.current_owner.require_auth();
 
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::PendingTransfer(pet_id))
-        {
-            panic_with_error!(env, ContractError::TransferAlreadyPending);
-        }
+        ensure_no_active_transfer(&env, pet_id);
 
         let timeout_secs = (transfer_timeout_days as u64).saturating_mul(86400);
 
@@ -1097,6 +1115,7 @@ impl PetOwnershipContract {
         if pet.current_owner != transfer.from {
             panic_with_error!(env, ContractError::Unauthorized);
         }
+        require_no_escrow(&env, pet_id);
 
         let escrowed = EscrowedTransfer {
             pet_id,
@@ -1376,9 +1395,14 @@ impl PetOwnershipContract {
                 .storage()
                 .persistent()
                 .has(&DataKey::PendingTransfer(pet_id))
+                || env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::EscrowedTransfer(pet_id))
             {
                 panic_with_error!(env, ContractError::TransferAlreadyPending);
             }
+            require_no_escrow(&env, pet_id);
         }
 
         // Safety: pet_ids is non-empty (guarded above), so expected_owner is always Some.
@@ -1431,6 +1455,7 @@ impl PetOwnershipContract {
                 panic_with_error!(env, ContractError::InvalidBatch);
             }
             seen_ids.push_back(pet_id);
+            require_no_escrow(&env, pet_id);
 
             let pet = get_pet(&env, pet_id);
             match expected_owner {

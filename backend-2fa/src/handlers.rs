@@ -40,7 +40,7 @@ fn verify_token_with_replay_protection(
 }
 
 #[cfg(test)]
-fn test_two_factor_store() -> Arc<InMemoryStore> {
+pub(crate) fn test_two_factor_store() -> Arc<InMemoryStore> {
     std::thread_local! {
         static STORE: Arc<InMemoryStore> = Arc::new(InMemoryStore::default());
     }
@@ -440,6 +440,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: Arc::new(scoped_store),
             issuer: "PetChain".to_string(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -448,6 +449,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -494,6 +496,7 @@ impl TwoFactorHandlers {
             limiter: lim,
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -507,6 +510,7 @@ impl TwoFactorHandlers {
             limiter,
             store: two_factor_store(),
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -515,6 +519,7 @@ impl TwoFactorHandlers {
             limiter: Arc::new(InMemoryRateLimiter::default()),
             store,
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -554,6 +559,7 @@ impl TwoFactorHandlers {
             limiter,
             store,
             issuer: default_issuer(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -571,6 +577,7 @@ impl TwoFactorHandlers {
             limiter,
             store,
             issuer: "PetChain".to_string(),
+            enroll_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -709,12 +716,17 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup(&req.email, &self.issuer)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         self.store
             .save(
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: false,
                     algorithm: setup.config.algorithm,
                     last_used_step: None,
@@ -965,14 +977,23 @@ impl TwoFactorHandlers {
             return Err(ApiError::bad_request("2FA not enabled for user", None));
         }
 
-        let backup_codes = &data.backup_codes;
         // Find the index of the provided backup code
-        let code_index = match TwoFactorAuth::verify_backup_code(backup_codes, &req.backup_code) {
-            Some(idx) => idx as i32,
-            None => {
-                return Err(ApiError::bad_request("InvalidRecoveryCode", None));
-            }
+        let Some(index) = TwoFactorAuth::verify_backup_code(&data.backup_codes, &req.backup_code)
+        else {
+            return Err(ApiError::bad_request("InvalidRecoveryCode", None));
         };
+        let code_index = index as i32;
+
+        // Atomically consume the matched code. `data` may be stale if a parallel
+        // request already used this code, so only the request that actually
+        // removes it from storage may proceed (issue #1226).
+        let consumed = self
+            .store
+            .remove_backup_code(&req.user_id, &data.backup_codes[index])
+            .map_err(|e| ApiError::internal_error(e, None))?;
+        if !consumed {
+            return Err(ApiError::bad_request("InvalidRecoveryCode", None));
+        }
 
         // Check if code has already been used and log the usage atomically
         self.store
@@ -985,11 +1006,13 @@ impl TwoFactorHandlers {
                 }
             })?;
 
-        // Now consume the code and generate new secret
-        let mut backup_codes = backup_codes.clone();
-        TwoFactorAuth::consume_backup_code(&mut backup_codes, &req.backup_code);
-
         let setup = TwoFactorAuth::setup("recovery", &self.issuer)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored. This also fully rotates
+        // away any legacy plaintext codes that may have been on the record.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
         self.store
@@ -997,7 +1020,7 @@ impl TwoFactorHandlers {
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: true,
                     algorithm: setup.config.algorithm,
                     last_used_step: None,
@@ -1114,13 +1137,18 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         // Save new secret and backup codes, immediately invalidate old secret
         self.store
             .save(
                 &req.user_id,
                 TwoFactorData {
                     secret: setup.secret.clone(),
-                    backup_codes: setup.backup_codes.clone(),
+                    backup_codes: hashed_backup_codes,
                     enabled: true,
                     algorithm: HmacAlgorithm::SHA256,
                     last_used_step: None,
@@ -1577,11 +1605,15 @@ impl CanaryHandlers {
     ) -> Result<CreateCanaryResponse, String> {
         let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
 
+        // Persist Argon2id hashes only; the canary response never exposes
+        // backup codes at all, so there is no plaintext to preserve here.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
+
         two_factor_store().save(
             &req.user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
+                backup_codes: hashed_backup_codes,
                 enabled: true,
                 algorithm: setup.config.algorithm,
                 last_used_step: None,
@@ -1768,11 +1800,15 @@ impl MultiTenantHandlers {
 
         let setup = TwoFactorAuth::setup(email, self.store.issuer())?;
 
+        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // the caller once below and never stored.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
+
         self.store.save(
             user_id,
             TwoFactorData {
                 secret: setup.secret.clone(),
-                backup_codes: setup.backup_codes.clone(),
+                backup_codes: hashed_backup_codes,
                 enabled: false,
                 algorithm: setup.config.algorithm,
                 last_used_step: None,
@@ -2150,5 +2186,131 @@ mod pool_metrics_tests {
             }
             Ok(_) => {}
         }
+    }
+}
+
+/// Issue #1226: parallel recovery requests must not both redeem one backup code.
+///
+/// Assumption: every request reads a (possibly stale) snapshot, verifies the
+/// code against it, and may only proceed after the store's atomic
+/// `remove_backup_code` compare-and-delete succeeds for that exact hash.
+#[cfg(test)]
+mod backup_code_race_tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    const USER: &str = "race-user";
+    const CODES: [&str; 3] = ["1111-1111", "2222-2222", "3333-3333"];
+
+    fn seeded_store() -> Arc<InMemoryStore> {
+        let codes: Vec<String> = CODES.iter().map(|c| c.to_string()).collect();
+        let store = Arc::new(InMemoryStore::default());
+        store
+            .save(
+                USER,
+                TwoFactorData {
+                    secret: TwoFactorAuth::generate_secret(),
+                    backup_codes: TwoFactorAuth::hash_backup_codes(&codes).unwrap(),
+                    enabled: true,
+                    algorithm: HmacAlgorithm::SHA256,
+                    last_used_step: None,
+                },
+            )
+            .unwrap();
+        store
+    }
+
+    fn recover(handlers: &TwoFactorHandlers, caller: &str, code: &str) -> Result<(), ApiError> {
+        handlers
+            .recover(
+                &AuthenticatedUser::new(caller),
+                RecoverWithBackupRequest {
+                    user_id: USER.to_string(),
+                    backup_code: code.to_string(),
+                },
+                None,
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn remove_backup_code_is_compare_and_delete() {
+        let store = seeded_store();
+        let target = store.get(USER).unwrap().backup_codes[1].clone();
+        let barrier = Arc::new(Barrier::new(16));
+
+        let wins = (0..16)
+            .map(|_| {
+                let (store, target, barrier) = (store.clone(), target.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.remove_backup_code(USER, &target).unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|won| *won)
+            .count();
+
+        assert_eq!(wins, 1);
+        let remaining = store.get(USER).unwrap().backup_codes;
+        assert_eq!(remaining.len(), CODES.len() - 1);
+        assert!(!remaining.contains(&target));
+    }
+
+    #[test]
+    fn remove_backup_code_missing_user_or_code() {
+        let store = seeded_store();
+        assert!(store.remove_backup_code("unknown", "x").is_err());
+        assert_eq!(store.remove_backup_code(USER, "not-stored"), Ok(false));
+        assert_eq!(store.get(USER).unwrap().backup_codes.len(), CODES.len());
+    }
+
+    #[test]
+    fn concurrent_recovery_with_same_code_succeeds_once() {
+        let handlers = Arc::new(TwoFactorHandlers::with_store(seeded_store()));
+        let barrier = Arc::new(Barrier::new(8));
+
+        let results: Vec<_> = (0..8)
+            .map(|_| {
+                let (handlers, barrier) = (handlers.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    recover(&handlers, USER, CODES[0])
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        for err in results.into_iter().filter_map(Result::err) {
+            assert_eq!(err.message, "InvalidRecoveryCode");
+        }
+    }
+
+    #[test]
+    fn replayed_code_is_rejected_after_success() {
+        let handlers = TwoFactorHandlers::with_store(seeded_store());
+        assert!(recover(&handlers, USER, CODES[0]).is_ok());
+        let err = recover(&handlers, USER, CODES[0]).unwrap_err();
+        assert_eq!(err.message, "InvalidRecoveryCode");
+        // Codes from the rotated-away set are rejected too.
+        assert!(recover(&handlers, USER, CODES[1]).is_err());
+    }
+
+    #[test]
+    fn unauthorized_or_invalid_requests_do_not_consume_codes() {
+        let store = seeded_store();
+        let handlers = TwoFactorHandlers::with_store(store.clone());
+
+        assert!(recover(&handlers, "someone-else", CODES[0]).is_err());
+        assert!(recover(&handlers, USER, "9999-9999").is_err());
+        assert!(recover(&handlers, USER, "").is_err());
+        assert_eq!(store.get(USER).unwrap().backup_codes.len(), CODES.len());
+
+        assert!(recover(&handlers, USER, CODES[0]).is_ok());
     }
 }

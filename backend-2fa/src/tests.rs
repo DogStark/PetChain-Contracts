@@ -446,7 +446,21 @@ mod tests {
 
         // Response is consistent with what was stored
         assert_eq!(resp.secret, stored.secret);
-        assert_eq!(resp.backup_codes, stored.backup_codes);
+        // Storage holds Argon2id hashes, not the plaintext codes returned in
+        // the response — verify each plaintext code matches its stored hash.
+        assert_eq!(resp.backup_codes.len(), stored.backup_codes.len());
+        for code in &stored.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &resp.backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&stored.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
         // enabled starts as false — not yet verified
         assert!(!stored.enabled);
         // 8 backup codes generated
@@ -898,7 +912,9 @@ mod tests {
 
         let mut data = store.get_data(user_id).unwrap();
         data.enabled = true;
-        let backup_code = data.backup_codes[0].clone();
+        // Storage holds Argon2id hashes, not plaintext — use the plaintext
+        // code from the enrollment response to exercise recovery.
+        let backup_code = enrollment.backup_codes[0].clone();
         store.seed(user_id, data);
 
         let recovered = handlers
@@ -1016,6 +1032,174 @@ mod tests {
             let step1 = current_step(30);
             // Just verify the helper returns a reasonable value (> 0)
             assert!(step1 > 0, "time step should be positive");
+        }
+    }
+
+    mod trusted_time_tests {
+        // Window semantics: `window` is the number of TOTP steps on either
+        // side of the trusted current step that are accepted as valid.
+        // Clock drift beyond that window is rejected.
+        use crate::two_factor::{TotpConfig, TwoFactorAuth};
+        use totp_rs::{Algorithm, Secret, TOTP};
+
+        fn generate_token_at(secret: &str, config: &TotpConfig, now: u64) -> String {
+            TOTP::new(
+                config.algorithm,
+                config.digits,
+                config.window,
+                config.period,
+                Secret::Encoded(secret.to_string()).to_bytes().unwrap(),
+                None,
+                String::new(),
+            )
+            .unwrap()
+            .generate(now)
+            .unwrap()
+        }
+
+        #[test]
+        fn test_verify_token_at_step_boundary() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig {
+                algorithm: Algorithm::SHA1,
+                digits: 6,
+                period: 30,
+                window: 0,
+                backup_code_count: 8,
+            };
+            let now = 1_700_000_020u64;
+
+            let token = generate_token_at(&secret, &config, now);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &token,
+                    config.clone(),
+                    now + 19
+                )
+                .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &token,
+                    config.clone(),
+                    now + 20
+                )
+                .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_default_window_accepts_one_step_drift() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+
+            let previous = generate_token_at(&secret, &config, now - config.period);
+            let future = generate_token_at(&secret, &config, now + config.period);
+            let too_old = generate_token_at(&secret, &config, now - 2 * config.period);
+            let too_new = generate_token_at(&secret, &config, now + 2 * config.period);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &previous, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(&secret, &future, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(&secret, &too_old, config.clone(), now)
+                    .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(&secret, &too_new, config.clone(), now)
+                    .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_leap_second_boundary_is_stable() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig {
+                algorithm: Algorithm::SHA1,
+                digits: 6,
+                period: 30,
+                window: 0,
+                backup_code_count: 8,
+            };
+            let before_leap = 1_483_228_799u64;
+            let after_leap = 1_483_228_800u64;
+
+            let before_token = generate_token_at(&secret, &config, before_leap);
+            let after_token = generate_token_at(&secret, &config, after_leap);
+
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &before_token,
+                    config.clone(),
+                    before_leap
+                )
+                .unwrap()
+            );
+            assert!(
+                TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &after_token,
+                    config.clone(),
+                    after_leap
+                )
+                .unwrap()
+            );
+            assert!(
+                !TwoFactorAuth::verify_token_with_config_at(
+                    &secret,
+                    &before_token,
+                    config.clone(),
+                    after_leap
+                )
+                .unwrap()
+            );
+        }
+
+        #[test]
+        fn test_multi_instance_trusted_time_consistency() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+            let token = generate_token_at(&secret, &config, now);
+
+            let first =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap();
+            let second =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &token, config.clone(), now)
+                    .unwrap();
+
+            assert_eq!(first, second);
+        }
+
+        #[test]
+        fn test_drift_metric_records_without_secret_material() {
+            let secret = TwoFactorAuth::generate_secret();
+            let config = TotpConfig::default();
+            let now = 1_700_000_020u64;
+            let rejected = generate_token_at(&secret, &config, now - 2 * config.period);
+
+            let ok =
+                TwoFactorAuth::verify_token_with_config_at(&secret, &rejected, config, now).unwrap();
+            assert!(!ok);
+
+            let rendered = crate::metrics::render_metrics().expect("metrics render");
+            assert!(rendered.contains("totp_drift"));
+            assert!(!rendered.contains(&secret));
         }
     }
 
@@ -5257,8 +5441,9 @@ mod api_error_logging_tests {
 mod algorithm_upgrade_tests {
     use crate::handlers::{
         clear_two_factor_store_for_tests, get_two_factor_data_for_tests,
-        overwrite_two_factor_data_for_tests, AuthenticatedUser, EnableTwoFactorRequest,
-        LoginWithTwoFactorRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
+        overwrite_two_factor_data_for_tests, test_two_factor_store, AuthenticatedUser,
+        DisableTwoFactorRequest, EnableTwoFactorRequest, LoginWithTwoFactorRequest,
+        RecoverWithBackupRequest, TwoFactorHandlers, UpgradeAlgorithmRequest,
         VerifyTwoFactorRequest,
     };
     use crate::two_factor::{TotpConfig, TwoFactorAuth, TwoFactorData};
@@ -5346,7 +5531,24 @@ mod algorithm_upgrade_tests {
         let data_after = get_two_factor_data_for_tests(user_id).unwrap();
         assert_eq!(data_after.algorithm, Algorithm::SHA256);
         assert_eq!(data_after.secret, upgrade_resp.new_secret);
-        assert_eq!(data_after.backup_codes, upgrade_resp.new_backup_codes);
+        // Storage holds Argon2id hashes, not the plaintext codes returned in
+        // the response — verify each plaintext code matches its stored hash.
+        assert_eq!(
+            data_after.backup_codes.len(),
+            upgrade_resp.new_backup_codes.len()
+        );
+        for code in &data_after.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &upgrade_resp.new_backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&data_after.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
         assert!(data_after.enabled);
 
         // Old secret should no longer work
@@ -5607,9 +5809,22 @@ mod algorithm_upgrade_tests {
         assert_ne!(upgrade_resp.new_backup_codes, old_backup_codes);
         assert_eq!(upgrade_resp.new_backup_codes.len(), 8);
 
-        // Verify they're stored
+        // Verify they're stored — storage holds Argon2id hashes, not the
+        // plaintext codes returned in the response.
         let data = get_two_factor_data_for_tests(user_id).unwrap();
-        assert_eq!(data.backup_codes, upgrade_resp.new_backup_codes);
+        assert_eq!(data.backup_codes.len(), upgrade_resp.new_backup_codes.len());
+        for code in &data.backup_codes {
+            assert!(
+                code.starts_with("$argon2"),
+                "stored backup codes must be Argon2id hashes, not plaintext"
+            );
+        }
+        for plaintext in &upgrade_resp.new_backup_codes {
+            assert!(
+                TwoFactorAuth::verify_backup_code(&data.backup_codes, plaintext).is_some(),
+                "plaintext backup code returned to the client must verify against a stored hash"
+            );
+        }
     }
 
     #[test]
@@ -6231,7 +6446,7 @@ mod algorithm_upgrade_tests {
                 &caller("charlie"),
                 VerifyTwoFactorRequest {
                     user_id: "charlie".to_string(),
-                    token: token_a,
+                    token: token_a.clone(),
                 },
             )
             .unwrap();
@@ -6331,10 +6546,8 @@ mod algorithm_upgrade_tests {
         clear_two_factor_store_for_tests();
         let custom_limiter: Arc<dyn RateLimiter> = Arc::new(InMemoryRateLimiter::default());
         let config = crate::two_factor::TenantConfig::new("tenant-custom");
-        let scoped_store = crate::two_factor::TenantScopedStore::new(
-            test_two_factor_store(),
-            config,
-        );
+        let scoped_store =
+            crate::two_factor::TenantScopedStore::new(test_two_factor_store(), config);
 
         let handlers = TwoFactorHandlers::with_store_and_limiter(
             Arc::new(scoped_store),

@@ -17,6 +17,7 @@
 //! | `db_pool_idle` | Gauge | — |
 //! | `request_duration_seconds` | Histogram | `endpoint` |
 //! | `totp_verification_duration_seconds` | Histogram | — |
+//! | `totp_clock_drift_seconds` | Gauge | — |
 //! | `leaderboard_ws_connections_total` | Gauge | — |
 //!
 //! # Registry
@@ -47,6 +48,8 @@ pub struct Metrics {
     pub db_pool_idle: Gauge,
     pub request_duration_seconds: HistogramVec,
     pub totp_verification_duration_seconds: Histogram,
+    /// Current clock drift between the local wall clock and the trusted time source, in seconds.
+    pub totp_clock_drift_seconds: Gauge,
     /// Tracks the current number of open leaderboard WebSocket connections.
     pub leaderboard_ws_connections_total: Gauge,
     /// Total webhook delivery attempts with `result` label (`ok`/`fail`).
@@ -154,6 +157,16 @@ pub fn metrics() -> &'static Metrics {
             "totp_verification_duration_seconds",
         );
 
+        let totp_clock_drift_seconds = try_register(
+            &registry,
+            Gauge::new(
+                "totp_clock_drift_seconds",
+                "Current clock drift between local and trusted time for TOTP verification (signed)",
+            )
+            .expect("valid metric name"),
+            "totp_clock_drift_seconds",
+        );
+
         let leaderboard_ws_connections_total = try_register(
             &registry,
             Gauge::new(
@@ -207,6 +220,7 @@ pub fn metrics() -> &'static Metrics {
             db_pool_idle,
             request_duration_seconds,
             totp_verification_duration_seconds,
+            totp_clock_drift_seconds,
             leaderboard_ws_connections_total,
             webhook_delivery_total,
             webhook_delivery_retries_total,
@@ -233,6 +247,15 @@ pub fn record_totp_latency(duration_secs: f64) {
     metrics()
         .totp_verification_duration_seconds
         .observe(duration_secs);
+}
+
+/// Record the current clock drift from the trusted time source, in seconds.
+///
+/// This metric is intentionally unlabelled so it never exposes secrets.
+/// Positive values mean the local clock is ahead of the trusted time source;
+/// negative values mean it is behind.
+pub fn record_totp_clock_drift(drift_secs: f64) {
+    metrics().totp_clock_drift_seconds.set(drift_secs);
 }
 
 /// Record a recovery code use.
@@ -438,6 +461,20 @@ mod tests {
         assert!(
             output.contains("totp_verification_duration_seconds"),
             "missing totp verification duration histogram"
+        );
+    }
+
+    #[test]
+    fn totp_clock_drift_gauge_present_with_signed_value() {
+        record_totp_clock_drift(-1.5);
+        let output = render_metrics().expect("render");
+        assert!(
+            output.contains("totp_clock_drift_seconds"),
+            "missing totp_clock_drift_seconds gauge"
+        );
+        assert!(
+            output.contains("-1.5"),
+            "signed drift value was not rendered"
         );
     }
 

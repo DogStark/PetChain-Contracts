@@ -1,16 +1,9 @@
-use crate::{
-    ContractError, Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species,
-};
+use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-fn register_pet(
-    env: &Env,
-    client: &PetChainContractClient,
-    owner: &Address,
-    name: &str,
-) -> u64 {
+fn register_pet(env: &Env, client: &PetChainContractClient, owner: &Address, name: &str) -> u64 {
     client.register_pet(
         owner,
         &String::from_str(env, name),
@@ -137,7 +130,10 @@ fn test_coi_first_cousins_full_siblings_returns_624() {
     // Actually the parents are full siblings (same sire and dam), so both
     // grandparents contribute.  312 + 312 = 624 bp.
     let coi = client.calculate_coi(&cousin_a, &cousin_b);
-    assert_eq!(coi, 624u32, "COI should be 624 bp for first cousins (both grandparents shared)");
+    assert_eq!(
+        coi, 624u32,
+        "COI should be 624 bp for first cousins (both grandparents shared)"
+    );
 }
 
 // ── test: COI guard rejects high inbreeding ────────────────────────────────

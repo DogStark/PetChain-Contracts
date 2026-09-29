@@ -35,7 +35,7 @@ fn test_rotate_nonce_generates_new_nonce() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
+#[should_panic(expected = "Error(Contract, #39)")]
 fn test_rejects_nonce_reuse_after_default_limit() {
     let env = Env::default();
     env.mock_all_auths();
@@ -48,6 +48,24 @@ fn test_rejects_nonce_reuse_after_default_limit() {
 
     assert!(client.record_nonce_use(&pet_id, &key_id, &nonce));
     client.record_nonce_use(&pet_id, &key_id, &nonce);
+}
+
+#[test]
+fn test_nonce_history_is_bounded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_test_pet(&env, &client, &owner);
+    let key_id = String::from_str(&env, "bounded");
+
+    for _ in 0..9 {
+        client.rotate_nonce(&pet_id, &key_id);
+    }
+
+    let history = client.get_nonce_history(&pet_id, &key_id);
+    assert!(history.len() <= 8, "history should be pruned to a bounded window");
 }
 
 #[test]

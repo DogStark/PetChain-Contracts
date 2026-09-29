@@ -175,6 +175,33 @@ Important details:
 - After expiry, the sender can use `reclaim_transfer` without recipient cooperation.
 - Expiry is based on ledger timestamps, not ledger sequence numbers.
 
+## Transfer State Machine
+
+For each pet, a direct transfer is always in exactly one of these states:
+
+| State | Stored as | Leaves via |
+|---|---|---|
+| Idle | neither key below | `initiate_transfer*`, `batch_initiate_transfer`, `batch_transfer` |
+| Pending | `DataKey::PendingTransfer` | `accept_transfer` → Escrowed; `cancel_transfer`, `reclaim_transfer`, `cancel_expired_transfer` → Idle |
+| Escrowed | `DataKey::EscrowedTransfer` (`disputed = false`) | `finalize_transfer` → Idle (new owner); `raise_dispute` → Disputed |
+| Disputed | `DataKey::EscrowedTransfer` (`disputed = true`) | none in this contract |
+
+While a pet has an escrowed transfer (disputed or not), `initiate_transfer`, `initiate_transfer_with_timeout`, `batch_initiate_transfer`, `batch_transfer` and `accept_transfer` fail with `TransferAlreadyPending` (error 3). Previously, a new transfer accepted during a dispute replaced the disputed escrow, and `batch_transfer` could move the pet away from under an open escrow. Callers that relied on either behavior must wait for the escrow to finalize.
+
+`src/test_state_machine.rs` checks these rules with property tests. They generate random sequences of transfer operations, including unauthenticated calls and ledger-time jumps to each window boundary, and compare the contract with a reference model after every step. They assert the allowed states, that a disputed escrow stays frozen and completed transfers are never undone, and that every pet has exactly one owner, listed once in that owner's index. Run them with:
+
+```sh
+cargo test test_state_machine
+```
+
+Resource impact of the escrow checks, measured in the Soroban test host (soroban-sdk 21.7.7), CPU instructions / memory bytes:
+
+| Call | Before | After |
+|---|---|---|
+| `initiate_transfer` | 75,073 / 11,968 | 86,319 / 14,085 |
+| `accept_transfer` | 91,144 / 15,132 | 94,885 / 14,345 |
+| `batch_transfer` (1 pet) | 356,427 / 54,930 | 375,357 / 58,732 |
+
 ## Rust Usage Examples
 
 ### Create a pet and initiate a transfer

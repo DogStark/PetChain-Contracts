@@ -110,7 +110,7 @@ fn test_split_vote_does_not_resolve_dispute() {
 
 #[test]
 fn test_admin_override_resolves_without_votes() {
-    let (_env, client, admin, owner, _target, dispute_id) = setup();
+    let (_env, client, _admin, owner, _target, dispute_id) = setup();
 
     // Owner casts a single vote; threshold is not met.
     client.vote_on_dispute(&owner, &dispute_id, &DisputeVote::Approve);
@@ -129,7 +129,7 @@ fn test_admin_override_resolves_without_votes() {
 }
 
 #[test]
-#[should_panic(expected = "Only the pet owner, the opposing party, or an admin may vote")]
+#[should_panic(expected = "Error(Contract, #166)")]
 fn test_non_stakeholder_cannot_vote() {
     let (env, client, _admin, _owner, _target, dispute_id) = setup();
     let stranger = Address::generate(&env);

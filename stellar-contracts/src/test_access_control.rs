@@ -270,6 +270,57 @@ fn test_access_expiry() {
     assert_eq!(access_level, AccessLevel::None);
 }
 
+// Issue #1160: repeated grant_access calls for the same (pet_id, grantee)
+// must keep exactly one canonical AccessGrantIndex/AccessGrantCount entry,
+// not grow the index on every update. Peeks at internal instance storage
+// via env.as_contract, since AccessGrantCount/AccessGrantIndex have no
+// public getter.
+#[test]
+fn test_grant_access_repeated_calls_keep_one_canonical_index_entry() {
+    let (env, contract_id, owner, pet_id, admin, _vet, _read_only) = setup();
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let grantee = admin;
+
+    let nonce = client.get_caller_nonce(&owner);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::ReadOnly, &None, &nonce);
+
+    let nonce = client.get_caller_nonce(&owner);
+    client.grant_access(&pet_id, &grantee, &AccessLevel::Full, &None, &nonce);
+
+    let nonce = client.get_caller_nonce(&owner);
+    let renewed_expiry = env.ledger().timestamp() + 1000;
+    client.grant_access(
+        &pet_id,
+        &grantee,
+        &AccessLevel::ReadOnly,
+        &Some(renewed_expiry),
+        &nonce,
+    );
+
+    env.as_contract(&contract_id, || {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccessGrantCount(pet_id))
+            .unwrap_or(0);
+        assert_eq!(
+            count, 1,
+            "repeated grant_access calls for the same grantee must not grow the index"
+        );
+
+        let indexed_grantee: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccessGrantIndex((pet_id, 1)))
+            .expect("canonical index slot 1 must hold the grantee");
+        assert_eq!(indexed_grantee, grantee);
+    });
+
+    // The latest call's values won — confirms this was an update, not a
+    // second independent grant record.
+    assert_eq!(client.check_access(&pet_id, &grantee), AccessLevel::ReadOnly);
+}
+
 #[test]
 #[ignore = "extend_access_grant not yet implemented"]
 fn test_extend_access_grant_updates_expiry() {
