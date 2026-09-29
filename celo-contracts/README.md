@@ -167,6 +167,43 @@ domain, and version matches. Diagnosis and treatment must be non-empty and all
 three text fields must be at most `MAX_LONG_LEN` bytes. Invalid, oversized,
 unknown, or stale inputs return `false` without writing state.
 
+## Ownership transfer
+
+`PetChainRegistry` exposes an explicit ownership-transfer path so indexers can
+reconstruct an unambiguous owner history.
+
+```solidity
+function transferOwnership(address newOwner) external;
+event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+```
+
+Semantics:
+
+- **Authorization.** Only the current owner may call `transferOwnership`. Any
+  other caller reverts with `NotOwner`. There is no implicit operator; if an
+  operator is ever delegated it must be documented here and enforced in the
+  contract before it can transfer.
+- **Zero recipient.** `newOwner == address(0)` reverts with `ZeroAddress`.
+- **Self transfer.** `newOwner == owner()` reverts with `AlreadyOwner`; a
+  no-op transfer is rejected rather than silently accepted.
+- **Event.** A successful transfer emits exactly one
+  `OwnershipTransferred(previousOwner, newOwner)` event, with the old owner as
+  the first indexed argument and the new owner as the second. The event is
+  emitted after state is updated, so `owner()` always returns the latest owner
+  and matches the event's `newOwner`.
+- **Reads.** `owner()` is the single source of truth and returns the latest
+  owner consistently before and after the event is observed.
+
+### Tests
+
+`test/PetChainRegistry.test.js` covers the transfer path:
+
+- unauthorized callers revert and leave `owner()` unchanged;
+- transfers to `address(0)` and to the current owner revert;
+- a successful transfer emits one `OwnershipTransferred` with the correct
+  old/new owners and updates `owner()`;
+- replaying a transfer from the previous owner reverts after ownership moved.
+
 ## Reentrancy and external-call policy
 
 `PetChainRegistry` follows a strict checks-effects-interactions (CEI) policy.
