@@ -34,3 +34,146 @@ jobs:
 
       - name: Deploy dry run on local network
         run: npx hardhat run scripts/deploy.js --network hardhat
+
+      - name: Generate CycloneDX SBOM
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json
+
+      - name: Generate artifact checksums and build metadata
+        run: |
+          {
+            echo "commit=${{ github.sha }}"
+            echo "ref=${{ github.ref }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+          } > build-metadata.txt
+          find artifacts -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum > checksums.txt || true
+          sha256sum sbom.cdx.json >> checksums.txt
+
+      - name: Upload SBOM, checksums, and build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: celo-contracts-sbom
+          path: |
+            celo-contracts/sbom.cdx.json
+            celo-contracts/checksums.txt
+            celo-contracts/build-metadata.txt
+          if-no-files-found: error
+
+  cross-network-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: celo-contracts/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Record toolchain versions
+        run: |
+          mkdir -p release-metadata
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "node_version=$(node --version)"
+            echo "npm_version=$(npm --version)"
+            echo "rustc_version=$(rustc --version)"
+            echo "cargo_version=$(cargo --version)"
+          } > release-metadata/toolchain.txt
+          cat release-metadata/toolchain.txt
+
+      - name: Build Celo artifacts
+        working-directory: celo-contracts
+        run: |
+          npm ci
+          npx hardhat compile
+
+      - name: Validate Celo artifacts
+        working-directory: celo-contracts
+        run: |
+          test -d artifacts || { echo "::error::Missing Celo artifacts directory"; exit 1; }
+          abi_count=$(find artifacts -name '*.json' -path '*dbg*' -prune -o -name '*.json' -print | wc -l)
+          if [ "$abi_count" -eq 0 ]; then
+            echo "::error::No Celo ABI artifacts produced";
+            exit 1;
+          fi
+          echo "Celo ABI artifacts: $abi_count"
+
+      - name: Local Celo deployment smoke test
+        working-directory: celo-contracts
+        run: npx hardhat run scripts/deploy.js --network hardhat
+
+      - name: Build Soroban artifacts
+        working-directory: soroban-contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Validate Soroban artifacts
+        working-directory: soroban-contracts
+        run: |
+          wasm_count=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' | wc -l)
+          if [ "$wasm_count" -eq 0 ]; then
+            echo "::error::No Soroban WASM artifacts produced";
+            exit 1
+          fi
+          echo "Soroban WASM artifacts: $wasm_count"
+
+      - name: Validate manifests
+        run: |
+          status=0
+          for manifest in celo-contracts/deployments/*.json soroban-contracts/manifests/*.json; do
+            [ -e "$manifest" ] || continue
+            if ! node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$manifest"; then
+              echo "::error::Invalid manifest: $manifest"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Generate deterministic verification fixtures
+        working-directory: celo-contracts
+        run: |
+          node scripts/generate-fixtures.js --out ../fixtures/verification-fixtures.json
+          node scripts/generate-fixtures.js --out ../fixtures/verification-fixtures.json --check
+
+      - name: Validate verification fixtures
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'fixtures/verification-fixtures.json';
+            if (!fs.existsSync(path)) {
+              console.error('::error::Missing verification fixtures at ' + path);
+              process.exit(1);
+            }
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const required = ['version', 'networks', 'pets', 'owners', 'records', 'events', 'verification'];
+            for (const key of required) {
+              if (!(key in data)) {
+                console.error('::error::Fixture missing required key: ' + key);
+                process.exit(1);
+              }
+            }
+            const outcomes = data.verification || [];
+            const hasPositive = outcomes.some((c) => c.expected === 'valid');
+            const hasNegative = outcomes.some((c) => c.expected === 'invalid');
+            if (!hasPositive || !hasNegative) {
+              console.error('::error::Fixtures must include positive and negative verification cases');
+              process.exit(1);
+            }
+            const serialized = JSON.stringify(data);
+            if (/0x[a-fA-F0-9]{64}/.test(serialized) && /privateKey/i.test(serialized)) {
+              console.error('::error::Fixtures must not contain private keys');
+              process.exit(1);
+            }
+            console.log('Verification fixtures validated: ' + outcomes.length + ' cases');
+          "
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata/toolchain.txt

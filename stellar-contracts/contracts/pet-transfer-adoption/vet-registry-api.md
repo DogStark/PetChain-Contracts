@@ -35,6 +35,24 @@ pub enum VetStatus {
 
 `VetStatus` is defined in the contract source but the current public API uses the `Vet.verified` boolean rather than returning this enum.
 
+### `VetFilter`
+
+```rust
+pub struct VetFilter {
+    pub verified_only: bool,
+    pub specialization: Option<String>,
+}
+```
+
+### `VetPage`
+
+```rust
+pub struct VetPage {
+    pub vets: Vec<Vet>,
+    pub next_cursor: Option<u64>,
+}
+```
+
 ## Admin Setup
 
 `init(env: Env, admin: Address)` must be called exactly once after deployment.
@@ -131,6 +149,50 @@ Returns the current `verified` flag for a registered vet.
 - Fails with:
   - `VetNotFound` if the address is not registered
 
+### `get_vet_count(env: Env) -> u64`
+
+Returns the number of registry slots (every vet ever registered, including revoked ones).
+
+### `list_vets_page(env: Env, cursor: u64, limit: u32, filter: VetFilter) -> VetPage`
+
+Cursor-based registry enumeration. See [Pagination](#pagination).
+
+- Auth: none
+- Fails with:
+  - `InvalidPageLimit` if `limit` is `0` or greater than `MAX_VET_PAGE_SIZE` (15)
+  - `InvalidCursor` if `cursor` is greater than `get_vet_count()`
+  - `InputTooLong` if `filter.specialization` is longer than 100 characters
+
+### `list_vets(env: Env, offset: u64, limit: u32, verified_only: bool) -> Vec<Vet>`
+
+Offset-based listing kept for compatibility. Inspects the registry slots `offset..offset + limit` and returns the vets among them that pass the `verified_only` filter.
+
+- Auth: none
+- `limit` is capped at `MAX_VET_PAGE_SIZE` (15); larger values are treated as 15.
+- Returns an empty list when `limit` is `0` or `offset >= get_vet_count()`.
+
+## Pagination
+
+Every registered vet occupies a registry slot (`VetIndex`), numbered from 1 in registration order. Slots are append-only: revoking a vet keeps its slot, and new vets are added at the end.
+
+`list_vets_page` inspects at most `limit` slots after `cursor` and returns the vets among them that match `filter`:
+
+- `verified_only`: only vets whose `verified` flag is set.
+- `specialization`: only vets whose specialization equals this value exactly.
+
+To read the whole registry, start with `cursor = 0` and keep passing `next_cursor` back until it is `None`. With a filter set, a page can hold fewer than `limit` vets, or none at all, while `next_cursor` is still `Some`; keep going until it is `None`.
+
+Because slots never move, a cursor stays valid while vets are registered or revoked between calls: no vet is skipped or returned twice, and vets registered after the walk started appear at the end.
+
+### Resource bounds
+
+Each inspected slot costs two persistent reads (`VetIndex` and `VetByAddress`), so a call reads at most `2 * MAX_VET_PAGE_SIZE + 1` entries (30 slot reads plus `VetCount`) no matter how large the registry is. Measured in the Soroban test host (soroban-sdk 21.7.7), a full 15-slot page costs about 0.57M CPU instructions and 42 KB of memory at 20 vets, and about 0.67M CPU instructions and 42 KB at 300 vets, excluding fixed per-invocation overhead. The uncapped `list_vets(0, u32::MAX, false)` used before this change cost about 13.4M CPU instructions and 1.25 MB at 300 vets.
+
+### Migration
+
+- `list_vets` now caps `limit` at 15. Callers that passed a larger `limit` to fetch everything in one call get the first 15 slots only; switch them to `list_vets_page` and follow `next_cursor`.
+- No storage changes: `list_vets_page` reads the existing `VetCount`, `VetIndex` and `VetByAddress` entries.
+
 ## Events
 
 ### `reg_vet`
@@ -162,6 +224,8 @@ Returns the current `verified` flag for a registered vet.
 | 4 | `LicenseAlreadyUsed` | Another vet already registered the same license number. |
 | 5 | `VetNotVerified` | Defined in the contract, but not currently raised by the public API. |
 | 6 | `InputTooLong` | One of the input strings exceeded its configured maximum length. |
+| 10 | `InvalidPageLimit` | `list_vets_page` was called with `limit` of `0` or above `MAX_VET_PAGE_SIZE`. |
+| 11 | `InvalidCursor` | `list_vets_page` was called with a cursor past the end of the registry. |
 
 ## Rust Usage Examples
 

@@ -85,6 +85,24 @@ fn cancel_expired_transfer_after_timeout_by_third_party_succeeds() {
 }
 
 #[test]
+fn cancel_transfer_then_retry_allows_new_offer() {
+    let (env, owner, original_recipient, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let replacement_recipient = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &original_recipient);
+    client.cancel_transfer(&pet_id);
+    client.initiate_transfer(&pet_id, &replacement_recipient);
+
+    let transfer = client.get_pending_transfer(&pet_id).unwrap();
+    assert_eq!(transfer.from, owner);
+    assert_eq!(transfer.to, replacement_recipient);
+    assert!(!client.get_escrowed_transfer(&pet_id).is_some());
+}
+
+#[test]
 fn accept_transfer_before_custom_timeout_still_works() {
     let (env, owner, new_owner, pet_id) = setup();
     let contract_id = env.register_contract(None, PetOwnershipContract);
@@ -100,6 +118,28 @@ fn accept_transfer_before_custom_timeout_still_works() {
     let escrowed = client.get_escrowed_transfer(&pet_id).unwrap();
     assert_eq!(escrowed.from, owner);
     assert_eq!(escrowed.to, new_owner);
+}
+
+#[test]
+fn initiate_transfer_fails_when_pet_is_already_in_escrow() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let replacement_owner = Address::generate(&env);
+
+    client.create_pet(&pet_id, &owner);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    let result = client.try_initiate_transfer(&pet_id, &replacement_owner);
+    assert_eq!(
+        result,
+        Err(Ok(Error::from_contract_error(
+            ContractError::TransferAlreadyPending as u32,
+        )))
+    );
+    assert!(client.get_escrowed_transfer(&pet_id).is_some());
+    assert_eq!(client.get_current_owner(&pet_id), owner);
 }
 
 #[test]
@@ -315,6 +355,7 @@ fn get_owner_pets_updates_after_transfer_acceptance() {
     client.create_pet(&2, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id); // → Escrowed
+    confirm_both(&client, pet_id, &owner, &new_owner);
 
     // Advance past the 48-hour dispute window then finalize
     env.ledger().with_mut(|l| {
@@ -352,6 +393,7 @@ fn finalize_transfer_errors_when_history_is_missing() {
     let client = PetOwnershipContractClient::new(&env, &contract_id);
     create_pending_transfer(&client, pet_id, &owner, &new_owner);
     client.accept_transfer(&pet_id); // → Escrowed
+    confirm_both(&client, pet_id, &owner, &new_owner);
 
     env.as_contract(&contract_id, || {
         env.storage()
@@ -379,6 +421,7 @@ fn finalize_transfer_errors_when_history_is_empty() {
     let client = PetOwnershipContractClient::new(&env, &contract_id);
     create_pending_transfer(&client, pet_id, &owner, &new_owner);
     client.accept_transfer(&pet_id); // → Escrowed
+    confirm_both(&client, pet_id, &owner, &new_owner);
 
     env.as_contract(&contract_id, || {
         env.storage()
@@ -795,6 +838,7 @@ fn finalize_transfer_after_window_transfers_ownership() {
     client.create_pet(&pet_id, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &owner, &new_owner);
 
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
@@ -942,6 +986,7 @@ fn finalize_transfer_appends_direct_custody_entry() {
     client.create_pet(&pet_id, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &owner, &new_owner);
 
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
@@ -969,6 +1014,7 @@ fn multiple_finalizations_produce_ordered_chain() {
     // First transfer
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &owner, &new_owner);
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
     });
@@ -977,6 +1023,7 @@ fn multiple_finalizations_produce_ordered_chain() {
     // Second transfer
     client.initiate_transfer(&pet_id, &third_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &new_owner, &third_owner);
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
     });
@@ -1017,6 +1064,7 @@ fn custody_chain_is_append_only_no_delete_path() {
     client.create_pet(&pet_id, &owner);
     client.initiate_transfer(&pet_id, &new_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &owner, &new_owner);
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
     });
@@ -1030,6 +1078,7 @@ fn custody_chain_is_append_only_no_delete_path() {
     let third_owner = Address::generate(&env);
     client.initiate_transfer(&pet_id, &third_owner);
     client.accept_transfer(&pet_id);
+    confirm_both(&client, pet_id, &new_owner, &third_owner);
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
     });
@@ -1395,8 +1444,10 @@ fn transfer_once(
 ) {
     // 250+ transfers in one test would otherwise exhaust the test budget.
     env.budget().reset_unlimited();
+    let from = client.get_current_owner(pet_id);
     client.initiate_transfer(pet_id, to);
     client.accept_transfer(pet_id);
+    confirm_both(client, *pet_id, &from, to);
     env.ledger().with_mut(|l| {
         l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
     });
@@ -1430,4 +1481,349 @@ fn custody_chain_is_capped_at_max_length() {
     // The newest transfer is retained at the tail.
     let newest = chain.get(MAX_CUSTODY_CHAIN_LENGTH - 1).unwrap();
     assert_eq!(newest.to, new_owner);
+}
+
+// ======================================================
+// Two-party custody confirmation (Issue #1187)
+// ======================================================
+
+use crate::{CustodyConfirmation, CUSTODY_CONFIRMATION_TIMEOUT_SECONDS};
+
+/// Creates `pet_id` owned by `owner` and moves a transfer to `to` into escrow.
+fn escrow_transfer(
+    client: &PetOwnershipContractClient,
+    pet_id: u64,
+    owner: &Address,
+    to: &Address,
+) {
+    client.create_pet(&pet_id, owner);
+    client.initiate_transfer(&pet_id, to);
+    client.accept_transfer(&pet_id);
+}
+
+fn confirm_both(client: &PetOwnershipContractClient, pet_id: u64, from: &Address, to: &Address) {
+    client.confirm_custody(&pet_id, from);
+    client.confirm_custody(&pet_id, to);
+}
+
+fn pass_dispute_window(env: &Env) {
+    env.ledger().with_mut(|l| {
+        l.timestamp += DISPUTE_WINDOW_SECONDS + 1;
+    });
+}
+
+fn advance(env: &Env, seconds: u64) {
+    env.ledger().with_mut(|l| {
+        l.timestamp += seconds;
+    });
+}
+
+fn contract_error(err: ContractError) -> Error {
+    Error::from_contract_error(err as u32)
+}
+
+/// Registers the contract with `arbitrator` as its only trusted admin.
+fn setup_with_arbitrator(env: &Env) -> (PetOwnershipContractClient<'_>, Address) {
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(env, &contract_id);
+    let arbitrator = Address::generate(env);
+    client.init_trusted_contract(
+        &Address::generate(env),
+        &address_vec(env, core::slice::from_ref(&arbitrator)),
+        &1,
+    );
+    (client, arbitrator)
+}
+
+// Neither party's acknowledgement alone is enough to finalize.
+#[test]
+fn finalize_requires_both_custody_confirmations() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    pass_dispute_window(&env);
+
+    let not_confirmed = Err(Ok(contract_error(ContractError::CustodyNotConfirmed)));
+    assert_eq!(client.try_finalize_transfer(&pet_id), not_confirmed);
+    client.confirm_custody(&pet_id, &new_owner);
+    assert_eq!(client.try_finalize_transfer(&pet_id), not_confirmed);
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+
+    client.confirm_custody(&pet_id, &owner);
+    assert_eq!(
+        client.get_custody_confirmation(&pet_id),
+        Some(CustodyConfirmation {
+            from_confirmed: true,
+            to_confirmed: true,
+        })
+    );
+
+    // Once both have confirmed, anyone may finalize.
+    env.mock_auths(&[]);
+    client.finalize_transfer(&pet_id);
+    assert_eq!(client.get_current_owner(&pet_id), new_owner);
+    assert_eq!(client.get_custody_confirmation(&pet_id), None);
+}
+
+// Confirming before the dispute window ends is fine; finalize still waits.
+#[test]
+fn confirmations_do_not_skip_the_dispute_window() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    confirm_both(&client, pet_id, &owner, &new_owner);
+
+    advance(&env, DISPUTE_WINDOW_SECONDS - 1);
+    assert_eq!(
+        client.try_finalize_transfer(&pet_id),
+        Err(Ok(contract_error(ContractError::DisputeWindowNotElapsed)))
+    );
+    advance(&env, 1);
+    client.finalize_transfer(&pet_id);
+    assert_eq!(client.get_current_owner(&pet_id), new_owner);
+}
+
+#[test]
+fn confirm_custody_requires_party_auth() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_confirm_custody(&pet_id, &stranger),
+        Err(Ok(contract_error(ContractError::Unauthorized)))
+    );
+
+    env.mock_auths(&[]);
+    assert!(client.try_confirm_custody(&pet_id, &owner).is_err());
+    env.mock_all_auths();
+    assert_eq!(
+        client.get_custody_confirmation(&pet_id),
+        Some(CustodyConfirmation::default())
+    );
+}
+
+#[test]
+fn confirm_custody_rejects_replay_and_missing_escrow() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    assert_eq!(
+        client.try_confirm_custody(&pet_id, &owner),
+        Err(Ok(contract_error(ContractError::NoEscrowedTransfer)))
+    );
+
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.confirm_custody(&pet_id, &owner);
+    assert_eq!(
+        client.try_confirm_custody(&pet_id, &owner),
+        Err(Ok(contract_error(ContractError::CustodyAlreadyConfirmed)))
+    );
+}
+
+#[test]
+fn confirm_custody_window_boundary() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+
+    advance(&env, CUSTODY_CONFIRMATION_TIMEOUT_SECONDS - 1);
+    client.confirm_custody(&pet_id, &owner);
+    advance(&env, 1);
+    assert_eq!(
+        client.try_confirm_custody(&pet_id, &new_owner),
+        Err(Ok(contract_error(
+            ContractError::CustodyConfirmationExpired
+        )))
+    );
+}
+
+#[test]
+fn confirm_custody_rejected_while_disputed() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.raise_dispute(&pet_id, &owner);
+
+    assert_eq!(
+        client.try_confirm_custody(&pet_id, &new_owner),
+        Err(Ok(contract_error(ContractError::TransferAlreadyDisputed)))
+    );
+}
+
+// Timeout path: a missing confirmation lets anyone cancel after the window,
+// leaving ownership with the transferor.
+#[test]
+fn unconfirmed_transfer_can_be_cancelled_after_timeout() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.confirm_custody(&pet_id, &new_owner);
+
+    advance(&env, CUSTODY_CONFIRMATION_TIMEOUT_SECONDS - 1);
+    assert_eq!(
+        client.try_cancel_unconfirmed_transfer(&pet_id),
+        Err(Ok(contract_error(ContractError::TransferNotExpired)))
+    );
+    advance(&env, 1);
+
+    env.mock_auths(&[]);
+    client.cancel_unconfirmed_transfer(&pet_id);
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+    assert!(client.get_escrowed_transfer(&pet_id).is_none());
+    assert_eq!(client.get_custody_confirmation(&pet_id), None);
+    assert_eq!(
+        client.try_cancel_unconfirmed_transfer(&pet_id),
+        Err(Ok(contract_error(ContractError::NoEscrowedTransfer)))
+    );
+
+    // The pet is free to be transferred again.
+    env.mock_all_auths();
+    client.initiate_transfer(&pet_id, &new_owner);
+}
+
+#[test]
+fn fully_confirmed_or_disputed_transfer_cannot_be_timed_out() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    confirm_both(&client, pet_id, &owner, &new_owner);
+    let disputed_pet = pet_id + 1;
+    escrow_transfer(&client, disputed_pet, &owner, &new_owner);
+    client.raise_dispute(&disputed_pet, &new_owner);
+
+    advance(&env, CUSTODY_CONFIRMATION_TIMEOUT_SECONDS);
+    assert_eq!(
+        client.try_cancel_unconfirmed_transfer(&pet_id),
+        Err(Ok(contract_error(ContractError::CustodyAlreadyConfirmed)))
+    );
+    assert_eq!(
+        client.try_cancel_unconfirmed_transfer(&disputed_pet),
+        Err(Ok(contract_error(ContractError::TransferAlreadyDisputed)))
+    );
+}
+
+// Arbitration path: a trusted admin rules on a disputed transfer.
+#[test]
+fn arbitrator_can_complete_disputed_transfer() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let (client, arbitrator) = setup_with_arbitrator(&env);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.raise_dispute(&pet_id, &owner);
+
+    client.resolve_custody_dispute(&pet_id, &arbitrator, &true);
+    assert_eq!(client.get_current_owner(&pet_id), new_owner);
+    assert!(client.get_escrowed_transfer(&pet_id).is_none());
+    assert_eq!(client.get_custody_chain(&pet_id).len(), 1);
+
+    // Replay: nothing left to resolve.
+    assert_eq!(
+        client.try_resolve_custody_dispute(&pet_id, &arbitrator, &true),
+        Err(Ok(contract_error(ContractError::NoEscrowedTransfer)))
+    );
+}
+
+#[test]
+fn arbitrator_can_cancel_disputed_transfer() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let (client, arbitrator) = setup_with_arbitrator(&env);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.confirm_custody(&pet_id, &new_owner);
+    client.raise_dispute(&pet_id, &new_owner);
+
+    client.resolve_custody_dispute(&pet_id, &arbitrator, &false);
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+    assert!(client.get_escrowed_transfer(&pet_id).is_none());
+    assert_eq!(client.get_custody_confirmation(&pet_id), None);
+    assert_eq!(client.get_ownership_history(&pet_id).len(), 1);
+}
+
+#[test]
+fn resolve_custody_dispute_requires_trusted_admin_and_dispute() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let (client, arbitrator) = setup_with_arbitrator(&env);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+
+    // Not disputed: arbitration is not a shortcut around confirmations.
+    assert_eq!(
+        client.try_resolve_custody_dispute(&pet_id, &arbitrator, &true),
+        Err(Ok(contract_error(ContractError::TransferNotDisputed)))
+    );
+
+    client.raise_dispute(&pet_id, &owner);
+    for party in [&owner, &new_owner] {
+        assert_eq!(
+            client.try_resolve_custody_dispute(&pet_id, party, &true),
+            Err(Ok(contract_error(ContractError::NotMultisigAdmin)))
+        );
+    }
+
+    env.mock_auths(&[]);
+    assert!(client
+        .try_resolve_custody_dispute(&pet_id, &arbitrator, &true)
+        .is_err());
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+// Ownership cannot move by any other path while a transfer is escrowed.
+#[test]
+fn escrowed_pet_cannot_change_hands_by_other_paths() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    escrow_transfer(&client, pet_id, &owner, &new_owner);
+    client.raise_dispute(&pet_id, &new_owner);
+
+    let other = Address::generate(&env);
+    let ids = Vec::from_array(&env, [pet_id]);
+    let pending = Err(Ok(contract_error(ContractError::TransferAlreadyPending)));
+    assert_eq!(client.try_batch_transfer(&ids, &other), pending);
+    assert_eq!(client.try_batch_initiate_transfer(&ids, &other), pending);
+    assert_eq!(client.try_initiate_transfer(&pet_id, &other), pending);
+    assert_eq!(client.try_sign_adoption(&pet_id, &other, &None), pending);
+
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+    assert!(client.get_escrowed_transfer(&pet_id).unwrap().disputed);
+}
+
+// An adoption signed before the transfer was escrowed cannot complete while
+// the escrow is open.
+#[test]
+fn adoption_cannot_complete_while_transfer_is_escrowed() {
+    let (env, owner, new_owner, pet_id) = setup();
+    let contract_id = env.register_contract(None, PetOwnershipContract);
+    let client = PetOwnershipContractClient::new(&env, &contract_id);
+    let adopter = Address::generate(&env);
+    client.create_pet(&pet_id, &owner);
+    client.sign_adoption(&pet_id, &adopter, &None);
+    client.approve_adoption(&pet_id, &adopter);
+    client.initiate_transfer(&pet_id, &new_owner);
+    client.accept_transfer(&pet_id);
+
+    let pending = Err(Ok(contract_error(ContractError::TransferAlreadyPending)));
+    assert_eq!(client.try_complete_adoption(&pet_id), pending);
+    let reason = String::from_str(&env, "waived");
+    assert_eq!(
+        client.try_waive_waiting_period(&pet_id, &owner, &reason),
+        pending
+    );
+    assert_eq!(client.get_current_owner(&pet_id), owner);
+}
+
+// Error discriminants added for #1187 are appended, never renumbered.
+#[test]
+fn custody_error_codes_are_stable() {
+    assert_eq!(ContractError::AdoptionNotExpired as u32, 34);
+    assert_eq!(ContractError::CustodyNotConfirmed as u32, 35);
+    assert_eq!(ContractError::CustodyAlreadyConfirmed as u32, 36);
+    assert_eq!(ContractError::CustodyConfirmationExpired as u32, 37);
+    assert_eq!(ContractError::TransferNotDisputed as u32, 38);
 }

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
+- Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
+- Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
 - Pull request template (`.github/PULL_REQUEST_TEMPLATE.md`) to standardize contributor submissions
 - Claim-document status/version semantics (#1341): documents are `Active`, `Superseded` or `Revoked`; revoked documents stay auditable but their digest is burned and can never back a new approval; settled claims are immutable and `settlement_has_revoked_documents` flags later revocations
 - Breeding eligibility and cooldown invariants (#1342): `record_mating` enforces active status, sex/species compatibility, minimum age, per-parent cooldowns (inclusive at the exact boundary), COI threshold and both owners' consent through one evaluator (`check_breeding_eligibility`); replays of the same mating are idempotent

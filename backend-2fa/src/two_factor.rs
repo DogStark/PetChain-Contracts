@@ -411,6 +411,23 @@ pub trait TwoFactorStore: Send + Sync {
     fn update_enabled(&self, user_id: &str, enabled: bool) -> Result<(), String>;
     fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String>;
 
+    /// Atomic compare-and-delete: remove `stored_code` (the exact stored hash)
+    /// from the user's backup codes only if it is still present. Returns
+    /// `Ok(true)` for exactly one caller; concurrent or later callers presenting
+    /// the same code get `Ok(false)`.
+    ///
+    /// The default is a non-atomic read-modify-write; stores serving concurrent
+    /// recovery requests must override it.
+    fn remove_backup_code(&self, user_id: &str, stored_code: &str) -> Result<bool, String> {
+        let mut codes = self.get(user_id)?.backup_codes;
+        let Some(index) = codes.iter().position(|c| c == stored_code) else {
+            return Ok(false);
+        };
+        codes.remove(index);
+        self.update_backup_codes(user_id, codes)?;
+        Ok(true)
+    }
+
     /// Check if a recovery code has been used and log the usage atomically
     /// Returns error if the code has already been used
     fn log_recovery_code_usage(
@@ -907,6 +924,21 @@ impl TwoFactorStore for InMemoryStore {
             .map(|d| d.backup_codes = codes)
     }
 
+    fn remove_backup_code(&self, user_id: &str, stored_code: &str) -> Result<bool, String> {
+        let mut store = self.data.lock().unwrap();
+        let codes = &mut store
+            .get_mut(user_id)
+            .ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?
+            .backup_codes;
+        match codes.iter().position(|c| c == stored_code) {
+            Some(index) => {
+                codes.remove(index);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     fn log_recovery_code_usage(
         &self,
         user_id: &str,
@@ -1397,6 +1429,11 @@ impl TwoFactorStore for TenantScopedStore {
 
     fn update_backup_codes(&self, user_id: &str, codes: Vec<String>) -> Result<(), String> {
         self.inner.update_backup_codes(&self.key(user_id), codes)
+    }
+
+    fn remove_backup_code(&self, user_id: &str, stored_code: &str) -> Result<bool, String> {
+        self.inner
+            .remove_backup_code(&self.key(user_id), stored_code)
     }
 
     fn log_recovery_code_usage(
