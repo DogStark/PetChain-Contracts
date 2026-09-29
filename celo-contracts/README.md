@@ -45,10 +45,88 @@ entry is present; undocumented drift always fails CI.
 
 ## Event schema versioning
 
-Contracts emit events that mobile and frontend indexers consume. An event field
-change without a version marker can silently break historical reconstruction,
-so every indexed event carries a documented topic and an explicit version
-policy.
+- Every indexed event includes a `version` field as its first payload member.
+  The value is the schema version of that event's payload.
+- New fields are **additive**: they are appended after existing fields and the
+  `version` is bumped only when the change is not backward compatible.
+- Removing, renaming, or reordering an existing field, or changing its type, is
+  a breaking change and requires a new version. Indexers must branch on
+  `version` to reconstruct
+
+### Immutability and replacement policy
+
+Commitments are **append-only per record version**. The contract enforces the
+following deterministic policy:
+
+- **Append.** The first commitment written for a `recordId` is stored and emits
+  `MedicalRecordCommitmentSet(recordId, petId, submitter, version, timestamp, commitment)`
+  with `version == 1`.
+- **Duplicate.** Re-submitting the exact same commitment for the same
+  `recordId` is a no-op: it does not revert, does not overwrite state, and does
+  not emit a new event. Clients can safely retry a write.
+- **Replacement.** A different commitment for an existing `recordId` is only
+  accepted as a new version. The replacement must keep the original `petId` and
+  submitter association; a write that changes either reverts. Accepted
+  replacements increment `version` and emit the same event with the new
+  `version` and `timestamp`.
+- **Unauthorized writes.** Only the original submitter (or an authorized vet)
+  may append a replacement version; any other caller reverts.
+
+Because every accepted write emits `version` and `timestamp`, clients can
+reconstruct the full commitment history for a record by replaying
+`MedicalRecordCommitmentSet` events in log order and grouping by `recordId`.
+
+### Client verification flow
+
+1. Read the latest commitment with `medicalRecordCommitments(recordId)` and the
+   current `version`.
+2. Fetch the record fields from the off-chain store and recompute the
+   commitment hash using the encoding above.
+3. Call `verifyMedicalRecordCommitment(...)` with the recomputed fields and the
+   on-chain commitment. A `true` result proves the off-chain record matches the
+   on-chain commitment for that version.
+4. To audit history, replay `MedicalRecordCommitmentSet` events for the
+   `recordId`, ordering by `version` (and `timestamp`), and verify each version
+   independently. A mismatch at any version indicates tampering.
+
+## Deployment manifests
+
+Every deployment is recorded in a checked-in, versioned manifest under
+`deployments/<network>.json`. A manifest binds a contract address to the chain
+id it was deployed on, the deployed bytecode hash, the compiler settings used,
+and the deployment transaction hash. Manifests are the source of truth for
+client and deployment tooling; they are validated in CI.
+
+```json
+{
+  "network": "alfajores",
+  "chainId": 44787,
+  "contract": "PetChainRegistry",
+  "address": "0xDeployedAddress",
+  "bytecodeHash": "0x<keccak256 of deployed bytecode>",
+  "compiler": { "version": "0.8.20", "optimizer": { "enabled": true, "runs": 200 } },
+  "transactionHash": "0x<deployment tx hash>"
+}
+```
+
+Rules enforced by the manifest checks:
+
+- **Chain binding.** A manifest is rejected when the connected chain id does not
+  match its `chainId`; an address can never be reused on a different chain.
+- **Bytecode integrity.** The recorded `bytecodeHash` must equal the keccak256
+  hash of the deployed artifact's bytecode; a mismatch fails the check.
+- **Freshness.** Missing manifests, or manifests whose `bytecodeHash` no longer
+  matches the compiled artifact, fail client and deployment checks.
+- **No secrets.** Manifests contain only public deployment data — never private
+  keys, mnemonics, or API keys.
+
+Generate or refresh a manifest after deploying:
+
+```bash
+npx hardhat run scripts/deploy.js --network alfajores
+```
+
+## Scripts
 
 ### Version policy
 
@@ -62,6 +140,9 @@ policy.
 - Private payloads (secrets, PII, or any value not intended for public
   consumption) must never be emitted in an event. Only commitments, hashes, and
   public identifiers are emitted.
+
+Deploys `PetChainRegistry`, prints its address, and writes the chain-specific
+deployment manifest to `deployments/<network>.json`.
 
 ### Indexed events
 
@@ -79,6 +160,19 @@ Representative old/new fixtures live under `celo-contracts/test/fixtures/`:
 
 - `events.v1.json` — the historical payload layout for each indexed event.
 - `events.v2.json` — the current payload layout, with additive fields only.
+
+Registers a sample pet against an already-deployed `PetChainRegistry`. The
+contract address is read from the selected network's manifest
+(`deployments/<network>.json`); set `CONTRACT_ADDRESS` to override it. The
+script fails if the manifest is missing, stale, or bound to a different chain
+id.
+
+```bash
+npx hardhat run scripts/register-pet.js --network alfajores
+
+# Explicit override
+CONTRACT_ADDRESS=0xDeployedAddress npx hardhat run scripts/register-pet.js --network alfajores
+```
 
 Historical fixtures must remain parseable: the compatibility parser reads the
 `version` field and decodes the payload with the matching layout, so a v1

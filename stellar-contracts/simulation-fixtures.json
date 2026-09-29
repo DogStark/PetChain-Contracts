@@ -1,0 +1,123 @@
+{
+  "$schema": "./simulation-fixtures.schema.json",
+  "fixture_version": "1.0.0",
+  "generated_at": "2026-08-30T00:00:00Z",
+  "source_commit": "HEAD",
+  "description": "Deterministic transaction simulation fixtures for client signing UX. Each fixture maps to a documented ContractError discriminant. No real secrets are included.",
+  "simulations": [
+    {
+      "fixture_id": "success-register-pet",
+      "description": "Successful pet registration with valid owner and all required fields",
+      "function": "register_pet",
+      "params": {
+        "owner": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "name": "TestPet",
+        "birthday": "2020-01-01",
+        "gender": "Male",
+        "species": "Dog",
+        "breed": "Labrador",
+        "color": "Yellow",
+        "weight": 25,
+        "microchip_id": null,
+        "privacy_level": "Public"
+      },
+      "expected": {
+        "result": "success",
+        "return_value": { "pet_id": 1 },
+        "resource_estimates": {
+          "steps": 15000,
+          "memory_bytes": 2048,
+          "read_entries": 3,
+          "write_entries": 5
+        }
+      }
+    },
+    {
+      "fixture_id": "auth-failure-set-error-message",
+      "description": "Non-admin caller is rejected when attempting to set an error message",
+      "function": "set_error_message",
+      "params": {
+        "admin": "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "error_code": 3,
+        "language": "en",
+        "message": "Pet not found"
+      },
+      "expected": {
+        "result": "failure",
+        "error_code": 28,
+        "error_name": "Unauthorized",
+        "resource_estimates": {
+          "steps": 5000,
+          "memory_bytes": 512,
+          "read_entries": 1,
+          "write_entries": 0
+        }
+      }
+    },
+    {
+      "fixture_id": "stale-version-migrate-storage",
+      "description": "Calling migrate_storage with the current schema version returns StaleMigration",
+      "function": "migrate_schema_version",
+      "params": {
+        "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "current_version": 1,
+        "target_version": 1
+      },
+      "expected": {
+        "result": "failure",
+        "error_code": 169,
+        "error_name": "StaleMigration",
+        "resource_estimates": {
+          "steps": 8000,
+          "memory_bytes": 256,
+          "read_entries": 2,
+          "write_entries": 0
+        }
+      }
+    },
+    {
+      "fixture_id": "budget-failure-batch-too-large",
+      "description": "Batch operation exceeding the maximum allowed size triggers a resource-budget failure",
+      "function": "batch_set_error_messages",
+      "params": {
+        "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "messages_count": 51
+      },
+      "expected": {
+        "result": "failure",
+        "error_code": 5,
+        "error_name": "BatchTooLarge",
+        "resource_estimates": {
+          "steps": 10000001,
+          "memory_bytes": 65536,
+          "read_entries": 0,
+          "write_entries": 0,
+          "exceeds_budget": true,
+          "budget_limit_steps": 10000000
+        }
+      }
+    },
+    {
+      "fixture_id": "malformed-input-empty-message",
+      "description": "Setting an error message with an empty message string is rejected as invalid input",
+      "function": "set_error_message",
+      "params": {
+        "admin": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "error_code": 3,
+        "language": "en",
+        "message": ""
+      },
+      "expected": {
+        "result": "failure",
+        "error_code": 12,
+        "error_name": "InvalidInput",
+        "resource_estimates": {
+          "steps": 3000,
+          "memory_bytes": 128,
+          "read_entries": 0,
+          "write_entries": 0
+        }
+      }
+    }
+  ]
+}

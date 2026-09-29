@@ -81,3 +81,55 @@ jobs:
           cd stellar-contracts
           cargo generate-lockfile
           cargo audit
+
+  sbom:
+    name: SBOM and provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+      - name: Build release artifacts
+        run: |
+          cd stellar-contracts
+          cargo build --target wasm32-unknown-unknown --release
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+      - name: Generate CycloneDX SBOM
+        run: |
+          cd stellar-contracts
+          cargo cyclonedx --format json --output-cdx
+      - name: Collect artifacts, checksums, and build metadata
+        run: |
+          mkdir -p dist
+          find stellar-contracts/target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' -exec cp {} dist/ \;
+          find stellar-contracts -maxdepth 1 -name '*.cdx.json' -exec cp {} dist/ \;
+          cd dist
+          sha256sum *.wasm *.cdx.json > SHA256SUMS
+          {
+            echo "commit=${{ github.sha }}"
+            echo "ref=${{ github.ref }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "run_attempt=${{ github.run_attempt }}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+          } > build-metadata.txt
+      - name: Upload SBOM and artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-and-artifacts
+          path: dist/
+      - name: Generate signed provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/*.wasm
+            dist/*.cdx.json
+            dist/SHA256SUMS
+            dist/build-metadata.txt
