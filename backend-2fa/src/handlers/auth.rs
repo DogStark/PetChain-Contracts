@@ -1,26 +1,22 @@
+//! Core 2FA authentication handlers.
+//!
+//! Contains [`TwoFactorHandlers`] (enroll, verify, login, disable, recover,
+//! upgrade) and all associated request/response types.
 #[cfg(not(test))]
 use crate::db::PostgresTwoFactorStore;
 use crate::error::ApiError;
-use crate::leaderboard::{
-    leaderboard_ws_endpoint, FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore,
-};
-use crate::rate_limiter::{
-    InMemoryRateLimiter, RateLimitResult, RateLimiter, TenantRateLimitKey, UserQuotaStore,
-};
+use crate::rate_limiter::{InMemoryRateLimiter, RateLimiter};
 use crate::two_factor::{
-    AuditLogEntry, HmacAlgorithm, InMemoryStore, LockedUserSummary, TenantConfig, TenantRegistry,
-    TenantScopedStore, TotpConfig, TwoFactorAuth, TwoFactorData, TwoFactorStore,
-    UserTwoFactorSummary,
+    HmacAlgorithm, InMemoryStore, TenantConfig, TenantScopedStore, TotpConfig, TwoFactorAuth,
+    TwoFactorData, TwoFactorStore,
 };
-use crate::webhooks::{SecurityEventType, WebhookManager};
-use actix_web::{web::Payload, Error, HttpRequest, HttpResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
-fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
+pub(crate) fn verification_config(algorithm: HmacAlgorithm) -> TotpConfig {
     match algorithm {
         HmacAlgorithm::SHA512 => TotpConfig::high_security(),
         HmacAlgorithm::SHA256 => TotpConfig::high_security(),
@@ -49,12 +45,12 @@ pub(crate) fn test_two_factor_store() -> Arc<InMemoryStore> {
 }
 
 #[cfg(test)]
-fn two_factor_store() -> Arc<dyn TwoFactorStore> {
+pub(crate) fn two_factor_store() -> Arc<dyn TwoFactorStore> {
     test_two_factor_store()
 }
 
 #[cfg(not(test))]
-fn two_factor_store() -> Arc<dyn TwoFactorStore> {
+pub(crate) fn two_factor_store() -> Arc<dyn TwoFactorStore> {
     static STORE: OnceLock<Arc<dyn TwoFactorStore>> = OnceLock::new();
     STORE
         .get_or_init(|| match std::env::var("DATABASE_URL") {
@@ -71,7 +67,10 @@ const IDEMPOTENCY_TTL_SECS: u64 = 300; // 5 minutes
 const MAX_FIELD_LENGTH: usize = 255;
 
 /// Validate that a string is non-empty and within max length
-fn validate_non_empty_max_length(field_name: &str, value: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_non_empty_max_length(
+    field_name: &str,
+    value: &str,
+) -> Result<(), ApiError> {
     if value.is_empty() {
         return Err(ApiError::bad_request(
             format!("{} must not be empty", field_name),
@@ -80,7 +79,10 @@ fn validate_non_empty_max_length(field_name: &str, value: &str) -> Result<(), Ap
     }
     if value.len() > MAX_FIELD_LENGTH {
         return Err(ApiError::bad_request(
-            format!("{} must not exceed {} characters", field_name, MAX_FIELD_LENGTH),
+            format!(
+                "{} must not exceed {} characters",
+                field_name, MAX_FIELD_LENGTH
+            ),
             None,
         ));
     }
@@ -88,7 +90,7 @@ fn validate_non_empty_max_length(field_name: &str, value: &str) -> Result<(), Ap
 }
 
 /// Validate that a token is exactly 6-8 decimal digits
-fn validate_token(token: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_token(token: &str) -> Result<(), ApiError> {
     if token.len() < 6 || token.len() > 8 {
         return Err(ApiError::bad_request(
             "token must be exactly 6-8 decimal digits",
@@ -173,6 +175,30 @@ fn recovery_secret_delivered_store() -> Arc<std::sync::Mutex<std::collections::H
 }
 
 const RECOVERY_SECRET_MASK: &str = "***already-returned***";
+
+// ---------------------------------------------------------------------------
+// Admin JWT scope check helper
+// ---------------------------------------------------------------------------
+
+/// Represents an authenticated admin caller (must have `admin` scope in JWT).
+/// In a real HTTP layer the JWT would be validated by middleware; here we model
+/// the scope as a field so handlers can enforce it without depending on a web
+/// framework.
+///
+/// Defined here (rather than in [`super::admin`]) so that [`RecoveryLogCaller`]
+/// can reference it without creating a circular module dependency.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthenticatedAdmin {
+    pub admin_id: String,
+}
+
+impl AuthenticatedAdmin {
+    pub fn new(admin_id: impl Into<String>) -> Self {
+        Self {
+            admin_id: admin_id.into(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthenticatedUser {
@@ -374,13 +400,13 @@ pub struct GetRecoveryLogQuery {
 /// }
 /// ```
 pub struct TwoFactorHandlers {
-    limiter: Arc<dyn RateLimiter>,
-    store: Arc<dyn TwoFactorStore>,
-    issuer: String,
+    pub(crate) limiter: Arc<dyn RateLimiter>,
+    pub(crate) store: Arc<dyn TwoFactorStore>,
+    pub(crate) issuer: String,
     /// Serialises the check-then-act read/save sequence in `enroll()` so
     /// that two concurrent enrollment requests for the same user cannot
     /// both observe "not enabled" and both proceed to `save()`.
-    enroll_lock: Arc<Mutex<()>>,
+    pub(crate) enroll_lock: Arc<Mutex<()>>,
 }
 
 /// Environment variable used to brand TOTP codes for white-label
@@ -505,7 +531,6 @@ impl TwoFactorHandlers {
     }
 
     pub fn with_limiter(limiter: Arc<dyn RateLimiter>) -> Self {
-
         Self {
             limiter,
             store: two_factor_store(),
@@ -817,9 +842,16 @@ impl TwoFactorHandlers {
 
         if let Err(e) = self.store.check_retry_after(&req.user_id) {
             if e.starts_with("retry_after:") {
-                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                let retry_secs: u64 = e
+                    .strip_prefix("retry_after:")
+                    .unwrap_or("60")
+                    .parse()
+                    .unwrap_or(60);
                 return Err(ApiError::rate_limited(
-                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    format!(
+                        "Progressive delay in effect. Retry after {} seconds.",
+                        retry_secs
+                    ),
                     retry_secs,
                 ));
             }
@@ -875,9 +907,16 @@ impl TwoFactorHandlers {
 
         if let Err(e) = self.store.check_retry_after(&req.user_id) {
             if e.starts_with("retry_after:") {
-                let retry_secs: u64 = e.strip_prefix("retry_after:").unwrap_or("60").parse().unwrap_or(60);
+                let retry_secs: u64 = e
+                    .strip_prefix("retry_after:")
+                    .unwrap_or("60")
+                    .parse()
+                    .unwrap_or(60);
                 return Err(ApiError::rate_limited(
-                    format!("Progressive delay in effect. Retry after {} seconds.", retry_secs),
+                    format!(
+                        "Progressive delay in effect. Retry after {} seconds.",
+                        retry_secs
+                    ),
                     retry_secs,
                 ));
             }
@@ -1182,293 +1221,10 @@ impl Default for TwoFactorHandlers {
     }
 }
 
-/// Admin handlers for recovery code audit log
-pub struct AdminRecoveryHandlers;
-
-impl AdminRecoveryHandlers {
-    /// Get recovery code usage log (admin-only endpoint would check authorization externally)
-    pub fn get_recovery_log(
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<RecoveryUsageLogEntry>, String> {
-        let entries = two_factor_store().get_recovery_usage_log(page, page_size)?;
-        Ok(entries
-            .into_iter()
-            .map(|e| RecoveryUsageLogEntry {
-                id: e.id as i32,
-                user_id: e.user_id,
-                code_index: e.code_index,
-                used_at: e.used_at,
-                ip_address: e.ip_address,
-            })
-            .collect())
-    }
-}
-
-/// Admin handlers for managing flagged leaderboard scores
-pub struct AdminScoreHandlers {
-    flagged_store: Arc<dyn FlaggedScoreStore>,
-}
-
-impl AdminScoreHandlers {
-    pub fn new() -> Self {
-        Self {
-            flagged_store: Arc::new(InMemoryFlaggedScoreStore::new()),
-        }
-    }
-
-    pub fn with_store(flagged_store: Arc<dyn FlaggedScoreStore>) -> Self {
-        Self { flagged_store }
-    }
-
-    /// Get all flagged submissions
-    pub fn get_all_flagged(&self) -> Vec<FlaggedScoreSubmission> {
-        self.flagged_store.get_all_flagged()
-    }
-
-    /// Get flagged submissions for a specific user
-    pub fn get_flagged_by_user(&self, user_id: &str) -> Vec<FlaggedScoreSubmission> {
-        self.flagged_store.get_flagged_by_user(user_id)
-    }
-
-    /// Log a rejected score submission
-    pub fn log_rejected_submission(&self, user_id: String, attempted_score: u64, reason: String) {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let flagged = FlaggedScoreSubmission {
-            user_id,
-            attempted_score,
-            timestamp,
-            reason,
-        };
-
-        self.flagged_store.add_flagged(flagged);
-    }
-
-    /// Clear all flagged submissions (for testing)
-    #[cfg(test)]
-    pub fn clear_flagged(&self) {
-        self.flagged_store.clear();
-    }
-}
-
-impl Default for AdminScoreHandlers {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Admin rate-limit quota management
-// ---------------------------------------------------------------------------
-
-/// Request / response types for quota admin endpoints.
-#[derive(Debug, Deserialize, Clone)]
-pub struct SetUserQuotaRequest {
-    pub user_id: String,
-    pub requests_per_minute: u32,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct GrantUnlimitedRequest {
-    pub user_id: String,
-    /// Unix timestamp (seconds) until which the bypass is active.
-    pub expires_at: u64,
-}
-
-/// Admin handlers for per-user rate-limit quota management.
-pub struct AdminRateLimitHandlers {
-    pub quota_store: Arc<UserQuotaStore>,
-}
-
-impl AdminRateLimitHandlers {
-    pub fn new(quota_store: Arc<UserQuotaStore>) -> Self {
-        Self { quota_store }
-    }
-
-    /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
-    /// Takes effect on the user's next request window.
-    pub fn set_user_quota(
-        &self,
-        _admin: &AuthenticatedAdmin,
-        req: SetUserQuotaRequest,
-    ) -> Result<(), String> {
-        self.quota_store
-            .set_quota(&req.user_id, req.requests_per_minute);
-        Ok(())
-    }
-
-    /// POST /admin/rate-limits/unlimited — grant temporary unlimited bypass.
-    pub fn grant_unlimited(
-        &self,
-        _admin: &AuthenticatedAdmin,
-        req: GrantUnlimitedRequest,
-    ) -> Result<(), String> {
-        self.quota_store
-            .grant_unlimited(&req.user_id, req.expires_at);
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Admin IP allowlist / blocklist management (Issue #701)
-// ---------------------------------------------------------------------------
-
-use crate::ip_access::{IpAccessEntry, IpAccessStore, IpListType};
-
-/// Request body for `POST /admin/ip/allow` and `POST /admin/ip/block`.
-#[derive(Debug, Deserialize, Clone)]
-pub struct AddIpRuleRequest {
-    pub cidr: String,
-    pub note: Option<String>,
-}
-
-/// Admin handlers for managing the IP allowlist and blocklist consulted by
-/// [`crate::ip_access::IpAccessMiddleware`] on every request.
-pub struct AdminIpAccessHandlers {
-    store: Arc<dyn IpAccessStore>,
-}
-
-impl AdminIpAccessHandlers {
-    pub fn new(store: Arc<dyn IpAccessStore>) -> Self {
-        Self { store }
-    }
-
-    /// POST /admin/ip/allow
-    pub fn allow_ip(
-        &self,
-        admin: &AuthenticatedAdmin,
-        req: AddIpRuleRequest,
-    ) -> Result<IpAccessEntry, String> {
-        self.store.add_entry(
-            &req.cidr,
-            IpListType::Allow,
-            req.note.as_deref(),
-            &admin.admin_id,
-        )
-    }
-
-    /// POST /admin/ip/block
-    pub fn block_ip(
-        &self,
-        admin: &AuthenticatedAdmin,
-        req: AddIpRuleRequest,
-    ) -> Result<IpAccessEntry, String> {
-        self.store.add_entry(
-            &req.cidr,
-            IpListType::Block,
-            req.note.as_deref(),
-            &admin.admin_id,
-        )
-    }
-
-    /// DELETE /admin/ip/{entry_id} — removes an entry from whichever list it's on.
-    pub fn remove_entry(&self, _admin: &AuthenticatedAdmin, entry_id: i64) -> Result<(), String> {
-        self.store.remove_entry(entry_id)
-    }
-
-    pub fn list_allow(&self) -> Vec<IpAccessEntry> {
-        self.store.list_entries(IpListType::Allow)
-    }
-
-    pub fn list_block(&self) -> Vec<IpAccessEntry> {
-        self.store.list_entries(IpListType::Block)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Issue #907 — Admin Webhook Configuration Handlers
-// ---------------------------------------------------------------------------
-
-/// Request body for `POST /admin/webhooks/configure`.
-#[derive(Debug, Deserialize, Clone)]
-pub struct ConfigureWebhookRequest {
-    pub event_type: SecurityEventType,
-    pub url: String,
-}
-
-/// A single entry in the webhook configuration list.
-#[derive(Debug, Serialize, Clone, PartialEq)]
-pub struct WebhookConfigEntry {
-    pub event_type: String,
-    pub urls: Vec<String>,
-}
-
-/// Admin handlers for managing webhook subscriptions.
-pub struct AdminWebhookHandlers {
-    webhook_manager: Arc<WebhookManager>,
-}
-
-impl AdminWebhookHandlers {
-    pub fn new(webhook_manager: Arc<WebhookManager>) -> Self {
-        Self { webhook_manager }
-    }
-
-    /// POST /admin/webhooks/configure — register a URL for a security event type.
-    pub fn configure(
-        &self,
-        _admin: &AuthenticatedAdmin,
-        req: ConfigureWebhookRequest,
-    ) -> Result<(), String> {
-        self.webhook_manager
-            .configure(req.event_type, req.url)
-            .map_err(|e| e.to_string())
-    }
-
-    /// DELETE /admin/webhooks/{event_type} — remove all URLs for an event type.
-    pub fn remove_config(
-        &self,
-        _admin: &AuthenticatedAdmin,
-        event_type: &SecurityEventType,
-    ) -> Result<(), String> {
-        self.webhook_manager.remove_config(event_type);
-        Ok(())
-    }
-
-    /// GET /admin/webhooks — list all configured event→URL mappings.
-    pub fn list_configured_events(&self, _admin: &AuthenticatedAdmin) -> Vec<WebhookConfigEntry> {
-        let mut entries: Vec<WebhookConfigEntry> = self
-            .webhook_manager
-            .list_configs()
-            .into_iter()
-            .map(|(event_type, urls)| WebhookConfigEntry { event_type, urls })
-            .collect();
-        entries.sort_by(|a, b| a.event_type.cmp(&b.event_type));
-        entries
-    }
-
-    /// GET /admin/webhooks/dead-letter — return all DLQ entries (newest first).
-    ///
-    /// Each entry represents a webhook delivery that exhausted all retry
-    /// attempts. The original payload and failure reason are included so
-    /// operators can diagnose what went wrong.
-    pub fn get_dead_letter_queue(
-        &self,
-        _admin: &AuthenticatedAdmin,
-    ) -> Vec<crate::dead_letter::DlqEntry> {
-        self.webhook_manager.get_dead_letter_queue()
-    }
-
-    /// POST /admin/webhooks/dead-letter/replay — retry all DLQ entries.
-    ///
-    /// Each entry is re-delivered through the normal retry path. Entries that
-    /// succeed are removed from the DLQ; entries that still fail remain with
-    /// an incremented `replay_attempts` counter.
-    ///
-    /// Returns `(succeeded, failed)` counts.
-    pub fn replay_dead_letter_queue(
-        &self,
-        _admin: &AuthenticatedAdmin,
-    ) -> (usize, usize) {
-        self.webhook_manager.replay_dead_letter_queue()
-    }
-}
-
 #[cfg(test)]
-pub(crate) fn get_two_factor_data_for_tests(user_id: &str) -> Option<TwoFactorData> {
+pub(crate) fn get_two_factor_data_for_tests(
+    user_id: &str,
+) -> Option<TwoFactorData> {
     two_factor_store().get(user_id).ok()
 }
 
@@ -1482,718 +1238,18 @@ pub(crate) fn clear_two_factor_store_for_tests() {
     test_two_factor_store().clear();
 }
 
-// ---------------------------------------------------------------------------
-// Admin JWT scope check helper
-// ---------------------------------------------------------------------------
-
-/// Represents an authenticated admin caller (must have `admin` scope in JWT).
-/// In a real HTTP layer the JWT would be validated by middleware; here we model
-/// the scope as a field so handlers can enforce it without depending on a web
-/// framework.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AuthenticatedAdmin {
-    pub admin_id: String,
-}
-
-impl AuthenticatedAdmin {
-    pub fn new(admin_id: impl Into<String>) -> Self {
-        Self {
-            admin_id: admin_id.into(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Issue #688 — Admin Dashboard Endpoint Suite
-// ---------------------------------------------------------------------------
-
-pub struct AdminDashboardHandlers;
-
-impl AdminDashboardHandlers {
-    /// GET /admin/users — paginated list of users with 2FA status.
-    /// Canary accounts are excluded from this listing.
-    pub fn list_users(
-        _admin: &AuthenticatedAdmin,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<UserTwoFactorSummary>, String> {
-        two_factor_store().list_users(page, page_size)
-    }
-
-    /// POST /admin/users/{id}/disable-2fa — force-disable with audit log entry.
-    pub fn disable_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
-        two_factor_store().admin_disable_two_fa(user_id, &admin.admin_id)
-    }
-
-    /// POST /admin/users/{id}/unlock-2fa — clear persistent lockout state.
-    pub fn unlock_two_fa(admin: &AuthenticatedAdmin, user_id: &str) -> Result<(), String> {
-        two_factor_store().unlock_two_fa_account(user_id, &admin.admin_id)
-    }
-
-    /// GET /admin/locked-users — list all accounts currently in a locked state.
-    pub fn list_locked_users(
-        _admin: &AuthenticatedAdmin,
-    ) -> Result<Vec<LockedUserSummary>, String> {
-        two_factor_store().list_locked_users()
-    }
-
-    /// GET /admin/users/{id}/audit-log — full 2FA event history (paginated).
-    pub fn get_audit_log(
-        _admin: &AuthenticatedAdmin,
-        user_id: &str,
-        page: u32,
-        page_size: u32,
-    ) -> Result<Vec<AuditLogEntry>, String> {
-        two_factor_store().get_audit_log(user_id, page, page_size)
-    }
-
-    /// GET /admin/users/{user_id}/2fa-summary — returns UserTwoFactorSummary.
-    pub fn get_user_two_factor_summary(
-        _admin: &AuthenticatedAdmin,
-        user_id: &str,
-    ) -> Result<UserTwoFactorSummary, String> {
-        // Validate user_id
-        if user_id.is_empty() {
-            return Err("user_id must not be empty".to_string());
-        }
-        if user_id.len() > 64 {
-            return Err("user_id must not exceed 64 characters".to_string());
-        }
-
-        let store = two_factor_store();
-        let data = store.get(user_id)?;
-        let is_canary = store.is_canary(user_id);
-        Ok(UserTwoFactorSummary {
-            user_id: user_id.to_string(),
-            enabled: data.enabled,
-            is_canary,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Issue #713 — Canary Token Detection
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CreateCanaryRequest {
-    pub user_id: String,
-    pub email: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateCanaryResponse {
-    pub user_id: String,
-    pub secret: String,
-    pub qr_code: String,
-}
-
-pub struct CanaryHandlers {
-    webhook_manager: Arc<WebhookManager>,
-}
-
-impl CanaryHandlers {
-    pub fn new(webhook_manager: Arc<WebhookManager>) -> Self {
-        Self { webhook_manager }
-    }
-
-    /// Admin: create a canary TOTP account that looks real but triggers an
-    /// alert when any verification is attempted.
-    pub fn create_canary(
-        admin: &AuthenticatedAdmin,
-        req: CreateCanaryRequest,
-    ) -> Result<CreateCanaryResponse, String> {
-        let setup = TwoFactorAuth::setup(&req.email, "PetChain")?;
-
-        // Persist Argon2id hashes only; the canary response never exposes
-        // backup codes at all, so there is no plaintext to preserve here.
-        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
-
-        two_factor_store().save(
-            &req.user_id,
-            TwoFactorData {
-                secret: setup.secret.clone(),
-                backup_codes: hashed_backup_codes,
-                enabled: true,
-                algorithm: setup.config.algorithm,
-                last_used_step: None,
-            },
-        )?;
-
-        two_factor_store().set_canary(&req.user_id, true)?;
-
-        two_factor_store().append_audit_log(
-            &req.user_id,
-            "canary_created",
-            &admin.admin_id,
-            None,
-        )?;
-
-        Ok(CreateCanaryResponse {
-            user_id: req.user_id,
-            secret: setup.secret,
-            qr_code: setup.qr_code_base64,
-        })
-    }
-
-    /// Verify a TOTP token for a user. If the account is a canary, log a
-    /// `CanaryTriggered` audit event and fire the webhook immediately.
-    /// The canary account always returns `false` for the verification result
-    /// so the attacker gets no useful feedback.
-    pub fn verify_with_canary_check(
-        &self,
-        user_id: &str,
-        token: &str,
-        ip_address: Option<&str>,
-    ) -> Result<bool, String> {
-        let store = two_factor_store();
-
-        if store.is_canary(user_id) {
-            // Log the trigger event
-            let meta = ip_address.map(|ip| format!("ip={}", ip));
-            store.append_audit_log(user_id, "CanaryTriggered", user_id, meta.as_deref())?;
-
-            // Fire webhook immediately
-            let mut metadata = HashMap::new();
-            if let Some(ip) = ip_address {
-                metadata.insert("ip".to_string(), ip.to_string());
-            }
-            metadata.insert("user_id".to_string(), user_id.to_string());
-            self.webhook_manager
-                .fire(SecurityEventType::CanaryTriggered, user_id, metadata);
-
-            // Return false — canary accounts never grant access
-            return Ok(false);
-        }
-
-        let data = store.get(user_id)?;
-        TwoFactorAuth::verify_token_with_config(
-            &data.secret,
-            token,
-            verification_config(data.algorithm),
-        )
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn get_two_factor_store_for_tests() -> Arc<InMemoryStore> {
     test_two_factor_store()
-}
-
-// ---------------------------------------------------------------------------
-// Multi-tenant support (Issue: multi-tenant 2FA)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ProvisionTenantRequest {
-    pub tenant_id: String,
-    pub name: String,
-    pub max_users: u32,
-    pub totp_issuer: String,
-    pub rate_limit_max_failures: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProvisionTenantResponse {
-    pub tenant_id: String,
-    pub name: String,
-    pub max_users: u32,
-    pub totp_issuer: String,
-    pub rate_limit_max_failures: u32,
-    /// `true` if `tenant_id` already existed and this call returned the
-    /// existing tenant's config instead of creating a new one. Lets
-    /// infrastructure automation safely retry `POST /tenant/provision`
-    /// without erroring or creating duplicates.
-    pub already_existed: bool,
-}
-
-/// Maximum length for `TenantConfig::tenant_id`.
-const MAX_TENANT_ID_LEN: usize = 64;
-/// Maximum length for `TenantConfig::name`.
-const MAX_TENANT_NAME_LEN: usize = 128;
-
-/// Validates a [`TenantConfig`] before it is persisted by `provision_tenant`.
-///
-/// - `tenant_id`: non-empty, at most 64 characters, alphanumeric plus hyphens only.
-/// - `max_users`: must be >= 1.
-/// - `name`: non-empty, at most 128 characters.
-///
-/// On failure, returns a `BAD_REQUEST` [`ApiError`] naming the offending field
-/// in `details.field`.
-fn validate_tenant_config(config: &TenantConfig) -> Result<(), ApiError> {
-    let bad_field = |field: &str, message: String| {
-        ApiError::bad_request(message, Some(serde_json::json!({ "field": field })))
-    };
-
-    if config.tenant_id.is_empty() {
-        return Err(bad_field("tenant_id", "tenant_id must not be empty".into()));
-    }
-    if config.tenant_id.len() > MAX_TENANT_ID_LEN {
-        return Err(bad_field(
-            "tenant_id",
-            format!("tenant_id must be at most {MAX_TENANT_ID_LEN} characters"),
-        ));
-    }
-    if !config
-        .tenant_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err(bad_field(
-            "tenant_id",
-            "tenant_id must contain only alphanumeric characters and hyphens".into(),
-        ));
-    }
-
-    if config.max_users < 1 {
-        return Err(bad_field("max_users", "max_users must be >= 1".into()));
-    }
-
-    if config.name.is_empty() {
-        return Err(bad_field("name", "name must not be empty".into()));
-    }
-    if config.name.len() > MAX_TENANT_NAME_LEN {
-        return Err(bad_field(
-            "name",
-            format!("name must be at most {MAX_TENANT_NAME_LEN} characters"),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Handlers that operate within a single tenant's namespace.
-/// All user data is scoped to the tenant; cross-tenant access is rejected
-/// at the `TenantScopedStore` level.
-pub struct MultiTenantHandlers {
-    store: TenantScopedStore,
-    limiter: Arc<dyn RateLimiter>,
-}
-
-impl MultiTenantHandlers {
-    pub fn new(store: TenantScopedStore) -> Self {
-        Self {
-            limiter: Arc::new(InMemoryRateLimiter::default()),
-            store,
-        }
-    }
-
-    pub fn with_limiter(store: TenantScopedStore, limiter: Arc<dyn RateLimiter>) -> Self {
-        Self { store, limiter }
-    }
-
-    pub fn enable_two_factor(
-        &self,
-        caller: &AuthenticatedUser,
-        user_id: &str,
-        email: &str,
-    ) -> Result<EnableTwoFactorResponse, String> {
-        caller.authorize(user_id).map_err(|e| e.to_string())?;
-
-        if let Ok(existing) = self.store.get(user_id) {
-            if existing.enabled {
-                return Err(
-                    "2FA is already enabled. To re-enroll, you must first disable it.".to_string(),
-                );
-            }
-        }
-
-        let setup = TwoFactorAuth::setup(email, self.store.issuer())?;
-
-        // Persist Argon2id hashes only — the plaintext codes are returned to
-        // the caller once below and never stored.
-        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)?;
-
-        self.store.save(
-            user_id,
-            TwoFactorData {
-                secret: setup.secret.clone(),
-                backup_codes: hashed_backup_codes,
-                enabled: false,
-                algorithm: setup.config.algorithm,
-                last_used_step: None,
-            },
-        )?;
-
-        Ok(EnableTwoFactorResponse {
-            secret: setup.secret,
-            qr_code: setup.qr_code_base64,
-            backup_codes: setup.backup_codes,
-            otpauth_uri: setup.otpauth_uri,
-        })
-    }
-
-    pub fn verify_and_activate(
-        &self,
-        caller: &AuthenticatedUser,
-        user_id: &str,
-        token: &str,
-    ) -> Result<bool, String> {
-        caller.authorize(user_id).map_err(|e| e.to_string())?;
-
-        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "verify", user_id);
-        if let RateLimitResult::Blocked {
-            retry_after_secs, ..
-        } = self.limiter.record_failure(key.as_str())
-        {
-            return Err(ApiError::rate_limited(
-                format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ),
-                retry_after_secs,
-            )
-            .to_string());
-        }
-
-        let data = self.store.get(user_id)?;
-        let result = TwoFactorAuth::verify_token_with_config(
-            &data.secret,
-            token,
-            verification_config(data.algorithm),
-        )?;
-        if result {
-            self.store.update_enabled(user_id, true)?;
-            self.limiter.record_success(key.as_str());
-        }
-        Ok(result)
-    }
-
-    pub fn disable_two_factor(
-        &self,
-        caller: &AuthenticatedUser,
-        user_id: &str,
-        token: &str,
-    ) -> Result<bool, String> {
-        caller.authorize(user_id).map_err(|e| e.to_string())?;
-
-        let key = TenantRateLimitKey::new(&self.store.config.tenant_id, "disable", user_id);
-        if let RateLimitResult::Blocked {
-            retry_after_secs, ..
-        } = self.limiter.record_failure(key.as_str())
-        {
-            return Err(ApiError::rate_limited(
-                format!(
-                    "Too many failed attempts. Retry after {} seconds.",
-                    retry_after_secs
-                ),
-                retry_after_secs,
-            )
-            .to_string());
-        }
-
-        let data = self.store.get(user_id)?;
-        if !data.enabled {
-            return Ok(false);
-        }
-        let result = TwoFactorAuth::verify_token_with_config(
-            &data.secret,
-            token,
-            verification_config(data.algorithm),
-        )?;
-        if result {
-            self.store.update_enabled(user_id, false)?;
-            self.limiter.record_success(key.as_str());
-        }
-        Ok(result)
-    }
-}
-
-/// Super-admin handler for tenant provisioning.
-pub struct TenantProvisioningHandlers {
-    registry: Arc<TenantRegistry>,
-}
-
-impl TenantProvisioningHandlers {
-    pub fn new(registry: Arc<TenantRegistry>) -> Self {
-        Self { registry }
-    }
-
-    /// Provision a tenant (super-admin only — caller must be verified externally).
-    ///
-    /// Idempotent: calling this repeatedly with the same `tenant_id` never
-    /// errors or creates a duplicate. The first call creates the tenant and
-    /// returns `already_existed: false`; subsequent calls return the
-    /// existing tenant's config with `already_existed: true`. This lets
-    /// infrastructure automation safely retry provisioning on failure.
-    pub fn provision_tenant(
-        &self,
-        _super_admin: &AuthenticatedAdmin,
-        req: ProvisionTenantRequest,
-    ) -> Result<ProvisionTenantResponse, ApiError> {
-        let config = TenantConfig {
-            tenant_id: req.tenant_id.clone(),
-            name: req.name.clone(),
-            max_users: req.max_users,
-            totp_issuer: req.totp_issuer.clone(),
-            rate_limit_max_failures: req.rate_limit_max_failures,
-            lockout_threshold: 10,
-        };
-        validate_tenant_config(&config)?;
-        let (existing_or_new, already_existed) = self
-            .registry
-            .provision(config)
-            .map_err(|e| ApiError::internal_error(e, None))?;
-        Ok(ProvisionTenantResponse {
-            tenant_id: existing_or_new.tenant_id,
-            name: existing_or_new.name,
-            max_users: existing_or_new.max_users,
-            totp_issuer: existing_or_new.totp_issuer,
-            rate_limit_max_failures: existing_or_new.rate_limit_max_failures,
-            already_existed,
-        })
-    }
-
-    pub fn get_tenant_config(&self, tenant_id: &str) -> Option<TenantConfig> {
-        self.registry.get_config(tenant_id)
-    }
-}
-// Pool metrics endpoint
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize, Clone, PartialEq)]
-pub struct PoolStatsResponse {
-    pub active: u32,
-    pub idle: u32,
-    pub max: u32,
-}
-
-pub struct PoolMetricsHandlers;
-
-#[cfg(not(test))]
-impl PoolMetricsHandlers {
-    /// Return current pool utilisation. Only available when backed by Postgres
-    /// and `POOL_STATS_ENABLED=1` is set in the environment.
-    /// Requires admin authentication.
-    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
-        if std::env::var("POOL_STATS_ENABLED").as_deref() != Ok("1") {
-            return Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string());
-        }
-        match two_factor_store().try_pool_stats() {
-            Some(stats) => Ok(PoolStatsResponse {
-                active: stats.active,
-                idle: stats.idle,
-                max: stats.max,
-            }),
-            None => Err("pool stats require direct access to PostgresTwoFactorStore; call store.pool_stats() directly".to_string()),
-        }
-    }
-}
-
-#[cfg(test)]
-impl PoolMetricsHandlers {
-    pub fn pool_stats(_admin: &AuthenticatedAdmin) -> Result<PoolStatsResponse, String> {
-        // In tests there is no real pool; return a fixed sentinel so the
-        // endpoint handler can be exercised without a database.
-        Ok(PoolStatsResponse {
-            active: 0,
-            idle: 0,
-            max: 0,
-        })
-    }
-}
-
-/// WebSocket endpoint for real-time leaderboard updates.
-///
-/// Mount this at `GET /leaderboard/ws`.
-pub async fn leaderboard_ws(req: HttpRequest, stream: Payload) -> Result<HttpResponse, Error> {
-    leaderboard_ws_endpoint(req, stream).await
-}
-
-#[cfg(test)]
-mod pool_metrics_tests {
-    use super::*;
-
-    #[test]
-    fn test_pool_stats_admin_access_succeeds() {
-        let admin = AuthenticatedAdmin::new("admin-user");
-        let result = PoolMetricsHandlers::pool_stats(&admin);
-        assert!(result.is_ok());
-        let stats = result.unwrap();
-        assert_eq!(stats.active, 0);
-        assert_eq!(stats.idle, 0);
-        assert_eq!(stats.max, 0);
-    }
-
-    mod revoke_session_tests {
-        use super::*;
-        use crate::two_factor::InMemoryStore;
-        use std::sync::Arc;
-
-        fn handlers() -> TwoFactorHandlers {
-            TwoFactorHandlers::with_store(Arc::new(InMemoryStore::default()))
-        }
-
-        #[test]
-        fn test_revoke_specific_session() {
-            let h = handlers();
-            let caller = AuthenticatedUser::new("user-1");
-
-            let result = h.revoke_session(
-                &caller,
-                RevokeSessionRequest {
-                    session_id: Some("jti-abc".to_string()),
-                    revoke_all: false,
-                },
-            );
-            assert!(result.is_ok());
-
-            assert!(h.store.is_session_revoked("user-1", "jti-abc", 0));
-            // A different session_id for the same user is untouched.
-            assert!(!h.store.is_session_revoked("user-1", "jti-other", 0));
-        }
-
-        #[test]
-        fn test_revoke_all_sessions() {
-            let h = handlers();
-            let caller = AuthenticatedUser::new("user-2");
-
-            let before = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            let result = h.revoke_session(
-                &caller,
-                RevokeSessionRequest {
-                    session_id: None,
-                    revoke_all: true,
-                },
-            );
-            assert!(result.is_ok());
-
-            // Any session issued at/before the revoke_all call is now invalid,
-            // even though its specific JTI was never explicitly revoked.
-            assert!(h
-                .store
-                .is_session_revoked("user-2", "jti-never-seen", before));
-
-            // A session issued after revoke_all is fine.
-            let after = before + 100;
-            assert!(!h.store.is_session_revoked("user-2", "jti-fresh", after));
-        }
-
-        #[test]
-        fn test_revoked_token_rejected_on_use() {
-            let h = handlers();
-            let caller = AuthenticatedUser::new("user-3");
-
-            h.revoke_session(
-                &caller,
-                RevokeSessionRequest {
-                    session_id: Some("jti-xyz".to_string()),
-                    revoke_all: false,
-                },
-            )
-            .unwrap();
-
-            // Simulates what auth middleware should do on every request:
-            // check is_session_revoked before trusting the bearer token.
-            let issued_at = 0;
-            let is_valid = !h.store.is_session_revoked("user-3", "jti-xyz", issued_at);
-            assert!(!is_valid, "revoked token must be rejected");
-        }
-    }
-
-    #[test]
-    fn test_pool_stats_requires_authentication() {
-        // This test verifies that calling pool_stats requires an admin parameter.
-        // If we tried to call pool_stats() without a parameter, it would not compile.
-        // The admin parameter is required, so only authenticated admins can call it.
-        let admin = AuthenticatedAdmin::new("admin-user");
-        let result = PoolMetricsHandlers::pool_stats(&admin);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_pool_stats_different_admin_still_succeeds() {
-        // Multiple admins can all access the metrics
-        let admin1 = AuthenticatedAdmin::new("admin-1");
-        let admin2 = AuthenticatedAdmin::new("admin-2");
-
-        let result1 = PoolMetricsHandlers::pool_stats(&admin1);
-        let result2 = PoolMetricsHandlers::pool_stats(&admin2);
-
-        assert!(result1.is_ok());
-        assert!(result2.is_ok());
-    }
-
-    // -----------------------------------------------------------------------
-    // Issue #1061 – Unified failure-count key ("2fa:{user_id}")
-    // -----------------------------------------------------------------------
-
-    /// Both verify_and_activate and verify_login_token must produce the same
-    /// rate-limit key "2fa:{user_id}" so a success on either path resets the
-    /// failure counter for both endpoints.
-    #[test]
-    fn test_verify_and_login_share_same_rate_limit_key() {
-        let verify_key = TwoFactorHandlers::rate_limit_key("2fa", "alice");
-        let login_key  = TwoFactorHandlers::rate_limit_key("2fa", "alice");
-        assert_eq!(
-            verify_key, login_key,
-            "verify_and_activate and verify_login_token must share the same 2fa:{{user_id}} key"
-        );
-        assert_eq!(verify_key, "2fa:alice");
-    }
-
-    /// Fail verify_and_activate N-1 times → call record_success on the shared
-    /// "2fa:{user_id}" key (simulating a successful verify_login_token) →
-    /// verify_and_activate must not be rate-limited on the next call.
-    #[test]
-    fn test_failed_verify_counter_is_reset_by_login_success_key() {
-        use crate::rate_limiter::InMemoryRateLimiter;
-        use crate::two_factor::InMemoryStore;
-        use std::sync::Arc;
-
-        let store = Arc::new(InMemoryStore::default());
-        let limiter = Arc::new(InMemoryRateLimiter::default());
-        let handlers = TwoFactorHandlers::with_store_and_limiter(
-            store.clone() as Arc<dyn crate::two_factor::TwoFactorStore>,
-            limiter.clone(),
-        );
-
-        let caller = AuthenticatedUser::new("key-test-user");
-        let enroll_req = EnableTwoFactorRequest {
-            user_id: "key-test-user".to_string(),
-            email: "key@example.com".to_string(),
-            idempotency_key: None,
-        };
-        let _ = handlers.enroll(&caller, enroll_req);
-
-        // Accumulate 2 failures via verify_and_activate.
-        let bad_verify = VerifyTwoFactorRequest {
-            user_id: "key-test-user".to_string(),
-            token: "000000".to_string(),
-        };
-        for _ in 0..2 {
-            let _ = handlers.verify_and_activate(&caller, bad_verify.clone());
-        }
-
-        // Simulate a successful login by calling record_success on the unified key.
-        let key = TwoFactorHandlers::rate_limit_key("2fa", "key-test-user");
-        assert_eq!(key, "2fa:key-test-user");
-        limiter.record_success(&key);
-
-        // After reset, verify_and_activate must not return a rate-limit error.
-        let result = handlers.verify_and_activate(&caller, bad_verify.clone());
-        match result {
-            Err(e) => {
-                let msg = format!("{:?}", e);
-                assert!(
-                    !msg.contains("Too many") && !msg.contains("rate"),
-                    "verify_and_activate must not be rate-limited after login success reset; got: {msg}"
-                );
-            }
-            Ok(_) => {}
-        }
-    }
 }
 
 /// Issue #1226: parallel recovery requests must not both redeem one backup code.
 ///
 /// Assumption: every request reads a (possibly stale) snapshot, verifies the
 /// code against it, and may only proceed after the store's atomic
-/// `remove_backup_code` compare-and-delete succeeds for that exact hash.
+/// `remove_backup_code` succeeds. Exactly one of N concurrent requests
+/// calling `remove_backup_code` with the same code hash will get `true`; all
+/// others must be rejected.
 #[cfg(test)]
 mod backup_code_race_tests {
     use super::*;
