@@ -597,6 +597,27 @@ impl TwoFactorStore for PostgresTwoFactorStore {
         Ok(())
     }
 
+    /// Single conditional UPDATE: Postgres re-checks the `?` predicate under
+    /// the row lock, so only one concurrent request can remove a given code.
+    fn remove_backup_code(&self, user_id: &str, stored_code: &str) -> Result<bool, String> {
+        let user_id = user_id.to_string();
+        let stored_code = stored_code.to_string();
+        let result = self.with_retry(|| {
+            sqlx::query(
+                r#"
+                UPDATE user_two_factor
+                SET backup_codes = (backup_codes::jsonb - $2)::text,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = $1 AND backup_codes::jsonb ? $2
+                "#,
+            )
+            .bind(&user_id)
+            .bind(&stored_code)
+            .execute(&self.pool)
+        })?;
+        Ok(result.rows_affected() == 1)
+    }
+
     fn log_recovery_code_usage(
         &self,
         user_id: &str,

@@ -65,3 +65,12 @@ MIT
 
 <!-- handsoff-issue-1200 -->
 - #1200: [stellar-contracts] Minimize public emergency-profile data
+
+<!-- handsoff-issue-1227 -->
+- #1227: [backend-2fa] Enforce TOTP replay protection atomically
+
+<!-- handsoff-issue-1261 -->
+- #1261: [backend-2fa] Add webhook signature key versioning
+
+<!-- handsoff-issue-1320 -->
+- #1320: [Contracts] Add Celo event indexing compatibility fixtures
