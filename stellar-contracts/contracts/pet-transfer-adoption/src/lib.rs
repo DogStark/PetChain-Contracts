@@ -32,6 +32,7 @@ mod test;
 #[cfg(test)]
 mod test_cross_contract;
 #[cfg(test)]
+mod test_error_codes;
 mod test_state_machine;
 mod vet_registry;
 

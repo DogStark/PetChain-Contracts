@@ -58,6 +58,27 @@ jobs:
         working-directory: stellar-contracts
         run: ./scripts/generate_abi_snapshot.sh --check
 
+  error-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Fails on removed, reused or renumbered contract error codes (Issue
+      # #1255). See stellar-contracts/docs/error-compatibility.md.
+      - name: Check contract error compatibility
+        working-directory: stellar-contracts
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          if git show "origin/${BASE_REF}:stellar-contracts/error-codes.json" > "$RUNNER_TEMP/base-error-codes.json" 2>/dev/null; then
+            python3 scripts/check_error_compat.py --base "$RUNNER_TEMP/base-error-codes.json"
+          else
+            python3 scripts/check_error_compat.py
+          fi
+
   cross-contract:
     runs-on: ubuntu-latest
     steps:

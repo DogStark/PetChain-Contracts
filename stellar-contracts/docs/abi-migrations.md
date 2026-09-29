@@ -37,6 +37,11 @@ existing ones, since off-chain integrators match on the numeric code.
 
 ## Log
 
+### 2026-09-24 — Error compatibility policy (#1255)
+
+- All contract error codes are now pinned in `error-codes.json` and checked
+  in CI; see [error-compatibility.md](error-compatibility.md).
+
 ### 2026-09-27 — Emergency notification replay protection, consent canonicalization, vet credential issuer rotation (#1338, #1337, #1336)
 
 **New public functions** (all additive, no existing signature changed):
