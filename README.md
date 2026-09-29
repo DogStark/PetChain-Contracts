@@ -111,6 +111,9 @@ MIT
 
 ## Handsoff notes
 
+<!-- handsoff-issue-1313 -->
+- #1313: [Contracts] Add Soroban persistent-storage TTL extension failure handling
+
 <!-- handsoff-issue-1188 -->
 - #1188: [pet-transfer-adoption] Prevent adoption of nonexistent or inactive pets
 
