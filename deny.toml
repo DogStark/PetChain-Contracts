@@ -1,0 +1,65 @@
+# cargo-deny supply-chain policy for the workspace.
+# Enforced in CI via `cargo deny check` (see .github/workflows/cargo-deny.yml).
+#
+# Scope: RustSec advisories, allowed licenses, duplicate critical crates, and
+# registry/git sources. This file does not affect crate source, public ABI,
+# storage layout, error discriminants, or authorization semantics.
+
+[graph]
+# Check the whole workspace dependency graph.
+all-features = true
+
+[advisories]
+# Fail the build on any RustSec advisory that is not explicitly ignored below.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Explicit allow-list of licenses acceptable for this workspace.
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+# Fail on any license not present in the allow-list.
+unused-allowed-license = "deny"
+
+[bans]
+# Deny duplicate versions of critical crates that must stay single-versioned.
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "all"
+
+[[bans.deny]]
+name = "openssl"
+reason = "Prefer rustls; openssl pulls in system TLS and duplicate native deps."
+
+[[bans.deny]]
+name = "openssl-sys"
+reason = "Prefer rustls; openssl-sys pulls in system TLS and duplicate native deps."
+
+[[bans.deny]]
+name = "native-tls"
+reason = "Prefer rustls for a consistent, auditable TLS stack."
+
+[[bans.deny]]
+name = "time"
+version = "<0.3.36"
+reason = "CVE-2024-42304 / RUSTSEC-2024-0370: use time >= 0.3.36."
+
+[sources]
+# Restrict dependencies to crates.io and explicitly approved git sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
