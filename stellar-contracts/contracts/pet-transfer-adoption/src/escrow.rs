@@ -117,6 +117,7 @@ pub fn bps_share(amount: i128, bps: u32) -> Result<i128, EscrowError> {
         .checked_add(remainder)
         .ok_or(EscrowError::InvalidAmount)
 }
+}
 
 /// Platform fee for `amount`, rounded down to a whole stroop.
 pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
@@ -580,6 +581,95 @@ mod tests {
     fn fee_calculation_correct() {
         assert_eq!(compute_platform_fee(10_000_000, 250), Ok(250_000));
         assert_eq!(compute_seller_amount(10_000_000, 250), Ok(9_750_000));
+    }
+
+    #[test]
+    fn fee_calculation_conserves_maximum_positive_amount() {
+        let amount = i128::MAX;
+        let fee = compute_platform_fee(amount, 10_000);
+
+        assert_eq!(fee, amount);
+        assert_eq!(compute_seller_amount(amount, 10_000), 0);
+        assert_eq!(fee + compute_seller_amount(amount, 10_000), amount);
+    }
+
+    /// Documents the escrow accounting invariant: after every successful
+    /// terminal path, buyer + seller + platform + contract equals the total
+    /// token balance before deposit, and the contract retains no funds.
+    /// The existing state checks above cover unauthorized, invalid-input, and
+    /// replay attempts; this matrix covers each successful lifecycle path.
+    #[test]
+    fn lifecycle_paths_conserve_tokens() {
+        let fee_rates = [0, 1, 250, 5_000, 9_999, 10_000];
+
+        for case in 0..24u64 {
+            let c = setup();
+            let amount = 1 + ((case * 7_919) % 50_000_000) as i128;
+            let fee_bps = fee_rates[case as usize % fee_rates.len()];
+            let transfer_id = 10_000 + case;
+            let total_before = c.balance(&c.buyer)
+                + c.balance(&c.seller)
+                + c.balance(&c.platform)
+                + c.balance(&c.contract);
+
+            c.run(|| {
+                init_escrow_config(&c.env, fee_bps, c.platform.clone(), c.token.clone());
+                deposit_fee(&c.env, transfer_id, c.buyer.clone(), c.seller.clone(), amount);
+            });
+
+            match case % 5 {
+                0 => c.run(|| finalize_transfer(&c.env, transfer_id)),
+                1 => c.run(|| refund_fee(&c.env, transfer_id)),
+                2 => {
+                    c.run(|| dispute_transfer(&c.env, transfer_id, c.buyer.clone()));
+                    c.run(|| refund_fee(&c.env, transfer_id));
+                }
+                3 => {
+                    let seller_bps = fee_rates[(case as usize + 1) % fee_rates.len()];
+                    c.run(|| dispute_transfer(&c.env, transfer_id, c.buyer.clone()));
+                    c.run(|| {
+                        admin_resolve_dispute(
+                            &c.env,
+                            transfer_id,
+                            DisputeDecision::Split(seller_bps),
+                        )
+                    });
+                }
+                _ => {
+                    c.run(|| {
+                        c.env.ledger().with_mut(|ledger| {
+                            ledger.timestamp += DEFAULT_ESCROW_DEADLINE_SECONDS + 1;
+                        });
+                        cancel_expired_escrow(&c.env, transfer_id);
+                    });
+                }
+            }
+
+            let total_after = c.balance(&c.buyer)
+                + c.balance(&c.seller)
+                + c.balance(&c.platform)
+                + c.balance(&c.contract);
+            assert_eq!(total_after, total_before, "case {case} changed token supply");
+            assert_eq!(c.balance(&c.contract), 0, "case {case} left escrow funds");
+        }
+    }
+
+    #[test]
+    fn finalize_resource_impact_stays_bounded() {
+        let c = setup();
+        let cpu_before = c.env.budget().cpu_instruction_cost();
+        let mem_before = c.env.budget().memory_bytes_cost();
+
+        c.run(|| {
+            init_escrow_config(&c.env, 250, c.platform.clone(), c.token.clone());
+            deposit_fee(&c.env, 30_000, c.buyer.clone(), c.seller.clone(), 10_000_000);
+            finalize_transfer(&c.env, 30_000);
+        });
+
+        let cpu_used = c.env.budget().cpu_instruction_cost() - cpu_before;
+        let mem_used = c.env.budget().memory_bytes_cost() - mem_before;
+        assert!(cpu_used < 50_000_000, "escrow finalize CPU cost regressed: {cpu_used}");
+        assert!(mem_used < 10_000_000, "escrow finalize memory cost regressed: {mem_used}");
     }
 
     #[test]
