@@ -163,7 +163,7 @@ jobs:
           ls -lh "${ARCHIVE_NAME}"*.tar.gz
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stellar-release-${{ github.ref_name }}
           path: |
@@ -219,7 +219,7 @@ jobs:
         run: bash scripts/verify_release.sh ${{ github.ref_name }}
 
       - name: Upload verification result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reproducibility-verification-${{ github.ref_name }}
           path: |
