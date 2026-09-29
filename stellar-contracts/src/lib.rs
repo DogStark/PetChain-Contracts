@@ -193,6 +193,11 @@ pub use consent_canon::*;
 pub use credential_issuers::*;
 pub use emergency_notify::*;
 
+mod consent_policy;
+pub use consent_policy::*;
+
+pub mod insurance_state;
+
 mod test_access_grant_pagination;
 #[cfg(test)]
 mod test_access_revocation_cascade;
@@ -255,6 +260,16 @@ mod test_storage_metrics;
 mod test_upgrade_proposal;
 #[cfg(test)]
 mod test_verify_claim_document;
+#[cfg(test)]
+mod test_discriminant_stability;
+#[cfg(test)]
+mod test_custody_digest;
+#[cfg(test)]
+mod test_custody_chain;
+#[cfg(test)]
+mod test_consent_versioning;
+#[cfg(test)]
+mod test_consent_cleanup;
 #[cfg(test)]
 mod test_vet_credential_issuer_rotation;
 
@@ -334,6 +349,9 @@ const MAX_PREREQUISITES: u32 = 20;
 /// Maximum entries in the chain-of-custody Vec stored per pet.
 /// ~100 transfers ÃƒÆ’Ã¢â‚¬â€ ~80 bytes/entry = ~8 KiB, well within the 64 KiB limit.
 const MAX_CUSTODY_CHAIN: u32 = 100;
+
+/// Maximum index slots inspected per `compact_consents_bounded` call.
+const MAX_CONSENT_CLEANUP_STEPS: u32 = 50;
 
 /// Canonical domain string for the chain-of-custody digest
 /// ([`PetChainContract::get_custody_chain_digest`]). The domain binds the
@@ -11153,6 +11171,207 @@ impl PetChainContract {
         );
     }
 
+    // ---------------------------------------------------------------
+    // Consent purpose / data-scope versioning (#1201)
+    // ---------------------------------------------------------------
+
+    /// Current consent policy version (defaults to 1).
+    pub fn get_consent_policy_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&ConsentPolicyKey::PolicyVersion)
+            .unwrap_or(1)
+    }
+
+    /// Admin-only: bump the policy version after an incompatible change to
+    /// consent purposes or data scopes. Consents stamped with an older
+    /// version stop being current until the owner renews them.
+    pub fn bump_consent_policy_version(env: Env, admin: Address) -> u32 {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let next = Self::get_consent_policy_version(env.clone())
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidState));
+        env.storage()
+            .instance()
+            .set(&ConsentPolicyKey::PolicyVersion, &next);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("CPOL_VER"),), next);
+        next
+    }
+
+    /// Owner-only: renew a consent under the current policy version.
+    pub fn renew_consent_version(env: Env, consent_id: u64, owner: Address) -> u32 {
+        owner.require_auth();
+        let consent: Consent = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::Consent(consent_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
+        if consent.owner != owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let v = Self::get_consent_policy_version(env.clone());
+        env.storage()
+            .instance()
+            .set(&ConsentPolicyKey::ConsentVersion(consent_id), &v);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("CONS_RNW"), consent_id), v);
+        v
+    }
+
+    /// Policy version a consent was last granted/renewed under. Consents
+    /// never stamped are treated as version 1.
+    pub fn get_consent_version(env: Env, consent_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get(&ConsentPolicyKey::ConsentVersion(consent_id))
+            .unwrap_or(1)
+    }
+
+    /// True only if the consent exists, is active, unexpired, and its stamped
+    /// version equals the current policy version.
+    pub fn is_consent_current(env: Env, consent_id: u64) -> bool {
+        match env
+            .storage()
+            .instance()
+            .get::<ConsentKey, Consent>(&ConsentKey::Consent(consent_id))
+        {
+            Some(c) => {
+                let live = c.is_active
+                    && !c
+                        .expires_at
+                        .map(|e| is_expired(env.ledger().timestamp(), e))
+                        .unwrap_or(false);
+                live && Self::get_consent_version(env.clone(), consent_id)
+                    == Self::get_consent_policy_version(env)
+            }
+            None => false,
+        }
+    }
+
+    /// Resumable, bounded consent index compaction (#1203).
+    ///
+    /// Inspects at most `max_steps` (1..=`MAX_CONSENT_CLEANUP_STEPS`) index
+    /// slots starting at the stored per-pet cursor. A stale (inactive or
+    /// expired) consent is removed by moving the last index slot into its
+    /// position, so no live entry is skipped and appends made between calls
+    /// are still visited. Returns `(removed, next_cursor)`; `next_cursor` is
+    /// `None` once the whole index has been swept (the cursor then resets).
+    /// Callable by the pet owner or an admin.
+    pub fn compact_consents_bounded(
+        env: Env,
+        pet_id: u64,
+        caller: Address,
+        max_steps: u32,
+    ) -> (u32, Option<u64>) {
+        caller.require_auth();
+        if max_steps == 0 || max_steps > MAX_CONSENT_CLEANUP_STEPS {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        if pet.owner != caller && !Self::is_admin_address(&env, &caller) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut cursor: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentPolicyKey::CleanupCursor(pet_id))
+            .unwrap_or(1);
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&ConsentKey::PetConsentCount(pet_id))
+            .unwrap_or(0);
+        let mut removed: u32 = 0;
+
+        for _ in 0..max_steps {
+            if cursor > count {
+                break;
+            }
+            let idx_key = ConsentKey::PetConsentIndex((pet_id, cursor));
+            let cid: Option<u64> = env.storage().instance().get(&idx_key);
+            let stale = match cid {
+                Some(cid) => match env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, Consent>(&ConsentKey::Consent(cid))
+                {
+                    Some(c) => {
+                        !c.is_active
+                            || c.expires_at.map(|e| is_expired(now, e)).unwrap_or(false)
+                    }
+                    None => true,
+                },
+                None => true,
+            };
+            if !stale {
+                cursor += 1;
+                continue;
+            }
+            if let Some(cid) = cid {
+                env.storage().instance().remove(&ConsentKey::Consent(cid));
+                env.storage()
+                    .instance()
+                    .remove(&ConsentPolicyKey::ConsentVersion(cid));
+            }
+            // Move the last slot into this one; do not advance the cursor so
+            // the moved entry is inspected next.
+            if cursor != count {
+                if let Some(last) = env
+                    .storage()
+                    .instance()
+                    .get::<ConsentKey, u64>(&ConsentKey::PetConsentIndex((pet_id, count)))
+                {
+                    env.storage().instance().set(&idx_key, &last);
+                }
+            }
+            env.storage()
+                .instance()
+                .remove(&ConsentKey::PetConsentIndex((pet_id, count)));
+            count -= 1;
+            removed += 1;
+        }
+
+        env.storage()
+            .instance()
+            .set(&ConsentKey::PetConsentCount(pet_id), &count);
+        let next = if cursor > count {
+            env.storage()
+                .instance()
+                .remove(&ConsentPolicyKey::CleanupCursor(pet_id));
+            None
+        } else {
+            env.storage()
+                .instance()
+                .set(&ConsentPolicyKey::CleanupCursor(pet_id), &cursor);
+            Some(cursor)
+        };
+        env.events().publish(
+            (soroban_sdk::symbol_short!("CONS_GC"), pet_id),
+            (removed, next),
+        );
+        (removed, next)
+    }
+
+    /// Read-only check of the claim state machine (#1204): whether `from`
+    /// may transition to `to`. See [`insurance_state`].
+    pub fn can_transition_claim_status(
+        _env: Env,
+        from: InsuranceClaimStatus,
+        to: InsuranceClaimStatus,
+    ) -> bool {
+        insurance_state::is_valid_claim_transition(&from, &to)
+    }
+
     /// Append a [`CustodyEntry`] to the chain-of-custody log for `pet_id`.
     fn append_custody_entry(
         env: &Env,
@@ -11170,10 +11389,22 @@ impl PetChainContract {
         if chain.len() >= MAX_CUSTODY_CHAIN {
             panic_with_error!(env, ContractError::TooManyItems);
         }
+        // Append-only ancestry (#1195): reject self-links, entries that do not
+        // continue from the previous entry's `to`, and non-monotonic
+        // timestamps, so the chain is always a single acyclic path.
+        if from == to {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+        let now = env.ledger().timestamp();
+        if let Some(prev) = chain.last() {
+            if prev.to != from || now < prev.timestamp {
+                panic_with_error!(env, ContractError::InvalidState);
+            }
+        }
         chain.push_back(CustodyEntry {
             from,
             to,
-            timestamp: env.ledger().timestamp(),
+            timestamp: now,
             transfer_type,
         });
         env.storage()
