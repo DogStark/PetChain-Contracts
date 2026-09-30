@@ -1,0 +1,33 @@
+{
+  "$schema": "../../celo-contracts/allowed-licenses.json",
+  "_comment": "npm dependency policy fixture — DISALLOWED LICENSE (issue #1349). This file documents what check-licenses.js outputs when a package uses a license not in allowed-licenses.json. It is NOT a real package.json entry — it is a human-readable test fixture used by dep-policy.yml to verify that CI correctly identifies the dependency, version, source, and violation.",
+  "_fixtureType": "disallowed-npm-license",
+  "simulatedPackage": {
+    "name": "evil-gpl-package",
+    "version": "2.0.0",
+    "license": "GPL-3.0-only",
+    "resolved": "https://registry.npmjs.org/evil-gpl-package/-/evil-gpl-package-2.0.0.tgz",
+    "description": "Hypothetical package whose GPL-3.0 license is not on the approved list."
+  },
+  "expectedViolation": {
+    "package": "evil-gpl-package",
+    "version": "2.0.0",
+    "license": "GPL-3.0-only",
+    "repository": "https://registry.npmjs.org/evil-gpl-package",
+    "violation": "disallowed-license"
+  },
+  "expectedOutput": "[license-check] FAIL — 1 license violation(s):\n  evil-gpl-package@2.0.0  license=GPL-3.0-only  source=https://registry.npmjs.org/evil-gpl-package  violation=disallowed-license",
+  "mitigation": "To add an approved exception, add an entry to celo-contracts/allowed-licenses.json under 'allowedExceptions' with 'name', 'version', 'license', 'reason', 'reviewedDate', 'expires', and 'issue' fields, then open a PR for review. See docs/dependency-policy.md.",
+  "disallowedLicensesReference": [
+    "GPL-2.0",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "AGPL-3.0",
+    "SSPL-1.0",
+    "Commons-Clause",
+    "BUSL-1.1"
+  ]
+}

@@ -1,5 +1,9 @@
 name: cargo-deny
 
+# Standalone cargo-deny job retained for fast feedback on Rust-only changes.
+# The full dependency-policy suite (including npm and lockfile checks) runs in
+# dep-policy.yml. See docs/dependency-policy.md for the policy overview.
+
 on:
   push:
     branches: [main]
@@ -14,7 +18,7 @@ permissions:
 
 jobs:
   cargo-deny:
-    name: cargo-deny check
+    name: cargo-deny check (advisories / licenses / bans / sources)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,5 +30,32 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
-      - name: Run cargo-deny
-        run: cargo deny check
+      # cargo-deny prints one structured line per violation in the form:
+      #
+      #   error[<code>]: <rule description>
+      #     --> <crate name> v<version> (<source URL>)
+      #
+      # This ensures each CI failure identifies: dependency, version, source,
+      # and the specific policy violation — satisfying the issue #1349
+      # acceptance criteria.
+      #
+      # Flags used:
+      #   --format human  — human-readable output with source + version context
+      #   (default)       — checks all four sections: advisories, licenses,
+      #                     bans, sources
+      - name: Run cargo-deny (all checks with source+version in output)
+        run: |
+          cargo deny check \
+            --format human \
+            2>&1 | tee cargo-deny-output.txt
+
+          # Re-exit with failure if cargo deny found violations.
+          grep -q '^error' cargo-deny-output.txt && exit 1 || exit 0
+
+      - name: Upload cargo-deny output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-deny-violations
+          path: cargo-deny-output.txt
+          if-no-files-found: ignore

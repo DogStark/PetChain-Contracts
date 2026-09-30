@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Approved SPDX license identifiers for npm dependencies (issue #1349). Any package whose license is not in this list fails CI. Exceptions require a versioned entry in allowed-exceptions and a PR review. See docs/dependency-policy.md for the full process.",
+  "allowedLicenses": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+    "0BSD",
+    "BlueOak-1.0.0",
+    "Python-2.0"
+  ],
+  "allowedExceptions": [
+    {
+      "name": "@openzeppelin/contracts",
+      "version": "^5.0.0",
+      "license": "MIT",
+      "reason": "Core OpenZeppelin library. MIT is in the approved list; exception kept as an explicit audit anchor.",
+      "reviewedDate": "2026-09-30",
+      "expires": "2027-09-30",
+      "issue": "#1349"
+    }
+  ],
+  "disallowedLicenses": [
+    "GPL-2.0",
+    "GPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "AGPL-3.0",
+    "SSPL-1.0",
+    "Commons-Clause",
+    "BUSL-1.1"
+  ]
+}

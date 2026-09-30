@@ -1,22 +1,40 @@
 # cargo-deny supply-chain policy for the workspace.
-# Enforced in CI via `cargo deny check` (see .github/workflows/cargo-deny.yml).
+# Enforced in CI via `cargo deny check` (see .github/workflows/cargo-deny.yml
+# and .github/workflows/dep-policy.yml).
 #
 # Scope: RustSec advisories, allowed licenses, duplicate critical crates, and
 # registry/git sources. This file does not affect crate source, public ABI,
 # storage layout, error discriminants, or authorization semantics.
+#
+# Exception process: all entries in [advisories.ignore], [bans.skip], and
+# [bans.skip-tree] must include a `reason` field referencing the PR or issue
+# that reviewed the exception, and an `expires` date (ISO-8601). The
+# dep-policy CI job fails on expired exceptions so they are re-evaluated
+# regularly. See docs/dependency-policy.md for the full process.
 
 [graph]
-# Check the whole workspace dependency graph.
+# Check the whole workspace dependency graph including all features.
 all-features = true
 
+# ---------------------------------------------------------------------------
+# Advisories
+# ---------------------------------------------------------------------------
 [advisories]
 # Fail the build on any RustSec advisory that is not explicitly ignored below.
 version = 2
 yanked = "deny"
+# Each ignored advisory must include: id, reason, and (in a comment) the
+# expiry date so the review cycle is tracked in git history.
 ignore = []
 
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
 [licenses]
-# Explicit allow-list of licenses acceptable for this workspace.
+# Explicit allow-list of SPDX identifiers acceptable for production artifacts.
+# To add a license: open a PR, add an entry here, and document the rationale
+# in docs/dependency-policy.md. Unlicensed crates require individual exceptions
+# (see [[licenses.exceptions]] below).
 version = 2
 confidence-threshold = 0.9
 allow = [
@@ -31,35 +49,92 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
 ]
-# Fail on any license not present in the allow-list.
+# Warn loudly when a license appears in the allow list but is not used by any
+# dependency (keeps the allow list minimal and reviewable).
 unused-allowed-license = "deny"
 
+# Crates with non-standard or missing license metadata require explicit
+# per-crate exceptions. Each exception must name the crate, the accepted
+# license expression, and carry a `reason` and an expiry date in a comment.
+# Template:
+#   [[licenses.exceptions]]
+#   allow = ["<SPDX-expr>"]
+#   name = "<crate>"
+#   version = "<semver-req>"
+#   # reason: <issue/PR ref> — reviewed <date>, expires <date>
+#
+# (No current exceptions.)
+
+# ---------------------------------------------------------------------------
+# Banned crates and duplicate-version policy
+# ---------------------------------------------------------------------------
 [bans]
-# Deny duplicate versions of critical crates that must stay single-versioned.
+# Allow multiple versions of most crates; only listed crates are single-version
+# enforced or fully banned.
 multiple-versions = "allow"
+# Deny wildcard version requirements in Cargo.toml so dependencies are
+# pinned to a reviewable range.
 wildcards = "deny"
 highlight = "all"
 
+# --- Explicitly banned crates -----------------------------------------------
+# These crates must not appear anywhere in the dependency graph. Each entry
+# carries the reason so `cargo deny check` output names the crate, version,
+# source, and violation in one line.
+
 [[bans.deny]]
 name = "openssl"
-reason = "Prefer rustls; openssl pulls in system TLS and duplicate native deps."
+reason = "Prefer rustls; openssl introduces system-TLS coupling and duplicated native deps."
 
 [[bans.deny]]
 name = "openssl-sys"
-reason = "Prefer rustls; openssl-sys pulls in system TLS and duplicate native deps."
+reason = "Prefer rustls; openssl-sys introduces system-TLS coupling and duplicated native deps."
 
 [[bans.deny]]
 name = "native-tls"
-reason = "Prefer rustls for a consistent, auditable TLS stack."
+reason = "Prefer rustls for a consistent, auditable, memory-safe TLS stack."
 
 [[bans.deny]]
 name = "time"
 version = "<0.3.36"
-reason = "CVE-2024-42304 / RUSTSEC-2024-0370: use time >= 0.3.36."
+reason = "RUSTSEC-2024-0370 / CVE-2024-42304: use time >= 0.3.36."
 
+[[bans.deny]]
+name = "atty"
+reason = "RUSTSEC-2021-0145: atty has a soundness issue on Windows; use is-terminal instead."
+
+[[bans.deny]]
+name = "ansi_term"
+reason = "Unmaintained (RUSTSEC-2021-0139). Use owo-colors or similar actively-maintained crate."
+
+# --- Version skips (reviewed exceptions) ------------------------------------
+# Use [[bans.skip]] for a specific duplicate version that has been reviewed,
+# or [[bans.skip-tree]] to skip an entire sub-graph pulled in transitively.
+# Every entry requires a reason comment with the originating issue/PR and an
+# expiry date. Expired entries must be re-reviewed.
+#
+# Template:
+#   [[bans.skip]]
+#   name = "<crate>"
+#   version = "<semver-req>"
+#   # reason: <issue/PR ref> — reviewed <date>, expires <date>
+#
+# (No current skip exceptions.)
+
+# ---------------------------------------------------------------------------
+# Registry and git source policy
+# ---------------------------------------------------------------------------
 [sources]
-# Restrict dependencies to crates.io and explicitly approved git sources.
+# Only crates.io is an approved registry for production dependencies.
+# Any dependency fetched from an unrecognised registry or arbitrary git URL
+# fails `cargo deny check` with the source URL included in the violation line,
+# making the dependency, version, source, and violation visible in one message.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Approved git sources (must include a pinned revision comment):
+# Template:
+#   allow-git = ["https://github.com/org/repo"]
+#   # reason: <issue/PR ref> — pinned to commit <sha>, expires <date>
 allow-git = []

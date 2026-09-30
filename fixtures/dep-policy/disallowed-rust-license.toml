@@ -1,0 +1,51 @@
+# fixtures/dep-policy/disallowed-rust-license.toml
+#
+# Rust dependency policy fixture — DISALLOWED LICENSE (issue #1349).
+#
+# Purpose: documents what a cargo-deny violation looks like when a crate uses a
+# license that is not on the approved allow-list (deny.toml [licenses].allow).
+#
+# This file is a human-readable test fixture, not a real Cargo.toml. It is
+# used by the dep-policy-fixture-test job in .github/workflows/dep-policy.yml
+# to verify that the CI toolchain correctly identifies:
+#
+#   - dependency name
+#   - version
+#   - registry source
+#   - violation type (license not allowed)
+#
+# Simulated crate metadata
+# ------------------------
+# [package]
+# name     = "evil-gpl-crate"
+# version  = "1.0.0"
+# license  = "GPL-3.0-only"           <-- NOT in deny.toml allow list
+# source   = "registry+https://github.com/rust-lang/crates.io-index"
+#
+# Expected cargo-deny output (excerpt):
+#   error[L002]: license 'GPL-3.0-only' is not in the allow list
+#     --> evil-gpl-crate v1.0.0 (registry+https://github.com/rust-lang/crates.io-index)
+#
+# The error line contains: dependency name, version, source, and violation.
+#
+# Mitigation
+# ----------
+# If a legitimate dependency carries a disallowed license, open a PR that:
+#   1. Adds a [[licenses.exceptions]] entry in deny.toml with `name`, `version`,
+#      `allow`, `reason`, and an expiry date comment.
+#   2. Updates docs/dependency-policy.md with the rationale.
+#   3. Gets approval from a repository maintainer.
+#
+# Disallowed licenses for Rust (mirrors deny.toml [bans]):
+#
+#   GPL-2.0, GPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0, AGPL-3.0, SSPL-1.0
+#
+# Source-policy violation example
+# --------------------------------
+# A crate with an unapproved git source would produce:
+#
+#   error[S001]: unknown git repository
+#     --> my-fork v0.1.0 (git+https://github.com/attacker/my-fork?rev=abc1234)
+#
+# To add an approved git source, add the repository URL to
+# deny.toml [sources].allow-git with a pinned revision comment.
