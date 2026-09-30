@@ -18,10 +18,10 @@ jobs:
       run:
         working-directory: celo-contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: celo-contracts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned, reproducible Rust toolchain (see celo-contracts/rust-toolchain.toml).
       - name: Install Rust toolchain
@@ -52,7 +52,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo registry and build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -124,7 +124,7 @@ jobs:
           sha256sum sbom.cdx.json >> checksums.txt
 
       - name: Upload SBOM, checksums, and build metadata
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: celo-contracts-sbom
           path: |
@@ -136,9 +136,9 @@ jobs:
   cross-network-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -263,7 +263,7 @@ jobs:
           "
 
       - name: Upload release metadata
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-metadata
           path: release-metadata/toolchain.txt
