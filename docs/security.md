@@ -60,3 +60,11 @@ Once reported, your submission will move through the following defined states:
 * If a bug bounty program is active, qualifying reports submitted in accordance with this policy may be eligible for a reward based on severity (evaluated using CVSS v3/SWC registry guidelines).
 
 Thank you for helping secure the PetChain ecosystem!
+
+
+
+## How to Test
+
+1. Review SECURITY.md to ensure all contact channels, SLA timelines, and triage states are clearly defined and accurate.
+
+2. Verify that issue templates include explicit warnings against sharing secret keys or exploit details in public issues.
