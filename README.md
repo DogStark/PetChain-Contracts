@@ -126,6 +126,7 @@ Rules:
 - [Development](docs/development.md)
 - [API Overview](docs/api.md)
 - [Error Codes](docs/error-codes.md)
+- [Dependency Policy](docs/dependency-policy.md)
 - [Security Policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

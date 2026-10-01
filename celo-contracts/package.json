@@ -8,7 +8,10 @@
     "test": "hardhat test",
     "lint": "solhint 'contracts/**/*.sol'",
     "gas:snapshot": "hardhat test test/gas.registry.test.js",
-    "gas:check": "hardhat test test/gas.registry.test.js"
+    "gas:check": "hardhat test test/gas.registry.test.js",
+    "license:check": "node scripts/check-licenses.js",
+    "license:check:json": "node scripts/check-licenses.js --json",
+    "dep-policy:test-fixtures": "node scripts/test-dep-policy-fixtures.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

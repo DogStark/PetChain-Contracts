@@ -1,0 +1,209 @@
+name: Dependency Policy
+
+# Runs on every push and pull request that touches dependency manifests,
+# lock files, or the policy configuration itself. Also runs on a weekly
+# schedule so advisory and license changes are caught without a code push.
+#
+# Enforces (issue #1349):
+#   - Rust: cargo-deny checks advisories, licenses, banned crates, and
+#     registry/git sources for the whole workspace.
+#   - npm: license-checker validates that every package installed in
+#     celo-contracts uses an SPDX license on the approved list.
+#   - Fixtures: verifies the policy test fixtures (disallowed license examples)
+#     are internally consistent so future reviewers can trust them.
+#
+# On a violation the step output includes: dependency name, version, source
+# URL, and the specific policy rule that was broken.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+      - 'celo-contracts/package.json'
+      - 'celo-contracts/package-lock.json'
+      - 'celo-contracts/allowed-licenses.json'
+      - 'celo-contracts/.npmrc'
+      - 'celo-contracts/scripts/check-licenses.js'
+      - '.github/workflows/dep-policy.yml'
+      - 'fixtures/dep-policy/**'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'deny.toml'
+      - 'celo-contracts/package.json'
+      - 'celo-contracts/package-lock.json'
+      - 'celo-contracts/allowed-licenses.json'
+      - 'celo-contracts/.npmrc'
+      - 'celo-contracts/scripts/check-licenses.js'
+      - '.github/workflows/dep-policy.yml'
+      - 'fixtures/dep-policy/**'
+  schedule:
+    # Re-check advisories and license data weekly even without code changes.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust — cargo-deny: advisories, licenses, bans, sources
+  # ---------------------------------------------------------------------------
+  rust-dep-policy:
+    name: Rust — cargo-deny (advisories / licenses / bans / sources)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      # Run all four cargo-deny checks together. Each violation line includes:
+      #   error[<code>]: <message>
+      #     --> <crate> v<version> (<source>)
+      # which satisfies the AC requirement to report dependency, version,
+      # source, and violation in one CI output line.
+      - name: cargo deny check — all checks
+        run: cargo deny check
+
+      # Surface expired exceptions as a hard failure so they cannot silently
+      # persist past their review date.
+      - name: Check for expired deny.toml exceptions
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          # Extract all expiry dates from comments in deny.toml
+          expired=$(grep -E 'expires [0-9]{4}-[0-9]{2}-[0-9]{2}' deny.toml \
+            | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+            | while read d; do
+                [ "$d" \< "$today" ] && echo "  expired: $d"
+              done)
+          if [ -n "$expired" ]; then
+            echo "::error::deny.toml contains expired exceptions. Re-review and update or remove them:"
+            echo "$expired"
+            exit 1
+          fi
+          echo "No expired exceptions found in deny.toml."
+
+  # ---------------------------------------------------------------------------
+  # npm — license-checker: package name, version, source, and license
+  # ---------------------------------------------------------------------------
+  npm-license-policy:
+    name: npm — license policy (celo-contracts)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: celo-contracts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: celo-contracts/package-lock.json
+
+      # Use `npm ci` to guarantee the lockfile is respected (lockfile
+      # reproducibility AC requirement).
+      - name: Install dependencies (lockfile-reproducible)
+        run: npm ci
+
+      # Each violation line from check-licenses.js includes:
+      #   <package>@<version>  license=<SPDX>  source=<registry-url>  violation=<rule>
+      # which satisfies the AC requirement to report dependency, version,
+      # source, and violation.
+      - name: Check npm license policy
+        run: npm run license:check
+
+      # Surface expired exceptions in allowed-licenses.json
+      - name: Check for expired npm exceptions
+        run: |
+          node -e "
+            const fs = require('fs');
+            const today = new Date().toISOString().slice(0, 10);
+            const policy = JSON.parse(fs.readFileSync('allowed-licenses.json', 'utf8'));
+            const expired = (policy.allowedExceptions || []).filter(e => e.expires && e.expires < today);
+            if (expired.length > 0) {
+              console.error('::error::allowed-licenses.json contains expired exceptions:');
+              for (const e of expired) {
+                console.error('  ' + e.name + '@' + e.version + ' expired ' + e.expires + ' (issue ' + e.issue + ')');
+              }
+              process.exit(1);
+            }
+            console.log('No expired exceptions in allowed-licenses.json.');
+          "
+
+  # ---------------------------------------------------------------------------
+  # Fixtures — verify policy test fixtures are internally consistent
+  # ---------------------------------------------------------------------------
+  dep-policy-fixtures:
+    name: Dependency policy fixture integrity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: celo-contracts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate dep-policy fixtures
+        run: node scripts/test-dep-policy-fixtures.js
+
+  # ---------------------------------------------------------------------------
+  # Lockfile reproducibility — ensure neither lockfile was mutated in CI
+  # ---------------------------------------------------------------------------
+  lockfile-reproducibility:
+    name: Lockfile reproducibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: celo-contracts/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # npm lockfile: `npm ci` must not modify package-lock.json
+      - name: Install npm dependencies (lockfile-reproducible)
+        working-directory: celo-contracts
+        run: npm ci
+
+      - name: Assert npm lockfile unchanged
+        run: |
+          if ! git diff --exit-code celo-contracts/package-lock.json; then
+            echo "::error::celo-contracts/package-lock.json was modified by 'npm ci'. Commit the updated lockfile."
+            exit 1
+          fi
+          echo "npm lockfile is reproducible."
+
+      # Cargo lockfile: `cargo fetch --locked` must succeed (no changes needed)
+      - name: Assert Cargo lockfile is up to date
+        run: |
+          cargo fetch --locked 2>&1
+          if ! git diff --exit-code Cargo.lock; then
+            echo "::error::Cargo.lock was modified. Commit the updated lockfile."
+            exit 1
+          fi
+          echo "Cargo lockfile is reproducible."
