@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1467 -->
 - #1467: [Contracts] Add found-pet intake and reunification workflow
+
+<!-- handsoff-issue-1468 -->
+- #1468: [Contracts] Add responder organization credentials
