@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1441 -->
 - #1441: [Contracts] Add vaccine schedule policy versions
+
+<!-- handsoff-issue-1442 -->
+- #1442: [Contracts] Add vaccine adverse-event reports
