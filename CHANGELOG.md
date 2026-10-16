@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Medication refill authorization records (#1416): refill requests are tracked as immutable records carrying the prescription ID, requester, ledger time and vet-approval state, so the full request/approval chain is auditable without ever storing private prescription text on-chain. Refills are rejected for prescriptions that are inactive or expired, approvals preserve the existing authorization checks and storage-version conventions, and input sizes, record iteration and persistent state growth are bounded; failed calls leave state unchanged.
 - Care-plan amendment history (#1414): each care-plan amendment is recorded as a new immutable revision carrying the author, ledger time and the superseded revision ID, so the full amendment chain is auditable and prior revisions can never be overwritten. Amendments preserve the existing authorization checks and storage-version conventions; input sizes, revision iteration and persistent state growth are bounded, and failed calls leave state unchanged.
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
@@ -107,19 +108,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Encryption for sensitive pet and owner fields
 - Deterministic key derivation using domain separator and contract address
-- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with timestamp + counter based unique nonces to prevent replay attacks
-- Decryption system with privacy level enforcement
-- Input validation for all public functions
-- Overflow protection on arithmetic operations
+- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with ti
 
-#### Emergency & Dispute Systems
-
-- Emergency contacts management per pet
-- Emergency override functionality for critical situations
-- Dispute system for handling ownership or data conflicts
-
-#### Transfer & Ownership
-
-- Pet transfer functionality w
-
-/* … truncated 2629 chars — edit only what you need near the top … */
+/* … truncated 528 chars — edit only what you need near the top … */
