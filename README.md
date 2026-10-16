@@ -193,6 +193,18 @@ MIT
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
 
+<!-- handsoff-issue-1425 -->
+- #1425: [Contracts] Add care-plan access purpose checks
+
+<!-- handsoff-issue-1426 -->
+- #1426: [Contracts] Add care-plan deletion and retention rules
+
+<!-- handsoff-issue-1427 -->
+- #1427: [Contracts] Add canonical laboratory analyte identifiers
+
+<!-- handsoff-issue-1428 -->
+- #1428: [Contracts] Add species-specific laboratory reference ranges
+
 <!-- handsoff-issue-1437 -->
 - #1437: [Contracts] Add laboratory result privacy tiers
 
