@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1430 -->
 - #1430: [Contracts] Add laboratory panel completeness metadata
+
+<!-- handsoff-issue-1432 -->
+- #1432: [Contracts] Add laboratory result verification attestations
