@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1406 -->
 - #1406: [Contracts] Add travel readiness evaluation for a pet
+
+<!-- handsoff-issue-1407 -->
+- #1407: [Contracts] Add destination-specific travel requirement profiles
