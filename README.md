@@ -265,6 +265,15 @@ MIT
 <!-- handsoff-issue-1451 -->
 - #1451: [Contracts] Add shelter intake attestation
 
+<!-- handsoff-issue-1457 -->
+- #1457: [Contracts] Add shelter authority delegation
+
+<!-- handsoff-issue-1458 -->
+- #1458: [Contracts] Add custody dispute evidence bundle references
+
+<!-- handsoff-issue-1459 -->
+- #1459: [Contracts] Add ownership recovery after failed adoption
+
 <!-- handsoff-issue-1463 -->
 - #1463: [Contracts] Add verified sighting reporter attestations
 
