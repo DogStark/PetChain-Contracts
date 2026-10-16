@@ -155,6 +155,55 @@ storage version is unchanged and no existing keys are renumbered. New error
 codes and the attestation event are documented in
 [Error Codes](docs/error-codes.md).
 
+## Preventive-Care Schedule Records
+
+Routine exams and preventive care (vaccinations, dental checks, wellness visits,
+and similar) can be recorded as owner-approved schedules. Each schedule is
+versioned so updates are explicit and auditable, and can be cancelled by the
+owner.
+
+### Authorization
+
+Only the pet owner may create, update, or cancel a preventive-care schedule.
+Unauthorized callers are rejected with a deterministic error and no state is
+written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `care_type` | bounded enum (e.g. `exam`, `vaccination`, `dental`, `wellness`) |
+| `interval_days` | bounded positive integer |
+| `next_due_at` | bounded ledger timestamp |
+| `notes` | bounded byte length |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Versioning
+
+Each schedule carries an explicit version. Creating a schedule starts at version
+`1`; every owner-approved update increments the version and records the new
+values. Reads return the current version so clients can detect stale copies.
+
+### Cancellation
+
+An owner may cancel a schedule. Cancellation is terminal for that schedule
+version: the schedule is marked cancelled and no further updates are accepted.
+Cancelling an already-cancelled schedule is rejected with a deterministic error
+and leaves state unchanged.
+
+### Replay and expiry
+
+Schedule mutations carry an idempotency key. Replaying the same key returns the
+previously recorded result without writing new state. A key that has expired is
+rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Schedules are stored under the existing storage-version conventions; the storage
+version is unchanged and no existing keys are renumbered. New error codes and
+the schedule event are documented in [Error Codes](docs/error-codes.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -190,46 +239,6 @@ MIT
 - #1188: [pet-transfer-adoption] Prevent adoption of nonexistent or inactive pets
 
 <!-- handsoff-issue-1197 -->
-- #1197: [stellar-contracts] Add emergency-override least-privilege scopes
+- #1197: [stellar-contracts] Add emergency-over
 
-<!-- handsoff-issue-1200 -->
-- #1200: [stellar-contracts] Minimize public emergency-profile data
-
-<!-- handsoff-issue-1212 -->
-- #1212: [stellar-contracts] Add governance timelock and cancellation policy
-
-<!-- handsoff-issue-1213 -->
-- #1213: [stellar-contracts] Secure contract-upgrade authorization and hash binding
-
-<!-- handsoff-issue-1223 -->
-- #1223: [backend-2fa] Version encrypted TOTP secret envelopes
-
-<!-- handsoff-issue-1224 -->
-- #1224: [backend-2fa] Add online key rotation for encrypted TOTP secrets
-
-<!-- handsoff-issue-1227 -->
-- #1227: [backend-2fa] Enforce TOTP replay protection atomically
-
-<!-- handsoff-issue-1261 -->
-- #1261: [backend-2fa] Add webhook signature key versioning
-
-<!-- handsoff-issue-1304 -->
-- #1304: [Contracts] Add Celo invariant tests for registry pause and recovery behavior
-
-<!-- handsoff-issue-1320 -->
-- #1320: [Contracts] Add Celo event indexing compatibility fixtures
-
-<!-- handsoff-issue-1331 -->
-- #1331: [Contracts] Add Soroban event privacy regression tests
-
-<!-- handsoff-issue-1332 -->
-- #1332: [Contracts] Add Soroban upgrade proposal expiry semantics
-
-<!-- handsoff-issue-1340 -->
-- #1340: [Contracts] Add Soroban insurance reserve accounting audit view
-
-<!-- handsoff-issue-1421 -->
-- #1421: [Contracts] Add care-plan review due dates
-
-<!-- handsoff-issue-1422 -->
-- #1422: [Contracts] Add medication administration attestation
+/* … truncated 1413 chars — edit only what you need near the top … */

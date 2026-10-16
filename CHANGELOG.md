@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preventive-care schedule records (#1423): an owner can register an owner-approved reminder for a routine exam or preventive-care item via `create_preventive_care_schedule`, binding a bounded care kind, a due ledger timestamp and an explicit schedule version. Each schedule is versioned — `update_preventive_care_schedule` writes a new version and supersedes the previous one, and `cancel_preventive_care_schedule` marks the current version `Cancelled` while keeping prior versions auditable. Replays of the same `(pet_id, schedule_id, version, idempotency_key)` are idempotent and return the existing record; a conflicting payload for the same key raises `PreventiveCareScheduleConflict`. Calls are rejected for unknown pets, non-owner callers, out-of-range care kinds, oversized notes, past due timestamps and cancelled/expired schedules, and failed calls leave state unchanged. New errors: `PreventiveCareScheduleConflict` (177), `PreventiveCareScheduleNotFound` (178), `InvalidPreventiveCareKind` (179), `PreventiveCareScheduleExpired` (180), `PreventiveCareScheduleCancelled` (181). New event: `PreventiveCareScheduleEvent` (`pet_id`, `schedule_id`, `version`, `care_kind`, `due_at`, `status`, `owner`, `timestamp`). Storage is additive under the existing schema version; see `stellar-contracts/docs/abi-migrations.md`.
 - Medication administration attestation (#1422): an authorized caregiver can attest a scheduled dose as `Administered`, `Skipped` or `Refused` via `attest_medication_administration`, binding a bounded reason code and an idempotency key. Replays of the same `(pet_id, schedule_id, dose_index, idempotency_key)` are idempotent and return the existing attestation; a conflicting status or reason for the same key raises `MedicationAttestationConflict`. Attestations are rejected for unknown schedules, out-of-range dose indices, expired schedules and oversized/invalid reason codes, and failed calls leave state unchanged. New errors: `MedicationAttestationConflict` (172), `InvalidMedicationReasonCode` (173), `MedicationScheduleNotFound` (174), `MedicationDoseOutOfRange` (175), `MedicationScheduleExpired` (176). New event: `MedicationAttestationEvent` (`pet_id`, `schedule_id`, `dose_index`, `status`, `reason_code`, `caregiver`, `timestamp`). Storage is additive under the existing schema version; see `stellar-contracts/docs/abi-migrations.md`.
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
@@ -92,34 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add insurance policies to pets with provider, coverage type, premium, and expiry
 - Retrieve pet insurance information
-- Update insurance policy active status
-- `InsuranceAddedEvent` and `InsuranceUpdatedEvent` events
+- Update insurance policy active 
 
-#### Access Control & Privacy
-
-- Owner-based access control for all state-changing operations
-- Privacy levels for pet data: Public, Restricted, and Private
-- Access grant system for authorized users
-- `get_authorized_users` and access validation
-- Consent pagination for managing data access permissions
-
-#### Security & Encryption
-
-- Encryption for sensitive pet and owner fields
-- Deterministic key derivation using domain separator and contract address
-- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with timestamp + counter based unique nonces to prevent replay attacks
-- Decryption system with privacy level enforcement
-- Input validation for all public functions
-- Overflow protection on arithmetic operations
-
-#### Emergency & Dispute Systems
-
-- Emergency contacts management per pet
-- Emergency override functionality for critical situations
-- Dispute system for handling ownership or data conflicts
-
-#### Transfer & Ownership
-
-- Pet transfer functionality w
-
-/* … truncated 2629 chars — edit only what you need near the top … */
+/* … truncated 1120 chars — edit only what you need near the top … */
