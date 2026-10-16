@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1465 -->
 - #1465: [Contracts] Add lost-pet alert escalation rules
+
+<!-- handsoff-issue-1466 -->
+- #1466: [Contracts] Add lost-pet alert radius and scope validation
