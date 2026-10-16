@@ -227,3 +227,6 @@ MIT
 
 <!-- handsoff-issue-1454 -->
 - #1454: [Contracts] Add adoption trial period policy
+
+<!-- handsoff-issue-1455 -->
+- #1455: [Contracts] Add adoption fee accounting receipt
