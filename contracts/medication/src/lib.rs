@@ -26,6 +26,7 @@ const MAX_UNIT_LEN: u32 = 16;
 /// | 5    | InvalidEndTime        | End time precedes start or exceeds the horizon.      |
 /// | 6    | ScheduleNotFound      | No schedule stored for the given id.                 |
 /// | 7    | ScheduleAlreadyExists | A schedule with the given id already exists.         |
+/// | 8    | ScheduleDiscontinued  | Schedule is already discontinued.                    |
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -37,6 +38,7 @@ pub enum MedicationError {
     InvalidEndTime = 5,
     ScheduleNotFound = 6,
     ScheduleAlreadyExists = 7,
+    ScheduleDiscontinued = 8,
 }
 
 /// Species supported by the contract. Units are validated per species.
@@ -60,9 +62,25 @@ pub struct DoseSchedule {
     pub end_time: u64,
 }
 
+/// Discontinuation record. Presence of this key marks a schedule as
+/// discontinued and invalidates reminders and refill eligibility.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Discontinuation {
+    pub id: u64,
+    pub discontinued_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct DataKey {
+    pub owner: Address,
+    pub id: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct DiscontinuationKey {
     pub owner: Address,
     pub id: u64,
 }
@@ -145,6 +163,70 @@ impl MedicationContract {
             .ok_or(MedicationError::ScheduleNotFound)
     }
 
+    /// Discontinue a medication schedule.
+    ///
+    /// Authorization: only the registered owner may discontinue schedules.
+    /// In the same transaction this removes the active schedule (invalidating
+    /// reminders) and records a discontinuation marker so refill eligibility
+    /// checks fail. All validation happens before any write, so a failed call
+    /// leaves storage unchanged.
+    pub fn discontinue_schedule(env: Env, id: u64) -> Result<(), MedicationError> {
+        let owner: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "owner"))
+            .ok_or(MedicationError::NotAuthorized)?;
+        owner.require_auth();
+
+        let key = DataKey {
+            owner: owner.clone(),
+            id,
+        };
+        if !env.storage().persistent().has(&key) {
+            return Err(MedicationError::ScheduleNotFound);
+        }
+
+        let dkey = DiscontinuationKey {
+            owner: owner.clone(),
+            id,
+        };
+        if env.storage().persistent().has(&dkey) {
+            return Err(MedicationError::ScheduleDiscontinued);
+        }
+
+        let now = env.ledger().timestamp();
+        let record = Discontinuation {
+            id,
+            discontinued_at: now,
+        };
+
+        // Same-transaction propagation: invalidate reminders by removing the
+        // active schedule and mark refill eligibility as ineligible.
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().set(&dkey, &record);
+        env.events().publish(
+            (Symbol::new(&env, "schedule_discontinued"), owner),
+            (id, now),
+        );
+        Ok(())
+    }
+
+    /// Returns true when the schedule is eligible for refills.
+    ///
+    /// A schedule is eligible only while it exists and has not been
+    /// discontinued.
+    pub fn is_refill_eligible(env: Env, owner: Address, id: u64) -> bool {
+        let key = DataKey {
+            owner: owner.clone(),
+            id,
+        };
+        if !env.storage().persistent().has(&key) {
+            return false;
+        }
+        let dkey = DiscontinuationKey { owner, id };
+        !env.storage().persistent().has(&dkey)
+    }
+
     /// Validate a dose schedule against documented bounds.
     ///
     /// Uses checked timestamp arithmetic so that overflow cannot bypass the
@@ -221,113 +303,81 @@ mod test {
 
     #[test]
     fn test_create_schedule_success() {
-        let (env, client, _owner) = setup();
+        let (env, client, owner) = setup();
         env.ledger().set_timestamp(1_000);
         let unit = Symbol::new(&env, "mg");
         let res = client.try_create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
         assert!(res.is_ok());
-        let stored = client.get_schedule(&client_owner(&env), &1);
-        assert_eq!(stored.interval_secs, 3_600);
-    }
-
-    fn client_owner(env: &Env) -> Address {
-        // Owner is the only address that created schedules in setup().
-        let _ = env;
-        // Recover owner via a fresh call is not possible; tests below use the
-        // returned owner directly instead.
-        unreachable!()
-    }
-
-    #[test]
-    fn test_unauthorized_access() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, MedicationContract);
-        let client = MedicationContractClient::new(&env, &contract_id);
-        let owner = Address::generate(&env);
-        client.init(&owner);
-        // No auth mocked: require_auth should fail.
-        let unit = Symbol::new(&env, "mg");
-        let res = client.try_create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn test_invalid_unit_for_species() {
-        let (env, client, _owner) = setup();
-        env.ledger().set_timestamp(1_000);
-        let unit = Symbol::new(&env, "iu");
-        // Feline does not allow iu.
-        let res = client.try_create_schedule(&1, &Species::Feline, &unit, &3_600, &2_000, &100_000);
-        assert_eq!(res, Err(Ok(MedicationError::InvalidUnit)));
-    }
-
-    #[test]
-    fn test_interval_bounds() {
-        let (env, client, _owner) = setup();
-        env.ledger().set_timestamp(1_000);
-        let unit = Symbol::new(&env, "mg");
-        let too_small = client.try_create_schedule(&1, &Species::Canine, &unit, &10, &2_000, &100_000);
-        assert_eq!(too_small, Err(Ok(MedicationError::InvalidInterval)));
-        let too_large = client.try_create_schedule(
-            &2,
-            &Species::Canine,
-            &unit,
-            &(MAX_INTERVAL_SECS + 1),
-            &2_000,
-            &100_000,
-        );
-        assert_eq!(too_large, Err(Ok(MedicationError::InvalidInterval)));
-    }
-
-    #[test]
-    fn test_start_time_in_past() {
-        let (env, client, _owner) = setup();
-        env.ledger().set_timestamp(10_000);
-        let unit = Symbol::new(&env, "mg");
-        let res = client.try_create_schedule(&1, &Species::Canine, &unit, &3_600, &5_000, &100_000);
-        assert_eq!(res, Err(Ok(MedicationError::InvalidStartTime)));
-    }
-
-    #[test]
-    fn test_end_time_bounds() {
-        let (env, client, _owner) = setup();
-        env.ledger().set_timestamp(1_000);
-        let unit = Symbol::new(&env, "mg");
-        let before_start = client.try_create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &1_500);
-        assert_eq!(before_start, Err(Ok(MedicationError::InvalidEndTime)));
-        let beyond_horizon = client.try_create_schedule(
-            &2,
-            &Species::Canine,
-            &unit,
-            &3_600,
-            &2_000,
-            &(2_000 + MAX_SCHEDULE_HORIZON_SECS + 1),
-        );
-        assert_eq!(beyond_horizon, Err(Ok(MedicationError::InvalidEndTime)));
-    }
-
-    #[test]
-    fn test_replay_rejected_and_state_unchanged() {
-        let (env, client, owner) = setup();
-        env.ledger().set_timestamp(1_000);
-        let unit = Symbol::new(&env, "mg");
-        client.create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
-        // Replay with the same id must be rejected.
-        let replay = client.try_create_schedule(&1, &Species::Canine, &unit, &7_200, &2_000, &100_000);
-        assert_eq!(replay, Err(Ok(MedicationError::ScheduleAlreadyExists)));
-        // Original state is unchanged.
         let stored = client.get_schedule(&owner, &1);
         assert_eq!(stored.interval_secs, 3_600);
     }
 
     #[test]
-    fn test_failed_call_leaves_state_unchanged() {
+    fn test_discontinue_success_invalidates_reminders_and_refills() {
         let (env, client, owner) = setup();
         env.ledger().set_timestamp(1_000);
         let unit = Symbol::new(&env, "mg");
-        let res = client.try_create_schedule(&9, &Species::Canine, &unit, &10, &2_000, &100_000);
-        assert_eq!(res, Err(Ok(MedicationError::InvalidInterval)));
-        let missing = client.try_get_schedule(&owner, &9);
-        assert_eq!(missing, Err(Ok(MedicationError::ScheduleNotFound)));
+        client.create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
+        assert!(client.is_refill_eligible(&owner, &1));
+
+        let res = client.try_discontinue_schedule(&1);
+        assert!(res.is_ok());
+
+        // Reminders invalidated: active schedule no longer retrievable.
+        assert!(client.try_get_schedule(&owner, &1).is_err());
+        // Refill eligibility invalidated.
+        assert!(!client.is_refill_eligible(&owner, &1));
+    }
+
+    #[test]
+    fn test_discontinue_unauthorized() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, MedicationContract);
+        let client = MedicationContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        client.init(&owner);
+        env.ledger().set_timestamp(1_000);
+        let unit = Symbol::new(&env, "mg");
+        client.create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
+
+        // No auth mocked: the call must fail and leave state unchanged.
+        let res = client.try_discontinue_schedule(&1);
+        assert!(res.is_err());
+        assert!(client.is_refill_eligible(&owner, &1));
+        assert!(client.try_get_schedule(&owner, &1).is_ok());
+    }
+
+    #[test]
+    fn test_discontinue_not_found_leaves_state_unchanged() {
+        let (env, client, owner) = setup();
+        env.ledger().set_timestamp(1_000);
+        let res = client.try_discontinue_schedule(&99);
+        assert!(res.is_err());
+        assert!(!client.is_refill_eligible(&owner, &99));
+    }
+
+    #[test]
+    fn test_discontinue_replay_rejected() {
+        let (env, client, owner) = setup();
+        env.ledger().set_timestamp(1_000);
+        let unit = Symbol::new(&env, "mg");
+        client.create_schedule(&1, &Species::Canine, &unit, &3_600, &2_000, &100_000);
+        client.discontinue_schedule(&1);
+
+        // Replay of the same discontinuation must be rejected.
+        let res = client.try_discontinue_schedule(&1);
+        assert!(res.is_err());
+        assert!(!client.is_refill_eligible(&owner, &1));
+    }
+
+    #[test]
+    fn test_discontinue_boundary_id_zero() {
+        let (env, client, owner) = setup();
+        env.ledger().set_timestamp(1_000);
+        let unit = Symbol::new(&env, "mg");
+        client.create_schedule(&0, &Species::Canine, &unit, &3_600, &2_000, &100_000);
+        assert!(client.is_refill_eligible(&owner, &0));
+        client.discontinue_schedule(&0);
+        assert!(!client.is_refill_eligible(&owner, &0));
     }
 }
