@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1425 -->
 - #1425: [Contracts] Add care-plan access purpose checks
+
+<!-- handsoff-issue-1426 -->
+- #1426: [Contracts] Add care-plan deletion and retention rules
