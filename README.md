@@ -205,6 +205,15 @@ MIT
 <!-- handsoff-issue-1428 -->
 - #1428: [Contracts] Add species-specific laboratory reference ranges
 
+<!-- handsoff-issue-1429 -->
+- #1429: [Contracts] Add explicit laboratory unit conversion rules
+
+<!-- handsoff-issue-1430 -->
+- #1430: [Contracts] Add laboratory panel completeness metadata
+
+<!-- handsoff-issue-1432 -->
+- #1432: [Contracts] Add laboratory result verification attestations
+
 <!-- handsoff-issue-1437 -->
 - #1437: [Contracts] Add laboratory result privacy tiers
 
