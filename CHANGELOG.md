@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Adoption consent evidence commitments (#1453): required consent artifacts are bound to a canonical SHA-256 digest (`consent_evidence_digest`) over domain, version, pet ID, applicant, artifact kind and each artifact's own digest in canonical order; the contract stores only commitments/digests and never applicant personal documents in plaintext. `record_adoption_consent` enforces existing owner/applicant authorization, bounds artifact count and per-artifact digest size, rejects replays of an already-recorded commitment, and honors an optional expiry; failed calls leave state unchanged. New error codes and events are documented in `stellar-contracts/docs/abi-migrations.md`.
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
@@ -119,84 +120,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Transfer & Ownership
 
-- Pet transfer functionality with ownership updates
-- Multisig transfer support for enhanced security
-- Pet adoption workflow support
+- Pet transfer functionality w
 
-#### Vet Registry
-
-- Vet registration and verification system
-- Vet information storage and retrieval
-
-#### Behavior & Nutrition Tracking
-
-- Pet behavior logging and history
-- Nutrition tracking and records management
-
-#### Data & Storage
-
-- IPFS integration for off-chain data storage
-- Attachment support for linking external files
-- Efficient on-chain storage patterns with optimized data structures
-- Statistics aggregation for pet data insights
-
-#### Governance & Upgrades
-
-- Upgrade proposal system for contract improvements
-- Admin initialization and management
-
-#### Backend Services
-
-- Configurable TOTP-based Two-Factor Authentication (2FA)
-- Cryptographic agility (SHA1/SHA256/SHA512, 6/8 digits, custom periods)
-- QR code generation for authenticator apps
-- 8 backup codes generation with recovery mechanism
-- Rate limiting support
-- Database schema for 2FA data persistence
-
-#### Testing
-
-- Comprehensive test suite with 43+ tests covering all 13 public contract functions
-- 100% function coverage
-- Decryption test suite with 21 tests for privacy enforcement and error handling
-- Encryption nonce tests with 8 test cases for uniqueness and format validation
-- Gas optimization benchmarks
-- Insurance comprehensive tests
-- Edge case and error condition testing
-
-#### Documentation
-
-- API reference documentation for all contract functions
-- Grooming API reference
-- Insurance API reference
-- Development setup guide
-- Contributing guidelines
-- Security policy with vulnerability reporting process
-- Gas optimization report with benchmark results
-- Test documentation and coverage summaries
-
-#### CI/CD & Tooling
-
-- `.gitignore` configured for Rust/Stellar project
-- Development and configuration guides
-
-### Changed
-
-#### Gas Optimization
-
-- Storage pattern optimization: single storage instance reused across operations, batched storage writes
-- Loop optimization for vaccination history functions (40-60% gas reduction)
-- Access control function inlining (25-30% reduction)
-- Vector pre-allocation for known sizes
-- Timestamp and storage instance caching
-- **Overall average gas savings: 30-40%** across all operations
-
-### Fixed
-
-- **Critical cryptographic vulnerability**: Fixed fixed-nonce encryption in `encrypt_sensitive_data` that enabled replay attacks, dictionary attacks, and information leakage. Now uses ledger timestamp + persistent counter for unique 12-byte nonces.
-- Input limit validations for public functions
-- Proper error handling for invalid pet IDs and missing records
-
-### Security
-
-- 
+/* … truncated 2629 chars — edit only what you need near the top … */
