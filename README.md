@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1433 -->
 - #1433: [Contracts] Add sample collection and processing timestamps
+
+<!-- handsoff-issue-1434 -->
+- #1434: [Contracts] Add laboratory result provenance for imported data
