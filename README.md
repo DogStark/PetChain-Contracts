@@ -192,3 +192,6 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1433 -->
+- #1433: [Contracts] Add sample collection and processing timestamps
