@@ -192,3 +192,6 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1413 -->
+- #1413: [Contracts] Add owner and vet co-signed care plans
