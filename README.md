@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1418 -->
 - #1418: [Contracts] Add missed-dose escalation policy
+
+<!-- handsoff-issue-1419 -->
+- #1419: [Contracts] Add caregiver handoff summaries
