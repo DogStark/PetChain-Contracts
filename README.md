@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1434 -->
 - #1434: [Contracts] Add laboratory result provenance for imported data
+
+<!-- handsoff-issue-1435 -->
+- #1435: [Contracts] Add laboratory panel trend comparison API
