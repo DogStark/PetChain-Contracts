@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1410 -->
 - #1410: [Contracts] Add passport export cursor for large histories
+
+<!-- handsoff-issue-1411 -->
+- #1411: [Contracts] Add cross-network passport commitment format
