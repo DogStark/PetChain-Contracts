@@ -192,3 +192,6 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1409 -->
+- #1409: [Contracts] Add travel certificate issuer authorization
