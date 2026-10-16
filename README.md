@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1449 -->
 - #1449: [Contracts] Add foster custody agreements with automatic expiry
+
+<!-- handsoff-issue-1451 -->
+- #1451: [Contracts] Add shelter intake attestation
