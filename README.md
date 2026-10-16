@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1409 -->
 - #1409: [Contracts] Add travel certificate issuer authorization
+
+<!-- handsoff-issue-1410 -->
+- #1410: [Contracts] Add passport export cursor for large histories
