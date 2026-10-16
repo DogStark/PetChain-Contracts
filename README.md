@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1426 -->
 - #1426: [Contracts] Add care-plan deletion and retention rules
+
+<!-- handsoff-issue-1427 -->
+- #1427: [Contracts] Add canonical laboratory analyte identifiers
