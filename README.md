@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1407 -->
 - #1407: [Contracts] Add destination-specific travel requirement profiles
+
+<!-- handsoff-issue-1408 -->
+- #1408: [Contracts] Add time-limited passport sharing grants
