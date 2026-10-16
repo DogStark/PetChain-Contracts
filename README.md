@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1405 -->
 - #1405: [Contracts] Add travel certificate lifecycle
+
+<!-- handsoff-issue-1406 -->
+- #1406: [Contracts] Add travel readiness evaluation for a pet
