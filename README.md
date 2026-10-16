@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1427 -->
 - #1427: [Contracts] Add canonical laboratory analyte identifiers
+
+<!-- handsoff-issue-1428 -->
+- #1428: [Contracts] Add species-specific laboratory reference ranges
