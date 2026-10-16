@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1445 -->
 - #1445: [Contracts] Add vaccination certificate offline verification payload
+
+<!-- handsoff-issue-1446 -->
+- #1446: [Contracts] Add vaccination certificate batch verification
