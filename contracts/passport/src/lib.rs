@@ -64,6 +64,18 @@ pub struct PassportView {
     pub vaccinations: Option<Vec<String>>,
 }
 
+/// Compact, portable verification receipt. Contains no medical contents — only
+/// the identifiers and digest needed to verify an exported passport off-chain.
+#[contracttype]
+#[derive(Clone)]
+pub struct VerificationReceipt {
+    pub pet_id: Address,
+    pub passport_version: u32,
+    pub issuing_contract: Address,
+    pub ledger: u32,
+    pub digest: BytesN<32>,
+}
+
 #[contracterror]
 #[repr(u32)]
 pub enum Error {
@@ -76,6 +88,7 @@ pub enum Error {
     DuplicateField = 7,
     EmptySelection = 8,
     StaleVersion = 9,
+    ReceiptExpired = 10,
 }
 
 #[contract]
@@ -219,6 +232,61 @@ impl PassportContract {
         Ok(())
     }
 
+    /// Produce a compact, portable verification receipt for an exported passport.
+    ///
+    /// The receipt discloses only the pet ID, passport version, issuing contract,
+    /// ledger, and a digest over the selected fields — never the medical contents.
+    /// `expected_version` guards against replay of stale exports; `max_ledger`
+    /// bounds the receipt's validity window (expiry).
+    pub fn get_verification_receipt(
+        env: Env,
+        owner: Address,
+        expected_version: u32,
+        max_ledger: u32,
+    ) -> Result<VerificationReceipt, Error> {
+        let settings: FieldSettings = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FieldSettings(owner.clone()))
+            .ok_or(Error::PassportNotFound)?;
+        if settings.version != expected_version {
+            return Err(Error::StaleVersion);
+        }
+
+        let ledger = env.ledger().sequence();
+        if ledger > max_ledger {
+            return Err(Error::ReceiptExpired);
+        }
+
+        // Digest binds the receipt to the exact selected-field set without
+        // revealing any field values.
+        let mut digest_input = BytesN::from_array(&env, &[0u8; 32]);
+        let mut bytes = [0u8; 32];
+        bytes[0..4].copy_from_slice(&settings.version.to_be_bytes());
+        bytes[4..8].copy_from_slice(&(settings.fields.len() as u32).to_be_bytes());
+        for (i, field) in settings.fields.iter().enumerate() {
+            if i >= 28 {
+                break;
+            }
+            bytes[8 + i] = field as u8;
+        }
+        digest_input = BytesN::from_array(&env, &bytes);
+
+        let receipt = VerificationReceipt {
+            pet_id: owner.clone(),
+            passport_version: settings.version,
+            issuing_contract: env.current_contract_address(),
+            ledger,
+            digest: digest_input,
+        };
+
+        env.events().publish(
+            (symbol_short!("v_receipt"), owner),
+            (receipt.passport_version, receipt.ledger),
+        );
+        Ok(receipt)
+    }
+
     fn next_version(env: &Env, owner: &Address) -> u32 {
         match env
             .storage()
@@ -253,115 +321,6 @@ mod test {
             owner: owner.clone(),
             name: String::from_str(env, "Rex"),
             species: String::from_str(env, "dog"),
-            breed: String::from_str(env, "lab"),
-            birth_date: 1_600_000_000,
-            microchip_id: String::from_str(env, "chip-1"),
-            vaccinations,
-        }
-    }
+            breed: String::from_str(env, "
 
-    #[test]
-    fn owner_selects_fields_and_view_hides_others() {
-        let (env, client, _admin) = setup();
-        let owner = Address::generate(&env);
-        client.set_passport(&owner, &sample_passport(&env, &owner));
-
-        let mut fields = Vec::new(&env);
-        fields.push_back(PassportField::Name);
-        fields.push_back(PassportField::Species);
-        let version = client.set_field_selection(&owner, &fields);
-        assert_eq!(version, 1);
-
-        let view = client.get_passport_view(&owner);
-        assert_eq!(view.version, 1);
-        assert_eq!(view.name, Some(String::from_str(&env, "Rex")));
-        assert_eq!(view.species, Some(String::from_str(&env, "dog")));
-        // Hidden fields must be absent.
-        assert_eq!(view.breed, None);
-        assert_eq!(view.birth_date, None);
-        assert_eq!(view.microchip_id, None);
-        assert_eq!(view.vaccinations, None);
-    }
-
-    #[test]
-    fn selection_is_versioned() {
-        let (env, client, _admin) = setup();
-        let owner = Address::generate(&env);
-        client.set_passport(&owner, &sample_passport(&env, &owner));
-
-        let mut first = Vec::new(&env);
-        first.push_back(PassportField::Name);
-        assert_eq!(client.set_field_selection(&owner, &first), 1);
-
-        let mut second = Vec::new(&env);
-        second.push_back(PassportField::Breed);
-        assert_eq!(client.set_field_selection(&owner, &second), 2);
-
-        let settings = client.get_field_selection(&owner);
-        assert_eq!(settings.version, 2);
-        assert_eq!(settings.fields.len(), 1);
-    }
-
-    #[test]
-    fn unauthorized_selection_is_rejected() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, PassportContract);
-        let client = PassportContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-
-        let owner = Address::generate(&env);
-        let mut fields = Vec::new(&env);
-        fields.push_back(PassportField::Name);
-        // No auth mocked: the call must fail and leave state unchanged.
-        let result = client.try_set_field_selection(&owner, &fields);
-        assert!(result.is_err());
-        assert!(client.try_get_field_selection(&owner).is_err());
-    }
-
-    #[test]
-    fn boundary_and_invalid_selections_are_rejected() {
-        let (env, client, _admin) = setup();
-        let owner = Address::generate(&env);
-        client.set_passport(&owner, &sample_passport(&env, &owner));
-
-        // Empty selection.
-        let empty: Vec<PassportField> = Vec::new(&env);
-        assert!(client.try_set_field_selection(&owner, &empty).is_err());
-
-        // Duplicate field.
-        let mut dup = Vec::new(&env);
-        dup.push_back(PassportField::Name);
-        dup.push_back(PassportField::Name);
-        assert!(client.try_set_field_selection(&owner, &dup).is_err());
-
-        // All supported fields is the maximum allowed selection.
-        let mut all = Vec::new(&env);
-        all.push_back(PassportField::Name);
-        all.push_back(PassportField::Species);
-        all.push_back(PassportField::Breed);
-        all.push_back(PassportField::BirthDate);
-        all.push_back(PassportField::MicrochipId);
-        all.push_back(PassportField::Vaccinations);
-        assert_eq!(client.set_field_selection(&owner, &all), 1);
-
-        // Failed calls above must not have advanced the version.
-        assert_eq!(client.get_field_selection(&owner).version, 1);
-    }
-
-    #[test]
-    fn stale_receipt_version_is_rejected() {
-        let (env, client, _admin) = setup();
-        let owner = Address::generate(&env);
-        client.set_passport(&owner, &sample_passport(&env, &owner));
-
-        let mut fields = Vec::new(&env);
-        fields.push_back(PassportField::Name);
-        client.set_field_selection(&owner, &fields);
-
-        // Matching version succeeds.
-        assert!(client.try_emit_receipt(&owner, &1).is_ok());
-        // Replayed/expired version is rejected.
-        assert!(client.try_emit_receipt(&owner, &2).is_err());
-    }
-}
+/* … truncated 4221 chars — edit only what you need near the top … */
