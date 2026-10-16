@@ -120,6 +120,90 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Medication Administration Attestation
+
+Scheduled medication doses can be attested by an authorized caregiver as
+`administered`, `skipped`, or `refused`. Attestation is recorded on-chain so the
+care plan reflects what actually happened to each scheduled dose.
+
+### Authorization
+
+Only a caregiver already authorized for the pet (via the existing consent /
+caregiver authorization conventions) may attest a dose. Unauthorized callers are
+rejected with a deterministic error and no state is written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `status` | one of `administered`, `skipped`, `refused` |
+| `reason_code` | bounded numeric code; required for `skipped` and `refused` |
+| `idempotency_key` | bounded byte length; unique per attestation |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Idempotency and replay
+
+Each attestation carries an idempotency key. Replaying the same key returns the
+previously recorded attestation without writing new state, so retries are safe.
+A key that has expired is rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Attestations are stored under the existing storage-version conventions; the
+storage version is unchanged and no existing keys are renumbered. New error
+codes and the attestation event are documented in
+[Error Codes](docs/error-codes.md).
+
+## Preventive-Care Schedule Records
+
+Routine exams and preventive care (vaccinations, dental checks, wellness visits,
+and similar) can be recorded as owner-approved schedules. Each schedule is
+versioned so updates are explicit and auditable, and can be cancelled by the
+owner.
+
+### Authorization
+
+Only the pet owner may create, update, or cancel a preventive-care schedule.
+Unauthorized callers are rejected with a deterministic error and no state is
+written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `care_type` | bounded enum (e.g. `exam`, `vaccination`, `dental`, `wellness`) |
+| `interval_days` | bounded positive integer |
+| `next_due_at` | bounded ledger timestamp |
+| `notes` | bounded byte length |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Versioning
+
+Each schedule carries an explicit version. Creating a schedule starts at version
+`1`; every owner-approved update increments the version and records the new
+values. Reads return the current version so clients can detect stale copies.
+
+### Cancellation
+
+An owner may cancel a schedule. Cancellation is terminal for that schedule
+version: the schedule is marked cancelled and no further updates are accepted.
+Cancelling an already-cancelled schedule is rejected with a deterministic error
+and leaves state unchanged.
+
+### Replay and expiry
+
+Schedule mutations carry an idempotency key. Replaying the same key returns the
+previously recorded result without writing new state. A key that has expired is
+rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Schedules are stored under the existing storage-version conventions; the storage
+version is unchanged and no existing keys are renumbered. New error codes and
+the schedule event are documented in [Error Codes](docs/error-codes.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -155,7 +239,7 @@ MIT
 - #1188: [pet-transfer-adoption] Prevent adoption of nonexistent or inactive pets
 
 <!-- handsoff-issue-1197 -->
-- #1197: [stellar-contracts] Add emergency-override least-privilege scopes
+- #1197: [stellar-contracts] Add emergency-over
 
 <!-- handsoff-issue-1200 -->
 - #1200: [stellar-contracts] Minimize public emergency-profile data
@@ -192,6 +276,93 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1425 -->
+- #1425: [Contracts] Add care-plan access purpose checks
+
+<!-- handsoff-issue-1426 -->
+- #1426: [Contracts] Add care-plan deletion and retention rules
+
+<!-- handsoff-issue-1427 -->
+- #1427: [Contracts] Add canonical laboratory analyte identifiers
+
+<!-- handsoff-issue-1428 -->
+- #1428: [Contracts] Add species-specific laboratory reference ranges
+
+<!-- handsoff-issue-1429 -->
+- #1429: [Contracts] Add explicit laboratory unit conversion rules
+
+<!-- handsoff-issue-1430 -->
+- #1430: [Contracts] Add laboratory panel completeness metadata
+
+<!-- handsoff-issue-1432 -->
+- #1432: [Contracts] Add laboratory result verification attestations
+
+<!-- handsoff-issue-1433 -->
+- #1433: [Contracts] Add sample collection and processing timestamps
+
+<!-- handsoff-issue-1434 -->
+- #1434: [Contracts] Add laboratory result provenance for imported data
+
+<!-- handsoff-issue-1435 -->
+- #1435: [Contracts] Add laboratory panel trend comparison API
+
+<!-- handsoff-issue-1437 -->
+- #1437: [Contracts] Add laboratory result privacy tiers
+
+<!-- handsoff-issue-1438 -->
+- #1438: [Contracts] Add lab data validation fixtures across supported species
+
+<!-- handsoff-issue-1439 -->
+- #1439: [Contracts] Add vaccine batch and manufacturer provenance
+
+<!-- handsoff-issue-1440 -->
+- #1440: [Contracts] Add multi-dose vaccination series tracking
+
+<!-- handsoff-issue-1441 -->
+- #1441: [Contracts] Add vaccine schedule policy versions
+
+<!-- handsoff-issue-1442 -->
+- #1442: [Contracts] Add vaccine adverse-event reports
+
+<!-- handsoff-issue-1443 -->
+- #1443: [Contracts] Add certificate replacement with supersession links
+
+<!-- handsoff-issue-1444 -->
+- #1444: [Contracts] Add vaccination administration-site metadata
+
+<!-- handsoff-issue-1445 -->
+- #1445: [Contracts] Add vaccination certificate offline verification payload
+
+<!-- handsoff-issue-1446 -->
+- #1446: [Contracts] Add vaccination certificate batch verification
+
+<!-- handsoff-issue-1447 -->
+- #1447: [Contracts] Add vaccine product registry governance
+
+<!-- handsoff-issue-1448 -->
+- #1448: [Contracts] Add vaccination schedule reconciliation preview
+
+<!-- handsoff-issue-1449 -->
+- #1449: [Contracts] Add foster custody agreements with automatic expiry
+
+<!-- handsoff-issue-1451 -->
+- #1451: [Contracts] Add shelter intake attestation
+
+<!-- handsoff-issue-1457 -->
+- #1457: [Contracts] Add shelter authority delegation
+
+<!-- handsoff-issue-1458 -->
+- #1458: [Contracts] Add custody dispute evidence bundle references
+
+<!-- handsoff-issue-1459 -->
+- #1459: [Contracts] Add ownership recovery after failed adoption
+
+<!-- handsoff-issue-1463 -->
+- #1463: [Contracts] Add verified sighting reporter attestations
+
+<!-- handsoff-issue-1464 -->
+- #1464: [Contracts] Add private sighting location reveal authorization
 
 <!-- handsoff-issue-1465 -->
 - #1465: [Contracts] Add lost-pet alert escalation rules

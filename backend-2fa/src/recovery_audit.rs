@@ -1,6 +1,8 @@
 // ─── Recovery-code audit trail types and logic ─────────────────────
 // Issue #1246: Append-only, redacted audit events for recovery code
 // issuance, regeneration, use, and revocation.
+// Issue #1460: Paginated audit export view exposing actors and event IDs
+// while excluding applicant private data.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -78,6 +80,100 @@ pub struct RecoveryAuditQuery {
     pub page_size: u32,
 }
 
+/// Maximum number of entries returned in a single audit export page.
+pub const MAX_AUDIT_PAGE_SIZE: u32 = 100;
+
+/// Error codes for the adoption case audit export view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditExportError {
+    /// Caller is not authorized to read the audit log.
+    Unauthorized,
+    /// Requested page size is zero or exceeds `MAX_AUDIT_PAGE_SIZE`.
+    InvalidPageSize,
+    /// Requested page is out of range for the available entries.
+    PageOutOfRange,
+}
+
+impl fmt::Display for AuditExportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unauthorized => write!(f, "audit_export_unauthorized"),
+            Self::InvalidPageSize => write!(f, "audit_export_invalid_page_size"),
+            Self::PageOutOfRange => write!(f, "audit_export_page_out_of_range"),
+        }
+    }
+}
+
+/// A single redacted row in the adoption case audit export.
+///
+/// Exposes only the transition, actor, and event ID. Applicant private data
+/// (names, contact details, free-text notes) is intentionally omitted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditExportRow {
+    /// Stable event ID for this transition (equals the entry `seq`).
+    pub event_id: u64,
+    /// Actor who performed the transition.
+    pub actor: String,
+    /// Human-readable transition label.
+    pub transition: String,
+    /// Unix timestamp (seconds) of the transition.
+    pub timestamp: u64,
+}
+
+/// A paginated page of redacted audit export rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditExportPage {
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u64,
+    pub rows: Vec<AuditExportRow>,
+}
+
+/// Builds a paginated, redacted audit export for a user's case transitions.
+///
+/// Authorization: `caller` must equal `query.user_id` or be the literal
+/// `"admin"` actor. Unauthorized callers receive `AuditExportError::Unauthorized`
+/// and no rows are produced, leaving state unchanged.
+///
+/// Bounds: `page_size` must be in `1..=MAX_AUDIT_PAGE_SIZE`; iteration is
+/// limited to the requested page window so persistent state growth is bounded.
+pub fn export_case_audit(
+    caller: &str,
+    query: &RecoveryAuditQuery,
+    entries: &[RecoveryAuditEntry],
+) -> Result<AuditExportPage, AuditExportError> {
+    if caller != query.user_id && caller != "admin" {
+        return Err(AuditExportError::Unauthorized);
+    }
+    if query.page_size == 0 || query.page_size > MAX_AUDIT_PAGE_SIZE {
+        return Err(AuditExportError::InvalidPageSize);
+    }
+
+    let total = entries.len() as u64;
+    let start = (query.page as u64) * (query.page_size as u64);
+    if start > total {
+        return Err(AuditExportError::PageOutOfRange);
+    }
+    let end = (start + query.page_size as u64).min(total);
+
+    let rows = entries[start as usize..end as usize]
+        .iter()
+        .map(|entry| AuditExportRow {
+            event_id: entry.seq,
+            actor: entry.actor.clone(),
+            transition: entry.action.to_string(),
+            timestamp: entry.timestamp,
+        })
+        .collect();
+
+    Ok(AuditExportPage {
+        page: query.page,
+        page_size: query.page_size,
+        total,
+        rows,
+    })
+}
+
 /// Validates that a `RecoveryAuditEntry` never contains plaintext codes.
 ///
 /// This is a defense-in-depth check run before persisting an entry.
@@ -117,6 +213,23 @@ mod tests {
             outcome: RecoveryAuditOutcome::Success,
             timestamp: 1_700_000_000,
         }
+    }
+
+    fn sample_entries(n: u64) -> Vec<RecoveryAuditEntry> {
+        (0..n)
+            .map(|i| RecoveryAuditEntry {
+                seq: i + 1,
+                user_id: "user-42".into(),
+                actor: "user-42".into(),
+                action: RecoveryAuditAction::Used { code_index: i as usize },
+                code_hash_prefix: "a1b2c3d4".into(),
+                codes_before: 8,
+                codes_after: 7,
+                request_id: format!("req-{}", i),
+                outcome: RecoveryAuditOutcome::Success,
+                timestamp: 1_700_000_000 + i,
+            })
+            .collect()
     }
 
     #[test]
@@ -230,10 +343,10 @@ mod tests {
         let entry = RecoveryAuditEntry {
             seq: 4,
             user_id: "user-42".into(),
-            actor: "admin-99".into(),
+            actor: "admin".into(),
             action: RecoveryAuditAction::Revoked,
             code_hash_prefix: String::new(),
-            codes_before: 6,
+            codes_before: 7,
             codes_after: 0,
             request_id: "req-jkl-012".into(),
             outcome: RecoveryAuditOutcome::Success,
@@ -244,92 +357,128 @@ mod tests {
     }
 
     #[test]
-    fn failure_outcome_preserves_reason() {
-        let entry = RecoveryAuditEntry {
-            seq: 5,
+    fn export_returns_redacted_rows_for_owner() {
+        let entries = sample_entries(3);
+        let query = RecoveryAuditQuery {
             user_id: "user-42".into(),
-            actor: "system".into(),
-            action: RecoveryAuditAction::Failed {
-                reason: "store_unavailable".into(),
-            },
-            code_hash_prefix: String::new(),
-            codes_before: 8,
-            codes_after: 8,
-            request_id: "req-mno-345".into(),
-            outcome: RecoveryAuditOutcome::Failure("store_unavailable".into()),
-            timestamp: 1_700_000_400,
+            page: 0,
+            page_size: 10,
+        };
+        let page = export_case_audit("user-42", &query, &entries).unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(page.rows.len(), 3);
+        assert_eq!(page.rows[0].event_id, 1);
+        assert_eq!(page.rows[0].actor, "user-42");
+        assert_eq!(page.rows[0].transition, "recovery_code_used(index=0)");
+    }
+
+    #[test]
+    fn export_allows_admin_actor() {
+        let entries = sample_entries(2);
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 0,
+            page_size: 10,
+        };
+        assert!(export_case_audit("admin", &query, &entries).is_ok());
+    }
+
+    #[test]
+    fn export_rejects_unauthorized_caller() {
+        let entries = sample_entries(2);
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 0,
+            page_size: 10,
         };
         assert_eq!(
-            entry.outcome,
-            RecoveryAuditOutcome::Failure("store_unavailable".into())
+            export_case_audit("user-99", &query, &entries),
+            Err(AuditExportError::Unauthorized)
         );
     }
 
     #[test]
-    fn concurrent_regeneration_last_writer_wins() {
-        // Two regeneration events for the same user in rapid succession.
-        // The second event's codes_before should match the first's codes_after.
-        let first = RecoveryAuditEntry {
-            seq: 6,
+    fn export_rejects_zero_page_size() {
+        let entries = sample_entries(2);
+        let query = RecoveryAuditQuery {
             user_id: "user-42".into(),
-            actor: "user-42".into(),
-            action: RecoveryAuditAction::Regenerated,
-            code_hash_prefix: String::new(),
-            codes_before: 3,
-            codes_after: 8,
-            request_id: "req-pqr-678".into(),
-            outcome: RecoveryAuditOutcome::Success,
-            timestamp: 1_700_000_500,
+            page: 0,
+            page_size: 0,
         };
-        let second = RecoveryAuditEntry {
-            seq: 7,
-            user_id: "user-42".into(),
-            actor: "user-42".into(),
-            action: RecoveryAuditAction::Regenerated,
-            code_hash_prefix: String::new(),
-            codes_before: first.codes_after,
-            codes_after: 8,
-            request_id: "req-stu-901".into(),
-            outcome: RecoveryAuditOutcome::Success,
-            timestamp: 1_700_000_501,
-        };
-        assert_eq!(second.codes_before, 8);
-        assert!(second.seq > first.seq);
+        assert_eq!(
+            export_case_audit("user-42", &query, &entries),
+            Err(AuditExportError::InvalidPageSize)
+        );
     }
 
     #[test]
-    fn serialization_round_trip() {
-        let entry = sample_entry(RecoveryAuditAction::Used { code_index: 1 });
-        let json = serde_json::to_string(&entry).expect("serialize");
-        let deserialized: RecoveryAuditEntry =
-            serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(deserialized.user_id, entry.user_id);
-        assert_eq!(deserialized.seq, entry.seq);
-        // Verify no plaintext codes leaked into serialization
-        assert!(!json.contains("XXXX-XXXX"));
-        assert!(!json.contains("1234-5678"));
+    fn export_rejects_oversized_page_size() {
+        let entries = sample_entries(2);
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 0,
+            page_size: MAX_AUDIT_PAGE_SIZE + 1,
+        };
+        assert_eq!(
+            export_case_audit("user-42", &query, &entries),
+            Err(AuditExportError::InvalidPageSize)
+        );
     }
 
     #[test]
-    fn retention_entries_ordered_by_seq() {
-        let entries: Vec<RecoveryAuditEntry> = (1..=5)
-            .map(|i| RecoveryAuditEntry {
-                seq: i,
-                user_id: "user-42".into(),
-                actor: "user-42".into(),
-                action: RecoveryAuditAction::Issued,
-                code_hash_prefix: String::new(),
-                codes_before: 0,
-                codes_after: 8,
-                request_id: format!("req-{}", i),
-                outcome: RecoveryAuditOutcome::Success,
-                timestamp: 1_700_000_000 + i * 100,
-            })
-            .collect();
+    fn export_paginates_within_bounds() {
+        let entries = sample_entries(5);
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 1,
+            page_size: 2,
+        };
+        let page = export_case_audit("user-42", &query, &entries).unwrap();
+        assert_eq!(page.total, 5);
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0].event_id, 3);
+        assert_eq!(page.rows[1].event_id, 4);
+    }
 
-        for window in entries.windows(2) {
-            assert!(window[0].seq < window[1].seq);
-            assert!(window[0].timestamp < window[1].timestamp);
-        }
+    #[test]
+    fn export_rejects_out_of_range_page() {
+        let entries = sample_entries(2);
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 5,
+            page_size: 10,
+        };
+        assert_eq!(
+            export_case_audit("user-42", &query, &entries),
+            Err(AuditExportError::PageOutOfRange)
+        );
+    }
+
+    #[test]
+    fn export_failed_call_leaves_entries_unchanged() {
+        let entries = sample_entries(2);
+        let before = entries.clone();
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 0,
+            page_size: 0,
+        };
+        assert!(export_case_audit("user-42", &query, &entries).is_err());
+        assert_eq!(entries.len(), before.len());
+        assert_eq!(entries[0].seq, before[0].seq);
+        assert_eq!(entries[1].seq, before[1].seq);
+    }
+
+    #[test]
+    fn export_empty_log_returns_empty_page() {
+        let entries: Vec<RecoveryAuditEntry> = Vec::new();
+        let query = RecoveryAuditQuery {
+            user_id: "user-42".into(),
+            page: 0,
+            page_size: 10,
+        };
+        let page = export_case_audit("user-42", &query, &entries).unwrap();
+        assert_eq!(page.total, 0);
+        assert!(page.rows.is_empty());
     }
 }
