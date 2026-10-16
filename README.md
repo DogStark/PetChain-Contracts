@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1438 -->
 - #1438: [Contracts] Add lab data validation fixtures across supported species
+
+<!-- handsoff-issue-1439 -->
+- #1439: [Contracts] Add vaccine batch and manufacturer provenance
