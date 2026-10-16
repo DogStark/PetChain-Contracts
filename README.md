@@ -204,3 +204,21 @@ MIT
 
 <!-- handsoff-issue-1428 -->
 - #1428: [Contracts] Add species-specific laboratory reference ranges
+
+<!-- handsoff-issue-1437 -->
+- #1437: [Contracts] Add laboratory result privacy tiers
+
+<!-- handsoff-issue-1438 -->
+- #1438: [Contracts] Add lab data validation fixtures across supported species
+
+<!-- handsoff-issue-1439 -->
+- #1439: [Contracts] Add vaccine batch and manufacturer provenance
+
+<!-- handsoff-issue-1440 -->
+- #1440: [Contracts] Add multi-dose vaccination series tracking
+
+<!-- handsoff-issue-1463 -->
+- #1463: [Contracts] Add verified sighting reporter attestations
+
+<!-- handsoff-issue-1464 -->
+- #1464: [Contracts] Add private sighting location reveal authorization
