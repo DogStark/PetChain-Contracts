@@ -120,6 +120,31 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Care-Plan Amendment History
+
+Care plans are versioned. Every amendment is recorded as a new immutable
+revision rather than mutating the existing plan, so the full amendment history
+is auditable on-chain.
+
+Each revision records:
+
+- **revision id** — a monotonically increasing identifier, unique per care plan.
+- **author** — the address that submitted the amendment (owner or co-signing vet).
+- **ledger time** — the ledger timestamp at which the revision was committed.
+- **superseded revision id** — the revision this amendment replaces, or `None`
+  for the initial revision.
+
+Rules:
+
+- Revisions are append-only and immutable: a committed revision is never edited
+  or deleted.
+- The initial revision has no superseded revision id; every later revision
+  references the revision it replaces.
+- Amendments preserve the existing authorization model: only the plan owner or
+  an authorized co-signing vet may append a revision.
+- History reads are paginated under the shared page-size policy above, so
+  amendment history is bounded and cannot grow an unbounded response.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -195,3 +220,6 @@ MIT
 
 <!-- handsoff-issue-1413 -->
 - #1413: [Contracts] Add owner and vet co-signed care plans
+
+<!-- handsoff-issue-1414 -->
+- #1414: [Contracts] Add care-plan amendment history
