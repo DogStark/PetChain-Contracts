@@ -363,3 +363,15 @@ MIT
 
 <!-- handsoff-issue-1464 -->
 - #1464: [Contracts] Add private sighting location reveal authorization
+
+<!-- handsoff-issue-1465 -->
+- #1465: [Contracts] Add lost-pet alert escalation rules
+
+<!-- handsoff-issue-1466 -->
+- #1466: [Contracts] Add lost-pet alert radius and scope validation
+
+<!-- handsoff-issue-1467 -->
+- #1467: [Contracts] Add found-pet intake and reunification workflow
+
+<!-- handsoff-issue-1468 -->
+- #1468: [Contracts] Add responder organization credentials
