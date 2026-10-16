@@ -214,6 +214,15 @@ MIT
 <!-- handsoff-issue-1432 -->
 - #1432: [Contracts] Add laboratory result verification attestations
 
+<!-- handsoff-issue-1433 -->
+- #1433: [Contracts] Add sample collection and processing timestamps
+
+<!-- handsoff-issue-1434 -->
+- #1434: [Contracts] Add laboratory result provenance for imported data
+
+<!-- handsoff-issue-1435 -->
+- #1435: [Contracts] Add laboratory panel trend comparison API
+
 <!-- handsoff-issue-1437 -->
 - #1437: [Contracts] Add laboratory result privacy tiers
 
