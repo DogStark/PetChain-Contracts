@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1411 -->
 - #1411: [Contracts] Add cross-network passport commitment format
+
+<!-- handsoff-issue-1412 -->
+- #1412: [Contracts] Add client-verifiable passport proof fixtures
