@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1446 -->
 - #1446: [Contracts] Add vaccination certificate batch verification
+
+<!-- handsoff-issue-1447 -->
+- #1447: [Contracts] Add vaccine product registry governance
