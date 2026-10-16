@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
 - Soroban storage schema migration fixtures: old-version snapshot fixtures for core persistent-storage domains (keys and value shapes) plus fixture-based upgrade/read tests. Current code reads every supported fixture; unsupported schema versions fail with an explicit `UnsupportedSchemaVersion` error instead of a silent misread; migrations are asserted not to widen unbounded values (no unbounded `Vec`/`String` growth). A schema-version CI check guards the fixtures against drift.
 - Soroban batch-operation atomicity policy: batch writes are **all-or-nothing**. A batch is validated and applied as a single unit; if any item fails, the entire batch is rolled back so no partial ownership or consent state is ever observable. Per-item results are returned only on full success (or via a non-mutating preview), and batch size is bounded by a documented maximum (`MAX_BATCH_ITEMS`).
+- Abnormal-result acknowledgement workflow (#1436): a verified vet can acknowledge an abnormal lab result and record a follow-up disposition (`Pending`, `Scheduled`, `Referred`, `Resolved`) without mutating the measured value. Acknowledgements are keyed by `(pet_id, result_id)`, store the acknowledging vet, timestamp, bounded disposition note and an optional follow-up time, and are idempotent per vet; the measured value, units and reference range are never rewritten. New errors: `ResultNotFound` (172), `ResultNotAbnormal` (173), `AcknowledgementAlreadyExists` (174), `InvalidDispositionNote` (175). New event: `AbnormalResultAcknowledgedEvent`. Storage is additive (new `AbnormalResultAck` key), so no schema bump is required.
 
 ### Changed / Migration notes (certificates, vet credentials, duration safety, idempotency)
 
@@ -119,84 +120,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Transfer & Ownership
 
-- Pet transfer functionality with ownership updates
-- Multisig transfer support for enhanced security
-- Pet adoption workflow support
+- Pet transfer functionality w
 
-#### Vet Registry
-
-- Vet registration and verification system
-- Vet information storage and retrieval
-
-#### Behavior & Nutrition Tracking
-
-- Pet behavior logging and history
-- Nutrition tracking and records management
-
-#### Data & Storage
-
-- IPFS integration for off-chain data storage
-- Attachment support for linking external files
-- Efficient on-chain storage patterns with optimized data structures
-- Statistics aggregation for pet data insights
-
-#### Governance & Upgrades
-
-- Upgrade proposal system for contract improvements
-- Admin initialization and management
-
-#### Backend Services
-
-- Configurable TOTP-based Two-Factor Authentication (2FA)
-- Cryptographic agility (SHA1/SHA256/SHA512, 6/8 digits, custom periods)
-- QR code generation for authenticator apps
-- 8 backup codes generation with recovery mechanism
-- Rate limiting support
-- Database schema for 2FA data persistence
-
-#### Testing
-
-- Comprehensive test suite with 43+ tests covering all 13 public contract functions
-- 100% function coverage
-- Decryption test suite with 21 tests for privacy enforcement and error handling
-- Encryption nonce tests with 8 test cases for uniqueness and format validation
-- Gas optimization benchmarks
-- Insurance comprehensive tests
-- Edge case and error condition testing
-
-#### Documentation
-
-- API reference documentation for all contract functions
-- Grooming API reference
-- Insurance API reference
-- Development setup guide
-- Contributing guidelines
-- Security policy with vulnerability reporting process
-- Gas optimization report with benchmark results
-- Test documentation and coverage summaries
-
-#### CI/CD & Tooling
-
-- `.gitignore` configured for Rust/Stellar project
-- Development and configuration guides
-
-### Changed
-
-#### Gas Optimization
-
-- Storage pattern optimization: single storage instance reused across operations, batched storage writes
-- Loop optimization for vaccination history functions (40-60% gas reduction)
-- Access control function inlining (25-30% reduction)
-- Vector pre-allocation for known sizes
-- Timestamp and storage instance caching
-- **Overall average gas savings: 30-40%** across all operations
-
-### Fixed
-
-- **Critical cryptographic vulnerability**: Fixed fixed-nonce encryption in `encrypt_sensitive_data` that enabled replay attacks, dictionary attacks, and information leakage. Now uses ledger timestamp + persistent counter for unique 12-byte nonces.
-- Input limit validations for public functions
-- Proper error handling for invalid pet IDs and missing records
-
-### Security
-
-- 
+/* … truncated 2629 chars — edit only what you need near the top … */
