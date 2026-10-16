@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1457 -->
 - #1457: [Contracts] Add shelter authority delegation
+
+<!-- handsoff-issue-1458 -->
+- #1458: [Contracts] Add custody dispute evidence bundle references
