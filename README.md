@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1442 -->
 - #1442: [Contracts] Add vaccine adverse-event reports
+
+<!-- handsoff-issue-1443 -->
+- #1443: [Contracts] Add certificate replacement with supersession links
