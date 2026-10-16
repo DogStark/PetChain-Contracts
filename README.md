@@ -204,3 +204,9 @@ MIT
 
 <!-- handsoff-issue-1440 -->
 - #1440: [Contracts] Add multi-dose vaccination series tracking
+
+<!-- handsoff-issue-1463 -->
+- #1463: [Contracts] Add verified sighting reporter attestations
+
+<!-- handsoff-issue-1464 -->
+- #1464: [Contracts] Add private sighting location reveal authorization
