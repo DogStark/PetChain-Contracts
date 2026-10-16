@@ -193,8 +193,80 @@ MIT
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
 
+<!-- handsoff-issue-1425 -->
+- #1425: [Contracts] Add care-plan access purpose checks
+
+<!-- handsoff-issue-1426 -->
+- #1426: [Contracts] Add care-plan deletion and retention rules
+
+<!-- handsoff-issue-1427 -->
+- #1427: [Contracts] Add canonical laboratory analyte identifiers
+
+<!-- handsoff-issue-1428 -->
+- #1428: [Contracts] Add species-specific laboratory reference ranges
+
+<!-- handsoff-issue-1429 -->
+- #1429: [Contracts] Add explicit laboratory unit conversion rules
+
+<!-- handsoff-issue-1430 -->
+- #1430: [Contracts] Add laboratory panel completeness metadata
+
+<!-- handsoff-issue-1432 -->
+- #1432: [Contracts] Add laboratory result verification attestations
+
+<!-- handsoff-issue-1433 -->
+- #1433: [Contracts] Add sample collection and processing timestamps
+
+<!-- handsoff-issue-1434 -->
+- #1434: [Contracts] Add laboratory result provenance for imported data
+
+<!-- handsoff-issue-1435 -->
+- #1435: [Contracts] Add laboratory panel trend comparison API
+
+<!-- handsoff-issue-1437 -->
+- #1437: [Contracts] Add laboratory result privacy tiers
+
+<!-- handsoff-issue-1438 -->
+- #1438: [Contracts] Add lab data validation fixtures across supported species
+
+<!-- handsoff-issue-1439 -->
+- #1439: [Contracts] Add vaccine batch and manufacturer provenance
+
+<!-- handsoff-issue-1440 -->
+- #1440: [Contracts] Add multi-dose vaccination series tracking
+
+<!-- handsoff-issue-1441 -->
+- #1441: [Contracts] Add vaccine schedule policy versions
+
+<!-- handsoff-issue-1442 -->
+- #1442: [Contracts] Add vaccine adverse-event reports
+
+<!-- handsoff-issue-1443 -->
+- #1443: [Contracts] Add certificate replacement with supersession links
+
+<!-- handsoff-issue-1444 -->
+- #1444: [Contracts] Add vaccination administration-site metadata
+
+<!-- handsoff-issue-1445 -->
+- #1445: [Contracts] Add vaccination certificate offline verification payload
+
+<!-- handsoff-issue-1446 -->
+- #1446: [Contracts] Add vaccination certificate batch verification
+
+<!-- handsoff-issue-1447 -->
+- #1447: [Contracts] Add vaccine product registry governance
+
+<!-- handsoff-issue-1448 -->
+- #1448: [Contracts] Add vaccination schedule reconciliation preview
+
 <!-- handsoff-issue-1449 -->
 - #1449: [Contracts] Add foster custody agreements with automatic expiry
 
 <!-- handsoff-issue-1451 -->
 - #1451: [Contracts] Add shelter intake attestation
+
+<!-- handsoff-issue-1463 -->
+- #1463: [Contracts] Add verified sighting reporter attestations
+
+<!-- handsoff-issue-1464 -->
+- #1464: [Contracts] Add private sighting location reveal authorization
