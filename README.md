@@ -120,6 +120,41 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Medication Administration Attestation
+
+Scheduled medication doses can be attested by an authorized caregiver as
+`administered`, `skipped`, or `refused`. Attestation is recorded on-chain so the
+care plan reflects what actually happened to each scheduled dose.
+
+### Authorization
+
+Only a caregiver already authorized for the pet (via the existing consent /
+caregiver authorization conventions) may attest a dose. Unauthorized callers are
+rejected with a deterministic error and no state is written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `status` | one of `administered`, `skipped`, `refused` |
+| `reason_code` | bounded numeric code; required for `skipped` and `refused` |
+| `idempotency_key` | bounded byte length; unique per attestation |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Idempotency and replay
+
+Each attestation carries an idempotency key. Replaying the same key returns the
+previously recorded attestation without writing new state, so retries are safe.
+A key that has expired is rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Attestations are stored under the existing storage-version conventions; the
+storage version is unchanged and no existing keys are renumbered. New error
+codes and the attestation event are documented in
+[Error Codes](docs/error-codes.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -195,3 +230,6 @@ MIT
 
 <!-- handsoff-issue-1421 -->
 - #1421: [Contracts] Add care-plan review due dates
+
+<!-- handsoff-issue-1422 -->
+- #1422: [Contracts] Add medication administration attestation
