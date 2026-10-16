@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1443 -->
 - #1443: [Contracts] Add certificate replacement with supersession links
+
+<!-- handsoff-issue-1444 -->
+- #1444: [Contracts] Add vaccination administration-site metadata
