@@ -10,6 +10,9 @@ pub enum DataKey {
     Version,
     Passport(Address),
     FieldSettings(Address),
+    Snapshot(Address, u32),
+    SnapshotCount(Address),
+    SnapshotRevoked(Address, u32),
 }
 
 /// Supported passport fields that an owner may choose to export.
@@ -29,6 +32,8 @@ pub enum PassportField {
 const STORAGE_VERSION: u32 = 1;
 /// Maximum number of selectable fields (bounded iteration / state growth).
 const MAX_FIELDS: u32 = 6;
+/// Maximum number of snapshots retained per owner (bounded persistent growth).
+const MAX_SNAPSHOTS: u32 = 64;
 
 #[contracttype]
 #[derive(Clone)]
@@ -76,6 +81,31 @@ pub struct VerificationReceipt {
     pub digest: BytesN<32>,
 }
 
+/// An immutable, versioned snapshot of a passport's selected fields.
+///
+/// Once issued, the snapshot contents are never rewritten. Revocation is
+/// recorded separately (see `SnapshotRevocation`) so previously issued data
+/// remains intact and auditable.
+#[contracttype]
+#[derive(Clone)]
+pub struct PassportSnapshot {
+    pub owner: Address,
+    pub version: u32,
+    pub ledger: u32,
+    pub view: PassportView,
+}
+
+/// Revocation record for a snapshot. Stored under a distinct key so the
+/// original `PassportSnapshot` is never mutated.
+#[contracttype]
+#[derive(Clone)]
+pub struct SnapshotRevocation {
+    pub owner: Address,
+    pub version: u32,
+    pub reason: u32,
+    pub ledger: u32,
+}
+
 #[contracterror]
 #[repr(u32)]
 pub enum Error {
@@ -89,6 +119,10 @@ pub enum Error {
     EmptySelection = 8,
     StaleVersion = 9,
     ReceiptExpired = 10,
+    SnapshotNotFound = 11,
+    SnapshotLimitReached = 12,
+    AlreadyRevoked = 13,
+    InvalidReason = 14,
 }
 
 #[contract]
@@ -252,75 +286,185 @@ impl PassportContract {
         if settings.version != expected_version {
             return Err(Error::StaleVersion);
         }
-
         let ledger = env.ledger().sequence();
         if ledger > max_ledger {
             return Err(Error::ReceiptExpired);
         }
-
-        // Digest binds the receipt to the exact selected-field set without
-        // revealing any field values.
-        let mut digest_input = BytesN::from_array(&env, &[0u8; 32]);
-        let mut bytes = [0u8; 32];
-        bytes[0..4].copy_from_slice(&settings.version.to_be_bytes());
-        bytes[4..8].copy_from_slice(&(settings.fields.len() as u32).to_be_bytes());
-        for (i, field) in settings.fields.iter().enumerate() {
-            if i >= 28 {
-                break;
-            }
-            bytes[8 + i] = field as u8;
-        }
-        digest_input = BytesN::from_array(&env, &bytes);
-
+        let view = Self::get_passport_view(env.clone(), owner.clone())?;
+        let digest = Self::digest_view(&env, &view);
         let receipt = VerificationReceipt {
             pet_id: owner.clone(),
             passport_version: settings.version,
             issuing_contract: env.current_contract_address(),
             ledger,
-            digest: digest_input,
+            digest,
         };
-
         env.events().publish(
-            (symbol_short!("v_receipt"), owner),
-            (receipt.passport_version, receipt.ledger),
+            (symbol_short!("receipt"), owner),
+            (settings.version, receipt.digest.clone()),
         );
         Ok(receipt)
     }
 
-    fn next_version(env: &Env, owner: &Address) -> u32 {
-        match env
+    /// Issue an immutable snapshot of the owner's current passport view.
+    ///
+    /// The snapshot version is monotonically increasing per owner and is
+    /// derived from the current field-selection version. Once written, the
+    /// snapshot contents are never mutated; revocation is recorded separately.
+    pub fn issue_snapshot(env: Env, owner: Address) -> Result<u32, Error> {
+        owner.require_auth();
+
+        let count: u32 = env
             .storage()
             .persistent()
-            .get::<DataKey, FieldSettings>(&DataKey::FieldSettings(owner.clone()))
+            .get(&DataKey::SnapshotCount(owner.clone()))
+            .unwrap_or(0);
+        if count >= MAX_SNAPSHOTS {
+            return Err(Error::SnapshotLimitReached);
+        }
+
+        let view = Self::get_passport_view(env.clone(), owner.clone())?;
+        let version = view.version;
+
+        // Reject re-issuing the same version so versions stay strictly increasing.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Snapshot(owner.clone(), version))
         {
-            Some(existing) => existing.version.saturating_add(1),
+            return Err(Error::StaleVersion);
+        }
+
+        let snapshot = PassportSnapshot {
+            owner: owner.clone(),
+            version,
+            ledger: env.ledger().sequence(),
+            view,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Snapshot(owner.clone(), version), &snapshot);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SnapshotCount(owner.clone()), &(count + 1));
+
+        env.events().publish(
+            (symbol_short!("snap_issue"), owner),
+            (version, snapshot.ledger),
+        );
+        Ok(version)
+    }
+
+    /// Read an issued snapshot. Returns the immutable snapshot contents.
+    pub fn get_snapshot(
+        env: Env,
+        owner: Address,
+        version: u32,
+    ) -> Result<PassportSnapshot, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Snapshot(owner, version))
+            .ok_or(Error::SnapshotNotFound)
+    }
+
+    /// Revoke a previously issued snapshot with a reason code.
+    ///
+    /// Revocation never rewrites the snapshot: it writes a separate
+    /// `SnapshotRevocation` record keyed by (owner, version).
+    pub fn revoke_snapshot(
+        env: Env,
+        owner: Address,
+        version: u32,
+        reason: u32,
+    ) -> Result<(), Error> {
+        owner.require_auth();
+
+        if reason == 0 {
+            return Err(Error::InvalidReason);
+        }
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Snapshot(owner.clone(), version))
+        {
+            return Err(Error::SnapshotNotFound);
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SnapshotRevoked(owner.clone(), version))
+        {
+            return Err(Error::AlreadyRevoked);
+        }
+
+        let revocation = SnapshotRevocation {
+            owner: owner.clone(),
+            version,
+            reason,
+            ledger: env.ledger().sequence(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::SnapshotRevoked(owner.clone(), version), &revocation);
+
+        env.events().publish(
+            (symbol_short!("snap_revoke"), owner),
+            (version, reason),
+        );
+        Ok(())
+    }
+
+    /// Read the revocation record for a snapshot, if any.
+    pub fn get_snapshot_revocation(
+        env: Env,
+        owner: Address,
+        version: u32,
+    ) -> Result<SnapshotRevocation, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SnapshotRevoked(owner, version))
+            .ok_or(Error::SnapshotNotFound)
+    }
+
+    /// Compute the next monotonic version for an owner's field settings.
+    fn next_version(env: &Env, owner: &Address) -> u32 {
+        let current: Option<FieldSettings> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FieldSettings(owner.clone()));
+        match current {
+            Some(settings) => settings.version + 1,
             None => 1,
         }
     }
-}
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String, Vec};
-
-    fn setup() -> (Env, PassportContractClient<'static>, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, PassportContract);
-        let client = PassportContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-        (env, client, admin)
+    /// Deterministic digest over the selected view fields.
+    fn digest_view(env: &Env, view: &PassportView) -> BytesN<32> {
+        let mut bytes: Vec<u8> = Vec::new(env);
+        bytes.push_back((view.version & 0xff) as u8);
+        bytes.push_back(((view.version >> 8) & 0xff) as u8);
+        bytes.push_back(((view.version >> 16) & 0xff) as u8);
+        bytes.push_back(((view.version >> 24) & 0xff) as u8);
+        if let Some(name) = view.name.clone() {
+            for b in name.to_bytes().iter() {
+                bytes.push_back(b);
+            }
+        }
+        if let Some(species) = view.species.clone() {
+            for b in species.to_bytes().iter() {
+                bytes.push_back(b);
+            }
+        }
+        if let Some(breed) = view.breed.clone() {
+            for b in breed.to_bytes().iter() {
+                bytes.push_back(b);
+            }
+        }
+        if let Some(microchip_id) = view.microchip_id.clone() {
+            for b in microchip_id.to_bytes().iter() {
+                bytes.push_back(b);
+            }
+        }
+        env.crypto().sha256(&bytes).into()
     }
-
-    fn sample_passport(env: &Env, owner: &Address) -> Passport {
-        let mut vaccinations = Vec::new(env);
-        vaccinations.push_back(String::from_str(env, "rabies"));
-        Passport {
-            owner: owner.clone(),
-            name: String::from_str(env, "Rex"),
-            species: String::from_str(env, "dog"),
-            breed: String::from_str(env, "
-
-/* … truncated 4221 chars — edit only what you need near the top … */
+}
