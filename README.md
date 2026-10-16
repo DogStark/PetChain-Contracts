@@ -120,6 +120,38 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Adoption Consent Evidence Commitments
+
+Adoption consent is recorded on-chain as a **commitment**, never as the
+underlying applicant document. The contract stores only a canonical digest of
+the required consent artifacts, so applicant personal documents are never
+persisted in plaintext.
+
+- **Canonical digest.** Each consent artifact is hashed with the contract's
+  canonical hashing routine (SHA-256 over the artifact bytes) and the resulting
+  digests are combined into a single commitment. The commitment is the only
+  value written to persistent storage.
+- **Required artifacts.** A consent submission must bind every artifact required
+  by the adoption policy. A submission missing a required artifact is rejected
+  with a deterministic error and leaves state unchanged.
+- **No plaintext storage.** Artifact bytes are consumed for hashing only and are
+  never written to contract storage, events, or return values. Only the
+  commitment digest is observable on-chain.
+- **Authorization.** Submitting or revoking a consent commitment requires the
+  same authorization as the existing consent flow; unauthorized callers are
+  rejected before any state is touched.
+- **Replay and expiry.** A commitment is bound to the adoption and carries an
+  expiry. Re-submitting an identical commitment for the same adoption is
+  rejected as a replay, and an expired commitment is rejected; both failures
+  leave state unchanged.
+- **Bounds.** The number of artifacts per submission and the size of each
+  artifact are bounded by documented maxima. Oversized submissions are rejected
+  before any state is touched.
+
+New error codes, events, and any ABI/storage changes introduced by this feature
+are recorded in the [Error Codes](docs/error-codes.md) registry and the
+compatibility fixtures, following the existing storage-version conventions.
+
 ## Medication Administration Attestation
 
 Scheduled medication doses can be attested by an authorized caregiver as
@@ -203,6 +235,28 @@ rejected. Failed calls leave storage unchanged.
 Schedules are stored under the existing storage-version conventions; the storage
 version is unchanged and no existing keys are renumbered. New error codes and
 the schedule event are documented in [Error Codes](docs/error-codes.md).
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
+- [API Overview](docs/api.md)
+- [Error Codes](docs/error-codes.md)
+- [Dependency Policy](docs/dependency-policy.md)
+- [Security Policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+
+## License
+
+MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-1305 -->
+- #1305: [Contracts] Add Stellar storage-key namespace collision tests
+
+<!-- handsoff-issue-1307 -->
+- #1307: [Contracts] Add cursor invalidation tests aft
 
 ## Documentation
 
@@ -348,6 +402,15 @@ MIT
 
 <!-- handsoff-issue-1451 -->
 - #1451: [Contracts] Add shelter intake attestation
+
+<!-- handsoff-issue-1454 -->
+- #1454: [Contracts] Add adoption trial period policy
+
+<!-- handsoff-issue-1455 -->
+- #1455: [Contracts] Add adoption fee accounting receipt
+
+<!-- handsoff-issue-1456 -->
+- #1456: [Contracts] Add adopter eligibility attestations
 
 <!-- handsoff-issue-1457 -->
 - #1457: [Contracts] Add shelter authority delegation
