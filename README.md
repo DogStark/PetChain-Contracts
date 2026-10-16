@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1437 -->
 - #1437: [Contracts] Add laboratory result privacy tiers
+
+<!-- handsoff-issue-1438 -->
+- #1438: [Contracts] Add lab data validation fixtures across supported species
