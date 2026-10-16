@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Medication allergy conflict checks (#1424): a proposed prescription's canonical ingredient IDs are compared against the pet's active allergy set before the prescription is recorded. When any ingredient matches an active allergy the call is rejected with `MedicationAllergyConflict` unless an explicit vet override record is supplied via `record_medication_allergy_override`, which binds the vet, the conflicting ingredient IDs, a bounded justification and an idempotency key. Overrides are versioned and auditable; replays of the same `(pet_id, prescription_id, idempotency_key)` are idempotent and return the existing record, while a conflicting payload for the same key raises `MedicationAllergyOverrideConflict`. Calls are rejected for unknown pets, non-vet callers, empty or oversized ingredient sets, oversized justifications and expired overrides, and failed calls leave state unchanged. New errors: `MedicationAllergyConflict` (182), `MedicationAllergyOverrideConflict` (183), `MedicationAllergyOverrideNotFound` (184), `InvalidMedicationIngredientSet` (185), `MedicationAllergyOverrideExpired` (186). New event: `MedicationAllergyOverrideEvent` (`pet_id`, `prescription_id`, `ingredient_ids`, `vet`, `timestamp`). Storage is additive under the existing schema version; see `stellar-contracts/docs/abi-migrations.md`.
+- Preventive-care schedule records (#1423): an owner can register an owner-approved reminder for a routine exam or preventive-care item via `create_preventive_care_schedule`, binding a bounded care kind, a due ledger timestamp and an explicit schedule version. Each schedule is versioned — `update_preventive_care_schedule` writes a new version and supersedes the previous one, and `cancel_preventive_care_schedule` marks the current version `Cancelled` while keeping prior versions auditable. Replays of the same `(pet_id, schedule_id, version, idempotency_key)` are idempotent and return the existing record; a conflicting payload for the same key raises `PreventiveCareScheduleConflict`. Calls are rejected for unknown pets, non-owner callers, out-of-range care kinds, oversized notes, past due timestamps and cancelled/expired schedules, and failed calls leave state unchanged. New errors: `PreventiveCareScheduleConflict` (177), `PreventiveCareScheduleNotFound` (178), `InvalidPreventiveCareKind` (179), `PreventiveCareScheduleExpired` (180), `PreventiveCareScheduleCancelled` (181). New event: `PreventiveCareScheduleEvent` (`pet_id`, `schedule_id`, `version`, `care_kind`, `due_at`, `status`, `owner`, `timestamp`). Storage is additive under the existing schema version; see `stellar-contracts/docs/abi-migrations.md`.
+- Medication administration attestation (#1422): an authorized caregiver can attest a scheduled dose as `Administered`, `Skipped` or `Refused` via `attest_medication_administration`, binding a bounded reason code and an idempotency key. Replays of the same `(pet_id, schedule_id, dose_index, idempotency_key)` are idempotent and return the existing attestation; a conflicting status or reason for the same key raises `MedicationAttestationConflict`. Attestations are rejected for unknown schedules, out-of-range dose indices, expired schedules and oversized/invalid reason codes, and failed calls leave state unchanged. New errors: `MedicationAttestationConflict` (172), `InvalidMedicationReasonCode` (173), `MedicationScheduleNotFound` (174), `MedicationDoseOutOfRange` (175), `MedicationScheduleExpired` (176). New event: `MedicationAttestationEvent` (`pet_id`, `schedule_id`, `dose_index`, `status`, `reason_code`, `caregiver`, `timestamp`). Storage is additive under the existing schema version; see `stellar-contracts/docs/abi-migrations.md`.
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
@@ -52,8 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CertificateExpired` (49), `VetCredentialsExpired` (50),
   `CertificateHashConflict` (51).
   Correction: `CertificateNotFound` is **171**, because 47 is
-  `ProposalNotFound`. These variants were lost in a merge and have been
-  restored (see `stellar-contracts/docs/abi-migrations.md`).
+  `ProposalNotFou
 
 ## [0.1.0] - 2024-XX-XX
 
@@ -121,6 +123,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Transfer & Ownership
 
-- Pet transfer functionality w
+- Pet transfer functionality with ownership validation
+- Ownership history tracking
+- Transfer event emission
 
-/* … truncated 2629 chars — edit only what you need near the top … */
+#### Care-Plan Review
+
+- Care-plan review workflow with scheduled review dates
+- Review status tracking and completion records
+
+#### Medication Attestation
+
+- Medication attestation records with attesting party and timestamp
+- Attestation history retrieval per pet
+
+#### Preventive-Care Schedules
+
+- Preventive-care schedule definitions per pet
+- Schedule tracking with due-date reminders
+
+#### Allergy Conflict Detection
+
+- Allergy conflict detection across medications and treatments
+- Conflict reporting for flagged allergy interactions
+
+#### Certificates
+
+- `anchor_certificate_idempotent` provides replay-safe certificate anchoring:
+  re-submitting the same `(pet_id, vaccination_id, cert_hash)` returns the
+  existing `cert_id`; a conflicting hash raises `CertificateHashConflict`.
+- New errors: `CertificateNotFound` (171), `CertificateRevoked` (48),
+  `CertificateExpired` (49), `VetCredentialsExpired` (50),
+  `CertificateHashConflict` (51).
+

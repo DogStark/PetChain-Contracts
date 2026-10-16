@@ -120,6 +120,90 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Medication Administration Attestation
+
+Scheduled medication doses can be attested by an authorized caregiver as
+`administered`, `skipped`, or `refused`. Attestation is recorded on-chain so the
+care plan reflects what actually happened to each scheduled dose.
+
+### Authorization
+
+Only a caregiver already authorized for the pet (via the existing consent /
+caregiver authorization conventions) may attest a dose. Unauthorized callers are
+rejected with a deterministic error and no state is written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `status` | one of `administered`, `skipped`, `refused` |
+| `reason_code` | bounded numeric code; required for `skipped` and `refused` |
+| `idempotency_key` | bounded byte length; unique per attestation |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Idempotency and replay
+
+Each attestation carries an idempotency key. Replaying the same key returns the
+previously recorded attestation without writing new state, so retries are safe.
+A key that has expired is rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Attestations are stored under the existing storage-version conventions; the
+storage version is unchanged and no existing keys are renumbered. New error
+codes and the attestation event are documented in
+[Error Codes](docs/error-codes.md).
+
+## Preventive-Care Schedule Records
+
+Routine exams and preventive care (vaccinations, dental checks, wellness visits,
+and similar) can be recorded as owner-approved schedules. Each schedule is
+versioned so updates are explicit and auditable, and can be cancelled by the
+owner.
+
+### Authorization
+
+Only the pet owner may create, update, or cancel a preventive-care schedule.
+Unauthorized callers are rejected with a deterministic error and no state is
+written.
+
+### Inputs
+
+| Field | Bound |
+| --- | --- |
+| `care_type` | bounded enum (e.g. `exam`, `vaccination`, `dental`, `wellness`) |
+| `interval_days` | bounded positive integer |
+| `next_due_at` | bounded ledger timestamp |
+| `notes` | bounded byte length |
+
+Oversized or invalid inputs are rejected before any state is touched.
+
+### Versioning
+
+Each schedule carries an explicit version. Creating a schedule starts at version
+`1`; every owner-approved update increments the version and records the new
+values. Reads return the current version so clients can detect stale copies.
+
+### Cancellation
+
+An owner may cancel a schedule. Cancellation is terminal for that schedule
+version: the schedule is marked cancelled and no further updates are accepted.
+Cancelling an already-cancelled schedule is rejected with a deterministic error
+and leaves state unchanged.
+
+### Replay and expiry
+
+Schedule mutations carry an idempotency key. Replaying the same key returns the
+previously recorded result without writing new state. A key that has expired is
+rejected. Failed calls leave storage unchanged.
+
+### Storage and ABI
+
+Schedules are stored under the existing storage-version conventions; the storage
+version is unchanged and no existing keys are renumbered. New error codes and
+the schedule event are documented in [Error Codes](docs/error-codes.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -155,7 +239,7 @@ MIT
 - #1188: [pet-transfer-adoption] Prevent adoption of nonexistent or inactive pets
 
 <!-- handsoff-issue-1197 -->
-- #1197: [stellar-contracts] Add emergency-override least-privilege scopes
+- #1197: [stellar-contracts] Add emergency-over
 
 <!-- handsoff-issue-1200 -->
 - #1200: [stellar-contracts] Minimize public emergency-profile data
