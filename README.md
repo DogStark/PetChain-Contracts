@@ -217,6 +217,18 @@ MIT
 <!-- handsoff-issue-1440 -->
 - #1440: [Contracts] Add multi-dose vaccination series tracking
 
+<!-- handsoff-issue-1441 -->
+- #1441: [Contracts] Add vaccine schedule policy versions
+
+<!-- handsoff-issue-1442 -->
+- #1442: [Contracts] Add vaccine adverse-event reports
+
+<!-- handsoff-issue-1443 -->
+- #1443: [Contracts] Add certificate replacement with supersession links
+
+<!-- handsoff-issue-1444 -->
+- #1444: [Contracts] Add vaccination administration-site metadata
+
 <!-- handsoff-issue-1445 -->
 - #1445: [Contracts] Add vaccination certificate offline verification payload
 
