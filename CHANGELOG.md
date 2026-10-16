@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repaired pre-existing `stellar-contracts` build breakage (the crate did not compile at `main`): removed a duplicated `MAX_PREREQUISITES` const and duplicated `ContractError` variants, restored `ProposalNotFound = 47` and `StaleMigration = 169`, added the missing `TrainingMilestone::prerequisites` field, fixed ~20 `safe_increment` call sites, and refreshed the stale ABI snapshot
 - Soroban storage schema migration fixtures: old-version snapshot fixtures for core persistent-storage domains (keys and value shapes) plus fixture-based upgrade/read tests. Current code reads every supported fixture; unsupported schema versions fail with an explicit `UnsupportedSchemaVersion` error instead of a silent misread; migrations are asserted not to widen unbounded values (no unbounded `Vec`/`String` growth). A schema-version CI check guards the fixtures against drift.
 - Soroban batch-operation atomicity policy: batch writes are **all-or-nothing**. A batch is validated and applied as a single unit; if any item fails, the entire batch is rolled back so no partial ownership or consent state is ever observable. Per-item results are returned only on full success (or via a non-mutating preview), and batch size is bounded by a documented maximum (`MAX_BATCH_ITEMS`).
+- Laboratory result amendment workflow (#1431): the originating verified clinic can issue a corrected result via `amend_lab_result`, which stores a new `LabResultAmendment` that links to the original result by `(pet_id, result_id)` and never overwrites it. The original record is marked `Amended` (status only) and remains readable; amendments are append-only, bounded (`MAX_AMENDMENT_REASON_LEN`, `MAX_AMENDMENTS_PER_RESULT`), and replay-safe via a per-result amendment nonce. New errors `LabResultNotFound` (172), `LabResultNotVerified` (173), `AmendmentNotAuthorized` (174), `AmendmentReasonTooLong` (175), `AmendmentLimitReached` (176) and `AmendmentReplay` (177); new event `LabResultAmendedEvent`; storage is additive (no schema bump required).
+- Abnormal-result acknowledgement workflow (#1436): a verified vet can acknowledge an abnormal lab result and record a follow-up disposition (`Pending`, `Scheduled`, `Referred`, `Resolved`) without mutating the measured value. Acknowledgements are keyed by `(pet_id, result_id)`, store the acknowledging vet, timestamp, bounded disposition note and an optional follow-up time, and are idempotent per vet; the measured value, units and reference range are never rewritten. New errors: `ResultNotFound` (172), `ResultNotAbnormal` (173), `AcknowledgementAlreadyExists` (174), `InvalidDispositionNote` (175). New event: `AbnormalResultAcknowledgedEvent`. Storage is additive (new `AbnormalResultAck` key), so no schema bump is required.
 
 ### Changed / Migration notes (certificates, vet credentials, duration safety, idempotency)
 
@@ -55,4 +57,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Correction: `CertificateNotFound` is **171**, because 47 is
   `ProposalNotFou
 
-/* … truncated 1398 chars — edit only what you need near the top … */
+## [0.1.0] - 2024-XX-XX
+
+### Added
+
+#### Core Pet Management
+
+- Pet registration with unique IDs on the Stellar blockchain
+- Pet profile storage including name, species, and ownership
+- Pet status updates (active/inactive) with owner authentication
+- Pet information retrieval by ID
+
+#### Medical Records System
+
+- Store and retrieve pet medical records on-chain
+- Paginated medical record queries (`get_pet_medical_records`)
+- Search medical records functionality
+- Complete medical history tracking per pet
+
+#### Vaccination Tracking
+
+- Record and track pet vaccinations
+- Vaccination history retrieval
+- Upcoming vaccination reminders
+- Overdue vaccination detection
+- Vaccination status validation (`is_vaccination_current`)
+
+#### Grooming Tracking System
+
+- Add detailed grooming records with service type, groomer, cost, and notes
+- Automatic calculation of next grooming due date (default: 60 days)
+- Complete grooming history retrieval per pet
+- Grooming expense tracking across all sessions
+- Next grooming date estimation
+
+#### Insurance System
+
+- Add insurance policies to pets with provider, coverage type, premium, and expiry
+- Retrieve pet insurance information
+- Update insurance policy active status
+- `InsuranceAddedEvent` and `InsuranceUpdatedEvent` events
+
+#### Access Control & Privacy
+
+- Owner-based access control for all state-changing operations
+- Privacy levels for pet data: Public, Restricted, and Private
+- Access grant system for authorized users
+- `get_authorized_users` and access validation
+- Consent pagination for managing data access permissions
+
+#### Security & Encryption
+
+- Encryption for sensitive pet and owner fields
+- Deterministic key derivation using domain separator and contract address
+- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with timestamp + counter based unique nonces to prevent replay attacks
+- Decryption system with privacy level enforcement
+- Input validation for all public functions
+- Overflow protection on arithmetic operations
+
+#### Emergency & Dispute Systems
+
+- Emergency contacts management per pet
+- Emergency override functionality for critical situations
+- Dispute system for handling ownership or data conflicts
+
+#### Transfer & Ownership
+
+- Pet transfer functionality with ownership validation
+- Ownership history tracking
+- Transfer event emission
+
+#### Care-Plan Review
+
+- Care-plan review workflow with scheduled review dates
+- Review status tracking and completion records
+
+#### Medication Attestation
+
+- Medication attestation records with attesting party and timestamp
+- Attestation history retrieval per pet
+
+#### Preventive-Care Schedules
+
+- Preventive-care schedule definitions per pet
+- Schedule tracking with due-date reminders
+
+#### Allergy Conflict Detection
+
+- Allergy conflict detection across medications and treatments
+- Conflict reporting for flagged allergy interactions
+
+#### Certificates
+
+- `anchor_certificate_idempotent` provides replay-safe certificate anchoring:
+  re-submitting the same `(pet_id, vaccination_id, cert_hash)` returns the
+  existing `cert_id`; a conflicting hash raises `CertificateHashConflict`.
+- New errors: `CertificateNotFound` (171), `CertificateRevoked` (48),
+  `CertificateExpired` (49), `VetCredentialsExpired` (50),
+  `CertificateHashConflict` (51).
+
