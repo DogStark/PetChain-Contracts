@@ -192,3 +192,6 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1465 -->
+- #1465: [Contracts] Add lost-pet alert escalation rules
