@@ -192,3 +192,6 @@ MIT
 
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+
+<!-- handsoff-issue-1441 -->
+- #1441: [Contracts] Add vaccine schedule policy versions
