@@ -217,6 +217,18 @@ MIT
 <!-- handsoff-issue-1440 -->
 - #1440: [Contracts] Add multi-dose vaccination series tracking
 
+<!-- handsoff-issue-1445 -->
+- #1445: [Contracts] Add vaccination certificate offline verification payload
+
+<!-- handsoff-issue-1446 -->
+- #1446: [Contracts] Add vaccination certificate batch verification
+
+<!-- handsoff-issue-1447 -->
+- #1447: [Contracts] Add vaccine product registry governance
+
+<!-- handsoff-issue-1448 -->
+- #1448: [Contracts] Add vaccination schedule reconciliation preview
+
 <!-- handsoff-issue-1463 -->
 - #1463: [Contracts] Add verified sighting reporter attestations
 
