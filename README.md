@@ -195,3 +195,6 @@ MIT
 
 <!-- handsoff-issue-1429 -->
 - #1429: [Contracts] Add explicit laboratory unit conversion rules
+
+<!-- handsoff-issue-1430 -->
+- #1430: [Contracts] Add laboratory panel completeness metadata
