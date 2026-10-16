@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1439 -->
 - #1439: [Contracts] Add vaccine batch and manufacturer provenance
+
+<!-- handsoff-issue-1440 -->
+- #1440: [Contracts] Add multi-dose vaccination series tracking
