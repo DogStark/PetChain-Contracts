@@ -198,3 +198,6 @@ MIT
 
 <!-- handsoff-issue-1458 -->
 - #1458: [Contracts] Add custody dispute evidence bundle references
+
+<!-- handsoff-issue-1459 -->
+- #1459: [Contracts] Add ownership recovery after failed adoption
