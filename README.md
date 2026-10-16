@@ -201,3 +201,6 @@ MIT
 
 <!-- handsoff-issue-1447 -->
 - #1447: [Contracts] Add vaccine product registry governance
+
+<!-- handsoff-issue-1448 -->
+- #1448: [Contracts] Add vaccination schedule reconciliation preview
