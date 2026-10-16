@@ -223,3 +223,6 @@ MIT
 
 <!-- handsoff-issue-1414 -->
 - #1414: [Contracts] Add care-plan amendment history
+
+<!-- handsoff-issue-1415 -->
+- #1415: [Contracts] Add medication prescription lifecycle
