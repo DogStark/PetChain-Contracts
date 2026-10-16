@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Medication refill authorization records (#1416): refill requests are tracked as immutable records carrying the prescription ID, requester, ledger time and vet-approval state, so the full request/approval chain is auditable without ever storing private prescription text on-chain. Refills are rejected for prescriptions that are inactive or expired, approvals preserve the existing authorization checks and storage-version conventions, and input sizes, record iteration and persistent state growth are bounded; failed calls leave state unchanged.
+- Care-plan amendment history (#1414): each care-plan amendment is recorded as a new immutable revision carrying the author, ledger time and the superseded revision ID, so the full amendment chain is auditable and prior revisions can never be overwritten. Amendments preserve the existing authorization checks and storage-version conventions; input sizes, revision iteration and persistent state growth are bounded, and failed calls leave state unchanged.
 - Contract error compatibility policy (`stellar-contracts/docs/error-compatibility.md`): stable codes, names and retry guidance for every contract error in `stellar-contracts/error-codes.json`, enforced in CI by `scripts/check_error_compat.py` (removed, reused or renumbered codes; new errors need a fixture and changelog entry)
 - Storage-rent and cleanup observability: read-only `get_storage_metrics` reports per-pet quota usage, configured cap, remaining headroom and the soft-deleted medical-record cleanup backlog (counts only, no medical content), scanned in bounded, resumable pages
 - Cross-contract interface compatibility tests: CI deploys the main, ownership/adoption/escrow and vet-registry contracts into one local Soroban environment and checks shared authorization, errors, events and state transitions, with a fixture that fails on signature or enum drift (`stellar-contracts/docs/cross-contract-compat.md`)
@@ -106,97 +108,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Encryption for sensitive pet and owner fields
 - Deterministic key derivation using domain separator and contract address
-- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with timestamp + counter based unique nonces to prevent replay attacks
-- Decryption system with privacy level enforcement
-- Input validation for all public functions
-- Overflow protection on arithmetic operations
+- **Nonce uniqueness fix**: replaced fixed `[0u8; 12]` nonce with ti
 
-#### Emergency & Dispute Systems
-
-- Emergency contacts management per pet
-- Emergency override functionality for critical situations
-- Dispute system for handling ownership or data conflicts
-
-#### Transfer & Ownership
-
-- Pet transfer functionality with ownership updates
-- Multisig transfer support for enhanced security
-- Pet adoption workflow support
-
-#### Vet Registry
-
-- Vet registration and verification system
-- Vet information storage and retrieval
-
-#### Behavior & Nutrition Tracking
-
-- Pet behavior logging and history
-- Nutrition tracking and records management
-
-#### Data & Storage
-
-- IPFS integration for off-chain data storage
-- Attachment support for linking external files
-- Efficient on-chain storage patterns with optimized data structures
-- Statistics aggregation for pet data insights
-
-#### Governance & Upgrades
-
-- Upgrade proposal system for contract improvements
-- Admin initialization and management
-
-#### Backend Services
-
-- Configurable TOTP-based Two-Factor Authentication (2FA)
-- Cryptographic agility (SHA1/SHA256/SHA512, 6/8 digits, custom periods)
-- QR code generation for authenticator apps
-- 8 backup codes generation with recovery mechanism
-- Rate limiting support
-- Database schema for 2FA data persistence
-
-#### Testing
-
-- Comprehensive test suite with 43+ tests covering all 13 public contract functions
-- 100% function coverage
-- Decryption test suite with 21 tests for privacy enforcement and error handling
-- Encryption nonce tests with 8 test cases for uniqueness and format validation
-- Gas optimization benchmarks
-- Insurance comprehensive tests
-- Edge case and error condition testing
-
-#### Documentation
-
-- API reference documentation for all contract functions
-- Grooming API reference
-- Insurance API reference
-- Development setup guide
-- Contributing guidelines
-- Security policy with vulnerability reporting process
-- Gas optimization report with benchmark results
-- Test documentation and coverage summaries
-
-#### CI/CD & Tooling
-
-- `.gitignore` configured for Rust/Stellar project
-- Development and configuration guides
-
-### Changed
-
-#### Gas Optimization
-
-- Storage pattern optimization: single storage instance reused across operations, batched storage writes
-- Loop optimization for vaccination history functions (40-60% gas reduction)
-- Access control function inlining (25-30% reduction)
-- Vector pre-allocation for known sizes
-- Timestamp and storage instance caching
-- **Overall average gas savings: 30-40%** across all operations
-
-### Fixed
-
-- **Critical cryptographic vulnerability**: Fixed fixed-nonce encryption in `encrypt_sensitive_data` that enabled replay attacks, dictionary attacks, and information leakage. Now uses ledger timestamp + persistent counter for unique 12-byte nonces.
-- Input limit validations for public functions
-- Proper error handling for invalid pet IDs and missing records
-
-### Security
-
-- 
+/* … truncated 528 chars — edit only what you need near the top … */

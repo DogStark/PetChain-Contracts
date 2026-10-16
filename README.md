@@ -120,6 +120,65 @@ Rules:
   the first page.
 - Existing callers that pass a page size within `[1, 100]` remain compatible.
 
+## Care-Plan Amendment History
+
+Care plans are versioned. Every amendment is recorded as a new immutable
+revision rather than mutating the existing plan, so the full amendment history
+is auditable on-chain.
+
+Each revision records:
+
+- **revision id** — a monotonically increasing identifier, unique per care plan.
+- **author** — the address that submitted the amendment (owner or co-signing vet).
+- **ledger time** — the ledger timestamp at which the revision was committed.
+- **superseded revision id** — the revision this amendment replaces, or `None`
+  for the initial revision.
+
+Rules:
+
+- Revisions are append-only and immutable: a committed revision is never edited
+  or deleted.
+- The initial revision has no superseded revision id; every later revision
+  references the revision it replaces.
+- Amendments preserve the existing authorization model: only the plan owner or
+  an authorized co-signing vet may append a revision.
+- History reads are paginated under the shared page-size policy above, so
+  amendment history is bounded and cannot grow an unbounded response.
+
+## Medication Refill Authorization Records
+
+Refill requests and their veterinary approval are tracked on-chain as bounded
+authorization records. Only the refill *authorization* is recorded — no private
+prescription text (drug name, dosage, directions, or notes) is ever stored
+on-chain. The prescription itself stays off-chain; the contract stores only the
+opaque prescription reference and the authorization outcome.
+
+Each refill authorization record records:
+
+- **refill id** — a monotonically increasing identifier, unique per prescription.
+- **prescription ref** — an opaque, bounded reference to the off-chain
+  prescription. No prescription text is stored.
+- **requester** — the address that submitted the refill request.
+- **approver** — the authorized vet that approved the refill, or `None` while
+  the request is pending.
+- **status** — `Pending`, `Approved`, or `Rejected`.
+- **ledger time** — the ledger timestamp at which the record was last updated.
+
+Rules:
+
+- Refills are only accepted for prescriptions that are **active** and not
+  **expired**. A refill request against an inactive or expired prescription is
+  rejected with a deterministic error and leaves state unchanged.
+- Only an authorized vet may approve or reject a pending refill; unauthorized
+  callers are rejected and leave state unchanged.
+- A refill request is single-use: once a refill id has been approved or
+  rejected it cannot be replayed, and a duplicate request for the same
+  prescription reference is rejected.
+- The prescription reference is bounded in length, and the number of refill
+  records per prescription is bounded, so persistent state growth is capped.
+- Refill history reads are paginated under the shared page-size policy above,
+  so refill history is bounded and cannot grow an unbounded response.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -164,31 +223,7 @@ MIT
 - #1212: [stellar-contracts] Add governance timelock and cancellation policy
 
 <!-- handsoff-issue-1213 -->
-- #1213: [stellar-contracts] Secure contract-upgrade authorization and hash binding
+- #1213
 
-<!-- handsoff-issue-1223 -->
-- #1223: [backend-2fa] Version encrypted TOTP secret envelopes
-
-<!-- handsoff-issue-1224 -->
-- #1224: [backend-2fa] Add online key rotation for encrypted TOTP secrets
-
-<!-- handsoff-issue-1227 -->
-- #1227: [backend-2fa] Enforce TOTP replay protection atomically
-
-<!-- handsoff-issue-1261 -->
-- #1261: [backend-2fa] Add webhook signature key versioning
-
-<!-- handsoff-issue-1304 -->
-- #1304: [Contracts] Add Celo invariant tests for registry pause and recovery behavior
-
-<!-- handsoff-issue-1320 -->
-- #1320: [Contracts] Add Celo event indexing compatibility fixtures
-
-<!-- handsoff-issue-1331 -->
-- #1331: [Contracts] Add Soroban event privacy regression tests
-
-<!-- handsoff-issue-1332 -->
-- #1332: [Contracts] Add Soroban upgrade proposal expiry semantics
-
-<!-- handsoff-issue-1340 -->
-- #1340: [Contracts] Add Soroban insurance reserve accounting audit view
+<!-- handsoff-issue-1416 -->
+- #1416: [Contracts] Add medication refill authorization records
