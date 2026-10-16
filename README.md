@@ -230,3 +230,6 @@ MIT
 
 <!-- handsoff-issue-1455 -->
 - #1455: [Contracts] Add adoption fee accounting receipt
+
+<!-- handsoff-issue-1456 -->
+- #1456: [Contracts] Add adopter eligibility attestations
