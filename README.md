@@ -331,6 +331,9 @@ MIT
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
 
+<!-- handsoff-issue-1401 -->
+- #1401: [Contracts] Add a versioned on-chain pet health passport
+
 <!-- handsoff-issue-1405 -->
 - #1405: [Contracts] Add travel certificate lifecycle
 
