@@ -145,16 +145,61 @@ Additional languages can be added by admins using the `set_error_message` functi
 
 ---
 
-### Alert System Errors (50-51)
+### Alert System Errors (50-51, 52-55)
 
 | Code | Name | English Message | Spanish Message |
 |------|------|-----------------|-----------------|
 | 50 | `AlertNotFound` | Alert not found | Alerta no encontrada |
 | 51 | `AlertNotActive` | Alert not active | Alerta no activa |
+| 52 | `AlertAlreadyActive` | An active alert already exists for this pet | Ya existe una alerta activa para esta mascota |
+| 53 | `InvalidPageSize` | Invalid page size | Tamaño de página inválido |
+| 54 | `InvalidAlertCursor` | Invalid or expired alert cursor | Cursor de alerta inválido o expirado |
+| 55 | `AlertRegionTooLong` | Alert region too long | Región de alerta demasiado larga |
 
 **Description:**
 - Errors related to lost pet alert system
 - Occur when trying to access or modify non-existent or inactive alerts
+
+#### Duplicate Alert Detection (Code 52)
+
+`create_alert` rejects a new alert when the same pet already has an active alert
+(`status == Active`). The failed call leaves all state unchanged: no alert record,
+no index entry, and no event is written.
+
+Resolution path for changed circumstances:
+1. The pet owner (or an authorized admin) calls `resolve_alert` / `cancel_alert`
+   on the existing alert, which moves it out of `Active`.
+2. Once no active alert remains for the pet, `create_alert` succeeds and the new
+   alert is indexed normally.
+
+Retry guidance: do **not** blindly retry `create_alert` after code 52. Query the
+pet's active alert first (`get_active_alert_for_pet`), then either resolve/cancel
+it or surface the existing alert to the user.
+
+#### Alert Index Pagination (Codes 53-55)
+
+`list_alerts_by_region` / `list_alerts_by_status` return a bounded page of active
+alerts using an opaque cursor.
+
+- **Page size bounds:** `page_size` must be in `1..=MAX_ALERT_PAGE_SIZE` (50).
+  `0` or values above the maximum fail with `InvalidPageSize` (53).
+- **Cursor format:** the cursor is an opaque, contract-issued token. Clients must
+  treat it as a black box and pass back exactly what the previous page returned.
+- **Cursor invalidation:** cursors are bound to the region/status filter they were
+  issued for and to the storage version. A cursor becomes invalid (54) when:
+  - it was issued for a different region or status filter,
+  - it is malformed or truncated,
+  - the contract storage version has changed (upgrade),
+  - the underlying alert it points at has been resolved or cancelled.
+- **Replay/expiry:** cursors are single-use per listing session; replaying a stale
+  cursor after the index changed returns `InvalidAlertCursor` (54) rather than
+  silently skipping or duplicating entries. On 54, restart pagination from the
+  first page (no cursor) instead of retrying the same cursor.
+- **Region bounds:** `region` must be non-empty and at most `MAX_REGION_LEN` (64)
+  bytes; otherwise `AlertRegionTooLong` (55).
+
+Retry guidance: codes 53 and 55 are deterministic input errors — fix the input,
+do not retry. Code 54 is recoverable by restarting from the first page.
 
 ---
 
@@ -517,6 +562,16 @@ match client.try_add_medical_record(...) {
 **Topics:** `("ErrorMessageRemoved", error_code)`  
 **Data:** `language`
 
+### AlertCreated
+**Emitted when:** A new lost-pet alert is created and indexed  
+**Topics:** `("AlertCreated", pet_id)`  
+**Data:** `(alert_id, region, status)`
+
+### AlertResolved
+**Emitted when:** An active alert is resolved or cancelled, invalidating any cursors pointing at it  
+**Topics:** `("AlertResolved", alert_id)`  
+**Data:** `(pet_id, status)`
+
 ---
 
 ## Storage Structure
@@ -632,8 +687,15 @@ For questions or issues related to error messages:
 - Added query functions for message retrieval
 - Documented all error codes
 
+### Version 1.1.0 - Alert Index Pagination & Duplicate Detection (Issues #1469, #1471)
+- Added error codes 52-55 (`AlertAlreadyActive`, `InvalidPageSize`, `InvalidAlertCursor`, `AlertRegionTooLong`)
+- Documented cursor-based pagination for active alerts by region/status, including page-size bounds and cursor invalidation/replay behavior
+- Documented duplicate active-alert rejection and its resolution path
+- Added `AlertCreated` and `AlertResolved` events
+- No changes to existing error codes; storage version bumped for the new alert index keys
+
 ---
 
 **Last Updated:** 2024  
-**Issue:** #684  
+**Issues:** #684, #1469, #1471  
 **Status:** ✅ Complete
