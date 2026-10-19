@@ -331,6 +331,18 @@ MIT
 <!-- handsoff-issue-1340 -->
 - #1340: [Contracts] Add Soroban insurance reserve accounting audit view
 
+<!-- handsoff-issue-1405 -->
+- #1405: [Contracts] Add travel certificate lifecycle
+
+<!-- handsoff-issue-1406 -->
+- #1406: [Contracts] Add travel readiness evaluation for a pet
+
+<!-- handsoff-issue-1407 -->
+- #1407: [Contracts] Add destination-specific travel requirement profiles
+
+<!-- handsoff-issue-1408 -->
+- #1408: [Contracts] Add time-limited passport sharing grants
+
 <!-- handsoff-issue-1425 -->
 - #1425: [Contracts] Add care-plan access purpose checks
 
