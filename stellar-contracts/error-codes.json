@@ -86,7 +86,18 @@
     { "code": 185, "name": "IssuerKeyVersionNotFound", "retry": "never" },
     { "code": 186, "name": "IssuerKeyVersionInactive", "retry": "never" },
     { "code": 187, "name": "IssuerKeyReused", "retry": "never" },
-    { "code": 188, "name": "RevokedConsentReplay", "retry": "never" }
+    { "code": 188, "name": "RevokedConsentReplay", "retry": "never" },
+    { "code": 189, "name": "EnrollmentNotFound", "retry": "never" },
+    { "code": 190, "name": "InvalidEnrollmentState", "retry": "after_state_change" },
+    { "code": 191, "name": "EnrollmentAlreadyExists", "retry": "treat_as_success" },
+    { "code": 192, "name": "EnrollmentNotExpired", "retry": "after_state_change" },
+    { "code": 193, "name": "PolicyVersionNotFound", "retry": "never" },
+    { "code": 194, "name": "PolicyVersionMismatch", "retry": "after_state_change" },
+    { "code": 195, "name": "CoverageSnapshotNotFound", "retry": "never" },
+    { "code": 196, "name": "CoverageSnapshotMismatch", "retry": "never" },
+    { "code": 197, "name": "TooManyCoverageItems", "retry": "never" },
+    { "code": 198, "name": "TooManyExclusionItems", "retry": "never" },
+    { "code": 199, "name": "InvalidCoverageAmount", "retry": "never" }
    ]
   },
   {

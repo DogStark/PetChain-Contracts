@@ -635,6 +635,395 @@ fn test_update_insurance_status_targets_specific_policy() {
     assert_eq!(all.get(1).unwrap().active, false);
 }
 
+// ---------------------------------------------------------------------------
+// Enrollment application workflow (#1470) + coverage schedule snapshots (#1472)
+// ---------------------------------------------------------------------------
+
+use crate::{
+    EnrollmentStatus, InsuranceEnrollmentApplication, PolicyCoverageSnapshot,
+    MAX_COVERAGE_ITEMS, MAX_ENROLLMENT_PAGE_SIZE,
+};
+
+fn register_enrollment_pet(
+    env: &Env,
+    client: &PetChainContractClient,
+    owner: &Address,
+    name: &str,
+) -> u64 {
+    client.register_pet(
+        owner,
+        &String::from_str(env, name),
+        &String::from_str(env, "2021-01-01"),
+        &Gender::Male,
+        &Species::Dog,
+        &String::from_str(env, "Brown"),
+        &String::from_str(env, "Mutt"),
+        &20,
+        &None,
+        &PrivacyLevel::Public,
+    )
+}
+
+fn coverage_items(env: &Env, count: u32) -> soroban_sdk::Vec<String> {
+    let mut items = soroban_sdk::Vec::new(env);
+    for i in 0..count {
+        items.push_back(String::from_str(env, "coverage-item"));
+    }
+    items
+}
+
+#[test]
+fn test_enrollment_full_happy_path_binds_policy_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Enroll");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-1"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-1"),
+        &coverage_items(&env, 2),
+        &coverage_items(&env, 1),
+    );
+
+    let app = client.get_enrollment_application(&app_id).unwrap();
+    assert_eq!(app.status, EnrollmentStatus::Draft);
+    assert_eq!(app.policy_version, 1);
+    assert_eq!(app.owner, owner);
+
+    assert!(client.submit_enrollment_application(&owner, &app_id));
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::Submitted
+    );
+
+    assert!(client.review_enrollment_application(&owner, &app_id));
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::UnderReview
+    );
+
+    assert!(client.accept_enrollment_application(&owner, &app_id));
+    let accepted = client.get_enrollment_application(&app_id).unwrap();
+    assert_eq!(accepted.status, EnrollmentStatus::Accepted);
+    assert_eq!(accepted.policy_version, 1);
+}
+
+#[test]
+fn test_enrollment_decline_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Decline");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-2"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-2"),
+        &coverage_items(&env, 1),
+        &coverage_items(&env, 0),
+    );
+
+    assert!(client.submit_enrollment_application(&owner, &app_id));
+    assert!(client.review_enrollment_application(&owner, &app_id));
+    assert!(client.decline_enrollment_application(&owner, &app_id));
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::Declined
+    );
+}
+
+#[test]
+fn test_enrollment_unauthorized_access_rejected_and_state_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Auth");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-3"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-3"),
+        &coverage_items(&env, 1),
+        &coverage_items(&env, 1),
+    );
+
+    // Unauthorized submit must fail and leave the draft untouched.
+    let result = client.try_submit_enrollment_application(&attacker, &app_id);
+    assert!(result.is_err());
+    let app = client.get_enrollment_application(&app_id).unwrap();
+    assert_eq!(app.status, EnrollmentStatus::Draft);
+    assert_eq!(app.policy_version, 1);
+}
+
+#[test]
+fn test_enrollment_invalid_transition_leaves_state_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Transition");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-4"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-4"),
+        &coverage_items(&env, 1),
+        &coverage_items(&env, 0),
+    );
+
+    // Cannot accept straight from Draft.
+    let result = client.try_accept_enrollment_application(&owner, &app_id);
+    assert!(result.is_err());
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::Draft
+    );
+
+    // Cannot review before submitting.
+    let result = client.try_review_enrollment_application(&owner, &app_id);
+    assert!(result.is_err());
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::Draft
+    );
+}
+
+#[test]
+fn test_enrollment_replay_after_decision_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Replay");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-5"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-5"),
+        &coverage_items(&env, 1),
+        &coverage_items(&env, 0),
+    );
+
+    assert!(client.submit_enrollment_application(&owner, &app_id));
+    assert!(client.review_enrollment_application(&owner, &app_id));
+    assert!(client.accept_enrollment_application(&owner, &app_id));
+
+    // Replaying any transition on a decided application must fail.
+    assert!(client
+        .try_submit_enrollment_application(&owner, &app_id)
+        .is_err());
+    assert!(client
+        .try_review_enrollment_application(&owner, &app_id)
+        .is_err());
+    assert!(client
+        .try_decline_enrollment_application(&owner, &app_id)
+        .is_err());
+    assert_eq!(
+        client.get_enrollment_application(&app_id).unwrap().status,
+        EnrollmentStatus::Accepted
+    );
+}
+
+#[test]
+fn test_enrollment_coverage_items_bounded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Bounds");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-6"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    // Exactly at the bound is accepted.
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-6"),
+        &coverage_items(&env, MAX_COVERAGE_ITEMS),
+        &coverage_items(&env, MAX_COVERAGE_ITEMS),
+    );
+    assert!(client.get_enrollment_application(&app_id).is_some());
+
+    // Over the bound is rejected and creates no application.
+    let result = client.try_create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-6"),
+        &coverage_items(&env, MAX_COVERAGE_ITEMS + 1),
+        &coverage_items(&env, 0),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_enrollment_page_size_bounded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Paging");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-7"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-7"),
+        &coverage_items(&env, 1),
+        &coverage_items(&env, 0),
+    );
+
+    let page = client.get_enrollment_applications(&pet_id, &0, &MAX_ENROLLMENT_PAGE_SIZE);
+    assert_eq!(page.len(), 1);
+
+    let result = client.try_get_enrollment_applications(&pet_id, &0, &(MAX_ENROLLMENT_PAGE_SIZE + 1));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_coverage_snapshot_immutable_after_policy_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PetChainContract);
+    let client = PetChainContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let pet_id = register_enrollment_pet(&env, &client, &owner, "Snapshot");
+
+    let expiry = env.ledger().timestamp() + 31536000;
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-8"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Basic"),
+        &1000,
+        &50000,
+        &expiry,
+    );
+
+    let app_id = client.create_enrollment_application(
+        &owner,
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-8"),
+        &coverage_items(&env, 2),
+        &coverage_items(&env, 1),
+    );
+
+    let snapshot: PolicyCoverageSnapshot = client.get_coverage_snapshot(&app_id).unwrap();
+    assert_eq!(snapshot.policy_version, 1);
+    assert_eq!(snapshot.coverage.len(), 2);
+    assert_eq!(snapshot.exclusions.len(), 1);
+
+    // Later policy changes must not mutate the stored snapshot.
+    client.add_insurance_policy(
+        &pet_id,
+        &String::from_str(&env, "ENR-POL-8"),
+        &String::from_str(&env, "Provider"),
+        &String::from_str(&env, "Premium"),
+        &2000,
+        &100000,
+        &expiry,
+    );
+
+    let after = client.get_coverage_snapshot(&app_id).unwrap();
+    assert_eq!(after.policy_version, snapshot.policy_version);
+    assert_eq!(after.coverage.len(), snapshot.coverage.len());
+    assert_eq!(after.exclusions.len(), snapshot.exclusions.len());
+}
+
 #[test]
 fn test_update_insurance_status_unknown_policy_id_returns_false() {
     let env = Env::default();

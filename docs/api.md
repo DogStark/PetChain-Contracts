@@ -63,8 +63,123 @@ Rules:
 - Existing valid callers (page sizes within `[1, 100]`) remain fully
   compatible.
 
-This policy applies to the pet, record, vet, consent, custody, and activity
-paginated reads.
+This policy applies to the pet, record, vet, consent, custody, activity, and
+lost-pet alert paginated reads.
+
+---
+
+## Lost-Pet Alert Index (Issues #1469, #1471)
+
+### `list_active_alerts(region, status, cursor, page_size)`
+
+Returns a stable, cursor-paginated index of lost-pet alerts filtered by
+`region` and `status`.
+
+| Bound | Value | Meaning |
+|---|---|---|
+| Minimum page size | `1` | Smallest accepted page size |
+| Default page size | `20` | Used when the caller omits `page_size` |
+| Maximum page size | `100` | Largest accepted page size |
+
+Rules:
+
+- Page sizes outside `[1, 100]` return the shared deterministic
+  `InvalidPageSize` error (see the pagination policy above).
+- The cursor is opaque and must be passed back unchanged. A `null`/absent
+  cursor starts from the beginning of the index.
+- Cursors are bound to the `(region, status)` filter they were issued for.
+  Reusing a cursor with a different filter returns `InvalidCursor`.
+- Cursors are invalidated when the alert they point at is resolved, expires,
+  or is otherwise removed from the active index. A stale cursor returns
+  `InvalidCursor` rather than silently skipping or repeating entries; callers
+  should restart from the beginning.
+- Iteration is bounded: a single call never scans more than the maximum page
+  size worth of index entries, and the index itself is capped at
+  `MAX_ACTIVE_ALERTS_PER_REGION` entries per region.
+
+### Duplicate-alert detection (Issue #1471)
+
+Creating an alert for a pet that already has an active alert is rejected with
+`DuplicateActiveAlert` and leaves state unchanged. The error carries the
+existing alert ID so callers can link to it.
+
+Resolution path for changed circumstances:
+
+- `link_alert_to_existing(pet_id, existing_alert_id, new_details)` — the pet
+  owner (or an admin) may attach updated details to the existing active alert
+  instead of creating a duplicate. This emits an `AlertLinked` event and does
+  not create a new index entry.
+- `resolve_alert(alert_id)` — the owner or an admin resolves the active alert;
+  once resolved, a new alert for the same pet may be created.
+- `supersede_alert(alert_id, new_details)` — the owner or an admin replaces an
+  active alert with a new one in a single call. The old alert is resolved and
+  the new alert is indexed; both transitions emit events.
+
+All three entrypoints require authorization (pet owner or admin); unauthorized
+callers receive `Unauthorized` and no state is modified.
+
+---
+
+## Insurance Enrollment Workflow (Issues #1470, #1472)
+
+Enrollment applications move through a bounded state machine:
+
+`Draft → Submitted → UnderReview → Accepted | Declined`
+
+| Entry point | Description |
+|---|---|
+| `create_enrollment_draft(pet_id, policy_id)` | Creates a draft application bound to the current policy version |
+| `submit_enrollment(application_id)` | Moves a draft to `Submitted` (owner only) |
+| `begin_enrollment_review(application_id)` | Moves `Submitted` to `UnderReview` (admin only) |
+| `accept_enrollment(application_id)` | Moves `UnderReview` to `Accepted` (admin only) |
+| `decline_enrollment(application_id, reason)` | Moves `UnderReview` to `Declined` (admin only) |
+| `get_enrollment(application_id)` | Returns the application and its bound policy version |
+| `get_coverage_snapshot(application_id)` | Returns the immutable coverage/exclusion snapshot captured at acceptance |
+
+Rules:
+
+- Every transition is authorized: drafts and submissions by the pet owner,
+  review decisions by an admin. Unauthorized calls return `Unauthorized` and
+  leave state unchanged.
+- Each decision is bound to the policy version in effect when the application
+  was created. If the policy has since changed, the decision is rejected with
+  `PolicyVersionMismatch`; the applicant must create a new draft.
+- Transitions are validated against the state machine; an out-of-order
+  transition returns `InvalidEnrollmentState` and leaves state unchanged.
+- Replaying a transition (e.g. accepting an already-accepted application)
+  returns `InvalidEnrollmentState`; it is never applied twice.
+- `reason` on decline is bounded to `MAX_DECLINE_REASON_LEN` bytes.
+
+### Coverage schedule snapshots (Issue #1472)
+
+At acceptance, the contract stores an immutable snapshot of the policy's
+coverage and exclusion schedule, keyed by application ID and policy version.
+Later policy edits never alter an existing snapshot, so an accepted contract
+cannot be silently changed. Snapshots are bounded to
+`MAX_COVERAGE_ITEMS` entries each for coverage and exclusions; oversized
+policies are rejected at acceptance with `CoverageSnapshotTooLarge`.
+
+### Events
+
+| Event | Emitted when |
+|---|---|
+| `EnrollmentCreated` | A draft application is created |
+| `EnrollmentSubmitted` | A draft is submitted |
+| `EnrollmentReviewStarted` | Review begins |
+| `EnrollmentAccepted` | An application is accepted (snapshot stored) |
+| `EnrollmentDeclined` | An application is declined |
+| `AlertLinked` | Details are linked to an existing active alert |
+| `AlertSuperseded` | An active alert is replaced by a new one |
+
+### New error codes
+
+| Error | Meaning |
+|---|---|
+| `InvalidCursor` | Cursor is stale, malformed, or used with a different filter |
+| `DuplicateActiveAlert` | The pet already has an active alert |
+| `InvalidEnrollmentState` | Transition is not valid from the current state |
+| `PolicyVersionMismatch` | Decision bound to a stale policy version |
+| `CoverageSnapshotTooLarge` | Policy exceeds the snapshot item bound |
 
 ---
 
