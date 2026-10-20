@@ -530,3 +530,6 @@ MIT
 
 <!-- handsoff-issue-1476 -->
 - #1476: [Contracts] Add claim preauthorization workflow
+
+<!-- handsoff-issue-1477 -->
+- #1477: [Contracts] Add claim line-item review decisions
