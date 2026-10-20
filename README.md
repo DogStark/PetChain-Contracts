@@ -530,3 +530,6 @@ MIT
 
 <!-- handsoff-issue-1483 -->
 - #1483: [Contracts] Add breeding program enrollment and approval
+
+<!-- handsoff-issue-1484 -->
+- #1484: [Contracts] Add breeding agreement commitments
