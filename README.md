@@ -530,3 +530,6 @@ MIT
 
 <!-- handsoff-issue-1486 -->
 - #1486: [Contracts] Add genetic trait disclosure scopes
+
+<!-- handsoff-issue-1487 -->
+- #1487: [Contracts] Add litter registration workflow
