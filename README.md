@@ -527,3 +527,6 @@ MIT
 
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
+
+<!-- handsoff-issue-1476 -->
+- #1476: [Contracts] Add claim preauthorization workflow
