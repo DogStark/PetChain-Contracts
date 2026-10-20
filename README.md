@@ -533,3 +533,6 @@ MIT
 
 <!-- handsoff-issue-1484 -->
 - #1484: [Contracts] Add breeding agreement commitments
+
+<!-- handsoff-issue-1485 -->
+- #1485: [Contracts] Add genetic test result issuer verification
