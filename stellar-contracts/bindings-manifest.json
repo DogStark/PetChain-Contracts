@@ -1,10 +1,10 @@
 {
   "$schema": "./bindings-manifest.schema.json",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "generated_at": "2026-08-30T00:00:00Z",
   "source": {
     "commit": "HEAD",
-    "contract_version": 1,
+    "contract_version": 2,
     "abi_snapshot": "stellar-contracts/abi-snapshot.txt"
   },
   "network": "testnet",
@@ -16,8 +16,66 @@
     "pet-chain": {
       "contract_id": "PLACEHOLDER_CONTRACT_ID",
       "wasm_hash": "PLACEHOLDER_WASM_HASH",
-      "abi_version": "1.0.0"
+      "abi_version": "1.1.0"
     }
   },
-  "migration_notes": []
+  "migration_notes": [
+    {
+      "id": "1470",
+      "title": "Insurance enrollment application workflow",
+      "abi_version": "1.1.0",
+      "storage_version": 2,
+      "summary": "Adds an insurance enrollment application workflow with draft, submitted, under-review, accepted, and declined states. Each decision is bound to a specific policy version so that later policy updates cannot retroactively alter an existing decision.",
+      "new_entry_points": [
+        "create_enrollment_draft",
+        "submit_enrollment",
+        "review_enrollment",
+        "accept_enrollment",
+        "decline_enrollment",
+        "get_enrollment"
+      ],
+      "new_error_codes": [
+        "EnrollmentNotFound",
+        "EnrollmentInvalidState",
+        "EnrollmentUnauthorized",
+        "EnrollmentPolicyVersionMismatch",
+        "EnrollmentAlreadyDecided",
+        "EnrollmentInputTooLarge"
+      ],
+      "new_events": [
+        "enrollment_created",
+        "enrollment_submitted",
+        "enrollment_under_review",
+        "enrollment_accepted",
+        "enrollment_declined"
+      ],
+      "storage_changes": [
+        "Adds persistent enrollment records keyed by enrollment id, bounded to a fixed maximum number of applications per applicant.",
+        "Enrollment records store the bound policy version at decision time."
+      ],
+      "compatibility": "Additive. Existing entry points and storage keys are unchanged; new keys are namespaced under the enrollment prefix."
+    },
+    {
+      "id": "1472",
+      "title": "Policy coverage schedule snapshots",
+      "abi_version": "1.1.0",
+      "storage_version": 2,
+      "summary": "Stores immutable coverage and exclusion snapshots at enrollment time so later policy changes cannot silently alter an existing contract.",
+      "new_entry_points": [
+        "get_enrollment_coverage_snapshot"
+      ],
+      "new_error_codes": [
+        "CoverageSnapshotNotFound",
+        "CoverageSnapshotTooLarge"
+      ],
+      "new_events": [
+        "coverage_snapshot_stored"
+      ],
+      "storage_changes": [
+        "Adds immutable coverage and exclusion snapshot records written once at enrollment and never mutated.",
+        "Snapshot sizes are bounded by a fixed maximum number of coverage and exclusion entries."
+      ],
+      "compatibility": "Additive. Snapshots are written alongside enrollment records; existing policy storage is unchanged."
+    }
+  ]
 }

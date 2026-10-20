@@ -90,6 +90,51 @@ All events below include `version: u32` set to `EVENT_SCHEMA_VERSION`.
 | `LabResultAnomaly` | `LAB_RESULT_ANOMALY` | Lab result statistical anomaly |
 | `ConsentRevoked` | (consent topic) | Consent revoked in cascade |
 | `CrossChainIdentityRegistered` | (cross-chain topic) | External chain identity linked |
+| `EnrollmentApplicationCreatedEvent` | `ENROLL_APP_CREATED` | A draft insurance enrollment application was created |
+| `EnrollmentApplicationSubmittedEvent` | `ENROLL_APP_SUBMITTED` | A draft enrollment application was submitted for review |
+| `EnrollmentApplicationReviewStartedEvent` | `ENROLL_APP_REVIEW` | A submitted enrollment application moved to under-review |
+| `EnrollmentApplicationAcceptedEvent` | `ENROLL_APP_ACCEPTED` | An enrollment application was accepted and bound to a policy version |
+| `EnrollmentApplicationDeclinedEvent` | `ENROLL_APP_DECLINED` | An enrollment application was declined |
+| `CoverageSnapshotStoredEvent` | `COVERAGE_SNAPSHOT` | Immutable coverage/exclusion snapshot stored at enrollment |
+
+## Insurance Enrollment Workflow Events (Issue #1470 / #1472)
+
+### Enrollment state machine
+
+Enrollment applications move through the following states:
+
+`Draft -> Submitted -> UnderReview -> Accepted | Declined`
+
+Every transition is authorized (applicant for draft/submit, insurer/admin for
+review/accept/decline) and emits exactly one event. `Accepted` and `Declined`
+are terminal; any further transition attempt fails with an error and leaves
+state unchanged (replay protection).
+
+### Payloads
+
+All payloads carry `version: u32` first and `timestamp: u64` last, per the
+field semantics convention above.
+
+| Event Struct | Additional Fields |
+|---|---|
+| `EnrollmentApplicationCreatedEvent` | `application_id: u64`, `pet_id: u64`, `applicant: Address`, `policy_id: u64` |
+| `EnrollmentApplicationSubmittedEvent` | `application_id: u64`, `pet_id: u64`, `applicant: Address`, `policy_id: u64` |
+| `EnrollmentApplicationReviewStartedEvent` | `application_id: u64`, `reviewer: Address` |
+| `EnrollmentApplicationAcceptedEvent` | `application_id: u64`, `pet_id: u64`, `policy_id: u64`, `policy_version: u32`, `coverage_snapshot_hash: BytesN<32>` |
+| `EnrollmentApplicationDeclinedEvent` | `application_id: u64`, `reviewer: Address`, `reason_code: u32` |
+| `CoverageSnapshotStoredEvent` | `application_id: u64`, `policy_id: u64`, `policy_version: u32`, `coverage_snapshot_hash: BytesN<32>` |
+
+`coverage_snapshot_hash` is a deterministic hash over the immutable coverage and
+exclusion lists captured at acceptance time, so indexers can detect when a later
+policy update would have changed an existing contract's terms.
+
+### Schema version impact
+
+These are **additive** changes: new event structs only, no existing event struct
+gains, loses, reorders, or retypes a field. Per the additive-change policy above,
+`EVENT_SCHEMA_VERSION` is **not** bumped and remains **1**. The new structs are
+registered in the `EventSchema` enum as v1 events, and the ABI snapshot must be
+regenerated because new public functions and event topics are exposed.
 
 ## Field Semantics Convention
 

@@ -23,6 +23,110 @@ pub enum ClaimError {
     Overflow,
 }
 
+/// Maximum number of coverage entries allowed in an enrollment snapshot.
+pub const MAX_COVERAGE_ENTRIES: u32 = 32;
+/// Maximum number of exclusion entries allowed in an enrollment snapshot.
+pub const MAX_EXCLUSION_ENTRIES: u32 = 32;
+
+/// Enrollment application states (#1470).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentState {
+    Draft,
+    Submitted,
+    UnderReview,
+    Accepted,
+    Declined,
+}
+
+impl EnrollmentState {
+    /// Allowed transitions: Draft -> Submitted -> UnderReview -> Accepted|Declined.
+    pub fn can_transition_to(self, next: EnrollmentState) -> bool {
+        matches!(
+            (self, next),
+            (EnrollmentState::Draft, EnrollmentState::Submitted)
+                | (EnrollmentState::Submitted, EnrollmentState::UnderReview)
+                | (EnrollmentState::UnderReview, EnrollmentState::Accepted)
+                | (EnrollmentState::UnderReview, EnrollmentState::Declined)
+        )
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, EnrollmentState::Accepted | EnrollmentState::Declined)
+    }
+}
+
+/// Immutable coverage/exclusion snapshot bound to a policy version (#1472).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CoverageSnapshot {
+    pub policy_version: u32,
+    pub coverage_entries: u32,
+    pub exclusion_entries: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentError {
+    /// Coverage or exclusion vector exceeds the bounded maximum.
+    TooManyEntries,
+    /// Decision references a policy version different from the application's.
+    PolicyVersionMismatch,
+    /// Snapshot was taken against a different policy version than the decision.
+    SnapshotVersionMismatch,
+    /// Transition is not permitted from the current state (includes replay).
+    InvalidTransition,
+    /// Application is already in a terminal state (replay of a decision).
+    AlreadyDecided,
+    /// Application has expired and can no longer be decided.
+    Expired,
+}
+
+/// Validates the bounded sizes of an enrollment application's snapshot inputs.
+pub fn validate_enrollment_inputs(
+    coverage_entries: u32,
+    exclusion_entries: u32,
+) -> Result<(), EnrollmentError> {
+    if coverage_entries > MAX_COVERAGE_ENTRIES || exclusion_entries > MAX_EXCLUSION_ENTRIES {
+        return Err(EnrollmentError::TooManyEntries);
+    }
+    Ok(())
+}
+
+/// Validates a state transition for an application bound to `application_version`.
+/// `now`/`expires_at` are ledger timestamps; `expires_at == 0` means no expiry.
+pub fn validate_transition(
+    current: EnrollmentState,
+    next: EnrollmentState,
+    application_version: u32,
+    decision_version: u32,
+    now: u64,
+    expires_at: u64,
+) -> Result<(), EnrollmentError> {
+    if current.is_terminal() {
+        return Err(EnrollmentError::AlreadyDecided);
+    }
+    if expires_at != 0 && now >= expires_at {
+        return Err(EnrollmentError::Expired);
+    }
+    if application_version != decision_version {
+        return Err(EnrollmentError::PolicyVersionMismatch);
+    }
+    if !current.can_transition_to(next) {
+        return Err(EnrollmentError::InvalidTransition);
+    }
+    Ok(())
+}
+
+/// Validates that a snapshot matches the policy version at acceptance (#1472).
+pub fn validate_snapshot_at_acceptance(
+    snapshot: &CoverageSnapshot,
+    policy_version: u32,
+) -> Result<(), EnrollmentError> {
+    validate_enrollment_inputs(snapshot.coverage_entries, snapshot.exclusion_entries)?;
+    if snapshot.policy_version != policy_version {
+        return Err(EnrollmentError::SnapshotVersionMismatch);
+    }
+    Ok(())
+}
+
 /// Returns the payable amount for a claim of `amount` in `asset_id`:
 /// `amount - deductible`, which must fit in the remaining coverage
 /// (`coverage_limit - cumulative_paid`).
@@ -88,5 +192,115 @@ mod tests {
             terms.cumulative_paid += p;
         }
         assert!(terms.cumulative_paid <= terms.coverage_limit);
+    }
+
+    #[test]
+    fn enrollment_input_sizes_are_bounded() {
+        assert_eq!(validate_enrollment_inputs(0, 0), Ok(()));
+        assert_eq!(
+            validate_enrollment_inputs(MAX_COVERAGE_ENTRIES, MAX_EXCLUSION_ENTRIES),
+            Ok(())
+        );
+        assert_eq!(
+            validate_enrollment_inputs(MAX_COVERAGE_ENTRIES + 1, 0),
+            Err(EnrollmentError::TooManyEntries)
+        );
+        assert_eq!(
+            validate_enrollment_inputs(0, MAX_EXCLUSION_ENTRIES + 1),
+            Err(EnrollmentError::TooManyEntries)
+        );
+    }
+
+    #[test]
+    fn happy_path_transitions_succeed() {
+        assert_eq!(
+            validate_transition(EnrollmentState::Draft, EnrollmentState::Submitted, 3, 3, 0, 0),
+            Ok(())
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::Submitted, EnrollmentState::UnderReview, 3, 3, 0, 0),
+            Ok(())
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Accepted, 3, 3, 0, 0),
+            Ok(())
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Declined, 3, 3, 0, 0),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn mismatched_policy_versions_rejected() {
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Accepted, 3, 4, 0, 0),
+            Err(EnrollmentError::PolicyVersionMismatch)
+        );
+    }
+
+    #[test]
+    fn invalid_transitions_rejected() {
+        assert_eq!(
+            validate_transition(EnrollmentState::Draft, EnrollmentState::Accepted, 3, 3, 0, 0),
+            Err(EnrollmentError::InvalidTransition)
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::Submitted, EnrollmentState::Draft, 3, 3, 0, 0),
+            Err(EnrollmentError::InvalidTransition)
+        );
+    }
+
+    #[test]
+    fn replay_of_decision_rejected() {
+        assert_eq!(
+            validate_transition(EnrollmentState::Accepted, EnrollmentState::Accepted, 3, 3, 0, 0),
+            Err(EnrollmentError::AlreadyDecided)
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::Declined, EnrollmentState::Accepted, 3, 3, 0, 0),
+            Err(EnrollmentError::AlreadyDecided)
+        );
+    }
+
+    #[test]
+    fn expiry_boundary_rejected() {
+        // now == expires_at is expired; now < expires_at is allowed.
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Accepted, 3, 3, 100, 100),
+            Err(EnrollmentError::Expired)
+        );
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Accepted, 3, 3, 99, 100),
+            Ok(())
+        );
+        // expires_at == 0 disables expiry.
+        assert_eq!(
+            validate_transition(EnrollmentState::UnderReview, EnrollmentState::Accepted, 3, 3, u64::MAX, 0),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn snapshot_must_match_policy_version_at_acceptance() {
+        let snap = CoverageSnapshot {
+            policy_version: 5,
+            coverage_entries: MAX_COVERAGE_ENTRIES,
+            exclusion_entries: MAX_EXCLUSION_ENTRIES,
+        };
+        assert_eq!(validate_snapshot_at_acceptance(&snap, 5), Ok(()));
+        assert_eq!(
+            validate_snapshot_at_acceptance(&snap, 6),
+            Err(EnrollmentError::SnapshotVersionMismatch)
+        );
+        let oversized = CoverageSnapshot {
+            policy_version: 5,
+            coverage_entries: MAX_COVERAGE_ENTRIES + 1,
+            exclusion_entries: 0,
+        };
+        assert_eq!(
+            validate_snapshot_at_acceptance(&oversized, 5),
+            Err(EnrollmentError::TooManyEntries)
+        );
     }
 }
