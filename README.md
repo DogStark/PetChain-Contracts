@@ -533,3 +533,6 @@ MIT
 
 <!-- handsoff-issue-1487 -->
 - #1487: [Contracts] Add litter registration workflow
+
+<!-- handsoff-issue-1488 -->
+- #1488: [Contracts] Add litter size and offspring linkage invariants
