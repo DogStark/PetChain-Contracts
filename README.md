@@ -533,3 +533,6 @@ MIT
 
 <!-- handsoff-issue-1477 -->
 - #1477: [Contracts] Add claim line-item review decisions
+
+<!-- handsoff-issue-1478 -->
+- #1478: [Contracts] Add insurance premium payment receipts
