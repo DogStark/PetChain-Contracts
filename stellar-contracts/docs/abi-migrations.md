@@ -60,6 +60,48 @@ the impact on off-chain consumers and any required data migration.
 
 ## Log
 
+### 2026-10-20 — Insurance benefit controls (#1473–#1475)
+
+**New public ABI (additive):** `set_condition_coverage`,
+`get_condition_coverage`, `get_condition_period_usage`,
+`get_insurance_benefit_claim`, `submit_condition_claim`, and
+`settle_condition_claim`; new contract types
+`ConditionCoverage`, `ConditionPeriodUsage`, `InsuranceBenefitClaim`,
+`InsuranceConditionCoverageConfiguredEvent`,
+`InsuranceBenefitClaimSubmittedEvent`, and `InsuranceBenefitSettledEvent`.
+Legacy `InsurancePolicy` and `InsuranceClaim` layouts remain unchanged.
+
+**New append-only storage keys:** per-policy condition terms, per-period
+paid/pending usage, a claim-to-benefit record, and a policy benefit-claim
+counter. Existing keys and structs are not modified, so no data migration or
+storage-schema version bump is required. Limits are 32 condition sections per
+pet and policy and 256 condition claims per pet and policy; each claim creates
+at most one usage entry. New APIs scan at most 32 policy entries.
+Condition terms are immutable once configured. See
+[`insurance-benefits.md`](insurance-benefits.md) for service-date, settlement,
+rounding, authorization, event, and error semantics.
+
+**New contract errors (append-only):** 209–219,
+`BenefitConditionNotFound` through `BenefitTermsAlreadyConfigured`.
+Declarations 220–226 restore referenced but previously missing enrollment and
+policy errors (`EnrollmentNotFound`, `EnrollmentInvalidTransition`,
+`EnrollmentAlreadyDecided`, `EnrollmentLimitReached`,
+`EnrollmentSnapshotTooLarge`, `InsurancePolicyInactive`,
+`InsurancePolicyNotFound`). `BenefitClaimLimitPerPetReached` (227) bounds the
+per-pet claims. The error registry and ABI snapshot are updated.
+`condition_cover` records immutable terms, `benefit_claim` emits calculated
+settlement terms, and `benefit_settled` records the final decision. These new
+events carry `EVENT_SCHEMA_VERSION`; existing event shapes are unchanged.
+
+**Compatibility impact:** additive. Existing claim methods continue to serve
+legacy claims; condition-benefit claims are restricted to the dedicated
+settlement method so legacy payout and appeal methods cannot bypass their
+condition accounting.
+
+`InvalidTimestamp` remains at its already-published code 169. The source had
+accidentally assigned it the same value as `StaleMigration` (170); restoring
+169 preserves the published error mapping and removes the duplicate.
+
 ### 2026-09-28 — Insurance enrollment application workflow + coverage schedule snapshots (#1470, #1472)
 
 **New public ABI (intentional, additive):**
