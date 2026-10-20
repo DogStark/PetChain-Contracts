@@ -527,3 +527,6 @@ MIT
 
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
+
+<!-- handsoff-issue-1483 -->
+- #1483: [Contracts] Add breeding program enrollment and approval
