@@ -527,3 +527,6 @@ MIT
 
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
+
+<!-- handsoff-issue-1486 -->
+- #1486: [Contracts] Add genetic trait disclosure scopes
