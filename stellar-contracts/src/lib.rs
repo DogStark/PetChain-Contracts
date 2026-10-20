@@ -33,7 +33,7 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 //   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Idempotent  ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â calling it again with the same target returns StaleMigration.
 //   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Resumable   ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â only advances forward; never rolls back the schema version.
 // ---------------------------------------------------------------------------
-pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+pub const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Canonical enum for off-chain indexers to identify the active event schema.
 /// Bump the variant and `EVENT_SCHEMA_VERSION` together whenever fields change.
@@ -83,6 +83,21 @@ pub enum InsuranceKey {
     ClaimSettled(u64), // claim_id -> bool; present+true means already paid
     // Reviewer tracking for appeal anti-replay
     ClaimReviewer(u64), // claim_id -> Address of first reviewer
+    // Issue #1470: insurance enrollment application workflow.
+    // EnrollmentCount -> u64 (monotonic id allocator)
+    EnrollmentCount,
+    // Enrollment(u64) -> InsuranceEnrollment
+    Enrollment(u64),
+    // PetEnrollmentCount(u64) -> u64 (pet_id -> number of enrollments)
+    PetEnrollmentCount(u64),
+    // PetEnrollmentIndex((u64, u64)) -> enrollment_id
+    PetEnrollmentIndex((u64, u64)),
+    // EnrollmentDecision(u64) -> bool; present+true means the decision was
+    // already applied (replay guard for accept/decline).
+    EnrollmentDecision(u64),
+    // Issue #1472: immutable coverage/exclusion snapshot per enrollment.
+    // CoverageSnapshot(u64) -> CoverageSnapshot (enrollment_id -> snapshot)
+    CoverageSnapshot(u64),
 }
 
 #[contracttype]
@@ -216,6 +231,11 @@ pub use consent_policy::*;
 
 pub mod insurance_state;
 
+// Issue #1470 / #1472: insurance enrollment application workflow and
+// immutable coverage/exclusion snapshots.
+mod insurance_enrollment;
+pub use insurance_enrollment::*;
+
 mod test_access_grant_pagination;
 #[cfg(test)]
 mod test_access_revocation_cascade;
@@ -298,6 +318,10 @@ mod test_consent_versioning;
 mod test_consent_cleanup;
 #[cfg(test)]
 mod test_vet_credential_issuer_rotation;
+#[cfg(test)]
+mod test_insurance_enrollment;
+#[cfg(test)]
+mod test_insurance_coverage_snapshot;
 
 const DEFAULT_NONCE_MAX_USES: u32 = 1;
 const NONCE_HISTORY_LIMIT: u32 = 8;
@@ -18199,6 +18223,401 @@ impl PetChainContract {
         claims
     }
 
+    // =========================================================================
+    // INSURANCE ENROLLMENT WORKFLOW  (Issue #1470)
+    // COVERAGE / EXCLUSION SNAPSHOTS  (Issue #1472)
+    //
+    // An enrollment application moves through a strict state machine:
+    //
+    //   Draft -> Submitted -> UnderReview -> Accepted
+    //                                      -> Declined
+    //
+    // Every transition is authorized (owner for draft/submit, admin for
+    // review/accept/decline), validated against the allowed transition table,
+    // and emits a versioned event. Accept/Decline are terminal and guarded by
+    // `InsuranceKey::EnrollmentDecision` so a replayed decision cannot flip an
+    // already-decided application.
+    //
+    // At submission time the policy's coverage and exclusions are captured in
+    // an immutable `CoverageSnapshot` (Issue #1472). Later policy edits cannot
+    // alter an existing enrollment's coverage: reads go through the snapshot.
+    // =========================================================================
+
+    /// Maximum number of coverage items captured in a snapshot.
+    const MAX_SNAPSHOT_COVERAGE_ITEMS: u32 = 32;
+    /// Maximum number of exclusion items captured in a snapshot.
+    const MAX_SNAPSHOT_EXCLUSION_ITEMS: u32 = 32;
+    /// Maximum length (bytes) of a single coverage/exclusion entry.
+    const MAX_SNAPSHOT_ITEM_LEN: u32 = 128;
+    /// Maximum number of enrollment applications per pet.
+    const MAX_ENROLLMENTS_PER_PET: u64 = 16;
+
+    /// Create a new enrollment application in `Draft` state for `pet_id`.
+    ///
+    /// The owner must authorize. The referenced policy must exist and be
+    /// active. Returns the new `enrollment_id`.
+    pub fn create_enrollment_draft(
+        env: Env,
+        owner: Address,
+        pet_id: u64,
+        policy_id: String,
+    ) -> u64 {
+        owner.require_auth();
+        Self::require_pet_owner(&env, pet_id, &owner);
+
+        let policy = Self::find_pet_policy(&env, pet_id, &policy_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InsurancePolicyNotFound));
+        if !policy.active {
+            panic_with_error!(&env, ContractError::InsurancePolicyInactive);
+        }
+
+        let pet_count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetEnrollmentCount(pet_id))
+            .unwrap_or(0);
+        if pet_count >= Self::MAX_ENROLLMENTS_PER_PET {
+            panic_with_error!(&env, ContractError::EnrollmentLimitReached);
+        }
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::EnrollmentCount)
+            .unwrap_or(0);
+        let enrollment_id = safe_increment(&env, count);
+        let now = env.ledger().timestamp();
+
+        let enrollment = InsuranceEnrollment {
+            enrollment_id,
+            pet_id,
+            policy_id: policy_id.clone(),
+            owner: owner.clone(),
+            status: EnrollmentStatus::Draft,
+            policy_version: 0,
+            created_at: now,
+            submitted_at: None,
+            decided_at: None,
+            reviewer: None,
+            decline_reason: None,
+        };
+        let key = InsuranceKey::Enrollment(enrollment_id);
+        env.storage().instance().set(&key, &enrollment);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::EnrollmentCount, &enrollment_id);
+
+        let new_pet_count = safe_increment(&env, pet_count);
+        env.storage().instance().set(
+            &InsuranceKey::PetEnrollmentIndex((pet_id, new_pet_count)),
+            &enrollment_id,
+        );
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::PetEnrollmentCount(pet_id), &new_pet_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_draft"),),
+            EnrollmentDraftEvent {
+                version: EVENT_SCHEMA_VERSION,
+                enrollment_id,
+                pet_id,
+                policy_id,
+                owner,
+                timestamp: now,
+            },
+        );
+        enrollment_id
+    }
+
+    /// Submit a `Draft` enrollment for review. Owner-only.
+    ///
+    /// Captures the immutable coverage/exclusion snapshot bound to the
+    /// current policy version (Issue #1472). Re-submitting an already
+    /// submitted application is rejected.
+    pub fn submit_enrollment(
+        env: Env,
+        owner: Address,
+        enrollment_id: u64,
+        coverage_items: Vec<String>,
+        exclusion_items: Vec<String>,
+    ) {
+        owner.require_auth();
+        let mut enrollment = Self::load_enrollment(&env, enrollment_id);
+        if enrollment.owner != owner {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        if !matches!(enrollment.status, EnrollmentStatus::Draft) {
+            panic_with_error!(&env, ContractError::EnrollmentInvalidTransition);
+        }
+        if coverage_items.len() > Self::MAX_SNAPSHOT_COVERAGE_ITEMS
+            || exclusion_items.len() > Self::MAX_SNAPSHOT_EXCLUSION_ITEMS
+        {
+            panic_with_error!(&env, ContractError::EnrollmentSnapshotTooLarge);
+        }
+        for item in coverage_items.iter().chain(exclusion_items.iter()) {
+            if item.len() > Self::MAX_SNAPSHOT_ITEM_LEN {
+                panic_with_error!(&env, ContractError::EnrollmentSnapshotTooLarge);
+            }
+        }
+
+        let policy = Self::find_pet_policy(&env, enrollment.pet_id, &enrollment.policy_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InsurancePolicyNotFound));
+        if !policy.active {
+            panic_with_error!(&env, ContractError::InsurancePolicyInactive);
+        }
+
+        let now = env.ledger().timestamp();
+        let policy_version = Self::next_policy_version(&env, enrollment.pet_id, &enrollment.policy_id);
+
+        let snapshot = CoverageSnapshot {
+            enrollment_id,
+            pet_id: enrollment.pet_id,
+            policy_id: enrollment.policy_id.clone(),
+            policy_version,
+            coverage_limit: policy.coverage_limit,
+            premium: policy.premium,
+            coverage_items: coverage_items.clone(),
+            exclusion_items: exclusion_items.clone(),
+            captured_at: now,
+        };
+        let snapshot_key = InsuranceKey::CoverageSnapshot(enrollment_id);
+        env.storage().instance().set(&snapshot_key, &snapshot);
+
+        enrollment.status = EnrollmentStatus::Submitted;
+        enrollment.policy_version = policy_version;
+        enrollment.submitted_at = Some(now);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Enrollment(enrollment_id), &enrollment);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_submitted"),),
+            EnrollmentSubmittedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                enrollment_id,
+                pet_id: enrollment.pet_id,
+                policy_id: enrollment.policy_id,
+                policy_version,
+                coverage_count: coverage_items.len() as u32,
+                exclusion_count: exclusion_items.len() as u32,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Move a `Submitted` enrollment to `UnderReview`. Admin-only.
+    pub fn review_enrollment(env: Env, admin: Address, enrollment_id: u64) {
+        Self::require_admin_auth(&env, &admin);
+        let mut enrollment = Self::load_enrollment(&env, enrollment_id);
+        if !matches!(enrollment.status, EnrollmentStatus::Submitted) {
+            panic_with_error!(&env, ContractError::EnrollmentInvalidTransition);
+        }
+        let now = env.ledger().timestamp();
+        enrollment.status = EnrollmentStatus::UnderReview;
+        enrollment.reviewer = Some(admin.clone());
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Enrollment(enrollment_id), &enrollment);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_review"),),
+            EnrollmentReviewedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                enrollment_id,
+                pet_id: enrollment.pet_id,
+                reviewer: admin,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Accept an `UnderReview` enrollment. Admin-only, terminal.
+    ///
+    /// Replay-guarded: a second accept/decline on the same enrollment panics
+    /// with `EnrollmentAlreadyDecided` and leaves state unchanged.
+    pub fn accept_enrollment(env: Env, admin: Address, enrollment_id: u64) {
+        Self::require_admin_auth(&env, &admin);
+        let mut enrollment = Self::load_enrollment(&env, enrollment_id);
+        Self::require_undecided(&env, enrollment_id);
+        if !matches!(enrollment.status, EnrollmentStatus::UnderReview) {
+            panic_with_error!(&env, ContractError::EnrollmentInvalidTransition);
+        }
+        let now = env.ledger().timestamp();
+        Self::mark_enrollment_decided(&env, enrollment_id);
+
+        enrollment.status = EnrollmentStatus::Accepted;
+        enrollment.decided_at = Some(now);
+        enrollment.reviewer = Some(admin.clone());
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Enrollment(enrollment_id), &enrollment);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_accepted"),),
+            EnrollmentDecidedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                enrollment_id,
+                pet_id: enrollment.pet_id,
+                policy_id: enrollment.policy_id,
+                policy_version: enrollment.policy_version,
+                accepted: true,
+                reviewer: admin,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Decline an `UnderReview` enrollment. Admin-only, terminal.
+    pub fn decline_enrollment(
+        env: Env,
+        admin: Address,
+        enrollment_id: u64,
+        reason: String,
+    ) {
+        Self::require_admin_auth(&env, &admin);
+        let mut enrollment = Self::load_enrollment(&env, enrollment_id);
+        Self::require_undecided(&env, enrollment_id);
+        if !matches!(enrollment.status, EnrollmentStatus::UnderReview) {
+            panic_with_error!(&env, ContractError::EnrollmentInvalidTransition);
+        }
+        if reason.len() > Self::MAX_SNAPSHOT_ITEM_LEN {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let now = env.ledger().timestamp();
+        Self::mark_enrollment_decided(&env, enrollment_id);
+
+        enrollment.status = EnrollmentStatus::Declined;
+        enrollment.decided_at = Some(now);
+        enrollment.reviewer = Some(admin.clone());
+        enrollment.decline_reason = Some(reason);
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::Enrollment(enrollment_id), &enrollment);
+
+        env.events().publish(
+            (Symbol::new(&env, "enrollment_declined"),),
+            EnrollmentDecidedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                enrollment_id,
+                pet_id: enrollment.pet_id,
+                policy_id: enrollment.policy_id,
+                policy_version: enrollment.policy_version,
+                accepted: false,
+                reviewer: admin,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Read an enrollment application.
+    pub fn get_enrollment(env: Env, enrollment_id: u64) -> Option<InsuranceEnrollment> {
+        env.storage()
+            .instance()
+            .get(&InsuranceKey::Enrollment(enrollment_id))
+    }
+
+    /// Read the immutable coverage snapshot bound to an enrollment.
+    pub fn get_coverage_snapshot(env: Env, enrollment_id: u64) -> Option<CoverageSnapshot> {
+        env.storage()
+            .instance()
+            .get(&InsuranceKey::CoverageSnapshot(enrollment_id))
+    }
+
+    /// List all enrollment ids for a pet, in creation order.
+    pub fn get_pet_enrollments(env: Env, pet_id: u64) -> Vec<u64> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetEnrollmentCount(pet_id))
+            .unwrap_or(0);
+        let mut ids = Vec::new(&env);
+        for index in 1..=count {
+            if let Some(id) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, u64>(&InsuranceKey::PetEnrollmentIndex((pet_id, index)))
+            {
+                ids.push_back(id);
+            }
+        }
+        ids
+    }
+
+    // --- ENROLLMENT INTERNAL HELPERS ---
+
+    fn load_enrollment(env: &Env, enrollment_id: u64) -> InsuranceEnrollment {
+        env.storage()
+            .instance()
+            .get(&InsuranceKey::Enrollment(enrollment_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::EnrollmentNotFound))
+    }
+
+    fn require_undecided(env: &Env, enrollment_id: u64) {
+        if env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, bool>(&InsuranceKey::EnrollmentDecision(enrollment_id))
+            .unwrap_or(false)
+        {
+            panic_with_error!(env, ContractError::EnrollmentAlreadyDecided);
+        }
+    }
+
+    fn mark_enrollment_decided(env: &Env, enrollment_id: u64) {
+        env.storage()
+            .instance()
+            .set(&InsuranceKey::EnrollmentDecision(enrollment_id), &true);
+    }
+
+    fn require_pet_owner(env: &Env, pet_id: u64, caller: &Address) {
+        let pet: Pet = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(env, ContractError::PetNotFound));
+        if pet.owner != *caller {
+            panic_with_error!(env, ContractError::Unauthorized);
+        }
+    }
+
+    /// Locate a policy by its string id within a pet's policy index.
+    fn find_pet_policy(env: &Env, pet_id: u64, policy_id: &String) -> Option<InsurancePolicy> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        for index in (1..=count).rev() {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((
+                    pet_id, index,
+                )))
+            {
+                if policy.policy_id == *policy_id {
+                    return Some(policy);
+                }
+            }
+        }
+        None
+    }
+
+    /// Derive the next policy version for a (pet, policy) pair from the
+    /// number of snapshots already captured. Monotonic and bounded by the
+    /// per-pet enrollment cap.
+    fn next_policy_version(env: &Env, pet_id: u64, _policy_id: &String) -> u32 {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetEnrollmentCount(pet_id))
+            .unwrap_or(0);
+        u32::try_from(count)
+            .unwrap_or(Self::MAX_SNAPSHOT_COVERAGE_ITEMS)
+            .saturating_add(1)
+    }
+
     /// Returns whether a pet has an active insurance policy.
     pub fn is_insurance_active(env: Env, pet_id: u64) -> bool {
         let now = env.ledger().timestamp();
@@ -18597,6 +19016,11 @@ mod test_lab_result_anomaly {
 
 #[cfg(test)]
 mod test_breeding_coi;
+
+#[cfg(test)]
+mod test_insurance_enrollment;
+#[cfg(test)]
+mod test_insurance_coverage_snapshot;
 
 #[allow(dead_code)]
 mod insurance_ledger;

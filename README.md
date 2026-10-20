@@ -405,6 +405,18 @@ MIT
 <!-- handsoff-issue-1408 -->
 - #1408: [Contracts] Add time-limited passport sharing grants
 
+<!-- handsoff-issue-1409 -->
+- #1409: [Contracts] Add travel certificate issuer authorization
+
+<!-- handsoff-issue-1410 -->
+- #1410: [Contracts] Add passport export cursor for large histories
+
+<!-- handsoff-issue-1411 -->
+- #1411: [Contracts] Add cross-network passport commitment format
+
+<!-- handsoff-issue-1412 -->
+- #1412: [Contracts] Add client-verifiable passport proof fixtures
+
 <!-- handsoff-issue-1416 -->
 - #1416: [Contracts] Add medication refill authorization records
 

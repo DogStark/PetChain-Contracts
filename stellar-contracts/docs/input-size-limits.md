@@ -46,6 +46,9 @@ and advances no counter.
 | `add_lab_result` | `results` | `MAX_LAB_RESULTS_LEN = 1000` bytes |
 | `add_lab_result` | `reference_ranges` | `MAX_LAB_REF_RANGES_LEN = 500` bytes |
 | `add_breeding_record` | `notes` | `MAX_BREEDING_NOTES_LEN = 500` bytes |
+| `submit_enrollment_application` | `notes` | `MAX_ENROLLMENT_NOTES_LEN = 500` bytes |
+| `submit_enrollment_application` | `applicant_name` | `MAX_ENROLLMENT_APPLICANT_NAME_LEN = 100` bytes |
+| `submit_enrollment_application` | `policy_version` | `MAX_POLICY_VERSION_LEN = 50` bytes |
 
 Limits are byte lengths (`String::len()`), i.e. UTF-8 encoded size, not
 character counts. Multi-byte characters consume more than one "letter".
@@ -60,6 +63,22 @@ character counts. Multi-byte characters consume more than one "letter".
 | `add_nutrition_plan` | `ingredients` | `MAX_INGREDIENTS = 50` |
 | `add_training_milestone` | `prerequisites` | `MAX_PREREQUISITES = 20` |
 | `setup_pet_multisig` | `signers` | `MAX_MULTISIG_SIGNERS = 20` |
+| `submit_enrollment_application` | `coverage_items` (snapshot) | `MAX_COVERAGE_ITEMS = 50` |
+| `submit_enrollment_application` | `exclusions` (snapshot) | `MAX_EXCLUSIONS = 50` |
+| `submit_enrollment_application` | `documents` | `MAX_ENROLLMENT_DOCUMENTS = 20` |
+
+### Enrollment coverage & exclusion snapshots
+
+`submit_enrollment_application` stores an immutable snapshot of the policy
+version's coverage and exclusion lists on the enrollment record at
+submission time. Later policy edits never mutate an existing enrollment's
+snapshot. Each snapshot list is capped (`MAX_COVERAGE_ITEMS = 50`,
+`MAX_EXCLUSIONS = 50`); an over-cap list is rejected with
+`ContractError::TooManyItems` (`27`) before any storage write, so a failed
+submission leaves no partial enrollment record behind. Individual snapshot
+entries are `String`s bounded by `MAX_COVERAGE_ITEM_LEN = 100` bytes and
+`MAX_EXCLUSION_LEN = 100` bytes respectively, rejected with
+`ContractError::InputStringTooLong` (`8`).
 
 ## Notes for client implementers
 
@@ -82,3 +101,9 @@ public input above, both halves of the boundary:
 - one-unit-over-limit rejected with its typed error (`#8` strings / `#27`
   vecs), run on the **default finite env budget** to demonstrate rejection
   is cheap and fires before storage.
+
+Enrollment-specific cases additionally assert that a rejected submission
+(over-long string, over-cap coverage/exclusion list, or over-long snapshot
+entry) leaves the enrollment counter and storage unchanged, and that a
+successful submission's snapshot is byte-identical after a subsequent
+policy update.
