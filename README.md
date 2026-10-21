@@ -530,3 +530,6 @@ MIT
 
 <!-- handsoff-issue-1480 -->
 - #1480: [Contracts] Add policy lapse and reinstatement rules
+
+<!-- handsoff-issue-1482 -->
+- #1482: [Contracts] Add insurance payout reconciliation view
