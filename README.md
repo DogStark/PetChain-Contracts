@@ -527,3 +527,6 @@ MIT
 
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
+
+<!-- handsoff-issue-1480 -->
+- #1480: [Contracts] Add policy lapse and reinstatement rules
