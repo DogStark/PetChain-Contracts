@@ -420,6 +420,12 @@ MIT
 <!-- handsoff-issue-1416 -->
 - #1416: [Contracts] Add medication refill authorization records
 
+<!-- handsoff-issue-1418 -->
+- #1418: [Contracts] Add missed-dose escalation policy
+
+<!-- handsoff-issue-1419 -->
+- #1419: [Contracts] Add caregiver handoff summaries
+
 <!-- handsoff-issue-1425 -->
 - #1425: [Contracts] Add care-plan access purpose checks
 
@@ -536,3 +542,12 @@ MIT
 
 <!-- handsoff-issue-1478 -->
 - #1478: [Contracts] Add insurance premium payment receipts
+
+<!-- handsoff-issue-1486 -->
+- #1486: [Contracts] Add genetic trait disclosure scopes
+
+<!-- handsoff-issue-1487 -->
+- #1487: [Contracts] Add litter registration workflow
+
+<!-- handsoff-issue-1488 -->
+- #1488: [Contracts] Add litter size and offspring linkage invariants
