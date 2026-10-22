@@ -534,6 +534,15 @@ MIT
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
 
+<!-- handsoff-issue-1476 -->
+- #1476: [Contracts] Add claim preauthorization workflow
+
+<!-- handsoff-issue-1477 -->
+- #1477: [Contracts] Add claim line-item review decisions
+
+<!-- handsoff-issue-1478 -->
+- #1478: [Contracts] Add insurance premium payment receipts
+
 <!-- handsoff-issue-1486 -->
 - #1486: [Contracts] Add genetic trait disclosure scopes
 
