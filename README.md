@@ -543,6 +543,12 @@ MIT
 <!-- handsoff-issue-1478 -->
 - #1478: [Contracts] Add insurance premium payment receipts
 
+<!-- handsoff-issue-1480 -->
+- #1480: [Contracts] Add policy lapse and reinstatement rules
+
+<!-- handsoff-issue-1482 -->
+- #1482: [Contracts] Add insurance payout reconciliation view
+
 <!-- handsoff-issue-1483 -->
 - #1483: [Contracts] Add breeding program enrollment and approval
 
