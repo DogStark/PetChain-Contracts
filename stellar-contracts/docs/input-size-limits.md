@@ -66,6 +66,9 @@ character counts. Multi-byte characters consume more than one "letter".
 | `submit_enrollment_application` | `coverage_items` (snapshot) | `MAX_COVERAGE_ITEMS = 50` |
 | `submit_enrollment_application` | `exclusions` (snapshot) | `MAX_EXCLUSIONS = 50` |
 | `submit_enrollment_application` | `documents` | `MAX_ENROLLMENT_DOCUMENTS = 20` |
+| `set_condition_coverage` / `submit_condition_claim` | policy id | 64 bytes |
+| `set_condition_coverage` / `submit_condition_claim` | condition | 64 bytes |
+| `submit_condition_claim` | description | 500 bytes |
 
 ### Enrollment coverage & exclusion snapshots
 
@@ -107,3 +110,9 @@ Enrollment-specific cases additionally assert that a rejected submission
 entry) leaves the enrollment counter and storage unchanged, and that a
 successful submission's snapshot is byte-identical after a subsequent
 policy update.
+
+Condition benefit terms and claim state have additional cardinality limits:
+32 configured conditions per pet and 256 benefit claims per pet and policy.
+Waiting-period,
+coverage-limit, and settlement behavior is documented in
+[`insurance-benefits.md`](insurance-benefits.md).

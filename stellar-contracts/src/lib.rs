@@ -98,6 +98,14 @@ pub enum InsuranceKey {
     // Issue #1472: immutable coverage/exclusion snapshot per enrollment.
     // CoverageSnapshot(u64) -> CoverageSnapshot (enrollment_id -> snapshot)
     CoverageSnapshot(u64),
+    // Issues #1473-#1475: bounded condition terms, period usage and claim data.
+    ConditionCoverage((u64, String, String)),
+    ConditionUsage((u64, String, String, u64)),
+    PolicyConditionCount((u64, String)),
+    BenefitClaim(u64),
+    PolicyBenefitClaimCount((u64, String)),
+    PetConditionCount(u64),
+    PetBenefitClaimCount(u64),
 }
 
 #[contracttype]
@@ -284,6 +292,8 @@ mod test_error_registry;
 mod test_get_pets_overdue_vaccinations;
 #[cfg(test)]
 mod test_insurance_eligibility;
+#[cfg(test)]
+mod test_insurance_benefits;
 #[cfg(test)]
 mod test_license_uniqueness;
 #[cfg(test)]
@@ -687,8 +697,8 @@ pub enum ContractError {
     /// A medical-event timestamp fell outside the allowed domain relative to
     /// ledger time (too far in the past, too far in the future, or with a
     /// due/expiry date before the event it describes). (Issue #1174)
-    /// Formerly 169 (collision with `StaleMigration`); moved to 170.
-    InvalidTimestamp = 170,
+    /// Stable published code; `StaleMigration` uses 170.
+    InvalidTimestamp = 169,
 
     // --- Repaired merge drift: variants referenced by #1264 / #1275 but
     // dropped from the enum. 48-51 are the values already published in
@@ -789,6 +799,26 @@ pub enum ContractError {
 
     /// `add_insurance_policy` was called for a pet that does not exist.
     PolicyPetNotFound = 208,
+
+    BenefitConditionNotFound = 209,
+    BenefitConditionLimitReached = 210,
+    BenefitWaitingPeriod = 211,
+    BenefitInvalidServiceDate = 212,
+    BenefitCoverageLimitExceeded = 213,
+    BenefitClaimNotPending = 214,
+    BenefitClaimAlreadyFinalized = 215,
+    BenefitInvalidTerms = 216,
+    BenefitClaimLimitReached = 217,
+    BenefitClaimMustUseSettlement = 218,
+    BenefitTermsAlreadyConfigured = 219,
+    EnrollmentNotFound = 220,
+    EnrollmentInvalidTransition = 221,
+    EnrollmentAlreadyDecided = 222,
+    EnrollmentLimitReached = 223,
+    EnrollmentSnapshotTooLarge = 224,
+    InsurancePolicyInactive = 225,
+    InsurancePolicyNotFound = 226,
+    BenefitClaimLimitPerPetReached = 227,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -2636,6 +2666,79 @@ pub struct InsurancePolicy {
     pub start_date: u64,
     pub expiry_date: u64,
     pub active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConditionCoverage {
+    pub coverage_start: u64,
+    pub waiting_period_end: u64,
+    pub period_secs: u64,
+    pub coverage_limit: u64,
+    pub deductible: u64,
+    pub copay_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConditionPeriodUsage {
+    pub paid: u64,
+    pub pending: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceConditionCoverageConfiguredEvent {
+    pub version: u32,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub condition: String,
+    pub coverage_start: u64,
+    pub waiting_period_end: u64,
+    pub period_secs: u64,
+    pub coverage_limit: u64,
+    pub deductible: u64,
+    pub copay_bps: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceBenefitClaim {
+    pub condition: String,
+    pub period_start: u64,
+    pub deductible_applied: u64,
+    pub copay: u64,
+    pub insurer_payment: u64,
+    pub finalized: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceBenefitClaimSubmittedEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub policy_id: String,
+    pub condition: String,
+    pub service_date: u64,
+    pub deductible_applied: u64,
+    pub copay: u64,
+    pub insurer_payment: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceBenefitSettledEvent {
+    pub version: u32,
+    pub claim_id: u64,
+    pub pet_id: u64,
+    pub condition: String,
+    pub period_start: u64,
+    pub insurer_payment: u64,
+    pub approved: bool,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -17641,6 +17744,9 @@ impl PetChainContract {
     /// Maximum number of evidence/document CIDs per claim (original + appeal).
     const MAX_CLAIM_DOCUMENTS: u32 = 10;
 
+    const MAX_BENEFIT_CLAIMS_PER_POLICY: u64 = 256;
+    const MAX_POLICY_ID_LEN: u32 = 64;
+
     /// Appeal window: 14 days in seconds.
     const CLAIM_APPEAL_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
 
@@ -17664,12 +17770,453 @@ impl PetChainContract {
         env.storage().instance().set(&key, &true);
     }
 
+    fn raise_benefit_error(env: &Env, error: insurance_validation::BenefitError) -> ! {
+        let contract_error = match error {
+            insurance_validation::BenefitError::InvalidTerms
+            | insurance_validation::BenefitError::PeriodRegression => {
+                ContractError::BenefitInvalidTerms
+            }
+            insurance_validation::BenefitError::InvalidServiceDate => {
+                ContractError::BenefitInvalidServiceDate
+            }
+            insurance_validation::BenefitError::WaitingPeriod => {
+                ContractError::BenefitWaitingPeriod
+            }
+            insurance_validation::BenefitError::ZeroAmount => ContractError::InvalidInput,
+            insurance_validation::BenefitError::ArithmeticOverflow => {
+                ContractError::CounterOverflow
+            }
+            insurance_validation::BenefitError::CoverageLimitExceeded => {
+                ContractError::BenefitCoverageLimitExceeded
+            }
+            insurance_validation::BenefitError::PendingAmountMismatch => {
+                ContractError::BenefitClaimNotPending
+            }
+        };
+        panic_with_error!(env, contract_error)
+    }
+
+    fn reject_legacy_benefit_claim_path(env: &Env, claim_id: u64) {
+        if env
+            .storage()
+            .instance()
+            .has(&InsuranceKey::BenefitClaim(claim_id))
+        {
+            panic_with_error!(env, ContractError::BenefitClaimMustUseSettlement);
+        }
+    }
+
     /// Returns true if `claim_id` has already been settled.
     pub fn is_claim_settled(env: Env, claim_id: u64) -> bool {
         env.storage()
             .instance()
             .get::<InsuranceKey, bool>(&InsuranceKey::ClaimSettled(claim_id))
             .unwrap_or(false)
+    }
+
+    /// Configure bounded per-condition coverage for a policy. Only the pet
+    /// owner may set terms; a newly configured section starts waiting at the
+    /// current ledger timestamp.
+    pub fn set_condition_coverage(
+        env: Env,
+        owner: Address,
+        pet_id: u64,
+        policy_id: String,
+        condition: String,
+        waiting_period_secs: u64,
+        period_secs: u64,
+        coverage_limit: u64,
+        deductible: u64,
+        copay_bps: u32,
+    ) {
+        owner.require_auth();
+        Self::require_pet_owner(&env, pet_id, &owner);
+        if policy_id.is_empty() || condition.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if policy_id.len() > Self::MAX_POLICY_ID_LEN
+            || condition.len() > insurance_validation::MAX_CONDITION_NAME_LEN
+        {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        let policy = Self::find_pet_policy_bounded(&env, pet_id, &policy_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InsurancePolicyNotFound));
+        if !policy.active {
+            panic_with_error!(&env, ContractError::InsurancePolicyInactive);
+        }
+
+        let now = env.ledger().timestamp();
+        if is_expired(now, policy.expiry_date) {
+            panic_with_error!(&env, ContractError::InsurancePolicyInactive);
+        }
+        let waiting_period_end = match insurance_validation::validate_condition_terms(
+            now,
+            waiting_period_secs,
+            period_secs,
+            coverage_limit,
+            copay_bps,
+            policy.expiry_date,
+        ) {
+            Ok(end) => end,
+            Err(error) => Self::raise_benefit_error(&env, error),
+        };
+        let key = InsuranceKey::ConditionCoverage((pet_id, policy_id.clone(), condition.clone()));
+        let existing = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, ConditionCoverage>(&key);
+        if existing.is_some() {
+            panic_with_error!(&env, ContractError::BenefitTermsAlreadyConfigured);
+        }
+        let count_key = InsuranceKey::PolicyConditionCount((pet_id, policy_id.clone()));
+        let count = env.storage().instance().get::<InsuranceKey, u32>(&count_key).unwrap_or(0);
+        if count >= insurance_validation::MAX_CONDITIONS_PER_POLICY {
+            panic_with_error!(&env, ContractError::BenefitConditionLimitReached);
+        }
+        let pet_count_key = InsuranceKey::PetConditionCount(pet_id);
+        let pet_count = env.storage().instance().get::<InsuranceKey, u32>(&pet_count_key).unwrap_or(0);
+        if pet_count >= insurance_validation::MAX_CONDITIONS_PER_POLICY {
+            panic_with_error!(&env, ContractError::BenefitConditionLimitReached);
+        }
+        let next_count = count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let next_pet_count = pet_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+
+        env.storage().instance().set(
+            &key,
+            &ConditionCoverage {
+                coverage_start: now,
+                waiting_period_end,
+                period_secs,
+                coverage_limit,
+                deductible,
+                copay_bps,
+            },
+        );
+        env.storage().instance().set(&count_key, &next_count);
+        env.storage().instance().set(&pet_count_key, &next_pet_count);
+        env.events().publish(
+            (Symbol::new(&env, "condition_cover"),),
+            InsuranceConditionCoverageConfiguredEvent {
+                version: EVENT_SCHEMA_VERSION,
+                pet_id,
+                policy_id,
+                condition,
+                coverage_start: now,
+                waiting_period_end,
+                period_secs,
+                coverage_limit,
+                deductible,
+                copay_bps,
+                timestamp: now,
+            },
+        );
+    }
+
+    pub fn get_condition_coverage(
+        env: Env,
+        pet_id: u64,
+        policy_id: String,
+        condition: String,
+    ) -> Option<ConditionCoverage> {
+        env.storage().instance().get(&InsuranceKey::ConditionCoverage((
+            pet_id,
+            policy_id,
+            condition,
+        )))
+    }
+
+    pub fn get_condition_period_usage(
+        env: Env,
+        pet_id: u64,
+        policy_id: String,
+        condition: String,
+        period_start: u64,
+    ) -> Option<ConditionPeriodUsage> {
+        env.storage().instance().get(&InsuranceKey::ConditionUsage((
+            pet_id,
+            policy_id,
+            condition,
+            period_start,
+        )))
+    }
+
+    pub fn get_insurance_benefit_claim(
+        env: Env,
+        claim_id: u64,
+    ) -> Option<InsuranceBenefitClaim> {
+        env.storage()
+            .instance()
+            .get(&InsuranceKey::BenefitClaim(claim_id))
+    }
+
+    /// Submit an insured claim against a configured condition section. The
+    /// service date, waiting period and period-specific reserve are validated
+    /// before any claim counter or index is changed.
+    pub fn submit_condition_claim(
+        env: Env,
+        owner: Address,
+        pet_id: u64,
+        policy_id: String,
+        condition: String,
+        service_date: u64,
+        amount: u64,
+        description: String,
+    ) -> u64 {
+        owner.require_auth();
+        Self::require_pet_owner(&env, pet_id, &owner);
+        if policy_id.is_empty() || condition.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        if policy_id.len() > Self::MAX_POLICY_ID_LEN
+            || condition.len() > insurance_validation::MAX_CONDITION_NAME_LEN
+            || description.len() > 500
+        {
+            panic_with_error!(&env, ContractError::InputStringTooLong);
+        }
+
+        let policy = Self::find_pet_policy_bounded(&env, pet_id, &policy_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InsurancePolicyNotFound));
+        let now = env.ledger().timestamp();
+        if !policy.active || now >= policy.expiry_date {
+            panic_with_error!(&env, ContractError::InsurancePolicyInactive);
+        }
+        let terms_key = InsuranceKey::ConditionCoverage((pet_id, policy_id.clone(), condition.clone()));
+        let terms: ConditionCoverage = env
+            .storage()
+            .instance()
+            .get(&terms_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::BenefitConditionNotFound));
+        if let Err(error) = insurance_validation::validate_service_date(
+            terms.coverage_start,
+            terms.waiting_period_end,
+            service_date,
+            policy.expiry_date,
+            now,
+        ) {
+            Self::raise_benefit_error(&env, error);
+        }
+
+        let settlement = match insurance_validation::calculate_benefit_settlement(
+            amount,
+            terms.deductible,
+            terms.copay_bps,
+        ) {
+            Ok(value) => value,
+            Err(error) => Self::raise_benefit_error(&env, error),
+        };
+        let period_offset = (service_date - terms.coverage_start) / terms.period_secs;
+        let period_start = terms
+            .coverage_start
+            .checked_add(period_offset.checked_mul(terms.period_secs)
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow)))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let usage_key = InsuranceKey::ConditionUsage((
+            pet_id,
+            policy_id.clone(),
+            condition.clone(),
+            period_start,
+        ));
+        let current = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, ConditionPeriodUsage>(&usage_key)
+            .map(|usage| insurance_validation::ConditionUsage {
+                period_start,
+                paid: usage.paid,
+                pending: usage.pending,
+            });
+        let updated = match insurance_validation::reserve_condition_claim(
+            current,
+            period_start,
+            terms.coverage_limit,
+            settlement.insurer_payment,
+        ) {
+            Ok(value) => value,
+            Err(error) => Self::raise_benefit_error(&env, error),
+        };
+
+        let policy_claim_count_key = InsuranceKey::PolicyBenefitClaimCount((pet_id, policy_id.clone()));
+        let policy_claim_count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&policy_claim_count_key)
+            .unwrap_or(0);
+        if policy_claim_count >= Self::MAX_BENEFIT_CLAIMS_PER_POLICY {
+            panic_with_error!(&env, ContractError::BenefitClaimLimitReached);
+        }
+        let pet_claim_count_key = InsuranceKey::PetBenefitClaimCount(pet_id);
+        let pet_claim_count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&pet_claim_count_key)
+            .unwrap_or(0);
+        if pet_claim_count >= Self::MAX_BENEFIT_CLAIMS_PER_POLICY {
+            panic_with_error!(&env, ContractError::BenefitClaimLimitPerPetReached);
+        }
+        let next_policy_claim_count = policy_claim_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let next_benefit_pet_claim_count = pet_claim_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CounterOverflow));
+        let claim_count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::ClaimCount)
+            .unwrap_or(0);
+        let claim_id = safe_increment(&env, claim_count);
+        let pet_claim_count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetClaimCount(pet_id))
+            .unwrap_or(0);
+        let next_pet_claim_count = safe_increment(&env, pet_claim_count);
+
+        let claim = InsuranceClaim {
+            claim_id,
+            pet_id,
+            policy_id: policy_id.clone(),
+            amount,
+            date: service_date,
+            status: InsuranceClaimStatus::Pending,
+            description,
+            flagged: false,
+            fraud_flags: 0,
+            documents: Vec::new(&env),
+            rejected_at: None,
+            appeal_reason: None,
+            appeal_evidence_cids: Vec::new(&env),
+            appealed_at: None,
+            original_reviewer: None,
+            appeal_reviewer: None,
+        };
+        let benefit_claim = InsuranceBenefitClaim {
+            condition: condition.clone(),
+            period_start,
+            deductible_applied: settlement.deductible_applied,
+            copay: settlement.copay,
+            insurer_payment: settlement.insurer_payment,
+            finalized: false,
+        };
+
+        env.storage().instance().set(&usage_key, &ConditionPeriodUsage {
+            paid: updated.paid,
+            pending: updated.pending,
+        });
+        env.storage().instance().set(&InsuranceKey::Claim(claim_id), &claim);
+        env.storage().instance().set(&InsuranceKey::BenefitClaim(claim_id), &benefit_claim);
+        env.storage().instance().set(&InsuranceKey::ClaimCount, &claim_id);
+        env.storage().instance().set(&InsuranceKey::PetClaimIndex((pet_id, next_pet_claim_count)), &claim_id);
+        env.storage().instance().set(&InsuranceKey::PetClaimCount(pet_id), &next_pet_claim_count);
+        env.storage().instance().set(&policy_claim_count_key, &next_policy_claim_count);
+        env.storage()
+            .instance()
+            .set(&pet_claim_count_key, &next_benefit_pet_claim_count);
+
+        env.events().publish(
+            (Symbol::new(&env, "benefit_claim"),),
+            InsuranceBenefitClaimSubmittedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id,
+                policy_id,
+                condition,
+                service_date,
+                deductible_applied: settlement.deductible_applied,
+                copay: settlement.copay,
+                insurer_payment: settlement.insurer_payment,
+                timestamp: now,
+            },
+        );
+        claim_id
+    }
+
+    /// An admin finalizes a condition claim exactly once. Approved amounts
+    /// move from pending to paid; rejected amounts release the reservation.
+    pub fn settle_condition_claim(env: Env, admin: Address, claim_id: u64, approved: bool) {
+        admin.require_auth();
+        if !Self::is_admin(&env, &admin) {
+            panic_with_error!(&env, ContractError::Unauthorized);
+        }
+        let mut claim: InsuranceClaim = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::Claim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ClaimNotFound));
+        let mut benefit_claim: InsuranceBenefitClaim = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::BenefitClaim(claim_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::BenefitClaimNotPending));
+        if benefit_claim.finalized || !matches!(claim.status, InsuranceClaimStatus::Pending) {
+            panic_with_error!(&env, ContractError::BenefitClaimAlreadyFinalized);
+        }
+
+        let terms: ConditionCoverage = env
+            .storage()
+            .instance()
+            .get(&InsuranceKey::ConditionCoverage((
+                claim.pet_id,
+                claim.policy_id.clone(),
+                benefit_claim.condition.clone(),
+            )))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::BenefitConditionNotFound));
+        let usage_key = InsuranceKey::ConditionUsage((
+            claim.pet_id,
+            claim.policy_id.clone(),
+            benefit_claim.condition.clone(),
+            benefit_claim.period_start,
+        ));
+        let current: ConditionPeriodUsage = env
+            .storage()
+            .instance()
+            .get(&usage_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::BenefitClaimNotPending));
+        let updated = match insurance_validation::finalize_condition_claim(
+            insurance_validation::ConditionUsage {
+                period_start: benefit_claim.period_start,
+                paid: current.paid,
+                pending: current.pending,
+            },
+            benefit_claim.insurer_payment,
+            approved,
+            terms.coverage_limit,
+        ) {
+            Ok(value) => value,
+            Err(error) => Self::raise_benefit_error(&env, error),
+        };
+
+        benefit_claim.finalized = true;
+        claim.status = if approved {
+            Self::mark_claim_settled(&env, claim_id);
+            InsuranceClaimStatus::Paid
+        } else {
+            InsuranceClaimStatus::Rejected
+        };
+        env.storage().instance().set(&usage_key, &ConditionPeriodUsage {
+            paid: updated.paid,
+            pending: updated.pending,
+        });
+        env.storage().instance().set(&InsuranceKey::BenefitClaim(claim_id), &benefit_claim);
+        env.storage().instance().set(&InsuranceKey::Claim(claim_id), &claim);
+        env.events().publish(
+            (Symbol::new(&env, "benefit_settled"),),
+            InsuranceBenefitSettledEvent {
+                version: EVENT_SCHEMA_VERSION,
+                claim_id,
+                pet_id: claim.pet_id,
+                condition: benefit_claim.condition,
+                period_start: benefit_claim.period_start,
+                insurer_payment: benefit_claim.insurer_payment,
+                approved,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     // --- POLICY MANAGEMENT ---
@@ -17876,6 +18423,7 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+        Self::reject_legacy_benefit_claim_path(&env, claim_id);
 
         // ---- PAYOUT PATH: checks-effects-interactions ----
         if matches!(status, InsuranceClaimStatus::Paid) {
@@ -17961,6 +18509,7 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+        Self::reject_legacy_benefit_claim_path(&env, claim_id);
 
         // Only Rejected claims can be appealed
         if !matches!(claim.status, InsuranceClaimStatus::Rejected) {
@@ -18047,6 +18596,7 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+        Self::reject_legacy_benefit_claim_path(&env, claim_id);
 
         // Must be under appeal
         if !matches!(claim.status, InsuranceClaimStatus::UnderAppeal) {
@@ -18100,6 +18650,7 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+        Self::reject_legacy_benefit_claim_path(&env, claim_id);
 
         claim.flagged = true;
         claim.status = InsuranceClaimStatus::UnderReview;
@@ -18145,6 +18696,7 @@ impl PetChainContract {
             .instance()
             .get::<InsuranceKey, InsuranceClaim>(&InsuranceKey::Claim(claim_id))
             .unwrap_or_else(|| panic_with_error!(env, ContractError::ClaimNotFound));
+        Self::reject_legacy_benefit_claim_path(&env, claim_id);
 
         if !matches!(claim.status, InsuranceClaimStatus::UnderReview) {
             panic_with_error!(&env, ContractError::ClaimInvalidStatus);
@@ -18595,6 +19147,37 @@ impl PetChainContract {
                 .get::<InsuranceKey, InsurancePolicy>(&InsuranceKey::PetPolicyIndex((
                     pet_id, index,
                 )))
+            {
+                if policy.policy_id == *policy_id {
+                    return Some(policy);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_pet_policy_bounded(
+        env: &Env,
+        pet_id: u64,
+        policy_id: &String,
+    ) -> Option<InsurancePolicy> {
+        let count = env
+            .storage()
+            .instance()
+            .get::<InsuranceKey, u64>(&InsuranceKey::PetPolicyCount(pet_id))
+            .unwrap_or(0);
+        if count == 0 {
+            return None;
+        }
+        let first_index = count
+            .saturating_sub(insurance_validation::MAX_CONDITIONS_PER_POLICY as u64 - 1)
+            .max(1);
+        for index in (first_index..=count).rev() {
+            let key = InsuranceKey::PetPolicyIndex((pet_id, index));
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<InsuranceKey, InsurancePolicy>(&key)
             {
                 if policy.policy_id == *policy_id {
                     return Some(policy);

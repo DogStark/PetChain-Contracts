@@ -23,6 +23,166 @@ pub enum ClaimError {
     Overflow,
 }
 
+pub const MAX_COPAY_BPS: u32 = 10_000;
+pub const MAX_CONDITION_NAME_LEN: u32 = 64;
+pub const MAX_CONDITIONS_PER_POLICY: u32 = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConditionUsage {
+    pub period_start: u64,
+    pub paid: u64,
+    pub pending: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BenefitSettlement {
+    pub deductible_applied: u64,
+    pub copay: u64,
+    pub insurer_payment: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BenefitError {
+    InvalidTerms,
+    InvalidServiceDate,
+    WaitingPeriod,
+    ZeroAmount,
+    ArithmeticOverflow,
+    CoverageLimitExceeded,
+    PeriodRegression,
+    PendingAmountMismatch,
+}
+
+pub fn validate_condition_terms(
+    coverage_start: u64,
+    waiting_period_secs: u64,
+    period_secs: u64,
+    condition_limit: u64,
+    copay_bps: u32,
+    policy_expiry: u64,
+) -> Result<u64, BenefitError> {
+    if period_secs == 0
+        || condition_limit == 0
+        || copay_bps > MAX_COPAY_BPS
+        || coverage_start > policy_expiry
+    {
+        return Err(BenefitError::InvalidTerms);
+    }
+
+    let waiting_period_end = coverage_start
+        .checked_add(waiting_period_secs)
+        .ok_or(BenefitError::ArithmeticOverflow)?;
+    if waiting_period_end >= policy_expiry {
+        return Err(BenefitError::InvalidTerms);
+    }
+    Ok(waiting_period_end)
+}
+
+pub fn validate_service_date(
+    coverage_start: u64,
+    waiting_period_end: u64,
+    service_date: u64,
+    policy_expiry: u64,
+    now: u64,
+) -> Result<(), BenefitError> {
+    if service_date < coverage_start || service_date >= policy_expiry || service_date > now {
+        return Err(BenefitError::InvalidServiceDate);
+    }
+    if service_date < waiting_period_end {
+        return Err(BenefitError::WaitingPeriod);
+    }
+    Ok(())
+}
+
+/// Applies the deductible first, then rounds the copay down to the nearest
+/// smallest asset unit. The insurer pays the remainder after copay.
+pub fn calculate_benefit_settlement(
+    amount: u64,
+    deductible: u64,
+    copay_bps: u32,
+) -> Result<BenefitSettlement, BenefitError> {
+    if amount == 0 {
+        return Err(BenefitError::ZeroAmount);
+    }
+    if copay_bps > MAX_COPAY_BPS {
+        return Err(BenefitError::InvalidTerms);
+    }
+
+    let deductible_applied = amount.min(deductible);
+    let after_deductible = amount - deductible_applied;
+    let copay = ((after_deductible as u128 * copay_bps as u128) / MAX_COPAY_BPS as u128) as u64;
+    Ok(BenefitSettlement {
+        deductible_applied,
+        copay,
+        insurer_payment: after_deductible - copay,
+    })
+}
+
+pub fn reserve_condition_claim(
+    current: Option<ConditionUsage>,
+    period_start: u64,
+    condition_limit: u64,
+    amount: u64,
+) -> Result<ConditionUsage, BenefitError> {
+    let mut usage = match current {
+        Some(current) if period_start < current.period_start => {
+            return Err(BenefitError::PeriodRegression)
+        }
+        Some(current) if period_start == current.period_start => current,
+        Some(_) | None => ConditionUsage {
+            period_start,
+            paid: 0,
+            pending: 0,
+        },
+    };
+
+    let reserved_total = usage
+        .paid
+        .checked_add(usage.pending)
+        .and_then(|total| total.checked_add(amount))
+        .ok_or(BenefitError::ArithmeticOverflow)?;
+    if reserved_total > condition_limit {
+        return Err(BenefitError::CoverageLimitExceeded);
+    }
+    usage.pending = usage
+        .pending
+        .checked_add(amount)
+        .ok_or(BenefitError::ArithmeticOverflow)?;
+    Ok(usage)
+}
+
+pub fn finalize_condition_claim(
+    current: ConditionUsage,
+    amount: u64,
+    approved: bool,
+    condition_limit: u64,
+) -> Result<ConditionUsage, BenefitError> {
+    let pending = current
+        .pending
+        .checked_sub(amount)
+        .ok_or(BenefitError::PendingAmountMismatch)?;
+    let paid = if approved {
+        current
+            .paid
+            .checked_add(amount)
+            .ok_or(BenefitError::ArithmeticOverflow)?
+    } else {
+        current.paid
+    };
+    if paid
+        .checked_add(pending)
+        .ok_or(BenefitError::ArithmeticOverflow)?
+        > condition_limit
+    {
+        return Err(BenefitError::CoverageLimitExceeded);
+    }
+    Ok(ConditionUsage {
+        period_start: current.period_start,
+        paid,
+        pending,
+    })
+}
+
 /// Maximum number of coverage entries allowed in an enrollment snapshot.
 pub const MAX_COVERAGE_ENTRIES: u32 = 32;
 /// Maximum number of exclusion entries allowed in an enrollment snapshot.
@@ -302,5 +462,75 @@ mod tests {
             validate_snapshot_at_acceptance(&oversized, 5),
             Err(EnrollmentError::TooManyEntries)
         );
+    }
+
+    #[test]
+    fn waiting_period_and_service_date_boundaries_are_enforced() {
+        let waiting_end = validate_condition_terms(100, 20, 365, 1_000, 2_500, 1_000).unwrap();
+        assert_eq!(waiting_end, 120);
+        assert_eq!(validate_service_date(100, waiting_end, 119, 1_000, 200), Err(BenefitError::WaitingPeriod));
+        assert_eq!(validate_service_date(100, waiting_end, 120, 1_000, 200), Ok(()));
+        assert_eq!(validate_service_date(100, waiting_end, 99, 1_000, 200), Err(BenefitError::InvalidServiceDate));
+        assert_eq!(validate_service_date(100, waiting_end, 201, 1_000, 200), Err(BenefitError::InvalidServiceDate));
+        assert_eq!(validate_service_date(100, waiting_end, 1_000, 1_000, 2_000), Err(BenefitError::InvalidServiceDate));
+    }
+
+    #[test]
+    fn invalid_and_overflowing_condition_terms_are_rejected() {
+        assert_eq!(validate_condition_terms(1, 0, 0, 1, 0, 100), Err(BenefitError::InvalidTerms));
+        assert_eq!(validate_condition_terms(1, 0, 1, 1, 10_001, 100), Err(BenefitError::InvalidTerms));
+        assert_eq!(validate_condition_terms(u64::MAX, 1, 1, 1, 0, u64::MAX), Err(BenefitError::ArithmeticOverflow));
+        assert_eq!(validate_condition_terms(10, 90, 1, 1, 0, 100), Err(BenefitError::InvalidTerms));
+    }
+
+    #[test]
+    fn deductible_copay_rounding_and_amount_boundaries_are_deterministic() {
+        assert_eq!(calculate_benefit_settlement(0, 0, 0), Err(BenefitError::ZeroAmount));
+        assert_eq!(calculate_benefit_settlement(101, 1, 3_333), Ok(BenefitSettlement {
+            deductible_applied: 1,
+            copay: 33,
+            insurer_payment: 67,
+        }));
+        assert_eq!(calculate_benefit_settlement(u64::MAX, u64::MAX, 10_000), Ok(BenefitSettlement {
+            deductible_applied: u64::MAX,
+            copay: 0,
+            insurer_payment: 0,
+        }));
+        assert_eq!(calculate_benefit_settlement(u64::MAX, 0, 10_000), Ok(BenefitSettlement {
+            deductible_applied: 0,
+            copay: u64::MAX,
+            insurer_payment: 0,
+        }));
+    }
+
+    #[test]
+    fn condition_reservations_enforce_limits_and_period_reset_boundaries() {
+        let first = reserve_condition_claim(None, 100, 100, 60).unwrap();
+        assert_eq!(first, ConditionUsage { period_start: 100, paid: 0, pending: 60 });
+        assert_eq!(reserve_condition_claim(Some(first), 100, 100, 41), Err(BenefitError::CoverageLimitExceeded));
+        assert_eq!(reserve_condition_claim(Some(first), 101, 100, 1), Ok(ConditionUsage {
+            period_start: 101,
+            paid: 0,
+            pending: 1,
+        }));
+        assert_eq!(finalize_condition_claim(first, 60, true, 100).unwrap(), ConditionUsage {
+            period_start: 100,
+            paid: 60,
+            pending: 0,
+        });
+        assert_eq!(finalize_condition_claim(first, 60, false, 100).unwrap(), ConditionUsage {
+            period_start: 100,
+            paid: 0,
+            pending: 0,
+        });
+        assert_eq!(reserve_condition_claim(Some(ConditionUsage {
+            period_start: 100,
+            paid: 100,
+            pending: 0,
+        }), 101, 100, 100).unwrap(), ConditionUsage {
+            period_start: 101,
+            paid: 0,
+            pending: 100,
+        });
     }
 }
