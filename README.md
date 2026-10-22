@@ -543,6 +543,15 @@ MIT
 <!-- handsoff-issue-1478 -->
 - #1478: [Contracts] Add insurance premium payment receipts
 
+<!-- handsoff-issue-1483 -->
+- #1483: [Contracts] Add breeding program enrollment and approval
+
+<!-- handsoff-issue-1484 -->
+- #1484: [Contracts] Add breeding agreement commitments
+
+<!-- handsoff-issue-1485 -->
+- #1485: [Contracts] Add genetic test result issuer verification
+
 <!-- handsoff-issue-1486 -->
 - #1486: [Contracts] Add genetic trait disclosure scopes
 
