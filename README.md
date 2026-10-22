@@ -533,3 +533,12 @@ MIT
 
 <!-- handsoff-issue-1468 -->
 - #1468: [Contracts] Add responder organization credentials
+
+<!-- handsoff-issue-1486 -->
+- #1486: [Contracts] Add genetic trait disclosure scopes
+
+<!-- handsoff-issue-1487 -->
+- #1487: [Contracts] Add litter registration workflow
+
+<!-- handsoff-issue-1488 -->
+- #1488: [Contracts] Add litter size and offspring linkage invariants
