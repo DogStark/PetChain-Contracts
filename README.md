@@ -566,3 +566,15 @@ MIT
 
 <!-- handsoff-issue-1488 -->
 - #1488: [Contracts] Add litter size and offspring linkage invariants
+
+<!-- handsoff-issue-1489 -->
+- #1489: [Contracts] Add post-birth health follow-up obligations
+
+<!-- handsoff-issue-1490 -->
+- #1490: [Contracts] Add breeding pair reservation and expiry
+
+<!-- handsoff-issue-1491 -->
+- #1491: [Contracts] Add breeding policy exception review
+
+<!-- handsoff-issue-1492 -->
+- #1492: [Contracts] Add pedigree export with consented fields
