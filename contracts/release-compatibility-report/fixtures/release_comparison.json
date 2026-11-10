@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "baseline_release": {
+    "tag": "v1.2.0",
+    "storage_schema_version": 1,
+    "event_schema_version": 1,
+    "abi_methods": [
+      "init(Env, Address)",
+      "register_pet(Env, Address, u64)",
+      "get_pet(Env, u64) -> Option<Pet>"
+    ],
+    "error_codes": [
+      { "name": "NotInitialized", "code": 1 },
+      { "name": "Unauthorized", "code": 2 },
+      { "name": "PetNotFound", "code": 3 }
+    ],
+    "manifest_contracts": [
+      { "name": "petchain-core", "address": "CBAA0001" }
+    ]
+  },
+  "compatible_candidate": {
+    "tag": "v1.3.0",
+    "storage_schema_version": 2,
+    "event_schema_version": 1,
+    "abi_methods": [
+      "init(Env, Address)",
+      "register_pet(Env, Address, u64)",
+      "get_pet(Env, u64) -> Option<Pet>",
+      "preview_role_change(Env, Address, u64) -> Preview"
+    ],
+    "error_codes": [
+      { "name": "NotInitialized", "code": 1 },
+      { "name": "Unauthorized", "code": 2 },
+      { "name": "PetNotFound", "code": 3 },
+      { "name": "ReplayDetected", "code": 4 }
+    ],
+    "manifest_contracts": [
+      { "name": "petchain-core", "address": "CBAA0002" },
+      { "name": "petchain-escrow", "address": "CBAA0099" }
+    ]
+  }
+}
