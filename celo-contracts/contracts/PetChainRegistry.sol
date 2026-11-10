@@ -786,4 +786,133 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Append-only medical record amendment chain (issue #1495)
+    // -------------------------------------------------------------------------
+
+    uint256 public constant MAX_AMENDMENTS_PER_RECORD = 32;
+    bytes32 public constant MEDICAL_AMENDMENT_DOMAIN =
+        keccak256("PetChain:MedicalRecordAmendment");
+
+    struct MedicalRecordAmendment {
+        uint256 amendmentId;
+        uint256 originalRecordId;
+        uint256 parentAmendmentId;
+        uint256 petId;
+        address author;
+        string  diagnosis;
+        string  treatment;
+        string  notes;
+        string  reason;
+        uint256 timestamp;
+        bytes32 commitment;
+    }
+
+    uint256 private _amendmentCounter;
+    mapping(uint256 => MedicalRecordAmendment[]) private _recordAmendments;
+
+    event MedicalRecordAmended(
+        uint256 indexed originalRecordId,
+        uint256 indexed amendmentId,
+        uint256 parentAmendmentId,
+        address indexed author,
+        bytes32 commitment
+    );
+
+    /// @notice Append an immutable correction record to `originalRecordId` without mutating
+    ///         the originally stored `MedicalRecord` entry.
+    function appendMedicalRecordAmendment(
+        uint256 originalRecordId,
+        string calldata diagnosis,
+        string calldata treatment,
+        string calldata notes,
+        string calldata reason
+    ) external whenNotPaused returns (uint256 amendmentId) {
+        uint256 petId = _recordPet[originalRecordId];
+        require(petId != 0, "PetChainRegistry: record does not exist");
+        MedicalRecord storage rec = _petRecords[petId][_recordIndex[originalRecordId]];
+        require(rec.recordId == originalRecordId, "PetChainRegistry: record not found");
+        require(
+            (msg.sender == rec.vet && !vets[msg.sender].isRevoked) || msg.sender == admin,
+            "PetChainRegistry: not authorized to amend"
+        );
+        require(
+            bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid diagnosis length"
+        );
+        require(
+            bytes(treatment).length > 0 && bytes(treatment).length <= MAX_LONG_LEN,
+            "PetChainRegistry: invalid treatment length"
+        );
+        require(bytes(notes).length <= MAX_LONG_LEN, "PetChainRegistry: notes too long");
+        require(
+            bytes(reason).length > 0 && bytes(reason).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid reason length"
+        );
+
+        MedicalRecordAmendment[] storage chain = _recordAmendments[originalRecordId];
+        require(
+            chain.length < MAX_AMENDMENTS_PER_RECORD,
+            "PetChainRegistry: amendment chain limit reached"
+        );
+
+        uint256 parentId = chain.length == 0 ? 0 : chain[chain.length - 1].amendmentId;
+        amendmentId = ++_amendmentCounter;
+
+        bytes32 commitment = keccak256(
+            abi.encode(
+                MEDICAL_AMENDMENT_DOMAIN,
+                MEDICAL_RECORD_COMMITMENT_VERSION,
+                amendmentId,
+                originalRecordId,
+                parentId,
+                petId,
+                msg.sender,
+                diagnosis,
+                treatment,
+                notes,
+                reason,
+                block.timestamp
+            )
+        );
+
+        chain.push(MedicalRecordAmendment({
+            amendmentId: amendmentId,
+            originalRecordId: originalRecordId,
+            parentAmendmentId: parentId,
+            petId: petId,
+            author: msg.sender,
+            diagnosis: diagnosis,
+            treatment: treatment,
+            notes: notes,
+            reason: reason,
+            timestamp: block.timestamp,
+            commitment: commitment
+        }));
+
+        emit MedicalRecordAmended(originalRecordId, amendmentId, parentId, msg.sender, commitment);
+    }
+
+    /// @notice Retrieve a bounded slice of the append-only amendment chain for `originalRecordId`.
+    function getMedicalRecordAmendments(
+        uint256 originalRecordId,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (MedicalRecordAmendment[] memory page) {
+        MedicalRecordAmendment[] storage all = _recordAmendments[originalRecordId];
+        uint256 total = all.length;
+        if (offset >= total || limit == 0) {
+            return new MedicalRecordAmendment[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 size = end - offset;
+        page = new MedicalRecordAmendment[](size);
+        for (uint256 i = 0; i < size; i++) {
+            page[i] = all[offset + i];
+        }
+    }
+
 }

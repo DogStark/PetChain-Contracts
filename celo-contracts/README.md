@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Medical Record Amendment Chain (#1495)
+- `appendMedicalRecordAmendment` and `getMedicalRecordAmendments` provide an append-only, commitment-bound correction chain without mutating the original `MedicalRecord`.
