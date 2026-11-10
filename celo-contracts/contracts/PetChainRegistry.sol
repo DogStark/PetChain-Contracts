@@ -337,6 +337,11 @@ contract PetChainRegistry is Pausable {
     function verifyVet(address vet) external onlyAdmin whenNotPaused {
         require(!vets[vet].isRevoked, "PetChainRegistry: vet is revoked");
         vets[vet].isVerified = true;
+        vetCapabilityGrants[vet] = VetCapabilityGrant({
+            capabilities: VET_CAP_ALL,
+            expiresAt: 0,
+            version: vetCapabilityGrants[vet].version + 1
+        });
         emit VetVerified(vet);
     }
 
@@ -345,6 +350,8 @@ contract PetChainRegistry is Pausable {
     function revokeVet(address vet) external onlyAdmin whenNotPaused {
         vets[vet].isVerified = false;
         vets[vet].isRevoked  = true;
+        vetCapabilityGrants[vet].capabilities = VET_CAP_NONE;
+        vetCapabilityGrants[vet].version += 1;
         emit VetRevoked(vet);
     }
 
@@ -455,6 +462,10 @@ contract PetChainRegistry is Pausable {
         string calldata treatment,
         string calldata notes
     ) external onlyVerifiedVet whenNotPaused returns (uint256 recordId) {
+        require(
+            hasVetCapability(msg.sender, _requiredVetCapabilityForRecord(recordType)),
+            "PetChainRegistry: missing vet capability"
+        );
         require(pets[petId].active, "PetChainRegistry: pet inactive");
         require(bytes(diagnosis).length > 0 && bytes(diagnosis).length <= MAX_LONG_LEN,
             "PetChainRegistry: invalid diagnosis length");
@@ -786,4 +797,134 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Verified-vet capability scopes (issue #1494)
+    // -------------------------------------------------------------------------
+
+    uint32 public constant VET_CAP_NONE                 = 0;
+    uint32 public constant VET_CAP_MEDICAL_RECORD       = 1 << 0;
+    uint32 public constant VET_CAP_VACCINATION          = 1 << 1;
+    uint32 public constant VET_CAP_SURGERY              = 1 << 2;
+    uint32 public constant VET_CAP_TRANSFER_ATTESTATION = 1 << 3;
+    uint32 public constant VET_CAP_ALL                  = 0x0F;
+
+    struct VetCapabilityGrant {
+        uint32  capabilities;
+        uint256 expiresAt;
+        uint64  version;
+    }
+
+    struct TransferHealthAttestation {
+        uint256 petId;
+        address vet;
+        address intendedRecipient;
+        bytes32 attestationHash;
+        uint256 issuedAt;
+        uint256 expiresAt;
+    }
+
+    mapping(address => VetCapabilityGrant) public vetCapabilityGrants;
+    mapping(uint256 => TransferHealthAttestation) public latestTransferAttestations;
+
+    event VetCapabilitiesGranted(
+        address indexed vet,
+        uint32 capabilities,
+        uint256 expiresAt,
+        uint64 version
+    );
+    event VetCapabilitiesRevoked(address indexed vet, uint32 revokedMask, uint64 version);
+    event PetTransferHealthAttested(
+        uint256 indexed petId,
+        address indexed vet,
+        address indexed intendedRecipient,
+        bytes32 attestationHash,
+        uint256 expiresAt
+    );
+
+    function _requiredVetCapabilityForRecord(RecordType recordType) internal pure returns (uint32) {
+        if (recordType == RecordType.Vaccination) return VET_CAP_VACCINATION;
+        if (recordType == RecordType.Surgery) return VET_CAP_SURGERY;
+        return VET_CAP_MEDICAL_RECORD;
+    }
+
+    /// @notice Grant explicit capability scopes to a registered, non-revoked vet.
+    function grantVetCapabilities(
+        address vet,
+        uint32 capabilities,
+        uint256 expiresAt
+    ) external onlyAdmin whenNotPaused returns (uint64 version) {
+        require(vets[vet].vetAddress == vet, "PetChainRegistry: not a registered vet");
+        require(!vets[vet].isRevoked, "PetChainRegistry: vet is revoked");
+        require(
+            capabilities > 0 && (capabilities & ~VET_CAP_ALL) == 0,
+            "PetChainRegistry: invalid capability mask"
+        );
+        require(expiresAt == 0 || expiresAt > block.timestamp, "PetChainRegistry: expired grant");
+
+        vets[vet].isVerified = true;
+        version = vetCapabilityGrants[vet].version + 1;
+        vetCapabilityGrants[vet] = VetCapabilityGrant({
+            capabilities: capabilities,
+            expiresAt: expiresAt,
+            version: version
+        });
+
+        emit VetCapabilitiesGranted(vet, capabilities, expiresAt, version);
+    }
+
+    /// @notice Revoke specific capability bits from a vet.
+    function revokeVetCapabilities(address vet, uint32 revokeMask) external onlyAdmin whenNotPaused {
+        require(revokeMask > 0 && (revokeMask & ~VET_CAP_ALL) == 0, "PetChainRegistry: invalid capability mask");
+        VetCapabilityGrant storage grant = vetCapabilityGrants[vet];
+        grant.capabilities &= ~revokeMask;
+        grant.version += 1;
+        if (grant.capabilities == 0) {
+            vets[vet].isVerified = false;
+        }
+        emit VetCapabilitiesRevoked(vet, revokeMask, grant.version);
+    }
+
+    /// @notice Check whether `vet` holds all bits in `requiredMask` and is not expired or revoked.
+    function hasVetCapability(address vet, uint32 requiredMask) public view returns (bool) {
+        if (!vets[vet].isVerified || vets[vet].isRevoked) {
+            return false;
+        }
+        VetCapabilityGrant storage grant = vetCapabilityGrants[vet];
+        if (grant.expiresAt != 0 && block.timestamp > grant.expiresAt) {
+            return false;
+        }
+        return (grant.capabilities & requiredMask) == requiredMask;
+    }
+
+    /// @notice Record a transfer health attestation requiring `VET_CAP_TRANSFER_ATTESTATION`.
+    function attestPetTransferHealth(
+        uint256 petId,
+        address intendedRecipient,
+        bytes32 attestationHash,
+        uint256 validForSeconds
+    ) external onlyVerifiedVet whenNotPaused {
+        require(
+            hasVetCapability(msg.sender, VET_CAP_TRANSFER_ATTESTATION),
+            "PetChainRegistry: missing vet capability"
+        );
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(intendedRecipient != address(0), "PetChainRegistry: zero address");
+        require(attestationHash != bytes32(0), "PetChainRegistry: zero attestationHash");
+        require(validForSeconds >= 60 && validForSeconds <= 30 days, "PetChainRegistry: invalid attestation ttl");
+
+        uint256 expiresAt = block.timestamp + validForSeconds;
+        latestTransferAttestations[petId] = TransferHealthAttestation({
+            petId: petId,
+            vet: msg.sender,
+            intendedRecipient: intendedRecipient,
+            attestationHash: attestationHash,
+            issuedAt: block.timestamp,
+            expiresAt: expiresAt
+        });
+
+        emit PetTransferHealthAttested(petId, msg.sender, intendedRecipient, attestationHash, expiresAt);
+    }
+
 }

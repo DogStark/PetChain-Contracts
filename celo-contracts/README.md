@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Verified-Vet Capability Scopes (#1494)
+- `grantVetCapabilities`, `revokeVetCapabilities`, and `hasVetCapability` enforce scoped permissions (`VET_CAP_MEDICAL_RECORD`, `VET_CAP_VACCINATION`, `VET_CAP_SURGERY`, `VET_CAP_TRANSFER_ATTESTATION`).
