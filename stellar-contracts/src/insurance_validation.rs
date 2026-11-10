@@ -311,6 +311,168 @@ pub fn validate_claim(terms: &CoverageTerms, amount: u64, asset_id: u32) -> Resu
     Ok(payable)
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Policy renewal offer and acceptance (#1479)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of pending or historical renewal offers tracked per policy.
+pub const MAX_RENEWAL_OFFERS_PER_POLICY: u32 = 32;
+
+/// Lifecycle state of a versioned policy renewal offer (#1479).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenewalOfferStatus {
+    Offered,
+    Accepted,
+    Expired,
+    Cancelled,
+}
+
+/// Active policy coverage state prior to and after renewal (#1479).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PolicyCoverageState {
+    pub policy_id: u64,
+    pub owner_id: u64,
+    pub policy_version: u32,
+    pub coverage_end: u64,
+    pub coverage_limit: u64,
+    pub deductible: u64,
+    pub asset_id: u32,
+}
+
+/// Versioned renewal offer with an explicit acceptance deadline (#1479).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PolicyRenewalOffer {
+    pub offer_id: u64,
+    pub policy_id: u64,
+    pub base_policy_version: u32,
+    pub next_policy_version: u32,
+    pub premium_amount: u64,
+    pub asset_id: u32,
+    pub proposed_coverage_extension_secs: u64,
+    pub proposed_coverage_limit: u64,
+    pub proposed_deductible: u64,
+    pub acceptance_deadline: u64,
+    pub status: RenewalOfferStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenewalError {
+    Unauthorized,
+    InvalidOfferTerms,
+    VersionMismatch,
+    OfferNotPending,
+    OfferExpired,
+    PaymentFailed,
+    InsufficientPayment,
+    AssetMismatch,
+    ArithmeticOverflow,
+    TooManyOffers,
+}
+
+/// Create a versioned renewal offer bound to the current policy version.
+/// Does not mutate `policy` coverage until accepted and paid.
+#[allow(clippy::too_many_arguments)]
+pub fn create_renewal_offer(
+    policy: &PolicyCoverageState,
+    existing_offer_count: u32,
+    offer_id: u64,
+    next_policy_version: u32,
+    premium_amount: u64,
+    proposed_coverage_extension_secs: u64,
+    proposed_coverage_limit: u64,
+    proposed_deductible: u64,
+    now: u64,
+    acceptance_deadline: u64,
+) -> Result<PolicyRenewalOffer, RenewalError> {
+    if existing_offer_count >= MAX_RENEWAL_OFFERS_PER_POLICY {
+        return Err(RenewalError::TooManyOffers);
+    }
+    if next_policy_version <= policy.policy_version {
+        return Err(RenewalError::VersionMismatch);
+    }
+    if premium_amount == 0
+        || proposed_coverage_extension_secs == 0
+        || proposed_coverage_limit == 0
+        || proposed_deductible >= proposed_coverage_limit
+        || acceptance_deadline <= now
+    {
+        return Err(RenewalError::InvalidOfferTerms);
+    }
+    // Verify extension will not overflow u64 when accepted
+    policy
+        .coverage_end
+        .checked_add(proposed_coverage_extension_secs)
+        .ok_or(RenewalError::ArithmeticOverflow)?;
+
+    Ok(PolicyRenewalOffer {
+        offer_id,
+        policy_id: policy.policy_id,
+        base_policy_version: policy.policy_version,
+        next_policy_version,
+        premium_amount,
+        asset_id: policy.asset_id,
+        proposed_coverage_extension_secs,
+        proposed_coverage_limit,
+        proposed_deductible,
+        acceptance_deadline,
+        status: RenewalOfferStatus::Offered,
+    })
+}
+
+/// Accept a pending renewal offer as the policy owner with verified payment.
+/// Coverage is never extended unless caller is the owner, `now < acceptance_deadline`,
+/// `payment_succeeded` is true, and `paid_amount`/`paid_asset_id` match the offer.
+#[allow(clippy::too_many_arguments)]
+pub fn accept_renewal_offer(
+    policy: &mut PolicyCoverageState,
+    offer: &mut PolicyRenewalOffer,
+    caller_owner_id: u64,
+    expected_next_version: u32,
+    paid_amount: u64,
+    paid_asset_id: u32,
+    payment_succeeded: bool,
+    now: u64,
+) -> Result<(), RenewalError> {
+    if caller_owner_id != policy.owner_id {
+        return Err(RenewalError::Unauthorized);
+    }
+    if offer.status != RenewalOfferStatus::Offered {
+        return Err(RenewalError::OfferNotPending);
+    }
+    if now >= offer.acceptance_deadline {
+        return Err(RenewalError::OfferExpired);
+    }
+    if offer.policy_id != policy.policy_id
+        || offer.base_policy_version != policy.policy_version
+        || offer.next_policy_version != expected_next_version
+    {
+        return Err(RenewalError::VersionMismatch);
+    }
+    if !payment_succeeded {
+        return Err(RenewalError::PaymentFailed);
+    }
+    if paid_asset_id != offer.asset_id {
+        return Err(RenewalError::AssetMismatch);
+    }
+    if paid_amount < offer.premium_amount {
+        return Err(RenewalError::InsufficientPayment);
+    }
+
+    let base_end = policy.coverage_end.max(now);
+    let new_coverage_end = base_end
+        .checked_add(offer.proposed_coverage_extension_secs)
+        .ok_or(RenewalError::ArithmeticOverflow)?;
+
+    policy.policy_version = offer.next_policy_version;
+    policy.coverage_end = new_coverage_end;
+    policy.coverage_limit = offer.proposed_coverage_limit;
+    policy.deductible = offer.proposed_deductible;
+    offer.status = RenewalOfferStatus::Accepted;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,4 +695,80 @@ mod tests {
             pending: 100,
         });
     }
+
+    #[test]
+    fn renewal_offer_does_not_extend_coverage_until_owner_accepts_and_payment_succeeds() {
+        let mut policy = PolicyCoverageState {
+            policy_id: 10,
+            owner_id: 42,
+            policy_version: 1,
+            coverage_end: 1_000,
+            coverage_limit: 5_000,
+            deductible: 250,
+            asset_id: 1,
+        };
+        let mut offer = create_renewal_offer(
+            &policy, 0, 100, 2, 300, 86_400, 6_000, 200, 500, 900,
+        )
+        .unwrap();
+
+        // Offer creation leaves policy coverage unchanged
+        assert_eq!(policy.coverage_end, 1_000);
+        assert_eq!(policy.policy_version, 1);
+
+        // Unauthorized caller fails and leaves state unchanged
+        let snap = policy;
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 99, 2, 300, 1, true, 600),
+            Err(RenewalError::Unauthorized)
+        );
+        assert_eq!(policy, snap);
+        assert_eq!(offer.status, RenewalOfferStatus::Offered);
+
+        // Failed payment leaves coverage unchanged
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 300, 1, false, 600),
+            Err(RenewalError::PaymentFailed)
+        );
+        assert_eq!(policy, snap);
+        assert_eq!(offer.status, RenewalOfferStatus::Offered);
+
+        // Insufficient payment or wrong asset leaves coverage unchanged
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 299, 1, true, 600),
+            Err(RenewalError::InsufficientPayment)
+        );
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 300, 2, true, 600),
+            Err(RenewalError::AssetMismatch)
+        );
+        assert_eq!(policy, snap);
+
+        // Expired acceptance deadline fails unchanged
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 300, 1, true, 900),
+            Err(RenewalError::OfferExpired)
+        );
+        assert_eq!(policy, snap);
+
+        // Owner accepts before deadline with successful payment -> extends coverage & updates version
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 300, 1, true, 899),
+            Ok(())
+        );
+        assert_eq!(policy.policy_version, 2);
+        assert_eq!(policy.coverage_end, 1_000 + 86_400);
+        assert_eq!(policy.coverage_limit, 6_000);
+        assert_eq!(policy.deductible, 200);
+        assert_eq!(offer.status, RenewalOfferStatus::Accepted);
+
+        // Replay of already-accepted offer is rejected
+        let after = policy;
+        assert_eq!(
+            accept_renewal_offer(&mut policy, &mut offer, 42, 2, 300, 1, true, 899),
+            Err(RenewalError::OfferNotPending)
+        );
+        assert_eq!(policy, after);
+    }
+
 }
