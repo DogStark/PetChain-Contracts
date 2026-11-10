@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Vaccination Certificate Verification (#1496)
+- `issueVaccinationCertificate`, `revokeVaccinationCertificate`, and `verifyVaccinationCertificate` store and verify certificate issuer, validity window, and revocation status matching Soroban semantics.

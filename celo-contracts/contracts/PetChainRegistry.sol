@@ -786,4 +786,190 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Vaccination certificate verification (issue #1496)
+    // -------------------------------------------------------------------------
+
+    uint8 public constant VACCINATION_CERT_SCHEMA_VERSION = 1;
+    uint256 public constant MAX_CERTS_PER_PET = 128;
+
+    enum CertificateStatus {
+        Unknown,
+        Valid,
+        Expired,
+        Revoked
+    }
+
+    struct VaccinationCertificate {
+        uint256 certificateId;
+        uint256 petId;
+        address issuer;
+        string  vaccineCode;
+        string  batchNumber;
+        uint256 issuedAt;
+        uint256 validUntil;
+        bytes32 contentHash;
+        uint8   schemaVersion;
+        bool    revoked;
+        uint256 revokedAt;
+        string  revocationReason;
+    }
+
+    struct CertificateVerificationResult {
+        CertificateStatus status;
+        bool    isValid;
+        uint256 certificateId;
+        uint256 petId;
+        address issuer;
+        uint256 issuedAt;
+        uint256 validUntil;
+        bool    revoked;
+    }
+
+    uint256 private _certificateCounter;
+    mapping(uint256 => VaccinationCertificate) public vaccinationCertificates;
+    mapping(uint256 => uint256[]) private _petCertificates;
+    mapping(bytes32 => bool) private _issuedCertificateReplayKey;
+
+    event VaccinationCertificateIssued(
+        uint256 indexed certificateId,
+        uint256 indexed petId,
+        address indexed issuer,
+        string vaccineCode,
+        uint256 validUntil,
+        bytes32 contentHash
+    );
+
+    event VaccinationCertificateRevoked(
+        uint256 indexed certificateId,
+        uint256 indexed petId,
+        address indexed revokedBy,
+        string reason
+    );
+
+    /// @notice Issue a verifiable vaccination certificate for an active pet.
+    function issueVaccinationCertificate(
+        uint256 petId,
+        string calldata vaccineCode,
+        string calldata batchNumber,
+        uint256 validUntil,
+        bytes32 contentHash
+    ) external onlyVerifiedVet whenNotPaused returns (uint256 certificateId) {
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(
+            bytes(vaccineCode).length > 0 && bytes(vaccineCode).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid vaccineCode length"
+        );
+        require(
+            bytes(batchNumber).length > 0 && bytes(batchNumber).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid batchNumber length"
+        );
+        require(validUntil > block.timestamp, "PetChainRegistry: invalid validity window");
+        require(contentHash != bytes32(0), "PetChainRegistry: zero contentHash");
+        require(
+            _petCertificates[petId].length < MAX_CERTS_PER_PET,
+            "PetChainRegistry: certificate limit reached"
+        );
+
+        bytes32 replayKey = keccak256(abi.encode(petId, contentHash));
+        require(!_issuedCertificateReplayKey[replayKey], "PetChainRegistry: duplicate certificate");
+        _issuedCertificateReplayKey[replayKey] = true;
+
+        certificateId = ++_certificateCounter;
+        vaccinationCertificates[certificateId] = VaccinationCertificate({
+            certificateId: certificateId,
+            petId: petId,
+            issuer: msg.sender,
+            vaccineCode: vaccineCode,
+            batchNumber: batchNumber,
+            issuedAt: block.timestamp,
+            validUntil: validUntil,
+            contentHash: contentHash,
+            schemaVersion: VACCINATION_CERT_SCHEMA_VERSION,
+            revoked: false,
+            revokedAt: 0,
+            revocationReason: ""
+        });
+        _petCertificates[petId].push(certificateId);
+
+        emit VaccinationCertificateIssued(
+            certificateId,
+            petId,
+            msg.sender,
+            vaccineCode,
+            validUntil,
+            contentHash
+        );
+    }
+
+    /// @notice Revoke a previously issued vaccination certificate.
+    function revokeVaccinationCertificate(
+        uint256 certificateId,
+        string calldata reason
+    ) external whenNotPaused {
+        VaccinationCertificate storage cert = vaccinationCertificates[certificateId];
+        require(cert.certificateId != 0, "PetChainRegistry: certificate not found");
+        require(!cert.revoked, "PetChainRegistry: already revoked");
+        require(
+            msg.sender == cert.issuer || msg.sender == admin,
+            "PetChainRegistry: not authorized to revoke"
+        );
+        require(
+            bytes(reason).length > 0 && bytes(reason).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid revocation reason"
+        );
+
+        cert.revoked = true;
+        cert.revokedAt = block.timestamp;
+        cert.revocationReason = reason;
+
+        emit VaccinationCertificateRevoked(certificateId, cert.petId, msg.sender, reason);
+    }
+
+    /// @notice Verify a vaccination certificate matching Soroban client semantics.
+    function verifyVaccinationCertificate(
+        uint256 certificateId,
+        bytes32 expectedContentHash
+    ) external view returns (CertificateVerificationResult memory result) {
+        VaccinationCertificate storage cert = vaccinationCertificates[certificateId];
+        if (
+            cert.certificateId == 0 ||
+            expectedContentHash == bytes32(0) ||
+            cert.contentHash != expectedContentHash
+        ) {
+            return CertificateVerificationResult({
+                status: CertificateStatus.Unknown,
+                isValid: false,
+                certificateId: certificateId,
+                petId: 0,
+                issuer: address(0),
+                issuedAt: 0,
+                validUntil: 0,
+                revoked: false
+            });
+        }
+
+        CertificateStatus status;
+        if (cert.revoked || vets[cert.issuer].isRevoked) {
+            status = CertificateStatus.Revoked;
+        } else if (block.timestamp > cert.validUntil) {
+            status = CertificateStatus.Expired;
+        } else {
+            status = CertificateStatus.Valid;
+        }
+
+        result = CertificateVerificationResult({
+            status: status,
+            isValid: status == CertificateStatus.Valid,
+            certificateId: cert.certificateId,
+            petId: cert.petId,
+            issuer: cert.issuer,
+            issuedAt: cert.issuedAt,
+            validUntil: cert.validUntil,
+            revoked: cert.revoked || vets[cert.issuer].isRevoked
+        });
+    }
+
 }
