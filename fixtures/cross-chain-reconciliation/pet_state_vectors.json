@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "description": "Shared Celo <-> Soroban pet state reconciliation fixtures (Issue #1511)",
+  "vectors": [
+    {
+      "id": "aligned_active_pet",
+      "pet_id": 1001,
+      "soroban": {
+        "owner_binding": "0x1111111111111111111111111111111111111111",
+        "active": true,
+        "record_commitment": "a3f5c8e1d9b407265184c90123456789abcdef0123456789abcdef0123456789",
+        "record_count": 3
+      },
+      "celo": {
+        "chain_id": 42220,
+        "owner_evm": "0x1111111111111111111111111111111111111111",
+        "is_active": true,
+        "record_commitment": "a3f5c8e1d9b407265184c90123456789abcdef0123456789abcdef0123456789",
+        "record_count": 3,
+        "block_number": 25000100
+      },
+      "expected_consistent": true,
+      "expected_discrepancies": []
+    },
+    {
+      "id": "owner_mismatch_after_unbridged_transfer",
+      "pet_id": 1002,
+      "soroban": {
+        "owner_binding": "0x2222222222222222222222222222222222222222",
+        "active": true,
+        "record_commitment": "b4e6d9f2a0c518376295da1234567890bcdef01234567890bcdef01234567890",
+        "record_count": 2
+      },
+      "celo": {
+        "chain_id": 42220,
+        "owner_evm": "0x3333333333333333333333333333333333333333",
+        "is_active": true,
+        "record_commitment": "b4e6d9f2a0c518376295da1234567890bcdef01234567890bcdef01234567890",
+        "record_count": 2,
+        "block_number": 25000200
+      },
+      "expected_consistent": false,
+      "expected_discrepancies": ["OwnerMismatch"]
+    },
+    {
+      "id": "active_state_and_commitment_drift",
+      "pet_id": 1003,
+      "soroban": {
+        "owner_binding": "0x4444444444444444444444444444444444444444",
+        "active": false,
+        "record_commitment": "c5f7e0a3b1d629487306eb2345678901cdef012345678901cdef012345678901",
+        "record_count": 5
+      },
+      "celo": {
+        "chain_id": 42220,
+        "owner_evm": "0x4444444444444444444444444444444444444444",
+        "is_active": true,
+        "record_commitment": "0000000000000000000000000000000000000000000000000000000000000000",
+        "record_count": 4,
+        "block_number": 25000300
+      },
+      "expected_consistent": false,
+      "expected_discrepancies": [
+        "ActiveStateMismatch",
+        "RecordCommitmentMismatch",
+        "RecordCountMismatch"
+      ]
+    }
+  ]
+}
