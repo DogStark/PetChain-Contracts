@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "expected_binding": {
+    "network": "testnet",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "chain_id": 44787,
+    "contract_address": "CCAA0001TESTNETPETCHAIN"
+  },
+  "mismatch_cases": [
+    {
+      "id": "wrong_network_name",
+      "network": "mainnet",
+      "network_passphrase": "Test SDF Network ; September 2015",
+      "chain_id": 44787,
+      "contract_address": "CCAA0001TESTNETPETCHAIN",
+      "expected_error": "NetworkNameMismatch"
+    },
+    {
+      "id": "wrong_passphrase",
+      "network": "testnet",
+      "network_passphrase": "Public Global Stellar Network ; September 2015",
+      "chain_id": 44787,
+      "contract_address": "CCAA0001TESTNETPETCHAIN",
+      "expected_error": "NetworkPassphraseMismatch"
+    },
+    {
+      "id": "wrong_chain_id",
+      "network": "testnet",
+      "network_passphrase": "Test SDF Network ; September 2015",
+      "chain_id": 42220,
+      "contract_address": "CCAA0001TESTNETPETCHAIN",
+      "expected_error": "ChainIdMismatch"
+    },
+    {
+      "id": "wrong_contract_address",
+      "network": "testnet",
+      "network_passphrase": "Test SDF Network ; September 2015",
+      "chain_id": 44787,
+      "contract_address": "CCFF9999ROGUECONTRACT",
+      "expected_error": "ContractAddressMismatch"
+    }
+  ]
+}
