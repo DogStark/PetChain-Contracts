@@ -1,0 +1,69 @@
+{
+  "fixture_bundle_version": 1,
+  "description": "Prior (v1) and current (v2) client schema compatibility fixtures for pet-profile, medical-record, consent, and insurance schemas (Issue #1502)",
+  "pet_profile": {
+    "v1": {
+      "schema_version": 1,
+      "pet_id": 101,
+      "name": "Buddy",
+      "species": "Dog"
+    },
+    "v2": {
+      "schema_version": 2,
+      "pet_id": 101,
+      "name": "Buddy",
+      "species": "Dog",
+      "microchip_id": "985112000123456",
+      "active": true
+    }
+  },
+  "medical_record": {
+    "v1": {
+      "schema_version": 1,
+      "record_id": 501,
+      "pet_id": 101,
+      "diagnosis": "Annual wellness exam"
+    },
+    "v2": {
+      "schema_version": 2,
+      "record_id": 501,
+      "pet_id": 101,
+      "diagnosis": "Annual wellness exam",
+      "attachment_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015",
+      "soft_deleted": false
+    }
+  },
+  "consent": {
+    "v1": {
+      "schema_version": 1,
+      "consent_id": 701,
+      "pet_id": 101,
+      "expires_at": 20000
+    },
+    "v2": {
+      "schema_version": 2,
+      "consent_id": 701,
+      "pet_id": 101,
+      "scope_code": "READ_WRITE_LABS",
+      "policy_version": 2,
+      "expires_at": 20000
+    }
+  },
+  "insurance": {
+    "v1": {
+      "schema_version": 1,
+      "policy_id": 901,
+      "pet_id": 101,
+      "coverage_limit": 500000
+    },
+    "v2": {
+      "schema_version": 2,
+      "policy_id": 901,
+      "pet_id": 101,
+      "coverage_limit": 500000,
+      "deductible": 25000,
+      "copay_bps": 1000,
+      "active": true
+    }
+  }
+}
