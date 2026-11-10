@@ -786,4 +786,81 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Cursor-based paginated pet medical history (issue #1498)
+    // -------------------------------------------------------------------------
+
+    /// @notice Upper bound on records returned in a single cursor page.
+    uint256 public constant MAX_MEDICAL_HISTORY_PAGE_SIZE = 50;
+
+    struct MedicalHistoryPage {
+        MedicalRecord[] records;
+        uint256 nextCursor;
+        bool    hasMore;
+        uint256 totalCount;
+    }
+
+    /// @notice Retrieve a cursor-paginated page of medical records for `petId`
+    ///         with deterministic ordering (ascending or descending by `recordId`)
+    ///         and bounded page size (`1..MAX_MEDICAL_HISTORY_PAGE_SIZE`).
+    /// @param petId          Pet identifier.
+    /// @param cursorRecordId Exclusive cursor `recordId` (0 starts from the beginning).
+    /// @param limit          Maximum records to return (`1..MAX_MEDICAL_HISTORY_PAGE_SIZE`).
+    /// @param newestFirst    When true, orders newest-to-oldest (`recordId` descending).
+    function getPetMedicalHistoryCursor(
+        uint256 petId,
+        uint256 cursorRecordId,
+        uint256 limit,
+        bool newestFirst
+    ) external view returns (MedicalHistoryPage memory page) {
+        require(
+            limit > 0 && limit <= MAX_MEDICAL_HISTORY_PAGE_SIZE,
+            "PetChainRegistry: invalid page limit"
+        );
+
+        MedicalRecord[] storage all = _petRecords[petId];
+        uint256 total = all.length;
+        page.totalCount = total;
+
+        if (total == 0) {
+            page.records = new MedicalRecord[](0);
+            return page;
+        }
+
+        uint256 startIdx;
+        if (cursorRecordId == 0) {
+            startIdx = newestFirst ? total - 1 : 0;
+        } else {
+            require(_recordPet[cursorRecordId] == petId, "PetChainRegistry: invalid cursor");
+            uint256 cursorIdx = _recordIndex[cursorRecordId];
+            if (newestFirst) {
+                if (cursorIdx == 0) {
+                    page.records = new MedicalRecord[](0);
+                    return page;
+                }
+                startIdx = cursorIdx - 1;
+            } else {
+                if (cursorIdx + 1 >= total) {
+                    page.records = new MedicalRecord[](0);
+                    return page;
+                }
+                startIdx = cursorIdx + 1;
+            }
+        }
+
+        uint256 available = newestFirst ? (startIdx + 1) : (total - startIdx);
+        uint256 size = limit < available ? limit : available;
+        page.records = new MedicalRecord[](size);
+
+        for (uint256 i = 0; i < size; i++) {
+            uint256 idx = newestFirst ? (startIdx - i) : (startIdx + i);
+            page.records[i] = all[idx];
+        }
+
+        page.hasMore = available > size;
+        page.nextCursor = page.hasMore ? page.records[size - 1].recordId : 0;
+    }
+
 }

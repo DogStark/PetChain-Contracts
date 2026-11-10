@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Cursor-Based Paginated Pet Medical History (#1498)
+- `getPetMedicalHistoryCursor(petId, cursorRecordId, limit, newestFirst)` provides deterministic cursor pagination bounded by `MAX_MEDICAL_HISTORY_PAGE_SIZE = 50`.
