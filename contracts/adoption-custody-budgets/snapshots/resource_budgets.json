@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "description": "Committed worst-case CPU, memory, and storage budget baselines for adoption and custody workflows (Issue #1510)",
+  "workflows": {
+    "custody_transfer": {
+      "max_cpu_instructions": 2500000,
+      "max_memory_bytes": 524288,
+      "max_storage_entries": 4
+    },
+    "adoption_dispute": {
+      "max_cpu_instructions": 2500000,
+      "max_memory_bytes": 524288,
+      "max_storage_entries": 5
+    },
+    "bounded_batch_custody_handoff": {
+      "batch_size": 16,
+      "max_cpu_instructions": 15000000,
+      "max_memory_bytes": 2097152,
+      "max_storage_entries": 34
+    }
+  }
+}
