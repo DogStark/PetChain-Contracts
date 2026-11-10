@@ -495,6 +495,7 @@ contract PetChainRegistry is Pausable {
         view
         returns (MedicalRecord[] memory filtered)
     {
+        _requireRecordReadConsent(petId, _scopeBitForRecordType(recordType));
         MedicalRecord[] storage all = _petRecords[petId];
         uint256 total = all.length;
 
@@ -593,6 +594,7 @@ contract PetChainRegistry is Pausable {
     /// @param petId ID of the pet to query.
     /// @return      Full array of MedicalRecord structs for the pet.
     function getPetRecords(uint256 petId) external view returns (MedicalRecord[] memory) {
+        _requireRecordReadConsent(petId, CONSENT_SCOPE_ALL);
         return _petRecords[petId];
     }
 
@@ -693,6 +695,7 @@ contract PetChainRegistry is Pausable {
         view
         returns (uint256[] memory ids)
     {
+        _requireRecordReadConsent(petId, CONSENT_SCOPE_ALL);
         MedicalRecord[] storage all = _petRecords[petId];
         uint256 total = all.length;
 
@@ -751,6 +754,7 @@ contract PetChainRegistry is Pausable {
         uint256 offset,
         uint256 limit
     ) external view returns (MedicalRecord[] memory page) {
+        _requireRecordReadConsent(petId, CONSENT_SCOPE_ALL);
         MedicalRecord[] storage all = _petRecords[petId];
         uint256 total = all.length;
         if (offset >= total || limit == 0) {
@@ -786,4 +790,127 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Owner-controlled consent scopes for medical record reads (issue #1497)
+    // -------------------------------------------------------------------------
+
+    uint8 public constant CONSENT_SCOPE_NONE        = 0;
+    uint8 public constant CONSENT_SCOPE_CHECKUP     = 1 << 0;
+    uint8 public constant CONSENT_SCOPE_VACCINATION = 1 << 1;
+    uint8 public constant CONSENT_SCOPE_SURGERY     = 1 << 2;
+    uint8 public constant CONSENT_SCOPE_LAB_RESULT  = 1 << 3;
+    uint8 public constant CONSENT_SCOPE_OTHER       = 1 << 4;
+    uint8 public constant CONSENT_SCOPE_ALL         = 0x1F;
+
+    uint256 public constant MAX_CONSENT_TTL = 365 days;
+
+    struct RecordConsentGrant {
+        uint8   scopes;
+        uint256 expiresAt;
+        uint64  version;
+        bool    active;
+    }
+
+    mapping(uint256 => bool) public petConsentRequired;
+    mapping(uint256 => mapping(address => RecordConsentGrant)) public recordConsentGrants;
+
+    event PetConsentRequirementUpdated(uint256 indexed petId, bool required);
+    event RecordConsentGranted(
+        uint256 indexed petId,
+        address indexed reader,
+        uint8 scopes,
+        uint256 expiresAt,
+        uint64 version
+    );
+    event RecordConsentRevoked(
+        uint256 indexed petId,
+        address indexed reader,
+        uint64 version
+    );
+
+    function _scopeBitForRecordType(RecordType recordType) internal pure returns (uint8) {
+        return uint8(1 << uint8(recordType));
+    }
+
+    function _requireRecordReadConsent(uint256 petId, uint8 requiredMask) internal view {
+        if (!petConsentRequired[petId]) {
+            return;
+        }
+        require(
+            hasRecordReadConsent(petId, msg.sender, requiredMask),
+            "PetChainRegistry: missing record read consent"
+        );
+    }
+
+    /// @notice Enable or disable strict consent enforcement on medical record retrieval for `petId`.
+    function setPetConsentRequirement(uint256 petId, bool required)
+        external
+        onlyPetOwner(petId)
+        whenNotPaused
+    {
+        petConsentRequired[petId] = required;
+        emit PetConsentRequirementUpdated(petId, required);
+    }
+
+    /// @notice Grant scoped, time-bounded read consent for `reader` on `petId` and enable enforcement.
+    function grantRecordConsent(
+        uint256 petId,
+        address reader,
+        uint8 scopes,
+        uint256 ttlSeconds
+    ) external onlyPetOwner(petId) whenNotPaused returns (uint64 version) {
+        require(reader != address(0), "PetChainRegistry: zero address");
+        require(
+            scopes > 0 && (scopes & ~CONSENT_SCOPE_ALL) == 0,
+            "PetChainRegistry: invalid consent scope"
+        );
+        require(ttlSeconds > 0 && ttlSeconds <= MAX_CONSENT_TTL, "PetChainRegistry: invalid consent ttl");
+
+        petConsentRequired[petId] = true;
+        RecordConsentGrant storage grant = recordConsentGrants[petId][reader];
+        version = grant.version + 1;
+        uint256 expiresAt = block.timestamp + ttlSeconds;
+
+        recordConsentGrants[petId][reader] = RecordConsentGrant({
+            scopes: scopes,
+            expiresAt: expiresAt,
+            version: version,
+            active: true
+        });
+
+        emit RecordConsentGranted(petId, reader, scopes, expiresAt, version);
+    }
+
+    /// @notice Revoke a reader's medical record consent for `petId`.
+    function revokeRecordConsent(uint256 petId, address reader)
+        external
+        onlyPetOwner(petId)
+        whenNotPaused
+    {
+        RecordConsentGrant storage grant = recordConsentGrants[petId][reader];
+        require(grant.active, "PetChainRegistry: consent not active");
+        grant.active = false;
+        grant.scopes = 0;
+        grant.version += 1;
+        emit RecordConsentRevoked(petId, reader, grant.version);
+    }
+
+    /// @notice Check whether `reader` is currently authorized for `requiredMask` on `petId`.
+    function hasRecordReadConsent(
+        uint256 petId,
+        address reader,
+        uint8 requiredMask
+    ) public view returns (bool) {
+        if (pets[petId].owner != address(0) && reader == pets[petId].owner) {
+            return true;
+        }
+        RecordConsentGrant storage grant = recordConsentGrants[petId][reader];
+        if (!grant.active || block.timestamp > grant.expiresAt) {
+            return false;
+        }
+        return (grant.scopes & requiredMask) == requiredMask;
+    }
+
 }

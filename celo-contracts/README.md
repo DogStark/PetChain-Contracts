@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Medical Record Read Consent Scopes (#1497)
+- `grantRecordConsent` and `revokeRecordConsent` manage bitmask access scopes (`CONSENT_SCOPE_*`) enforced across `getPetRecords`, `getPetRecordsByType`, `getPetRecordsByDateRange`, and `getPetRecordsPaged`.
