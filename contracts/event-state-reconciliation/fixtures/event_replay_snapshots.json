@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "pet_id": 701,
+  "events": [
+    { "seq": 1, "version": 1, "kind": "PetRegistered", "delta": 1 },
+    { "seq": 2, "version": 1, "kind": "ConsentGranted", "delta": 1 },
+    { "seq": 3, "version": 1, "kind": "VaccinationRecorded", "delta": 1 },
+    { "seq": 4, "version": 1, "kind": "VaccinationRecorded", "delta": 1 },
+    { "seq": 5, "version": 1, "kind": "InsurancePolicyActivated", "delta": 1 },
+    { "seq": 6, "version": 1, "kind": "InsuranceClaimPaid", "delta": 25000 }
+  ],
+  "expected_snapshot": {
+    "pet_active": true,
+    "active_consent_count": 1,
+    "vaccination_count": 2,
+    "insurance_active": true,
+    "total_insurance_paid": 25000,
+    "last_event_seq": 6
+  }
+}

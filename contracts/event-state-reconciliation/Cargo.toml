@@ -1,0 +1,17 @@
+[package]
+name = "petchain-event-state-reconciliation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+soroban-sdk = "21.7.7"
+
+[dev-dependencies]
+soroban-sdk = { version = "21.7.7", features = ["testutils"] }
+ed25519-dalek = "2"
+serde_json = "1.0"
+
+[workspace]
