@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "initial_storage_version": 0,
+  "target_storage_version": 3,
+  "keys": [
+    { "key": "pet:101", "min_version": 0, "migrates_to": 3 },
+    { "key": "consent:101:1", "min_version": 0, "migrates_to": 3 },
+    { "key": "medical_record:501", "min_version": 1, "migrates_to": 3 },
+    { "key": "insurance_policy:801", "min_version": 2, "migrates_to": 3 },
+    { "key": "legacy_orphan_ experimental:999", "min_version": 0, "migrates_to": 0 }
+  ],
+  "expected_migrated_count": 4,
+  "expected_unmigrated_keys": ["legacy_orphan_ experimental:999"]
+}
