@@ -309,3 +309,7 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Emergency Pause Role Separation & Recovery (#1499)
+- `setPauseGuardian` and `setRecoveryAdmin` isolate emergency pause authority from `admin` and post-incident recovery.
+- `emergencyPause(reason)` increments `pauseEpoch`, and `recoverFromEmergencyPause(expectedEpoch, resolutionNote)` requires epoch matching and an audit note.

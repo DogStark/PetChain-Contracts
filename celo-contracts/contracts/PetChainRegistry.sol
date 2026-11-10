@@ -786,4 +786,87 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Emergency pause role separation & recovery path (issue #1499)
+    // -------------------------------------------------------------------------
+
+    /// @notice Dedicated emergency pause guardian (distinct from registry admin).
+    address public pauseGuardian;
+
+    /// @notice Dedicated recovery authority for post-incident unpause verification.
+    address public recoveryAdmin;
+
+    /// @notice Monotonic epoch counter incremented on every emergency pause.
+    uint64 public pauseEpoch;
+
+    /// @notice Most recent emergency pause reason and recovery resolution note.
+    string public lastPauseReason;
+    string public lastRecoveryNote;
+
+    event PauseGuardianUpdated(address indexed previousGuardian, address indexed newGuardian);
+    event RecoveryAdminUpdated(address indexed previousRecoveryAdmin, address indexed newRecoveryAdmin);
+    event EmergencyPaused(address indexed guardian, uint64 indexed pauseEpoch, string reason);
+    event EmergencyRecovered(address indexed recoveredBy, uint64 indexed pauseEpoch, string resolutionNote);
+
+    modifier onlyPauseGuardian() {
+        require(msg.sender == pauseGuardian, "PetChainRegistry: not pause guardian");
+        _;
+    }
+
+    modifier onlyRecoveryOrAdmin() {
+        require(
+            msg.sender == recoveryAdmin || (recoveryAdmin == address(0) && msg.sender == admin),
+            "PetChainRegistry: not recovery authority"
+        );
+        _;
+    }
+
+    /// @notice Assign a dedicated pause guardian separated from the registry `admin`.
+    function setPauseGuardian(address newGuardian) external onlyAdmin {
+        require(newGuardian != address(0), "PetChainRegistry: zero address");
+        require(newGuardian != admin, "PetChainRegistry: guardian cannot be admin");
+        address prev = pauseGuardian;
+        pauseGuardian = newGuardian;
+        emit PauseGuardianUpdated(prev, newGuardian);
+    }
+
+    /// @notice Assign a dedicated recovery administrator for emergency recovery.
+    function setRecoveryAdmin(address newRecoveryAdmin) external onlyAdmin {
+        require(newRecoveryAdmin != address(0), "PetChainRegistry: zero address");
+        require(newRecoveryAdmin != pauseGuardian, "PetChainRegistry: recovery cannot be guardian");
+        address prev = recoveryAdmin;
+        recoveryAdmin = newRecoveryAdmin;
+        emit RecoveryAdminUpdated(prev, newRecoveryAdmin);
+    }
+
+    /// @notice Trigger an emergency pause using the separated pauseGuardian role.
+    function emergencyPause(string calldata reason) external onlyPauseGuardian whenNotPaused {
+        require(
+            bytes(reason).length > 0 && bytes(reason).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid pause reason length"
+        );
+        pauseEpoch += 1;
+        lastPauseReason = reason;
+        _pause();
+        emit EmergencyPaused(msg.sender, pauseEpoch, reason);
+    }
+
+    /// @notice Documented recovery path: unpause only when matching the current `pauseEpoch`
+    ///         and supplying a bounded audit resolution note.
+    function recoverFromEmergencyPause(
+        uint64 expectedEpoch,
+        string calldata resolutionNote
+    ) external onlyRecoveryOrAdmin whenPaused {
+        require(expectedEpoch == pauseEpoch && pauseEpoch > 0, "PetChainRegistry: pause epoch mismatch");
+        require(
+            bytes(resolutionNote).length > 0 && bytes(resolutionNote).length <= MAX_SHORT_LEN,
+            "PetChainRegistry: invalid resolution note length"
+        );
+        lastRecoveryNote = resolutionNote;
+        _unpause();
+        emit EmergencyRecovered(msg.sender, pauseEpoch, resolutionNote);
+    }
+
 }
