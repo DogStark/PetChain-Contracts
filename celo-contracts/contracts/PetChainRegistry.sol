@@ -384,6 +384,9 @@ contract PetChainRegistry is Pausable {
             active:  true
         });
         _ownerPets[msg.sender].push(petId);
+        _petSchemaVersion[petId] = CURRENT_PET_SCHEMA_VERSION;
+        _petRevision[petId] = 1;
+        _petUpdatedAt[petId] = block.timestamp;
         emit PetRegistered(petId, msg.sender);
     }
 
@@ -786,4 +789,160 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Pet profile schema versioning & migration compatibility (issue #1493)
+    // -------------------------------------------------------------------------
+
+    uint16 public constant LEGACY_PET_SCHEMA_VERSION  = 1;
+    uint16 public constant CURRENT_PET_SCHEMA_VERSION = 2;
+
+    struct VersionedPetProfile {
+        uint256 petId;
+        address owner;
+        string  name;
+        string  species;
+        string  breed;
+        string  birthday;
+        string  microchipId;
+        string  metadataUri;
+        uint16  schemaVersion;
+        uint64  revision;
+        uint256 updatedAt;
+        bool    active;
+    }
+
+    mapping(uint256 => uint16) private _petSchemaVersion;
+    mapping(uint256 => uint64) private _petRevision;
+    mapping(uint256 => string) private _petMicrochipId;
+    mapping(uint256 => string) private _petMetadataUri;
+    mapping(uint256 => uint256) private _petUpdatedAt;
+
+    event PetProfileMigrated(
+        uint256 indexed petId,
+        uint16 fromVersion,
+        uint16 toVersion,
+        uint64 revision
+    );
+
+    event PetProfileUpdatedV2(
+        uint256 indexed petId,
+        uint16 schemaVersion,
+        uint64 revision
+    );
+
+    /// @notice Seed a legacy V1 pet record (simulating pre-upgrade state) for migration verification.
+    function registerLegacyPetV1(
+        string calldata name,
+        string calldata species,
+        string calldata breed,
+        string calldata birthday
+    ) external whenNotPaused returns (uint256 petId) {
+        require(bytes(name).length > 0 && bytes(name).length <= MAX_SHORT_LEN, "PetChainRegistry: invalid name length");
+        require(bytes(species).length > 0 && bytes(species).length <= MAX_SHORT_LEN, "PetChainRegistry: invalid species length");
+        require(bytes(breed).length > 0 && bytes(breed).length <= MAX_SHORT_LEN, "PetChainRegistry: invalid breed length");
+        require(bytes(birthday).length > 0 && bytes(birthday).length <= MAX_SHORT_LEN, "PetChainRegistry: invalid birthday length");
+
+        petId = ++_petCounter;
+        pets[petId] = Pet({
+            petId: petId,
+            owner: msg.sender,
+            name: name,
+            species: species,
+            breed: breed,
+            birthday: birthday,
+            active: true
+        });
+        _ownerPets[msg.sender].push(petId);
+        // Leave _petSchemaVersion[petId] unset (0) to represent a pre-versioning deployed record
+        emit PetRegistered(petId, msg.sender);
+    }
+
+    /// @notice Effective schema version for `petId` (defaults to `LEGACY_PET_SCHEMA_VERSION` for deployed V1 records).
+    function getPetSchemaVersion(uint256 petId) public view returns (uint16) {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
+        uint16 v = _petSchemaVersion[petId];
+        return v == 0 ? LEGACY_PET_SCHEMA_VERSION : v;
+    }
+
+    /// @notice Migrate a legacy V1 pet record to `CURRENT_PET_SCHEMA_VERSION` (V2).
+    function migratePetProfileToV2(
+        uint256 petId,
+        string calldata microchipId,
+        string calldata metadataUri
+    ) external whenNotPaused {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
+        require(
+            msg.sender == pets[petId].owner || msg.sender == admin,
+            "PetChainRegistry: not authorized to migrate"
+        );
+        uint16 currentVer = getPetSchemaVersion(petId);
+        require(currentVer < CURRENT_PET_SCHEMA_VERSION, "PetChainRegistry: already at current version");
+        require(bytes(metadataUri).length <= MAX_SHORT_LEN, "PetChainRegistry: metadataUri too long");
+
+        string memory normalizedChip = bytes(microchipId).length > 0
+            ? normalizeIdentifier(microchipId)
+            : "";
+
+        _petSchemaVersion[petId] = CURRENT_PET_SCHEMA_VERSION;
+        _petMicrochipId[petId] = normalizedChip;
+        _petMetadataUri[petId] = metadataUri;
+        _petRevision[petId] = _petRevision[petId] + 1;
+        _petUpdatedAt[petId] = block.timestamp;
+
+        emit PetProfileMigrated(petId, currentVer, CURRENT_PET_SCHEMA_VERSION, _petRevision[petId]);
+    }
+
+    /// @notice Update V2 profile attributes while incrementing the profile revision counter.
+    function updatePetProfileV2(
+        uint256 petId,
+        string calldata microchipId,
+        string calldata metadataUri
+    ) external onlyPetOwner(petId) whenNotPaused {
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(
+            getPetSchemaVersion(petId) == CURRENT_PET_SCHEMA_VERSION,
+            "PetChainRegistry: migration required before v2 update"
+        );
+        require(bytes(metadataUri).length <= MAX_SHORT_LEN, "PetChainRegistry: metadataUri too long");
+
+        string memory normalizedChip = bytes(microchipId).length > 0
+            ? normalizeIdentifier(microchipId)
+            : "";
+
+        _petMicrochipId[petId] = normalizedChip;
+        _petMetadataUri[petId] = metadataUri;
+        _petRevision[petId] += 1;
+        _petUpdatedAt[petId] = block.timestamp;
+
+        emit PetProfileUpdatedV2(petId, CURRENT_PET_SCHEMA_VERSION, _petRevision[petId]);
+    }
+
+    /// @notice Read a pet's versioned profile with transparent V1 fallback compatibility.
+    function getVersionedPetProfile(uint256 petId)
+        external
+        view
+        returns (VersionedPetProfile memory profile)
+    {
+        Pet storage p = pets[petId];
+        require(p.petId != 0, "PetChainRegistry: pet does not exist");
+        uint16 ver = getPetSchemaVersion(petId);
+        uint64 rev = _petRevision[petId] == 0 ? 1 : _petRevision[petId];
+        profile = VersionedPetProfile({
+            petId: p.petId,
+            owner: p.owner,
+            name: p.name,
+            species: p.species,
+            breed: p.breed,
+            birthday: p.birthday,
+            microchipId: _petMicrochipId[petId],
+            metadataUri: _petMetadataUri[petId],
+            schemaVersion: ver,
+            revision: rev,
+            updatedAt: _petUpdatedAt[petId],
+            active: p.active
+        });
+    }
+
 }

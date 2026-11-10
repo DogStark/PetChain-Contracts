@@ -309,3 +309,6 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Pet Profile Schema Versioning (#1493)
+- `getVersionedPetProfile`, `migratePetProfileToV2`, and `updatePetProfileV2` add schema version tracking (`LEGACY_PET_SCHEMA_VERSION = 1`, `CURRENT_PET_SCHEMA_VERSION = 2`) while preserving compatibility for deployed records.
