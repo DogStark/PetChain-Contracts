@@ -786,4 +786,135 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Cross-chain pet identifier mapping (issue #1501)
+    // -------------------------------------------------------------------------
+
+    /// @notice Storage schema version for cross-chain identifier mappings.
+    uint16 public constant CROSS_CHAIN_MAPPING_VERSION = 1;
+
+    struct CrossChainPetMapping {
+        uint256 petId;
+        string  canonicalPetChainId;
+        uint16  schemaVersion;
+        uint64  version;
+        uint256 linkedAt;
+        bool    active;
+        bool    revoked;
+    }
+
+    mapping(uint256 => CrossChainPetMapping) private _petCrossChainMapping;
+    mapping(bytes32 => uint256) private _canonicalHashToPetId;
+    mapping(bytes32 => bool) private _revokedCanonicalHashes;
+
+    event CrossChainPetIdLinked(
+        uint256 indexed petId,
+        string canonicalPetChainId,
+        uint64 version,
+        address indexed linkedBy
+    );
+
+    event CrossChainPetIdRevoked(
+        uint256 indexed petId,
+        string canonicalPetChainId,
+        uint64 version,
+        address indexed revokedBy
+    );
+
+    /// @notice Link a Celo `petId` to a canonical PetChain identifier.
+    /// @dev    Preserves authorization (pet owner or admin), normalizes the identifier
+    ///         to printable uppercase ASCII (1..MAX_SHORT_LEN), enforces 1-to-1 uniqueness,
+    ///         and forbids reusing any previously revoked canonical identifier.
+    function linkCrossChainPetId(uint256 petId, string calldata canonicalPetChainId)
+        external
+        whenNotPaused
+        returns (string memory normalizedId)
+    {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(
+            msg.sender == pets[petId].owner || msg.sender == admin,
+            "PetChainRegistry: not authorized to link"
+        );
+
+        normalizedId = normalizeIdentifier(canonicalPetChainId);
+        bytes32 idHash = keccak256(bytes(normalizedId));
+
+        require(!_revokedCanonicalHashes[idHash], "PetChainRegistry: canonical id revoked");
+        uint256 existingPet = _canonicalHashToPetId[idHash];
+        require(existingPet == 0, "PetChainRegistry: canonical id already mapped");
+
+        CrossChainPetMapping storage current = _petCrossChainMapping[petId];
+        require(!current.active, "PetChainRegistry: pet already has active mapping");
+
+        uint64 nextVersion = current.version + 1;
+        _canonicalHashToPetId[idHash] = petId;
+        _petCrossChainMapping[petId] = CrossChainPetMapping({
+            petId: petId,
+            canonicalPetChainId: normalizedId,
+            schemaVersion: CROSS_CHAIN_MAPPING_VERSION,
+            version: nextVersion,
+            linkedAt: block.timestamp,
+            active: true,
+            revoked: false
+        });
+
+        emit CrossChainPetIdLinked(petId, normalizedId, nextVersion, msg.sender);
+    }
+
+    /// @notice Revoke an active cross-chain identifier mapping for `petId`.
+    /// @dev    Marks the canonical identifier hash as permanently revoked so it
+    ///         cannot be replayed or reassigned to another pet.
+    function revokeCrossChainPetId(uint256 petId) external whenNotPaused {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
+        require(
+            msg.sender == pets[petId].owner || msg.sender == admin,
+            "PetChainRegistry: not authorized to revoke"
+        );
+
+        CrossChainPetMapping storage current = _petCrossChainMapping[petId];
+        require(current.active, "PetChainRegistry: no active mapping");
+
+        string memory prevCanonical = current.canonicalPetChainId;
+        bytes32 idHash = keccak256(bytes(prevCanonical));
+
+        delete _canonicalHashToPetId[idHash];
+        _revokedCanonicalHashes[idHash] = true;
+        current.active = false;
+        current.revoked = true;
+
+        emit CrossChainPetIdRevoked(petId, prevCanonical, current.version, msg.sender);
+    }
+
+    /// @notice Retrieve the cross-chain identifier mapping for a Celo `petId`.
+    function getCrossChainPetMapping(uint256 petId)
+        external
+        view
+        returns (CrossChainPetMapping memory)
+    {
+        return _petCrossChainMapping[petId];
+    }
+
+    /// @notice Resolve a canonical PetChain identifier to its linked Celo `petId` (0 if unmapped).
+    function resolvePetIdByCanonicalId(string calldata canonicalPetChainId)
+        external
+        view
+        returns (uint256)
+    {
+        bytes32 idHash = keccak256(bytes(normalizeIdentifier(canonicalPetChainId)));
+        return _canonicalHashToPetId[idHash];
+    }
+
+    /// @notice Check whether a canonical PetChain identifier has been permanently revoked.
+    function isCanonicalPetIdRevoked(string calldata canonicalPetChainId)
+        external
+        view
+        returns (bool)
+    {
+        bytes32 idHash = keccak256(bytes(normalizeIdentifier(canonicalPetChainId)));
+        return _revokedCanonicalHashes[idHash];
+    }
+
 }
