@@ -397,6 +397,9 @@ contract PetChainRegistry is Pausable {
         require(to != from, "PetChainRegistry: self transfer");
 
         // All validation above; state writes below (issue #1326).
+        if (pendingPetTransfers[petId].active) {
+            pendingPetTransfers[petId].active = false;
+        }
         _removeOwnerPet(from, petId);
         pets[petId].owner = to;
         _ownerPets[to].push(petId);
@@ -786,4 +789,157 @@ contract PetChainRegistry is Pausable {
             page[i] = vets[_vetAddresses[offset + i]];
         }
     }
+
+
+    // -------------------------------------------------------------------------
+    // Ownership transfer acceptance & history (issue #1500)
+    // -------------------------------------------------------------------------
+
+    uint16 public constant OWNERSHIP_TRANSFER_SCHEMA_VERSION = 1;
+    uint256 public constant MIN_TRANSFER_TTL = 60;
+    uint256 public constant MAX_TRANSFER_TTL = 30 days;
+    uint256 public constant MAX_OWNER_HISTORY = 64;
+
+    struct PendingPetTransfer {
+        address from;
+        address to;
+        uint16  schemaVersion;
+        uint256 proposedAt;
+        uint256 expiresAt;
+        uint64  nonce;
+        bool    active;
+    }
+
+    struct OwnershipHistoryEntry {
+        address previousOwner;
+        address newOwner;
+        uint16  schemaVersion;
+        uint256 transferredAt;
+        uint64  transferSequence;
+    }
+
+    mapping(uint256 => PendingPetTransfer) public pendingPetTransfers;
+    mapping(uint256 => OwnershipHistoryEntry[]) private _petOwnershipHistory;
+
+    event PetTransferProposed(
+        uint256 indexed petId,
+        address indexed from,
+        address indexed to,
+        uint256 expiresAt,
+        uint64 nonce
+    );
+
+    event PetTransferAccepted(
+        uint256 indexed petId,
+        address indexed from,
+        address indexed to,
+        uint64 transferSequence
+    );
+
+    event PetTransferCancelled(
+        uint256 indexed petId,
+        address indexed from,
+        address indexed to,
+        uint64 nonce
+    );
+
+    /// @notice Propose a two-step pet ownership transfer with an explicit expiry window.
+    function proposePetTransfer(
+        uint256 petId,
+        address to,
+        uint256 ttlSeconds
+    ) external onlyPetOwner(petId) whenNotPaused returns (uint64 nonce) {
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(to != address(0), "PetChainRegistry: zero address");
+        require(to != msg.sender, "PetChainRegistry: self transfer");
+        require(
+            ttlSeconds >= MIN_TRANSFER_TTL && ttlSeconds <= MAX_TRANSFER_TTL,
+            "PetChainRegistry: invalid transfer ttl"
+        );
+        require(
+            _petOwnershipHistory[petId].length < MAX_OWNER_HISTORY,
+            "PetChainRegistry: ownership history limit reached"
+        );
+
+        PendingPetTransfer storage pending = pendingPetTransfers[petId];
+        nonce = pending.nonce + 1;
+        uint256 expiresAt = block.timestamp + ttlSeconds;
+
+        pendingPetTransfers[petId] = PendingPetTransfer({
+            from: msg.sender,
+            to: to,
+            schemaVersion: OWNERSHIP_TRANSFER_SCHEMA_VERSION,
+            proposedAt: block.timestamp,
+            expiresAt: expiresAt,
+            nonce: nonce,
+            active: true
+        });
+
+        emit PetTransferProposed(petId, msg.sender, to, expiresAt, nonce);
+    }
+
+    /// @notice Accept a pending pet ownership transfer before its expiry deadline.
+    function acceptPetTransfer(uint256 petId) external whenNotPaused {
+        PendingPetTransfer storage pending = pendingPetTransfers[petId];
+        require(pending.active, "PetChainRegistry: no pending transfer");
+        require(msg.sender == pending.to, "PetChainRegistry: not transfer recipient");
+        require(block.timestamp <= pending.expiresAt, "PetChainRegistry: transfer expired");
+        require(pets[petId].active, "PetChainRegistry: pet inactive");
+        require(pets[petId].owner == pending.from, "PetChainRegistry: stale transfer owner");
+        require(
+            _petOwnershipHistory[petId].length < MAX_OWNER_HISTORY,
+            "PetChainRegistry: ownership history limit reached"
+        );
+
+        address from = pending.from;
+        address to = pending.to;
+        uint64 seq = uint64(_petOwnershipHistory[petId].length + 1);
+
+        pending.active = false;
+        _removeOwnerPet(from, petId);
+        pets[petId].owner = to;
+        _ownerPets[to].push(petId);
+
+        _petOwnershipHistory[petId].push(OwnershipHistoryEntry({
+            previousOwner: from,
+            newOwner: to,
+            schemaVersion: OWNERSHIP_TRANSFER_SCHEMA_VERSION,
+            transferredAt: block.timestamp,
+            transferSequence: seq
+        }));
+
+        emit PetTransferAccepted(petId, from, to, seq);
+        emit PetTransferred(petId, from, to);
+    }
+
+    /// @notice Cancel an active pending pet ownership transfer.
+    function cancelPetTransfer(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
+        PendingPetTransfer storage pending = pendingPetTransfers[petId];
+        require(pending.active, "PetChainRegistry: no pending transfer");
+        address to = pending.to;
+        uint64 nonce = pending.nonce;
+        pending.active = false;
+        emit PetTransferCancelled(petId, msg.sender, to, nonce);
+    }
+
+    /// @notice Return a bounded page of prior ownership transitions for `petId`.
+    function getPetOwnershipHistory(
+        uint256 petId,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (OwnershipHistoryEntry[] memory page) {
+        OwnershipHistoryEntry[] storage all = _petOwnershipHistory[petId];
+        uint256 total = all.length;
+        if (offset >= total || limit == 0) {
+            return new OwnershipHistoryEntry[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 size = end - offset;
+        page = new OwnershipHistoryEntry[](size);
+        for (uint256 i = 0; i < size; i++) {
+            page[i] = all[offset + i];
+        }
+    }
+
 }
