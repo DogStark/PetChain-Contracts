@@ -237,6 +237,10 @@ pub use emergency_notify::*;
 mod consent_policy;
 pub use consent_policy::*;
 
+// Adoption trial period policy and its lazy-expiry event (#1454, #1657).
+mod trial_period;
+pub use trial_period::*;
+
 pub mod insurance_state;
 
 // Issue #1470 / #1472: insurance enrollment application workflow and
@@ -306,6 +310,8 @@ mod test_pet_birthday_validation;
 mod test_search_medical_records;
 #[cfg(test)]
 mod test_storage_metrics;
+#[cfg(test)]
+mod test_trial_period_expiry;
 #[cfg(test)]
 mod test_upgrade_proposal;
 #[cfg(test)]
@@ -19223,6 +19229,154 @@ impl PetChainContract {
             }
         }
         false
+    }
+
+    // --- ADOPTION TRIAL PERIOD (issues #1454, #1657) ---
+
+    /// Record a trial-period adoption. Ownership is intentionally *not*
+    /// changed here: the original owner stays in control until the trial is
+    /// settled, so an automatic reversal cannot strand the pet.
+    pub fn start_adoption_trial(
+        env: Env,
+        pet_id: u64,
+        adoption_id: u64,
+        adopter: Address,
+        trial_expires_at: u64,
+        auto_convert: bool,
+    ) -> AdoptionTrial {
+        if adoption_id == 0 {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let pet = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(pet_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::PetNotFound));
+        pet.owner.require_auth();
+
+        let now = env.ledger().timestamp();
+        if trial_expires_at <= now {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+        let key = TrialPeriodKey::Trial(adoption_id);
+        if env.storage().instance().has(&key) {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+
+        let trial = AdoptionTrial {
+            pet_id,
+            adoption_id,
+            adopter,
+            previous_owner: pet.owner,
+            trial_expires_at,
+            auto_convert,
+            settled: false,
+            outcome: None,
+            settled_at: 0,
+        };
+        env.storage().instance().set(&key, &trial);
+        trial
+    }
+
+    /// Read a trial record. An expired, unsettled trial is settled on this
+    /// first interaction, which emits `TrialPeriodExpired` exactly once.
+    pub fn get_adoption_trial(env: Env, adoption_id: u64) -> Option<AdoptionTrial> {
+        Self::settle_trial_if_expired(&env, adoption_id);
+        env.storage()
+            .instance()
+            .get(&TrialPeriodKey::Trial(adoption_id))
+    }
+
+    /// Permissionless keeper entry point for lazy trial expiry. Returns the
+    /// emitted event, or `None` when the trial is unknown, not yet expired, or
+    /// has already been settled.
+    pub fn settle_adoption_trial(env: Env, adoption_id: u64) -> Option<TrialPeriodExpiredEvent> {
+        Self::settle_trial_if_expired(&env, adoption_id)
+    }
+
+    fn settle_trial_if_expired(env: &Env, adoption_id: u64) -> Option<TrialPeriodExpiredEvent> {
+        let key = TrialPeriodKey::Trial(adoption_id);
+        let Some(mut trial) = env
+            .storage()
+            .instance()
+            .get::<TrialPeriodKey, AdoptionTrial>(&key)
+        else {
+            return None;
+        };
+        let now = env.ledger().timestamp();
+        if trial.settled || now < trial.trial_expires_at {
+            return None;
+        }
+
+        let outcome = if trial.auto_convert {
+            TrialOutcome::Converted
+        } else {
+            TrialOutcome::Reversed
+        };
+        let new_owner = match outcome {
+            TrialOutcome::Converted => trial.adopter.clone(),
+            TrialOutcome::Reversed => trial.previous_owner.clone(),
+        };
+
+        if let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Pet>(&DataKey::Pet(trial.pet_id))
+        {
+            let old_owner = pet.owner.clone();
+            if old_owner != new_owner {
+                Self::remove_pet_from_owner_index(env, &old_owner, trial.pet_id);
+                pet.owner = new_owner.clone();
+                pet.new_owner = new_owner.clone();
+                pet.updated_at = now;
+                Self::add_pet_to_owner_index(env, &new_owner, trial.pet_id);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Pet(trial.pet_id), &pet);
+                Self::log_ownership_change(
+                    env,
+                    trial.pet_id,
+                    old_owner.clone(),
+                    new_owner.clone(),
+                    String::from_str(env, "Adoption trial settled"),
+                );
+                // Only a conversion moves custody: a reversal restores the
+                // original owner and leaves the custody chain untouched.
+                if outcome == TrialOutcome::Converted {
+                    Self::append_custody_entry(
+                        env,
+                        trial.pet_id,
+                        old_owner,
+                        new_owner.clone(),
+                        TransferType::Adoption,
+                    );
+                }
+            }
+        }
+
+        trial.settled = true;
+        trial.outcome = Some(outcome);
+        trial.settled_at = now;
+        env.storage().instance().set(&key, &trial);
+
+        let event = TrialPeriodExpiredEvent {
+            version: EVENT_SCHEMA_VERSION,
+            pet_id: trial.pet_id,
+            adoption_id,
+            outcome,
+            new_owner: new_owner.clone(),
+            previous_owner: trial.previous_owner.clone(),
+            timestamp: now,
+        };
+        env.events().publish(
+            (
+                Symbol::new(env, "TrialPeriodExpired"),
+                trial.pet_id,
+                adoption_id,
+            ),
+            event.clone(),
+        );
+        Some(event)
     }
 } // end impl PetChainContract
 

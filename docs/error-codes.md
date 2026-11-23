@@ -572,6 +572,18 @@ match client.try_add_medical_record(...) {
 **Topics:** `("AlertResolved", alert_id)`  
 **Data:** `(pet_id, status)`
 
+### TrialPeriodExpired
+**Emitted when:** The first interaction with a trial-period adoption after `trial_expires_at` settles the trial. Emitted at most once per adoption.  
+**Topics:** `("TrialPeriodExpired", pet_id, adoption_id)`  
+**Data:** `TrialPeriodExpiredEvent { version, pet_id, adoption_id, outcome, new_owner, previous_owner, timestamp }`
+
+`outcome` is `Converted` (the adoption becomes permanent and `new_owner` is the
+adopter) or `Reversed` (the pet returns to `previous_owner`). `new_owner` always
+carries the resulting ownership state, and `previous_owner` is always present so
+integrators can reconcile both sides of the transition. The event contains no
+personal documents or private contact details. Before expiry, `settle_adoption_trial`
+and `get_adoption_trial` are no-ops with respect to this event.
+
 ---
 
 ## Storage Structure
