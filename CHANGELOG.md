@@ -55,11 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-submitting the same `(pet_id, vaccination_id, cert_hash)` returns the
   existing `cert_id`; a conflicting hash raises `CertificateHashConflict`.
 
-- New errors: `CertificateNotFound` (47), `CertificateRevoked` (48),
-  `CertificateExpired` (49), `VetCredentialsExpired` (50),
-  `CertificateHashConflict` (51).
-  Correction: `CertificateNotFound` is **171**, because 47 is
-  `ProposalNotFou
+- New errors: `CertificateNotFound` (172), `CertificateRevoked` (173),
+  `CertificateExpired` (174), `VetCredentialsExpired` (171),
+  `CertificateHashConflict` (175).
+  Correction: `CertificateNotFound` is **172**, not 47, because 47 is
+  `ProposalNotFound`. Codes match `stellar-contracts/error-codes.json`.
 
 ## [0.1.0] - 2024-XX-XX
 
