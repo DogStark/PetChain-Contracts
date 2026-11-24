@@ -249,59 +249,45 @@ changing their meaning.
 
 Public contract errors are part of the client-facing API: clients branch on the
 numeric discriminant returned by Soroban, so every public error must have a
-stable code, a documented meaning, and explicit retryability semantics. The
-registry below is the single source of truth for those discriminants and is
-mirrored by the generated snapshot in
-`stellar-contracts/src/test_error_registry.rs`.
+stable code, a documented meaning, and explicit retryability semantics.
 
-### Registry generation
+The source of truth is [`stellar-contracts/error-codes.json`](../stellar-contracts/error-codes.json),
+a hand-maintained fixture with one entry per `#[contracterror]` enum (for
+example `ContractError` in the petchain contract). Each entry lists every
+error's `code`, `name`, and `retry` policy, plus `retired` codes that stay
+reserved forever. Do not copy the table into this document; the fixture and the
+policy in [`stellar-contracts/docs/error-compatibility.md`](../stellar-contracts/docs/error-compatibility.md)
+are authoritative. For the per-module error reference, see
+[`docs/error-codes.md`](error-codes.md).
 
-The registry is generated from source rather than hand-maintained. The
-`Error` enum in `stellar-contracts/src/lib.rs` is the source of truth; each
-variant carries an explicit `#[repr(u32)]` discriminant and a doc comment that
-states its meaning and retryability. The generator walks the enum and emits a
-snapshot (code, name, meaning, retryable) that is committed alongside the
-contract so drift is visible in review.
+### Retry policies
 
-### Registry
+| `retry` | Client behaviour |
+| --- | --- |
+| `never` | Permanent for this request: fix the input, caller, or target. |
+| `after_state_change` | A precondition is not met yet. Re-read state and retry once it changes. |
+| `backoff` | Transient throttling. Retry with exponential backoff. |
+| `treat_as_success` | Idempotent replay: the effect already exists. Do not retry. |
 
-| Code | Error | Meaning | Retryable |
-| --- | --- | --- | --- |
-| 1 | `Unauthorized` | Caller is not authorized for this operation. | No — fix authorization first. |
-| 2 | `NotFound` | Referenced pet, record, or resource does not exist. | No — the resource must be created first. |
-| 3 | `InvalidInput` | Input failed validation (malformed or out of range). | No — correct the input before retrying. |
-| 4 | `AlreadyExists` | Resource already exists and cannot be created twice. | No — treat as idempotent success or fetch the existing resource. |
-| 5 | `Conflict` | Operation conflicts with current contract state. | Yes — re-read state and retry once it is consistent. |
-| 6 | `InsufficientFunds` | Account lacks the balance required for the operation. | No — fund the account first. |
-| 7 | `Expired` | Consent, grant, or record has passed its validity window. | No — a new grant must be issued. |
-| 8 | `RateLimited` | Caller exceeded the allowed request rate. | Yes — retry after the documented backoff. |
-| 9 | `Internal` | Unexpected internal failure. | Yes — retry with backoff; report if it persists. |
+### Excerpt
 
-### Recovery semantics
+| Code | Name | `retry` |
+| --- | --- | --- |
+| 1 | `AdminAlreadyApproved` | `treat_as_success` |
+| 5 | `BatchTooLarge` | `never` |
+| 8 | `InputStringTooLong` | `never` |
+| 9 | `InvalidBreed` | `never` |
+| 28 | `Unauthorized` | `never` |
+| 46 | `RateLimitExceeded` | `backoff` |
 
-- **Non-retryable errors** (`Unauthorized`, `NotFound`, `InvalidInput`,
-  `AlreadyExists`, `InsufficientFunds`, `Expired`) require a client-side change
-  (authorization, input, funding, or a fresh grant) before the call can succeed.
-  Retrying the identical request is guaranteed to fail.
-- **Retryable errors** (`Conflict`, `RateLimited`, `Internal`) may succeed on a
-  later attempt. Clients should re-read contract state, apply the documented
-  backoff, and retry with bounded attempts.
-- Clients must branch on the numeric code, never on error text, so that
-  localization and message changes do not break recovery logic.
+### Stability rules
 
-### Discriminant stability
-
-Existing codes must not change silently:
-
-- Every public error has an explicit `#[repr(u32)]` discriminant; codes are
-  never reassigned or reused, even after a variant is deprecated.
-- The generated snapshot is committed and compared in CI. Adding, removing, or
-  renumbering a variant changes the snapshot and fails the build until the
-  change is reviewed and the snapshot is regenerated intentionally.
-- Duplicate discriminants are rejected: the registry test asserts that every
-  code is unique, so two variants cannot share a code.
-- The intentional-change test documents the expected diff for a deliberate
-  renumbering, ensuring such changes are explicit rather than accidental.
+- Codes are append-only: never renumber a variant or give a code a new meaning.
+- Never delete a published code. Retire it by moving its entry from `errors`
+  to `retired` in `error-codes.json`.
+- CI runs `stellar-contracts/scripts/check_error_compat.py` against the base
+  branch's fixture and fails on removed, reused, or renumbered codes, and on
+  new errors without a `CHANGELOG.md` entry.
 
 ## Verification Status
 
