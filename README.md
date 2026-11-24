@@ -578,3 +578,6 @@ MIT
 
 <!-- handsoff-issue-1492 -->
 - #1492: [Contracts] Add pedigree export with consented fields
+
+<!-- handsoff-issue-1493 -->
+- #1493: [Contracts] Add Celo registry pet profile versioning
