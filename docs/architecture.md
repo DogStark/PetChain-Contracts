@@ -208,34 +208,41 @@ unambiguous.
 Mobile and frontend clients must derive the same canonical pet lookup key from
 user-entered chip/microchip values. The canonicalization rules below are the
 single source of truth and are published as Rust compatibility vectors in
-`stellar-contracts/src/test_pet_identifier_normalization.rs` so contract tests
-and generated client fixtures consume the same rules.
+`stellar-contracts/src/test_microchip_normalization.rs`, and the contract
+(`canonicalize_microchip_id` in `stellar-contracts/src/lib.rs`) implements
+exactly these rules.
 
 ### Canonicalization rules
 
-1. **Unicode normalization** — apply NFKC normalization first so compatibility
-   characters (full-width digits, ligatures, etc.) fold to their canonical form.
-2. **Case folding** — lowercase using Unicode simple case folding (e.g. `A` →
-   `a`, `İ` → `i̇`).
-3. **Whitespace** — trim leading/trailing whitespace and collapse any internal
-   run of Unicode whitespace to a single ASCII space.
-4. **Separators** — remove all separator characters (`-`, `_`, `.`, `/`, `\`,
-   `:`, and Unicode dash/space separators) so `123-456` and `123 456` both
-   canonicalize to `123456`.
-5. **Result** — the canonical key is the concatenation of the remaining
-   characters; an empty result is rejected as an invalid identifier.
+1. **Character set** — no Unicode normalization (NFKC is *not* applied). After
+   separator removal, only ASCII letters and digits are accepted. Any other
+   character (full-width Latin/digits, katakana, Arabic-Indic digits, Unicode
+   dashes or spaces, mixed-script input) is rejected as `InvalidInput`. Rejecting
+   instead of folding means clients cannot derive divergent keys for the same
+   chip.
+2. **Case** — ASCII `a`–`z` map to upper case `A`–`Z`.
+3. **Whitespace** — ASCII space, tab, LF and CR are removed (not collapsed).
+4. **Separators** — `-`, `:` and `.` are removed, so `123-456` and `123 456`
+   both canonicalize to `123456`. `_`, `/` and `\` are not separators and are
+   rejected.
+5. **Length and result** — input longer than 64 bytes is rejected. An empty
+   result is rejected as an invalid identifier.
 
 ### Compatibility vectors
 
 | Input | Canonical key |
 | --- | --- |
-| `"  ABC-123  "` | `abc123` |
-| `"abc_123"` | `abc123` |
-| `"ABC.123"` | `abc123` |
-| `"ＡＢＣ１２３"` (full-width) | `abc123` |
-| `"abc\u{2009}123"` (thin space) | `abc123` |
-| `"ABC\u{2013}123"` (en dash) | `abc123` |
+| `"  ab-12:cd.34 "` | `AB12CD34` |
+| `"  ABC-123  "` | `ABC123` |
+| `"ABC.123"` | `ABC123` |
 | `""` | rejected |
+| `"abc_123"` (underscore) | rejected |
+| `"ＡＢＣ１２３"` (full-width Latin and digits) | rejected |
+| `"ペット"` (full-width katakana chip suffix) | rejected |
+| `"٠١٢٣٤"` (Arabic-Indic digits) | rejected |
+| `"AB٠١"` (mixed Latin and Arabic-Indic) | rejected |
+| `"abc\u{2009}123"` (thin space) | rejected |
+| `"ABC\u{2013}123"` (en dash) | rejected |
 
 ### Migration path
 
