@@ -1,3 +1,6 @@
+use crate::handlers::admin::{
+    AdoptionCaseAuditBackend, AdoptionCaseAuditEntry, AdoptionCaseAuditPage,
+};
 use crate::ip_access::{CidrBlock, IpAccessEntry, IpAccessStore, IpListType};
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission};
 use crate::two_factor::HmacAlgorithm;
@@ -1271,6 +1274,123 @@ impl FlaggedScoreStore for PostgresFlaggedScoreStore {
 
     fn clear(&self) {
         let _ = self.block_on(sqlx::query("DELETE FROM flagged_scores").execute(&self.pool));
+    }
+}
+
+/// Postgres-backed adoption case audit store (Issue #1613). Persists transitions
+/// in the `adoption_case_audit` table (see
+/// `migrations/007_create_adoption_case_audit.sql`) so the audit export survives
+/// process restarts. The in-memory `AdoptionCaseAuditStore` is for tests/demos only.
+#[derive(Clone)]
+pub struct PostgresAdoptionCaseAuditStore {
+    pool: PgPool,
+    runtime: Arc<Runtime>,
+}
+
+impl PostgresAdoptionCaseAuditStore {
+    pub fn connect(database_url: &str) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        let pool = runtime
+            .block_on(
+                PgPoolOptions::new()
+                    .max_connections(10)
+                    .connect(database_url),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool, runtime })
+    }
+
+    pub fn from_pool(pool: PgPool) -> Result<Self, String> {
+        let runtime = Arc::new(Runtime::new().map_err(|e| e.to_string())?);
+        Ok(Self { pool, runtime })
+    }
+
+    fn block_on<F, T>(&self, future: F) -> Result<T, String>
+    where
+        F: std::future::Future<Output = Result<T, sqlx::Error>>,
+    {
+        self.runtime.block_on(future).map_err(|e| e.to_string())
+    }
+}
+
+impl AdoptionCaseAuditBackend for PostgresAdoptionCaseAuditStore {
+    fn record(
+        &self,
+        case_id: &str,
+        transition: &str,
+        actor: &str,
+        timestamp: u64,
+    ) -> Result<u64, String> {
+        let event_id: i64 = self.block_on(
+            sqlx::query_scalar(
+                r#"
+                INSERT INTO adoption_case_audit (case_id, transition, actor, recorded_at)
+                VALUES ($1, $2, $3, $4)
+                RETURNING event_id
+                "#,
+            )
+            .bind(case_id)
+            .bind(transition)
+            .bind(actor)
+            .bind(timestamp as i64)
+            .fetch_one(&self.pool),
+        )?;
+        Ok(event_id.max(0) as u64)
+    }
+
+    fn page(
+        &self,
+        case_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<AdoptionCaseAuditPage, String> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            event_id: i64,
+            case_id: String,
+            transition: String,
+            actor: String,
+            recorded_at: i64,
+        }
+
+        let total: i64 = self.block_on(
+            sqlx::query_scalar("SELECT COUNT(*) FROM adoption_case_audit WHERE case_id = $1")
+                .bind(case_id)
+                .fetch_one(&self.pool),
+        )?;
+
+        let offset = (page as i64).saturating_mul(page_size as i64);
+        let rows = self.block_on(
+            sqlx::query_as::<_, Row>(
+                r#"
+                SELECT event_id, case_id, transition, actor, recorded_at
+                FROM adoption_case_audit
+                WHERE case_id = $1
+                ORDER BY event_id
+                LIMIT $2 OFFSET $3
+                "#,
+            )
+            .bind(case_id)
+            .bind(page_size as i64)
+            .bind(offset)
+            .fetch_all(&self.pool),
+        )?;
+
+        Ok(AdoptionCaseAuditPage {
+            entries: rows
+                .into_iter()
+                .map(|r| AdoptionCaseAuditEntry {
+                    event_id: r.event_id.max(0) as u64,
+                    case_id: r.case_id,
+                    transition: r.transition,
+                    actor: r.actor,
+                    timestamp: r.recorded_at.max(0) as u64,
+                })
+                .collect(),
+            page,
+            page_size,
+            total: total.max(0) as u64,
+        })
     }
 }
 
