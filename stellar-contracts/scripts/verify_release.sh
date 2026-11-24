@@ -92,7 +92,8 @@ if [[ -f "$PROVENANCE_FILE" ]]; then
 
   MISMATCHES=0
 
-  if [[ -n "$ORIGINAL_WASM" && "$WASM_CHECKSUM" != "$ORIGINAL_WASM" ]]; then
+  # An empty expected value (unparseable manifest) must count as a mismatch, not a pass
+  if [[ "$WASM_CHECKSUM" != "$ORIGINAL_WASM" ]]; then
     echo "MISMATCH: WASM checksum differs" >&2
     echo "  Expected: ${ORIGINAL_WASM}" >&2
     echo "  Got:      ${WASM_CHECKSUM}" >&2
@@ -101,7 +102,7 @@ if [[ -f "$PROVENANCE_FILE" ]]; then
     echo "WASM checksum: OK"
   fi
 
-  if [[ -n "$ORIGINAL_ABI" && "$ABI_CHECKSUM" != "$ORIGINAL_ABI" ]]; then
+  if [[ "$ABI_CHECKSUM" != "$ORIGINAL_ABI" ]]; then
     echo "MISMATCH: ABI snapshot checksum differs" >&2
     echo "  Expected: ${ORIGINAL_ABI}" >&2
     echo "  Got:      ${ABI_CHECKSUM}" >&2
@@ -110,7 +111,7 @@ if [[ -f "$PROVENANCE_FILE" ]]; then
     echo "ABI snapshot checksum: OK"
   fi
 
-  if [[ -n "$ORIGINAL_MANIFEST" && "$MANIFEST_CHECKSUM" != "$ORIGINAL_MANIFEST" ]]; then
+  if [[ "$MANIFEST_CHECKSUM" != "$ORIGINAL_MANIFEST" ]]; then
     echo "MISMATCH: Deployment manifest checksum differs" >&2
     echo "  Expected: ${ORIGINAL_MANIFEST}" >&2
     echo "  Got:      ${MANIFEST_CHECKSUM}" >&2
@@ -119,7 +120,7 @@ if [[ -f "$PROVENANCE_FILE" ]]; then
     echo "Deployment manifest checksum: OK"
   fi
 
-  if [[ -n "$ORIGINAL_BINDINGS" && "$BINDINGS_CHECKSUM" != "$ORIGINAL_BINDINGS" ]]; then
+  if [[ "$BINDINGS_CHECKSUM" != "$ORIGINAL_BINDINGS" ]]; then
     echo "MISMATCH: Bindings manifest checksum differs" >&2
     echo "  Expected: ${ORIGINAL_BINDINGS}" >&2
     echo "  Got:      ${BINDINGS_CHECKSUM}" >&2
@@ -137,6 +138,11 @@ if [[ -f "$PROVENANCE_FILE" ]]; then
 
   echo "All checksums match provenance manifest."
 else
+  # In CI a release must be checked against its original manifest; never self-generate one
+  if [[ "${CI:-}" == "true" ]]; then
+    echo "ERROR: No provenance manifest found at ${PROVENANCE_FILE} in CI. Cannot verify release." >&2
+    exit 1
+  fi
   echo "No provenance manifest found at ${PROVENANCE_FILE}. Skipping comparison."
   echo "Saving current provenance for future verification..."
   # Generate a provenance manifest for this build
