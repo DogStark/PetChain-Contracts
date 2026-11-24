@@ -4,6 +4,8 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const MAX_ISSUER_LEN: u32 = 64;
 /// Maximum length (in bytes) accepted for a certificate identifier.
 const MAX_CERT_ID_LEN: u32 = 64;
+/// Maximum length (in bytes) accepted for a consent scope label.
+const MAX_SCOPE_LEN: u32 = 32;
 /// Current storage schema version for certificate records.
 const CERT_STORAGE_VERSION: u32 = 1;
 
@@ -25,6 +27,10 @@ pub enum CeloError {
     Revoked = 6,
     /// Certificate is not yet valid or has expired.
     NotValid = 7,
+    /// Consent scope label exceeds `MAX_SCOPE_LEN`.
+    ScopeTooLong = 8,
+    /// Caller has not been granted the required consent scope.
+    ConsentDenied = 9,
 }
 
 #[contracttype]
@@ -53,6 +59,8 @@ pub struct VerificationResult {
 pub enum DataKey {
     Admin,
     Certificate(Bytes),
+    /// Owner-controlled consent scope grant: (owner, scope) -> grantee.
+    Consent(Address, Symbol),
 }
 
 #[contract]
@@ -128,8 +136,42 @@ impl CeloContract {
         Ok(())
     }
 
+    /// Grant a consent scope on a medical record to a grantee. Only the owner may call this.
+    pub fn grant_consent(
+        env: Env,
+        owner: Address,
+        scope: Symbol,
+        grantee: Address,
+    ) -> Result<(), CeloError> {
+        owner.require_auth();
+        Self::require_scope_len(&scope)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Consent(owner, scope), &grantee);
+        Ok(())
+    }
+
+    /// Revoke a previously granted consent scope. Only the owner may call this.
+    pub fn revoke_consent(env: Env, owner: Address, scope: Symbol) -> Result<(), CeloError> {
+        owner.require_auth();
+        Self::require_scope_len(&scope)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Consent(owner, scope));
+        Ok(())
+    }
+
     /// Read-only verification matching Soroban client semantics.
-    pub fn verify_certificate(env: Env, cert_id: Bytes) -> Result<VerificationResult, CeloError> {
+    /// Requires the caller to hold the `read` consent scope granted by the record owner.
+    pub fn verify_certificate(
+        env: Env,
+        caller: Address,
+        owner: Address,
+        cert_id: Bytes,
+    ) -> Result<VerificationResult, CeloError> {
+        caller.require_auth();
+        Self::require_consent(&env, &owner, &caller, Symbol::new(&env, "read"))?;
+
         if cert_id.len() > MAX_CERT_ID_LEN {
             return Err(CeloError::CertIdTooLong);
         }
@@ -161,6 +203,30 @@ impl CeloContract {
             .ok_or(CeloError::Unauthorized)?;
         if &admin != caller {
             return Err(CeloError::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn require_scope_len(scope: &Symbol) -> Result<(), CeloError> {
+        if scope.len() > MAX_SCOPE_LEN {
+            return Err(CeloError::ScopeTooLong);
+        }
+        Ok(())
+    }
+
+    fn require_consent(
+        env: &Env,
+        owner: &Address,
+        caller: &Address,
+        scope: Symbol,
+    ) -> Result<(), CeloError> {
+        let grantee: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Consent(owner.clone(), scope))
+            .ok_or(CeloError::ConsentDenied)?;
+        if &grantee != caller {
+            return Err(CeloError::ConsentDenied);
         }
         Ok(())
     }
