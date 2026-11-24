@@ -49,317 +49,227 @@ Additional languages can be added by admins using the `set_error_message` functi
 
 ---
 
+<!-- BEGIN GENERATED ERROR CODES: stellar-contracts/scripts/generate_error_docs.py -->
 ## Error Code Reference
 
-### Authorization & Admin Errors (1-20)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 1 | `Unauthorized` | Unauthorized access | Acceso no autorizado |
-| 2 | `AdminNotInitialized` | Admin not initialized | Administrador no inicializado |
-| 16 | `AdminAlreadySet` | Admin already set | Administrador ya establecido |
-| 17 | `AdminsNotSet` | Admins not set | Administradores no establecidos |
-| 18 | `NoAdminsConfigured` | No admins configured | No hay administradores configurados |
-| 19 | `NotAnAdmin` | Not an admin | No es un administrador |
-| 20 | `InvokerNotInAdminList` | Invoker not in admin list | Invocador no está en la lista de administradores |
-| 21 | `InvalidThreshold` | Invalid threshold | Umbral inválido |
-
-**Description:**
-- These errors occur when there are authorization failures or admin configuration issues
-- Most operations require proper authentication and admin privileges
-
----
-
-### Pet Management Errors (3, 22, 60)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 3 | `PetNotFound` | Pet not found | Mascota no encontrada |
-| 22 | `SireNotFound` | Sire not found | Padre no encontrado |
-| 60 | `NotPetOwner` | Not pet owner | No es el dueño de la mascota |
-
-**Description:**
-- Errors related to pet records and ownership
-- Occur when trying to access or modify non-existent pets or without proper ownership
-
----
-
-### Veterinarian Errors (4-7, 23)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 4 | `VetNotFound` | Veterinarian not found | Veterinario no encontrado |
-| 5 | `VeterinarianNotVerified` | Veterinarian not verified | Veterinario no verificado |
-| 6 | `VetAlreadyRegistered` | Veterinarian already registered | Veterinario ya registrado |
-| 7 | `LicenseAlreadyRegistered` | License already registered | Licencia ya registrada |
-| 23 | `VetNotVerified` | Vet not verified | Veterinario no verificado |
-
-**Description:**
-- Errors related to veterinarian registration and verification
-- Only verified vets can perform certain operations (add medical records, vaccinations, etc.)
-
----
-
-### Input Validation Errors (8, 11-15, 25-27)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 8 | `InputStringTooLong` | Input string too long | Cadena de entrada demasiado larga |
-| 11 | `CounterOverflow` | Counter overflow | Desbordamiento de contador |
-| 12 | `TooManyItems` | Too many items | Demasiados elementos |
-| 13 | `InvalidState` | Invalid state | Estado inválido |
-| 14 | `InvalidInput` | Invalid input | Entrada inválida |
-| 15 | `CommentTooLong` | Comment too long | Comentario demasiado largo |
-| 25 | `FilenameEmpty` | Filename empty | Nombre de archivo vacío |
-| 26 | `FileTypeEmpty` | File type empty | Tipo de archivo vacío |
-| 27 | `FileSizeZero` | File size zero | Tamaño de archivo cero |
-
-**Description:**
-- Validation errors for input data
-- Occur when inputs exceed limits or are malformed
-
----
-
-### Tag & IPFS Errors (9-10, 24)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 9 | `PetAlreadyHasLinkedTag` | Pet already has linked tag | Mascota ya tiene etiqueta vinculada |
-| 10 | `InvalidIpfsHash` | Invalid IPFS hash | Hash IPFS inválido |
-| 24 | `TagAlreadyLinked` | Tag already linked | Etiqueta ya vinculada |
-
-**Description:**
-- Errors related to NFC tag linking and IPFS content
-- Each pet can only have one active tag at a time
-
----
-
-### Attachment Errors (43)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 43 | `InvalidAttachmentIndex` | Invalid attachment index | Índice de adjunto inválido |
-
-**Description:**
-- Errors when accessing attachments with invalid indices
-
----
-
-### Alert System Errors (50-51, 52-55)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 50 | `AlertNotFound` | Alert not found | Alerta no encontrada |
-| 51 | `AlertNotActive` | Alert not active | Alerta no activa |
-| 52 | `AlertAlreadyActive` | An active alert already exists for this pet | Ya existe una alerta activa para esta mascota |
-| 53 | `InvalidPageSize` | Invalid page size | Tamaño de página inválido |
-| 54 | `InvalidAlertCursor` | Invalid or expired alert cursor | Cursor de alerta inválido o expirado |
-| 55 | `AlertRegionTooLong` | Alert region too long | Región de alerta demasiado larga |
-
-**Description:**
-- Errors related to lost pet alert system
-- Occur when trying to access or modify non-existent or inactive alerts
-
-#### Duplicate Alert Detection (Code 52)
-
-`create_alert` rejects a new alert when the same pet already has an active alert
-(`status == Active`). The failed call leaves all state unchanged: no alert record,
-no index entry, and no event is written.
-
-Resolution path for changed circumstances:
-1. The pet owner (or an authorized admin) calls `resolve_alert` / `cancel_alert`
-   on the existing alert, which moves it out of `Active`.
-2. Once no active alert remains for the pet, `create_alert` succeeds and the new
-   alert is indexed normally.
-
-Retry guidance: do **not** blindly retry `create_alert` after code 52. Query the
-pet's active alert first (`get_active_alert_for_pet`), then either resolve/cancel
-it or surface the existing alert to the user.
-
-#### Alert Index Pagination (Codes 53-55)
-
-`list_alerts_by_region` / `list_alerts_by_status` return a bounded page of active
-alerts using an opaque cursor.
-
-- **Page size bounds:** `page_size` must be in `1..=MAX_ALERT_PAGE_SIZE` (50).
-  `0` or values above the maximum fail with `InvalidPageSize` (53).
-- **Cursor format:** the cursor is an opaque, contract-issued token. Clients must
-  treat it as a black box and pass back exactly what the previous page returned.
-- **Cursor invalidation:** cursors are bound to the region/status filter they were
-  issued for and to the storage version. A cursor becomes invalid (54) when:
-  - it was issued for a different region or status filter,
-  - it is malformed or truncated,
-  - the contract storage version has changed (upgrade),
-  - the underlying alert it points at has been resolved or cancelled.
-- **Replay/expiry:** cursors are single-use per listing session; replaying a stale
-  cursor after the index changed returns `InvalidAlertCursor` (54) rather than
-  silently skipping or duplicating entries. On 54, restart pagination from the
-  first page (no cursor) instead of retrying the same cursor.
-- **Region bounds:** `region` must be non-empty and at most `MAX_REGION_LEN` (64)
-  bytes; otherwise `AlertRegionTooLong` (55).
-
-Retry guidance: codes 53 and 55 are deterministic input errors — fix the input,
-do not retry. Code 54 is recoverable by restarting from the first page.
-
----
-
-### Consent Errors (61-62)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 61 | `NotConsentOwner` | Not consent owner | No es el propietario del consentimiento |
-| 62 | `ConsentAlreadyRevoked` | Consent already revoked | Consentimiento ya revocado |
-
-**Description:**
-- Errors related to data sharing consent management
-- Occur when trying to modify consent without proper authorization
-
----
-
-### Booking Errors (70-71)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 70 | `SlotAlreadyBooked` | Slot already booked | Espacio ya reservado |
-| 71 | `SlotNotBooked` | Slot not booked | Espacio no reservado |
-
-**Description:**
-- Errors related to veterinary appointment booking system
-- Occur when trying to book already-booked slots or cancel non-existent bookings
-
----
-
-### Proposal & Governance Errors (80-87)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 80 | `ProposalNotFound` | Proposal not found | Propuesta no encontrada |
-| 81 | `ProposalAlreadyExecuted` | Proposal already executed | Propuesta ya ejecutada |
-| 82 | `ProposalExpired` | Proposal expired | Propuesta expirada |
-| 83 | `ThresholdNotMet` | Threshold not met | Umbral no alcanzado |
-| 84 | `AdminAlreadyApproved` | Admin already approved | Administrador ya aprobó |
-| 85 | `TimelockNotExpired` | Timelock not expired | Bloqueo de tiempo no expirado |
-| 86 | `ProposalVetoed` | Proposal vetoed | Propuesta vetada |
-| 87 | `ProposalNotExecutable` | Proposal not executable | Propuesta no ejecutable |
-
-**Description:**
-- Errors related to multisig governance and upgrade proposals
-- Occur during proposal lifecycle management
-
----
-
-### Review Errors (90-91)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 90 | `InvalidRating` | Invalid rating | Calificación inválida |
-| 91 | `DuplicateReview` | Duplicate review | Reseña duplicada |
-
-**Description:**
-- Errors related to veterinarian review system
-- Occur when ratings are out of range or users try to review the same vet twice
-
----
-
-### Medication Errors (100)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 100 | `MedicationNotFound` | Medication not found | Medicamento no encontrado |
-
-**Description:**
-- Errors when accessing non-existent medication records
-
----
-
-### Multisig Errors (110-113)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 110 | `MultisigNotConfigured` | Multisig not configured | Multifirma no configurada |
-| 111 | `MultisigNotEnabled` | Multisig not enabled | Multifirma no habilitada |
-| 112 | `NotAuthorizedSigner` | Not authorized signer | Firmante no autorizado |
-| 113 | `AlreadySigned` | Already signed | Ya firmado |
-
-**Description:**
-- Errors related to multisig pet transfer functionality
-- Occur when multisig is not properly configured or signers are unauthorized
-
----
-
-### Range Validation Errors (120-121)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 120 | `SeverityOutOfRange` | Severity out of range | Severidad fuera de rango |
-| 121 | `IntensityOutOfRange` | Intensity out of range | Intensidad fuera de rango |
-
-**Description:**
-- Errors when numeric values are outside acceptable ranges
-- Used in behavioral tracking and activity recording
-
----
-
-### Custody Errors (130)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 130 | `CustodyNotFound` | Custody not found | Custodia no encontrada |
-
-**Description:**
-- Errors related to temporary custody records
-- Occur when trying to access non-existent custody arrangements
-
----
-
-### Grooming Errors (140)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 140 | `UnregisteredGroomer` | Unregistered groomer | Peluquero no registrado |
-
-**Description:**
-- Errors when unregistered groomers try to perform operations
-
----
-
-### Training & Breeding Errors (141-143, 150)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 141 | `PrerequisiteIncomplete` | Prerequisite incomplete | Prerrequisito incompleto |
-| 142 | `CircularDependency` | Circular dependency | Dependencia circular |
-| 143 | `CrossPetComparison` | Cross pet comparison | Comparación entre mascotas |
-| 150 | `BreedingRecordNotFound` | Breeding record not found | Registro de cría no encontrado |
-
-**Description:**
-- Errors related to training milestones and breeding records
-- Occur when prerequisites aren't met or records don't exist
-
----
-
-### Storage Quota Errors (160)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 160 | `StorageQuotaExceeded` | Storage quota exceeded | Cuota de almacenamiento excedida |
-
-**Description:**
-- Error when a pet's storage quota is exceeded
-- Prevents unbounded storage consumption
-- Admin can increase quota via `set_pet_storage_quota` or `set_global_storage_quota`
-
----
-
-### Error Registry Errors (170)
-
-| Code | Name | English Message | Spanish Message |
-|------|------|-----------------|-----------------|
-| 170 | `ErrorMessageNotFound` | Error message not found | Mensaje de error no encontrado |
-
-**Description:**
-- Error when querying an error message that doesn't exist in the registry
-- Indicates the error code or language combination is not registered
+Generated from [`stellar-contracts/error-codes.json`](../stellar-contracts/error-codes.json). Do not edit this section by hand: change the registry, then run `python3 stellar-contracts/scripts/generate_error_docs.py`.
+
+### Retry Policies
+
+| Policy | Meaning |
+|--------|---------|
+| `never` | Permanent for this request: fix the input, caller, or target. Resubmitting unchanged always fails. |
+| `after_state_change` | A precondition is not met yet (time window, approval, verification, nonce). Re-read state and retry once it changes; do not loop blindly. |
+| `backoff` | Transient throttling. Retry the same request with exponential backoff. |
+| `treat_as_success` | The requested effect already exists (idempotent replay). Clients should treat it as success and not retry. |
+
+### `ContractError` (petchain)
+
+Source: `stellar-contracts/src/lib.rs`
+
+| Code | Name | Retry |
+|------|------|-------|
+| 1 | `AdminAlreadyApproved` | `treat_as_success` |
+| 2 | `AdminAlreadySet` | `never` |
+| 3 | `AdminNotInitialized` | `after_state_change` |
+| 4 | `AdminsNotSet` | `after_state_change` |
+| 5 | `BatchTooLarge` | `never` |
+| 6 | `CertificateAlreadyAnchored` | `treat_as_success` |
+| 7 | `CounterOverflow` | `never` |
+| 8 | `InputStringTooLong` | `never` |
+| 9 | `InvalidBreed` | `never` |
+| 10 | `InvalidCallerNonce` | `after_state_change` |
+| 11 | `InvalidCertificateHash` | `never` |
+| 12 | `InvalidInput` | `never` |
+| 13 | `InvalidIpfsHash` | `never` |
+| 14 | `InvalidPetName` | `never` |
+| 15 | `InvalidRating` | `never` |
+| 16 | `InvalidState` | `after_state_change` |
+| 17 | `InvalidThreshold` | `never` |
+| 18 | `InvokerNotInAdminList` | `never` |
+| 19 | `LicenseAlreadyRegistered` | `never` |
+| 20 | `NoAdminsConfigured` | `after_state_change` |
+| 21 | `NotAnAdmin` | `never` |
+| 22 | `NotPetOwner` | `never` |
+| 23 | `PetAlreadyHasLinkedTag` | `never` |
+| 24 | `PetNotFound` | `never` |
+| 25 | `StorageQuotaExceeded` | `after_state_change` |
+| 26 | `ThresholdNotMet` | `after_state_change` |
+| 27 | `TooManyItems` | `never` |
+| 28 | `Unauthorized` | `never` |
+| 29 | `VaccinationNotFound` | `never` |
+| 30 | `VetAlreadyRegistered` | `never` |
+| 31 | `VetNotFound` | `never` |
+| 32 | `VetNotVerified` | `after_state_change` |
+| 33 | `VeterinarianNotVerified` | `after_state_change` |
+| 34 | `SlotAlreadyBooked` | `never` |
+| 35 | `DuplicateActivity` | `treat_as_success` |
+| 36 | `InbreedingThresholdExceeded` | `never` |
+| 37 | `SelfBreeding` | `never` |
+| 38 | `ProposalAlreadyExecuted` | `treat_as_success` |
+| 39 | `InvalidNonce` | `after_state_change` |
+| 40 | `RollbackWindowExpired` | `never` |
+| 41 | `NoPreviousUpgrade` | `never` |
+| 43 | `ProposalExpired` | `never` |
+| 44 | `ProposalNotApproved` | `after_state_change` |
+| 45 | `QuorumNotMet` | `after_state_change` |
+| 46 | `RateLimitExceeded` | `backoff` |
+| 47 | `ProposalNotFound` | `never` |
+| 160 | `AlreadyDeleted` | `treat_as_success` |
+| 161 | `RecordAlreadyDeleted` | `treat_as_success` |
+| 162 | `RetentionPeriodNotMet` | `after_state_change` |
+| 163 | `RecordNotFound` | `never` |
+| 164 | `DisputeNotFound` | `never` |
+| 165 | `DisputeNotOpenForVoting` | `after_state_change` |
+| 166 | `NotDisputeStakeholder` | `never` |
+| 167 | `NotInEvidencePhase` | `never` |
+| 168 | `NotDisputeParty` | `never` |
+| 169 | `InvalidTimestamp` | `never` |
+| 170 | `StaleMigration` | `treat_as_success` |
+| 171 | `VetCredentialsExpired` | `after_state_change` |
+| 172 | `CertificateNotFound` | `never` |
+| 173 | `CertificateRevoked` | `never` |
+| 174 | `CertificateExpired` | `never` |
+| 175 | `CertificateHashConflict` | `never` |
+| 176 | `NonceReused` | `after_state_change` |
+| 177 | `NotificationExpired` | `never` |
+| 178 | `NotificationAlreadySent` | `treat_as_success` |
+| 179 | `UnknownEmergencyRecipient` | `never` |
+| 180 | `ConsentNotFound` | `never` |
+| 181 | `ConsentVersionMismatch` | `after_state_change` |
+| 182 | `IssuerAlreadyRegistered` | `never` |
+| 183 | `IssuerNotFound` | `never` |
+| 184 | `IssuerRevoked` | `never` |
+| 185 | `IssuerKeyVersionNotFound` | `never` |
+| 186 | `IssuerKeyVersionInactive` | `never` |
+| 187 | `IssuerKeyReused` | `never` |
+| 188 | `RevokedConsentReplay` | `never` |
+| 189 | `EnrollmentNotFound` | `never` |
+| 190 | `InvalidEnrollmentState` | `after_state_change` |
+| 191 | `EnrollmentAlreadyExists` | `treat_as_success` |
+| 192 | `EnrollmentNotExpired` | `after_state_change` |
+| 193 | `PolicyVersionNotFound` | `never` |
+| 194 | `PolicyVersionMismatch` | `after_state_change` |
+| 195 | `CoverageSnapshotNotFound` | `never` |
+| 196 | `CoverageSnapshotMismatch` | `never` |
+| 197 | `TooManyCoverageItems` | `never` |
+| 198 | `TooManyExclusionItems` | `never` |
+| 199 | `InvalidCoverageAmount` | `never` |
+| 200 | `ClaimNotFound` | `never` |
+| 201 | `ClaimInvalidStatus` | `after_state_change` |
+| 202 | `ClaimNotRejected` | `never` |
+| 203 | `AppealWindowExpired` | `never` |
+| 204 | `ClaimAlreadyAppealed` | `never` |
+| 205 | `ClaimNotUnderAppeal` | `never` |
+| 206 | `ReviewerCannotBeOriginal` | `never` |
+| 207 | `ClaimDocumentLimitReached` | `never` |
+| 208 | `PolicyPetNotFound` | `never` |
+| 209 | `BenefitConditionNotFound` | `never` |
+| 210 | `BenefitConditionLimitReached` | `never` |
+| 211 | `BenefitWaitingPeriod` | `after_state_change` |
+| 212 | `BenefitInvalidServiceDate` | `never` |
+| 213 | `BenefitCoverageLimitExceeded` | `never` |
+| 214 | `BenefitClaimNotPending` | `never` |
+| 215 | `BenefitClaimAlreadyFinalized` | `never` |
+| 216 | `BenefitInvalidTerms` | `never` |
+| 217 | `BenefitClaimLimitReached` | `never` |
+| 218 | `BenefitClaimMustUseSettlement` | `never` |
+| 219 | `BenefitTermsAlreadyConfigured` | `never` |
+| 220 | `EnrollmentNotFound` | `never` |
+| 221 | `EnrollmentInvalidTransition` | `after_state_change` |
+| 222 | `EnrollmentAlreadyDecided` | `never` |
+| 223 | `EnrollmentLimitReached` | `never` |
+| 224 | `EnrollmentSnapshotTooLarge` | `never` |
+| 225 | `InsurancePolicyInactive` | `after_state_change` |
+| 226 | `InsurancePolicyNotFound` | `never` |
+| 227 | `BenefitClaimLimitPerPetReached` | `never` |
+
+### `PetChainError` (petchain)
+
+Source: `stellar-contracts/src/lib.rs`
+
+| Code | Name | Retry |
+|------|------|-------|
+| 1 | `NonceReused` | `after_state_change` |
+| 2 | `SelfLineage` | `never` |
+| 3 | `CircularLineage` | `never` |
+| 4 | `KeywordTooLong` | `never` |
+| 5 | `TooManySearchTokens` | `never` |
+
+### `ContractError` (pet-transfer-adoption)
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/lib.rs`
+
+| Code | Name | Retry |
+|------|------|-------|
+| 1 | `PetNotFound` | `never` |
+| 2 | `Unauthorized` | `never` |
+| 3 | `TransferAlreadyPending` | `after_state_change` |
+| 4 | `NoPendingTransfer` | `never` |
+| 5 | `InvalidRecipient` | `never` |
+| 6 | `EmptyOwnershipHistory` | `never` |
+| 7 | `MissingOwnershipRecord` | `never` |
+| 8 | `TransferNotExpired` | `after_state_change` |
+| 9 | `StaleCancellation` | `never` |
+| 10 | `EmptyBatch` | `never` |
+| 11 | `BatchOwnerMismatch` | `never` |
+| 12 | `NoEscrowedTransfer` | `never` |
+| 13 | `DisputeWindowNotElapsed` | `after_state_change` |
+| 14 | `TransferAlreadyDisputed` | `never` |
+| 15 | `AlreadyInitialized` | `treat_as_success` |
+| 16 | `InvalidThreshold` | `never` |
+| 17 | `NotMultisigAdmin` | `never` |
+| 18 | `ThresholdNotMet` | `after_state_change` |
+| 19 | `UntrustedContract` | `never` |
+| 20 | `NoPendingAdoption` | `never` |
+| 21 | `WaitingPeriodNotElapsed` | `after_state_change` |
+| 22 | `AdoptionAlreadyCompleted` | `treat_as_success` |
+| 23 | `AdoptionNotConfigurable` | `never` |
+| 24 | `InvalidWaitingPeriod` | `never` |
+| 25 | `AdoptionConfigNotFound` | `never` |
+| 26 | `BatchTooLarge` | `never` |
+| 27 | `InvalidBatch` | `never` |
+| 28 | `OrganizationApprovalRequired` | `after_state_change` |
+| 29 | `AdoptionRejected` | `never` |
+| 30 | `InvalidApprover` | `never` |
+| 31 | `InvalidTimeoutDays` | `never` |
+| 32 | `AdopterApprovalRequired` | `after_state_change` |
+| 33 | `InputStringTooLong` | `never` |
+| 34 | `AdoptionNotExpired` | `after_state_change` |
+
+### `EscrowError` (pet-transfer-adoption (escrow))
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/escrow.rs`
+
+| Code | Name | Retry |
+|------|------|-------|
+| 1 | `FeeBpsTooHigh` | `never` |
+| 2 | `InvalidAmount` | `never` |
+| 3 | `EscrowAlreadyExists` | `never` |
+| 4 | `EscrowNotFound` | `never` |
+| 5 | `InvalidEscrowState` | `never` |
+| 6 | `Unauthorized` | `never` |
+| 7 | `EscrowNotExpired` | `after_state_change` |
+| 8 | `InvalidTokenAddress` | `never` |
+
+### `ContractError` (vet-registry)
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/vet_registry.rs`
+
+| Code | Name | Retry |
+|------|------|-------|
+| 0 | `AlreadyInitialized` | `treat_as_success` |
+| 1 | `Unauthorized` | `never` |
+| 2 | `VetAlreadyRegistered` | `never` |
+| 3 | `VetNotFound` | `never` |
+| 4 | `LicenseAlreadyUsed` | `never` |
+| 5 | `VetNotVerified` | `after_state_change` |
+| 6 | `InputTooLong` | `never` |
+| 7 | `VetAlreadyVerified` | `treat_as_success` |
+| 8 | `StaleMigration` | `treat_as_success` |
+| 9 | `InvalidMigrationTarget` | `never` |
+| 10 | `InvalidPageLimit` | `never` |
+| 11 | `InvalidCursor` | `never` |
 
 ---
 
@@ -369,15 +279,15 @@ do not retry. Code 54 is recoverable by restarting from the first page.
 
 ```rust
 // Get error message in English
-let message = client.get_error_message(&3, &String::from_str(&env, "en"));
+let message = client.get_error_message(&24, &String::from_str(&env, "en"));
 // Returns: Some("Pet not found")
 
 // Get error message in Spanish
-let message = client.get_error_message(&3, &String::from_str(&env, "es"));
+let message = client.get_error_message(&24, &String::from_str(&env, "es"));
 // Returns: Some("Mascota no encontrada")
 
 // Get error message for unsupported language
-let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
+let message = client.get_error_message(&24, &String::from_str(&env, "fr"));
 // Returns: None
 ```
 
@@ -387,9 +297,9 @@ let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
 // Admin sets a custom error message
 client.set_error_message(
     &admin,
-    &100,
+    &31,
     &String::from_str(&env, "en"),
-    &String::from_str(&env, "Medication record not found in database")
+    &String::from_str(&env, "Veterinarian record not found in database")
 );
 ```
 
@@ -399,14 +309,14 @@ client.set_error_message(
 // Admin adds French translations
 client.set_error_message(
     &admin,
-    &3,
+    &24,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Animal de compagnie non trouvé")
 );
 
 client.set_error_message(
     &admin,
-    &160,
+    &25,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Quota de stockage dépassé")
 );
