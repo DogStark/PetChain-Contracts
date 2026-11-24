@@ -80,7 +80,7 @@ jobs:
           cargo install cargo-audit
           cd stellar-contracts
           cargo generate-lockfile
-          cargo audit
+          cargo audit --deny warnings
 
   sbom:
     name: SBOM and provenance
