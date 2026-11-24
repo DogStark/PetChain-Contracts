@@ -20,8 +20,7 @@ We apply security updates and bug fixes to the following active versions:
 
 Please submit all vulnerability reports privately using one of the following channels:
 
-* **Email:** [security@petchain.dog](mailto:security@petchain.dog) *(Update with your team's security email address)*
-* **Encrypted Reporting:** [Insert PGP Key or Security Portal Link if applicable]
+* **Email:** [security@petchain.dog](mailto:security@petchain.dog)
 
 ### What to Include in Your Report
 
