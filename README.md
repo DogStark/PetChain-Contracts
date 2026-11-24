@@ -578,3 +578,6 @@ MIT
 
 <!-- handsoff-issue-1492 -->
 - #1492: [Contracts] Add pedigree export with consented fields
+
+<!-- handsoff-issue-1640 -->
+- #1640: [Contracts] Insurance benefit section count bound (32) is not enforced at `create_enrollment_draft`
