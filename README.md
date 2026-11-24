@@ -578,3 +578,6 @@ MIT
 
 <!-- handsoff-issue-1492 -->
 - #1492: [Contracts] Add pedigree export with consented fields
+
+<!-- handsoff-issue-1479 -->
+- #1479: [Contracts] Add policy renewal offer and acceptance
