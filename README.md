@@ -581,3 +581,6 @@ MIT
 
 <!-- handsoff-issue-1640 -->
 - #1640: [Contracts] Insurance benefit section count bound (32) is not enforced at `create_enrollment_draft`
+
+<!-- handsoff-issue-1643 -->
+- #1643: [Contracts] `purge_deleted_records_bounded` does not emit a progress event — large purges are unobservable
