@@ -100,7 +100,7 @@ Rules:
 ### Duplicate-alert detection (Issue #1471)
 
 Creating an alert for a pet that already has an active alert is rejected with
-`DuplicateActiveAlert` and leaves state unchanged. The error carries the
+`DuplicateAlert` and leaves state unchanged. The error carries the
 existing alert ID so callers can link to it.
 
 Resolution path for changed circumstances:
@@ -176,7 +176,7 @@ policies are rejected at acceptance with `CoverageSnapshotTooLarge`.
 | Error | Meaning |
 |---|---|
 | `InvalidCursor` | Cursor is stale, malformed, or used with a different filter |
-| `DuplicateActiveAlert` | The pet already has an active alert |
+| `DuplicateAlert` | The pet already has an active alert |
 | `InvalidEnrollmentState` | Transition is not valid from the current state |
 | `PolicyVersionMismatch` | Decision bound to a stale policy version |
 | `CoverageSnapshotTooLarge` | Policy exceeds the snapshot item bound |

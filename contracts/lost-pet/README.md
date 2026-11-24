@@ -46,13 +46,13 @@ entries, so cursors remain valid across concurrent writes.
 of active alerts for the given region and status.
 
 - `page_size` is bounded to a fixed maximum; larger values are rejected with
-  `PageSizeOutOfRange` and zero is rejected as well.
+  `InvalidPageSize` and zero is rejected as well.
 - The returned cursor is **opaque**: callers must pass it back unmodified and
   must not parse or construct cursors themselves.
 - A cursor is bound to the index **generation** it was issued under. Any
   operation that changes the index generation (for example a region/status
   reindex) invalidates outstanding cursors; a stale cursor is rejected with
-  `CursorInvalid` rather than silently returning shifted results.
+  `InvalidCursor` rather than silently returning shifted results.
 - Iteration per call is bounded to `page_size` entries, so a single call can
   never scan the whole index.
 - A `None` cursor starts from the beginning of the index for that
@@ -62,7 +62,7 @@ of active alerts for the given region and status.
 
 An `ActiveAlertByPet(pet_id)` index tracks the currently active alert for a
 pet. While an earlier alert is active, a repeated alert for the same pet is
-rejected with `DuplicateActiveAlert`; the existing alert id is returned in the
+rejected with `DuplicateAlert`; the existing alert id is returned in the
 error payload so callers can link to it.
 
 Changed circumstances have a documented resolution path:
@@ -97,14 +97,19 @@ existing versioned key namespace and existing keys are not migrated in place.
 
 | Code | Meaning |
 | --- | --- |
-| `CellOutOfRange` | Provided cell id is outside the valid range |
-| `NotOwner` | Caller is not the pet owner |
-| `ConsentRequired` | Precise coordinates requested without consent |
-| `AlreadySet` | Cell already set for this pet (replay protection) |
-| `Expired` | Consent or alert has expired |
-| `PageSizeOutOfRange` | Requested page size is zero or above the maximum |
-| `CursorInvalid` | Cursor is malformed or bound to a stale generation |
-| `DuplicateActiveAlert` | An active alert already exists for this pet |
+| `AlreadyInitialized` | Contract has already been initialized |
+| `NotInitialized` | Contract has not been initialized |
+| `Unauthorized` | Caller is not permitted to perform this action |
+| `NotFound` | Requested alert does not exist |
+| `InvalidState` | Alert is not in a state that allows this transition |
+| `InvalidDeadline` | Deadline is invalid for this operation |
+| `TextTooLong` | A text field exceeds its maximum length |
+| `TooManySightings` | Sighting limit for this alert has been reached |
+| `InvalidVersion` | Stored storage version does not match the expected version |
+| `InvalidPageSize` | Requested page size is zero or above the maximum |
+| `InvalidCursor` | Cursor is malformed or bound to a stale generation |
+| `DuplicateAlert` | An active alert already exists for this pet |
+| `RegionTooLong` | Region value exceeds its maximum length |
 
 ### Events
 
