@@ -581,3 +581,6 @@ MIT
 
 <!-- handsoff-issue-1479 -->
 - #1479: [Contracts] Add policy renewal offer and acceptance
+
+<!-- handsoff-issue-1662 -->
+- #1662: [Contracts] `get_vet_treatment_history` and `get_vet_vaccination_history` share no test fixture — coverage gap
