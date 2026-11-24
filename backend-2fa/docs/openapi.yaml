@@ -5,51 +5,159 @@ info:
   description: Multi-tenant two-factor authentication, leaderboard, and admin API.
 
 paths:
+  /health:
+    get:
+      summary: Health check for the 2FA service and its subsystems
+      responses:
+        "200":
+          description: All subsystems healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReport"
+        "503":
+          description: One or more subsystems unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReport"
   /2fa/enable:
     post:
       summary: Enable two-factor authentication for a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnableTwoFactorRequest"
       responses:
         "200":
           description: 2FA setup details (secret, QR code, backup codes)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnableTwoFactorResponse"
   /2fa/disable:
     post:
       summary: Disable two-factor authentication for a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DisableTwoFactorRequest"
       responses:
         "200":
           description: Whether 2FA was disabled
   /2fa/verify:
     post:
       summary: Verify a TOTP token and activate 2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyTwoFactorRequest"
       responses:
         "200":
           description: Verification result
   /2fa/login:
     post:
       summary: Verify a TOTP token during login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginWithTwoFactorRequest"
       responses:
         "200":
           description: Login verification result
   /2fa/recover:
     post:
       summary: Recover account access using a backup code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecoverWithBackupRequest"
       responses:
         "200":
-          description: New secret and backup/recovery codes
+          description: New secret and backup/recovery codes. Response must not be cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            Pragma:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoverWithBackupResponse"
   /2fa/recovery-log:
     get:
       summary: Fetch the recovery-code usage audit log for a user
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
       responses:
         "200":
           description: List of recovery code usage entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RecoveryUsageLogEntry"
+  /2fa/audit-log/{user_id}:
+    get:
+      summary: Fetch the paginated 2FA audit log for a user
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Paginated 2FA audit log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLogEntry"
   /2fa/upgrade-algorithm:
     post:
       summary: Upgrade a user's TOTP HMAC algorithm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpgradeAlgorithmRequest"
       responses:
         "200":
           description: Upgrade result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpgradeAlgorithmResponse"
   /2fa/revoke-session:
     post:
       summary: Revoke a session by JWT ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeSessionRequest"
       responses:
         "200":
           description: Revocation result
@@ -103,3 +211,173 @@ paths:
       responses:
         "101":
           description: Switching Protocols (WebSocket upgrade)
+
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+  schemas:
+    HealthReport:
+      type: object
+      required: [healthy, subsystems]
+      properties:
+        healthy:
+          type: boolean
+        subsystems:
+          type: object
+          additionalProperties: true
+    EnableTwoFactorRequest:
+      type: object
+      required: [user_id, email]
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+        idempotency_key:
+          type: string
+          nullable: true
+    EnableTwoFactorResponse:
+      type: object
+      required: [secret, otpauth_uri, qr_code, backup_codes]
+      properties:
+        secret:
+          type: string
+        otpauth_uri:
+          type: string
+        qr_code:
+          type: string
+        backup_codes:
+          type: array
+          items:
+            type: string
+    VerifyTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+        token:
+          type: string
+    LoginWithTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+        token:
+          type: string
+    DisableTwoFactorRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+        token:
+          type: string
+    RecoverWithBackupRequest:
+      type: object
+      required: [user_id, backup_code]
+      properties:
+        user_id:
+          type: string
+        backup_code:
+          type: string
+    RecoverWithBackupResponse:
+      type: object
+      required: [new_secret, new_otpauth_uri, new_backup_codes, new_recovery_codes, enabled]
+      properties:
+        new_secret:
+          type: string
+        new_otpauth_uri:
+          type: string
+        new_backup_codes:
+          type: array
+          items:
+            type: string
+        new_recovery_codes:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+    UpgradeAlgorithmRequest:
+      type: object
+      required: [user_id, token]
+      properties:
+        user_id:
+          type: string
+        token:
+          type: string
+    UpgradeAlgorithmResponse:
+      type: object
+      required: [new_secret, new_otpauth_uri, new_qr_code, new_backup_codes, algorithm]
+      properties:
+        new_secret:
+          type: string
+        new_otpauth_uri:
+          type: string
+        new_qr_code:
+          type: string
+        new_backup_codes:
+          type: array
+          items:
+            type: string
+        algorithm:
+          type: string
+    RevokeSessionRequest:
+      type: object
+      properties:
+        session_id:
+          type: string
+          nullable: true
+        revoke_all:
+          type: boolean
+          default: false
+    RecoveryUsageLogEntry:
+      type: object
+      required: [id, user_id, code_index, used_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: string
+        code_index:
+          type: integer
+        used_at:
+          type: string
+        ip_address:
+          type: string
+          nullable: true
+    AuditLogEntry:
+      type: object
+      required: [id, user_id, event, timestamp, actor]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: string
+        event:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        actor:
+          type: string
+        metadata:
+          type: string
+          nullable: true
