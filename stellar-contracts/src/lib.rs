@@ -200,6 +200,11 @@ use soroban_sdk::{
     Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
+/// Shared page-size ceiling for view functions that scan an index (Issue #1647).
+pub const MAX_PAGE_SIZE: u32 = 100;
+/// Upper bound on entries in the overdue-vaccination due-date index (Issue #1647).
+pub const MAX_DUE_INDEX_ENTRIES: u32 = 2_000;
+
 // Bounded-module split (Issue #1146, phase 1): storage keys and value
 // types for the dispute-resolution domain live in `disputes.rs`. The
 // `pub use` keeps every type nameable exactly as before (`Dispute`,
@@ -1747,6 +1752,8 @@ pub enum MedicalKey {
     // Certificate lifecycle (Issue #X: cert_id, expiry, revocation)
     CertificateCount,
     CertificateLifecycle((u64, u64)), // (pet_id, vaccination_id) -> CertificateLifecycle
+    // Secondary index (Issue #1647): sorted Vec<(next_due_date, pet_id, vaccination_id)>
+    OverdueDueDateIndex,
 }
 
 #[contracttype]
@@ -4779,41 +4786,67 @@ impl PetChainContract {
         if limit == 0 {
             return Vec::new(&env);
         }
+        // Shared pagination policy: a single call never walks more than MAX_PAGE_SIZE results.
+        let limit = if limit > MAX_PAGE_SIZE { MAX_PAGE_SIZE } else { limit };
 
-        let pet_count = env
+        // Read only from the sorted due-date index (ascending by due date) and stop at the
+        // first entry that is not yet due, instead of scanning every pet's records.
+        let now = env.ledger().timestamp();
+        let index: Vec<(u64, u64, u64)> = env
             .storage()
             .instance()
-            .get::<DataKey, u64>(&DataKey::PetCount)
-            .unwrap_or(0);
+            .get(&MedicalKey::OverdueDueDateIndex)
+            .unwrap_or(Vec::new(&env));
 
         let mut overdue_pets = Vec::new(&env);
-        if pet_count == 0 {
-            return overdue_pets;
-        }
-
+        let mut seen: Map<u64, bool> = Map::new(&env);
         let mut skipped: u64 = 0;
 
-        for pet_id in 1..=pet_count {
-            if overdue_pets.len() >= limit {
+        for (due, pet_id, _vax_id) in index.iter() {
+            if due >= now || overdue_pets.len() >= limit {
                 break;
             }
-
-            let overdue = PetChainContract::get_overdue_vaccinations(env.clone(), pet_id);
+            if seen.contains_key(pet_id) {
+                continue;
+            }
+            seen.set(pet_id, true);
 
             let has_record = match &vet_address {
                 Some(vet) => Self::pet_has_vet_care_record(env.clone(), pet_id, vet.clone()),
-                None => true, // No filter, include all overdue pets
+                None => true,
             };
-
-            if !overdue.is_empty() && has_record {
-                if skipped < offset {
-                    skipped = skipped.saturating_add(1);
-                } else {
-                    overdue_pets.push_back(pet_id);
-                }
+            if !has_record {
+                continue;
+            }
+            if skipped < offset {
+                skipped = skipped.saturating_add(1);
+            } else {
+                overdue_pets.push_back(pet_id);
             }
         }
         overdue_pets
+    }
+
+    /// Inserts `(next_due_date, pet_id, vaccination_id)` into the sorted due-date index.
+    /// Bounded by `MAX_DUE_INDEX_ENTRIES` (Issue #1647).
+    fn due_index_insert(env: &Env, next_due_date: u64, pet_id: u64, vaccination_id: u64) {
+        let mut index: Vec<(u64, u64, u64)> = env
+            .storage()
+            .instance()
+            .get(&MedicalKey::OverdueDueDateIndex)
+            .unwrap_or(Vec::new(env));
+        if index.len() >= MAX_DUE_INDEX_ENTRIES {
+            panic_with_error!(env, ContractError::StorageQuotaExceeded);
+        }
+        let entry = (next_due_date, pet_id, vaccination_id);
+        let pos = match index.binary_search(entry.clone()) {
+            Ok(i) => i,
+            Err(i) => i,
+        };
+        index.insert(pos, entry);
+        env.storage()
+            .instance()
+            .set(&MedicalKey::OverdueDueDateIndex, &index);
     }
 
     // --- STATISTICS SNAPSHOT FOR GOVERNANCE REPORTING (Issue #828) ---
@@ -8706,6 +8739,9 @@ impl PetChainContract {
         env.storage()
             .instance()
             .set(&MedicalKey::VaccinationCount, &vaccine_id);
+
+        // Maintain the due-date index used by get_pets_overdue_vaccinations (Issue #1647)
+        Self::due_index_insert(&env, next_due_date, pet_id, vaccine_id);
 
         // Update indexes
         let pet_vax_count: u64 = env
