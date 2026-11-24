@@ -124,3 +124,72 @@ from the prior admin key. No other layout changes are required.
 Public ABI adds `pause`, `unpause`, and `rotate_pauser` entry points plus the
 `Paused`, `Unpaused`, and `PauserRotated` events. Update compatibility fixtures
 when the ABI snapshot changes.
+
+## Two-Step Ownership Transfer
+
+Ownership changes require explicit recipient acceptance. The current owner
+proposes a recipient; ownership only moves once that recipient accepts. This
+prevents transfers to wrong or unreachable addresses.
+
+### Flow
+
+- `propose_owner(caller, new_owner)` — requires `caller == current owner`;
+  stores a pending transfer `{ new_owner, expires_at }` and emits
+  `OwnershipProposed { current, new_owner, expires_at }`. Proposing while a
+  pending transfer exists overwrites it (bounded to a single pending slot).
+- `accept_owner(caller)` — requires `caller == pending.new_owner` and
+  `ledger_time <= pending.expires_at`. On success, the prior owner is appended
+  to the owner history, ownership moves to `caller`, the pending slot is
+  cleared, and `OwnershipTransferred { previous, new_owner }` is emitted.
+- `cancel_owner_transfer(caller)` — requires `caller == current owner`; clears
+  the pending slot and emits `OwnershipTransferCancelled { current }`.
+- `owner_history()` — read-only view returning the bounded, append-only list of
+  prior owners (oldest first).
+
+### Expiry
+
+Pending transfers carry an `expires_at` ledger timestamp. Proposals with a
+zero or past deadline are rejected with `Error::InvalidDeadline`. Accepting an
+expired proposal returns `Error::TransferExpired` and leaves state unchanged;
+re-proposing replaces the expired slot. This bounds how long a stale proposal
+can be replayed.
+
+### Bounded history
+
+Owner history is append-only and capped at `MAX_OWNER_HISTORY = 32` entries.
+When the cap is reached the oldest entry is dropped, keeping persistent state
+growth bounded while retaining a verifiable recent chain of prior owners.
+
+### Authorization
+
+Only the current owner may propose or cancel; only the nominated recipient may
+accept. Unauthorized callers receive `Error::Unauthorized` and no state is
+mutated. Replay of an already-accepted or cancelled proposal fails because the
+pending slot is cleared on success.
+
+### Error codes (ownership)
+
+| Code | Name               | Meaning                                        |
+|------|--------------------|------------------------------------------------|
+| 8    | `NoPendingTransfer`| No pending ownership transfer to act on        |
+| 9    | `TransferExpired`  | Pending transfer deadline has passed           |
+| 10   | `InvalidDeadline`  | Proposed deadline is zero or in the past       |
+
+### Events (ownership)
+
+- `OwnershipProposed { current, new_owner, expires_at }`
+- `OwnershipTransferred { previous, new_owner }`
+- `OwnershipTransferCancelled { current }`
+
+### Storage version
+
+Ownership adds a pending-transfer key and an owner-history key under the
+existing storage-version key; the version is bumped and a migration seeds the
+history with the current owner. No other layout changes are required.
+
+### Compatibility
+
+Public ABI adds `propose_owner`, `accept_owner`, `cancel_owner_transfer`, and
+`owner_history` entry points plus the `OwnershipProposed`,
+`OwnershipTransferred`, and `OwnershipTransferCancelled` events. Update
+compatibility fixtures when the ABI snapshot changes.
