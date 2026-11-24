@@ -578,3 +578,6 @@ MIT
 
 <!-- handsoff-issue-1492 -->
 - #1492: [Contracts] Add pedigree export with consented fields
+
+<!-- handsoff-issue-1653 -->
+- #1653: [Contracts] Error code 172 is assigned to three different errors in CHANGELOG — discriminant collision
