@@ -399,6 +399,10 @@ pub struct GetRecoveryLogQuery {
 ///     todo!()
 /// }
 /// ```
+///
+/// The multi-tenant flows in [`MultiTenantHandlers`](super::tenant::MultiTenantHandlers)
+/// duplicate this logic rather than sharing it. Any security fix here must be
+/// checked against that implementation too.
 pub struct TwoFactorHandlers {
     pub(crate) limiter: Arc<dyn RateLimiter>,
     pub(crate) store: Arc<dyn TwoFactorStore>,
