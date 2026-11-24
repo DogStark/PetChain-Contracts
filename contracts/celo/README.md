@@ -193,3 +193,66 @@ Public ABI adds `propose_owner`, `accept_owner`, `cancel_owner_transfer`, and
 `owner_history` entry points plus the `OwnershipProposed`,
 `OwnershipTransferred`, and `OwnershipTransferCancelled` events. Update
 compatibility fixtures when the ABI snapshot changes.
+
+## Celo Cross-Chain Pet Identifier Mapping
+
+An explicit mapping from Celo pet identifiers to canonical PetChain identifiers
+lets off-chain Celo records resolve to a single canonical pet. Both directions
+are stored so uniqueness can be enforced in either direction.
+
+### Mapping rules
+
+- `set_pet_mapping(caller, celo_pet_id, canonical_pet_id)` — requires the
+  `RegistryAdmin` role (preserving existing authorization conventions). Stores
+  `celo_pet_id -> canonical_pet_id` and `canonical_pet_id -> celo_pet_id` and
+  emits `PetMappingSet { celo_pet_id, canonical_pet_id }`.
+- A `celo_pet_id` maps to at most one canonical id. Re-mapping a `celo_pet_id`
+  to a *different* canonical id returns `Error::MappingConflict` and leaves
+  state unchanged; re-mapping to the *same* canonical id is an idempotent no-op.
+- A `canonical_pet_id` cannot be double-mapped to a different `celo_pet_id`;
+  this also returns `Error::MappingConflict` without mutating state.
+- `revoke_pet_mapping(caller, celo_pet_id)` — requires `RegistryAdmin`; clears
+  both directions of the mapping and emits `PetMappingRevoked { celo_pet_id,
+  canonical_pet_id }`. Revoking a missing mapping returns
+  `Error::MappingNotFound` and leaves state unchanged (explicit error, not a
+  silent no-op).
+- `canonical_for(celo_pet_id)` / `celo_for(canonical_pet_id)` — read-only
+  lookups returning `Option<u64>`; missing entries return `None`.
+
+### Bounds
+
+Identifiers are `u64`; the zero id is rejected with `Error::InvalidPetId` to
+keep the mapping space well-defined. Each mapping occupies exactly two storage
+slots, so persistent state growth is bounded by the number of live mappings and
+fully reclaimed on revocation. No iteration over the mapping set is performed.
+
+### Authorization
+
+Only `RegistryAdmin` may set or revoke mappings. Unauthorized callers receive
+`Error::Unauthorized` and no state is mutated. While the contract is paused,
+set/revoke return `Error::Paused` and perform no writes; reads remain available.
+
+### Error codes (mapping)
+
+| Code | Name              | Meaning                                          |
+|------|-------------------|--------------------------------------------------|
+| 11   | `MappingConflict` | Id already mapped to a different counterpart     |
+| 12   | `MappingNotFound` | No mapping exists for the supplied id            |
+| 13   | `InvalidPetId`    | Zero/invalid pet identifier supplied             |
+
+### Events (mapping)
+
+- `PetMappingSet { celo_pet_id, canonical_pet_id }`
+- `PetMappingRevoked { celo_pet_id, canonical_pet_id }`
+
+### Storage version
+
+Mapping keys are added under the existing storage-version key; the version is
+bumped and a migration initializes the (empty) mapping tables. No other layout
+changes are required.
+
+### Compatibility
+
+Public ABI adds `set_pet_mapping`, `revoke_pet_mapping`, `canonical_for`, and
+`celo_for` entry points plus the `PetMappingSet` and `PetMappingRevoked`
+events. Update compatibility fixtures when the ABI snapshot changes.
