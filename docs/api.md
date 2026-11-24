@@ -99,24 +99,24 @@ Rules:
 
 ### Duplicate-alert detection (Issue #1471)
 
-Creating an alert for a pet that already has an active alert is rejected with
-`DuplicateActiveAlert` and leaves state unchanged. The error carries the
-existing alert ID so callers can link to it.
+Calling `create_alert` for an owner and `pet_name` that already have an active
+alert is rejected with `DuplicateAlert` and leaves state unchanged.
 
-Resolution path for changed circumstances:
+Resolution path for changed circumstances (`contracts/lost-pet`):
 
-- `link_alert_to_existing(pet_id, existing_alert_id, new_details)` — the pet
-  owner (or an admin) may attach updated details to the existing active alert
-  instead of creating a duplicate. This emits an `AlertLinked` event and does
-  not create a new index entry.
-- `resolve_alert(alert_id)` — the owner or an admin resolves the active alert;
-  once resolved, a new alert for the same pet may be created.
-- `supersede_alert(alert_id, new_details)` — the owner or an admin replaces an
-  active alert with a new one in a single call. The old alert is resolved and
-  the new alert is indexed; both transitions emit events.
+- `resolve_alert(actor, id)`, `withdraw_alert(actor, id)`, `expire_alert(actor, id)`
+  — close the existing active alert. Once it is no longer active, a new alert
+  for the same pet may be created with `create_alert`.
+- `create_linked_alert(owner, resolver, pet_name, last_seen, region, deadline, supersedes)`
+  — creates a replacement alert in a single call. `supersedes` must be the id
+  of the owner's active alert for the same `pet_name`. That alert is resolved,
+  the new alert's `linked_to` is set to `supersedes`, and `AlertClosed` and
+  `AlertLinked` events are emitted alongside `AlertCreated`.
 
-All three entrypoints require authorization (pet owner or admin); unauthorized
-callers receive `Unauthorized` and no state is modified.
+`create_alert` and `create_linked_alert` require the `owner` to authorize the
+call. `create_linked_alert` returns `Unauthorized` if `supersedes` belongs to
+another owner, and `InvalidState` if it is not active or names a different
+pet. Failed calls leave state unchanged.
 
 ---
 
@@ -168,15 +168,12 @@ policies are rejected at acceptance with `CoverageSnapshotTooLarge`.
 | `EnrollmentReviewStarted` | Review begins |
 | `EnrollmentAccepted` | An application is accepted (snapshot stored) |
 | `EnrollmentDeclined` | An application is declined |
-| `AlertLinked` | Details are linked to an existing active alert |
-| `AlertSuperseded` | An active alert is replaced by a new one |
 
 ### New error codes
 
 | Error | Meaning |
 |---|---|
 | `InvalidCursor` | Cursor is stale, malformed, or used with a different filter |
-| `DuplicateActiveAlert` | The pet already has an active alert |
 | `InvalidEnrollmentState` | Transition is not valid from the current state |
 | `PolicyVersionMismatch` | Decision bound to a stale policy version |
 | `CoverageSnapshotTooLarge` | Policy exceeds the snapshot item bound |

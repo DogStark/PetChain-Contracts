@@ -60,20 +60,19 @@ of active alerts for the given region and status.
 
 ### Duplicate-alert detection
 
-An `ActiveAlertByPet(pet_id)` index tracks the currently active alert for a
-pet. While an earlier alert is active, a repeated alert for the same pet is
-rejected with `DuplicateActiveAlert`; the existing alert id is returned in the
-error payload so callers can link to it.
+While an owner has an active alert for a `pet_name`, `create_alert` with the
+same `(owner, pet_name)` is rejected with `DuplicateAlert`; state is unchanged.
 
-Changed circumstances have a documented resolution path:
+Changed circumstances have two resolution paths:
 
-1. The owner resolves or cancels the earlier alert (`resolve_alert`), which
-   clears `ActiveAlertByPet(pet_id)` and bumps the index generation.
-2. The owner may then submit a new alert for the same pet.
+1. Close the earlier alert with `resolve_alert`, `withdraw_alert` or
+   `expire_alert`, then call `create_alert` for the same pet.
+2. Call `create_linked_alert(owner, resolver, pet_name, last_seen, region, deadline, supersedes)`.
+   `supersedes` must be the owner's active alert for the same `pet_name`. That
+   alert is resolved, the new alert's `linked_to` is set to `supersedes`, and
+   `AlertClosed` and `AlertLinked` events are emitted.
 
-Linking instead of rejecting is not supported implicitly: a caller that wants
-to reference the earlier alert must resolve it first, keeping the index
-consistent and bounded to at most one active alert per pet.
+Either path keeps at most one active alert per `(owner, pet_name)` in the index.
 
 ### Storage layout (alerts)
 
@@ -104,7 +103,7 @@ existing versioned key namespace and existing keys are not migrated in place.
 | `Expired` | Consent or alert has expired |
 | `PageSizeOutOfRange` | Requested page size is zero or above the maximum |
 | `CursorInvalid` | Cursor is malformed or bound to a stale generation |
-| `DuplicateActiveAlert` | An active alert already exists for this pet |
+| `DuplicateAlert` | An active alert already exists for this owner and pet name |
 
 ### Events
 
