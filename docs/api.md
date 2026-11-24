@@ -63,8 +63,9 @@ Rules:
 - Existing valid callers (page sizes within `[1, 100]`) remain fully
   compatible.
 
-This policy applies to the pet, record, vet, consent, custody, activity, and
-lost-pet alert paginated reads.
+This policy applies to the pet, record, vet, consent, custody, and activity
+paginated reads. The lost-pet alert index (`list_active_alerts`) uses its own
+tighter bound of `1..=32` with no default; see the Lost-Pet Alert Index section.
 
 ---
 
@@ -78,13 +79,14 @@ Returns a stable, cursor-paginated index of lost-pet alerts filtered by
 | Bound | Value | Meaning |
 |---|---|---|
 | Minimum page size | `1` | Smallest accepted page size |
-| Default page size | `20` | Used when the caller omits `page_size` |
-| Maximum page size | `100` | Largest accepted page size |
+| Default page size | none | `page_size` is required; there is no default |
+| Maximum page size | `32` | Largest accepted page size (`MAX_PAGE_SIZE` in `contracts/lost-pet`) |
 
 Rules:
 
-- Page sizes outside `[1, 100]` return the shared deterministic
-  `InvalidPageSize` error (see the pagination policy above).
+- Page sizes outside `[1, 32]` return the deterministic `InvalidPageSize`
+  error. This is a lost-pet-specific bound and is stricter than the general
+  pagination policy above (`[1, 100]`); clients must not assume 100.
 - The cursor is opaque and must be passed back unchanged. A `null`/absent
   cursor starts from the beginning of the index.
 - Cursors are bound to the `(region, status)` filter they were issued for.
