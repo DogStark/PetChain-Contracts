@@ -581,3 +581,6 @@ MIT
 
 <!-- handsoff-issue-1493 -->
 - #1493: [Contracts] Add Celo registry pet profile versioning
+
+<!-- handsoff-issue-1495 -->
+- #1495: [Contracts] Add Celo medical record amendment chain
