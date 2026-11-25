@@ -463,3 +463,113 @@ fn inbreeding_threshold_is_part_of_eligibility() {
         err(ContractError::InbreedingThresholdExceeded)
     );
 }
+
+// ---- property-based tests: reservation conflicts (issue #1581) -----------
+//
+// Invariant: recording the same (sire_id, dam_id, breeding_date) mating
+// multiple times is idempotent — the same record id is returned and no
+// duplicate entry is created.
+
+#[test]
+fn prop_duplicate_mating_is_idempotent() {
+    // Property: ∀ valid mating (sire, dam, date), recording it twice returns
+    // the same record id and does not change the breeding count.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+
+    let id1 = c.client.record_mating(&c.owner, &s, &d, &ADULT, &notes(&c.env));
+    let id2 = c.client.record_mating(&c.owner, &s, &d, &ADULT, &notes(&c.env));
+    assert_eq!(id1, id2, "duplicate mating must return the same record id");
+
+    // Breeding count must not double-count the replay.
+    let count = c.client.get_breeding_count(&s);
+    assert_eq!(count, 1, "duplicate mating must not increment the breeding count");
+}
+
+#[test]
+fn prop_different_dates_produce_distinct_records() {
+    // Property: two matings for the same pair but different dates are distinct
+    // reservations and produce different record ids.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+
+    let id1 = c.client.record_mating(&c.owner, &s, &d, &ADULT, &notes(&c.env));
+    // Advance ledger past sire cooldown before recording a second mating.
+    c.env.ledger().with_mut(|l| l.timestamp = NOW + SIRE_COOLDOWN + 1);
+    let id2 = c.client.record_mating(
+        &c.owner, &s, &d, &(ADULT + SIRE_COOLDOWN + 1), &notes(&c.env),
+    );
+    assert_ne!(id1, id2, "matings on different dates must have different record ids");
+}
+
+#[test]
+fn prop_duplicate_idempotency_across_multiple_replays() {
+    // Property: replaying the same mating N times always returns id₀.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+    let id0 = c.client.record_mating(&c.owner, &s, &d, &ADULT, &notes(&c.env));
+
+    for _ in 0..5 {
+        let id = c.client.record_mating(&c.owner, &s, &d, &ADULT, &notes(&c.env));
+        assert_eq!(id, id0, "every replay must return the original record id");
+    }
+    assert_eq!(c.client.get_breeding_count(&s), 1);
+}
+
+// ---- property-based tests: exception approval thresholds (issue #1581) ---
+//
+// Invariant: register_breeding_pair rejects any mating whose COI meets or
+// exceeds max_coi_bp, and accepts it when max_coi_bp is strictly greater.
+
+#[test]
+fn prop_coi_threshold_at_zero_always_rejects() {
+    // Property: max_coi_bp = 0 blocks every pair because COI ≥ 0 always.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+    let result = c.client.try_register_breeding_pair(&s, &d, &ADULT, &notes(&c.env), &0);
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        err(ContractError::InbreedingThresholdExceeded),
+        "max_coi_bp=0 must reject every pair"
+    );
+}
+
+#[test]
+fn prop_coi_threshold_at_max_always_accepts_unrelated_pair() {
+    // Property: max_coi_bp = 10_000 (100%) accepts any pair with COI < 10_000.
+    // An unrelated pair (freshly registered, no common ancestors) has COI = 0.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+    let result = c.client.try_register_breeding_pair(&s, &d, &ADULT, &notes(&c.env), &10_000);
+    assert!(
+        result.is_ok(),
+        "max_coi_bp=10_000 must accept an unrelated pair, got {result:?}"
+    );
+}
+
+#[test]
+fn prop_threshold_boundary_sweep_for_unrelated_pair() {
+    // Property: for an unrelated pair (COI = 0), any max_coi_bp > 0 accepts
+    // while max_coi_bp = 0 rejects.
+    // We sweep representative thresholds to cover the boundary systematically.
+    for max_coi_bp in [1u32, 10, 100, 500, 1_000, 5_000, 9_999, 10_000] {
+        let c = setup();
+        let (s, d) = (sire(&c), dam(&c));
+        let result = c
+            .client
+            .try_register_breeding_pair(&s, &d, &ADULT, &notes(&c.env), &max_coi_bp);
+        assert!(
+            result.is_ok(),
+            "max_coi_bp={max_coi_bp} should accept an unrelated pair (COI=0)"
+        );
+    }
+    // Boundary at zero must reject.
+    let c = setup();
+    let (s, d) = (sire(&c), dam(&c));
+    let result = c.client.try_register_breeding_pair(&s, &d, &ADULT, &notes(&c.env), &0);
+    assert_eq!(
+        result.unwrap_err().unwrap(),
+        err(ContractError::InbreedingThresholdExceeded),
+        "max_coi_bp=0 must reject at the strict-lower boundary"
+    );
+}

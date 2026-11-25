@@ -2,6 +2,15 @@
 members = [
     "stellar-contracts",
     "backend-2fa",
+    # Soroban contract packages added to workspace (issues #1583, #1584).
+    # Each package now has its own Cargo.toml so `cargo test --workspace`
+    # builds and tests them together with the rest of the project.
+    "contracts/adoption",
+    "contracts/foster",
+    "contracts/lost-pet",
+    "contracts/medication",
+    "contracts/passport",
+    "contracts/soroban",
 ]
 resolver = "2"
 
