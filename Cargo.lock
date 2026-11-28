@@ -3079,6 +3079,7 @@ name = "petchain-stellar"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "serde_json",
  "soroban-sdk",
 ]
 

@@ -206,7 +206,7 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_vet_stats` | Returns vet treatment/vaccination statistics |
 | `get_vet_treatment_history` | Returns paginated treatment history for a vet |
 | `get_vet_vaccination_history` | Returns paginated vaccination history for a vet |
-| `get_pets_overdue_vaccinations` | Returns pet IDs with overdue vaccinations |
+| `get_pets_overdue_vaccinations` | Returns pet IDs with overdue vaccinations. Reads a sorted due-date index (no full pet scan); `limit` is capped at 100 per page |
 | `get_admins` | Returns list of admin addresses |
 | `get_admin_threshold` | Returns multisig approval threshold |
 | `get_verified_vets` | Returns paginated list of verified vets |

@@ -6,6 +6,9 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+budget-tests = []
+
 [dependencies]
 soroban-sdk = "21.7.7"
 

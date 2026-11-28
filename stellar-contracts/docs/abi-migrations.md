@@ -60,6 +60,19 @@ the impact on off-chain consumers and any required data migration.
 
 ## Log
 
+### 2026-11-23 — Governance proposer cancellation (#1649)
+
+**New public ABI (additive):** `cancel_proposal`, `veto_proposal`,
+`get_proposal_veto_count`, and `has_admin_vetoed`; new event structs
+`ProposalCancelledEvent` and `ProposalVetoedEvent`; new append-only errors
+`ProposalVetoed` (86, restoring the previously published code),
+`ProposalCancelled` (228), `NotProposalProposer` (229), and
+`CancellationWindowClosed` (230). `ProposalState` gains the terminal
+`Cancelled` variant at the end of the enum. No existing method signature,
+stored struct layout, error discriminant, or storage key changes. No migration
+or storage-schema version bump is required. See
+`docs/governance-cancellation.md`.
+
 ### 2026-10-20 — Insurance benefit controls (#1473–#1475)
 
 **New public ABI (additive):** `set_condition_coverage`,

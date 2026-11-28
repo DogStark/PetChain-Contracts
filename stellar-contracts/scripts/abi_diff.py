@@ -103,6 +103,120 @@ def _type_name(entry):
     return entry
 
 
+def _event_name(entry):
+    """Extract the event name from an event snapshot line.
+
+    Supports forms like ``Event::Foo { ... }``, ``Foo { ... }``,
+    ``Foo(...)``, and plain ``Foo``. Returns the bare event name.
+    """
+    m = re.match(r"(?:\w+::)?(\w+)", entry)
+    if m:
+        return m.group(1)
+    return entry
+
+
+def _event_fields(entry):
+    """Parse the ordered field list of an event snapshot line.
+
+    Fields may be written as ``name: Type`` (struct-style, inside
+    ``{ ... }``) or as bare ``Type`` (tuple-style, inside ``( ... )``).
+    Returns a list of ``(name, type)`` tuples in declaration order.
+    For tuple-style fields the name is ``None``.
+    """
+    m = re.search(r"[{(](.*)[})]", entry)
+    if not m:
+        return []
+    body = m.group(1).strip()
+    if not body:
+        return []
+
+    fields = []
+    for raw in body.split(","):
+        field = raw.strip()
+        if not field:
+            continue
+        if ":" in field:
+            name, _, ftype = field.partition(":")
+            fields.append((name.strip(), ftype.strip()))
+        else:
+            fields.append((None, field))
+    return fields
+
+
+def _diff_event(old_entry, new_entry):
+    """Classify the change between two versions of the same event.
+
+    Returns a tuple ``(additive, breaking)`` where each is a list of
+    human-readable change descriptions.
+
+    Rules:
+      * Appended field(s) → additive (index-based consumers must update).
+      * Removed field, renamed field, changed field type, or reordered
+        field → breaking.
+    """
+    additive = []
+    breaking = []
+
+    old_fields = _event_fields(old_entry)
+    new_fields = _event_fields(new_entry)
+
+    # Name-based comparison (struct-style fields).
+    old_named = {name: ftype for name, ftype in old_fields if name is not None}
+    new_named = {name: ftype for name, ftype in new_fields if name is not None}
+
+    if old_named or new_named:
+        old_order = [name for name, _ in old_fields if name is not None]
+        new_order = [name for name, _ in new_fields if name is not None]
+
+        for name in old_order:
+            if name not in new_named:
+                breaking.append(
+                    f"{old_entry}  →  {new_entry}  (field '{name}' removed)"
+                )
+            elif old_named[name] != new_named[name]:
+                breaking.append(
+                    f"{old_entry}  →  {new_entry}  "
+                    f"(field '{name}' type changed: "
+                    f"{old_named[name]} → {new_named[name]})"
+                )
+
+        for name in new_order:
+            if name not in old_named:
+                additive.append(
+                    f"{old_entry}  →  {new_entry}  "
+                    f"(field '{name}' appended; index-based consumers must update)"
+                )
+
+        # Reorder detection: compare relative order of common fields.
+        common_old = [n for n in old_order if n in new_named]
+        common_new = [n for n in new_order if n in old_named]
+        if common_old != common_new:
+            breaking.append(
+                f"{old_entry}  →  {new_entry}  (fields reordered)"
+            )
+        return additive, breaking
+
+    # Tuple-style (positional) fields: compare by position and type.
+    for idx, (_, old_type) in enumerate(old_fields):
+        if idx >= len(new_fields):
+            breaking.append(
+                f"{old_entry}  →  {new_entry}  (field #{idx} removed)"
+            )
+        elif new_fields[idx][1] != old_type:
+            breaking.append(
+                f"{old_entry}  →  {new_entry}  "
+                f"(field #{idx} type changed: {old_type} → {new_fields[idx][1]})"
+            )
+
+    for idx in range(len(old_fields), len(new_fields)):
+        additive.append(
+            f"{old_entry}  →  {new_entry}  "
+            f"(field #{idx} appended; index-based consumers must update)"
+        )
+
+    return additive, breaking
+
+
 def diff_snapshots(old_path, new_path):
     """Compare two ABI snapshots and return a structured diff.
 
@@ -154,8 +268,39 @@ def diff_snapshots(old_path, new_path):
                         f"{old_sig}  →  {new_sig}"
                     )
 
+        elif category == "events":
+            # Events are keyed by event name; compare fields by name
+            # and position to distinguish additive appends from
+            # breaking removals/renames/type changes/reorders.
+            old_by_name = {}
+            for entry in old_entries:
+                old_by_name[_event_name(entry)] = entry
+
+            new_by_name = {}
+            for entry in new_entries:
+                new_by_name[_event_name(entry)] = entry
+
+            added_names = set(new_by_name.keys()) - set(old_by_name.keys())
+            removed_names = set(old_by_name.keys()) - set(new_by_name.keys())
+            common_names = set(old_by_name.keys()) & set(new_by_name.keys())
+
+            for name in sorted(added_names):
+                result["additive"]["events"].append(new_by_name[name])
+
+            for name in sorted(removed_names):
+                result["breaking"]["events"].append(old_by_name[name])
+
+            for name in sorted(common_names):
+                old_entry = old_by_name[name]
+                new_entry = new_by_name[name]
+                if old_entry == new_entry:
+                    continue
+                additive, breaking = _diff_event(old_entry, new_entry)
+                result["additive"]["events"].extend(additive)
+                result["breaking"]["events"].extend(breaking)
+
         else:
-            # Events, errors, types: compare by full entry text.
+            # Errors, types: compare by full entry text.
             # For errors, normalise by variant name (ignore discriminant).
             if category == "errors":
                 old_keys = {_error_name(e): e for e in old_entries}
