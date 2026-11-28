@@ -223,6 +223,12 @@ jobs:
             python3 scripts/check_error_compat.py
           fi
 
+      # Fails if docs/error-codes.md drifts from error-codes.json (Issue #1593).
+      # Fix with: python3 stellar-contracts/scripts/generate_error_docs.py
+      - name: Check error code docs match error-codes.json
+        working-directory: stellar-contracts
+        run: python3 scripts/generate_error_docs.py --check
+
   coverage:
     runs-on: ubuntu-latest
     steps:

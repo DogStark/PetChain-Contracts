@@ -49,6 +49,7 @@ Additional languages can be added by admins using the `set_error_message` functi
 
 ---
 
+<!-- BEGIN GENERATED ERROR CODES: stellar-contracts/scripts/generate_error_docs.py -->
 ## Error Code Reference
 
 ### Authorization & Admin Errors (1-20)
@@ -604,15 +605,15 @@ Source: `stellar-contracts/contracts/pet-transfer-adoption/src/vet_registry.rs`
 
 ```rust
 // Get error message in English
-let message = client.get_error_message(&3, &String::from_str(&env, "en"));
+let message = client.get_error_message(&24, &String::from_str(&env, "en"));
 // Returns: Some("Pet not found")
 
 // Get error message in Spanish
-let message = client.get_error_message(&3, &String::from_str(&env, "es"));
+let message = client.get_error_message(&24, &String::from_str(&env, "es"));
 // Returns: Some("Mascota no encontrada")
 
 // Get error message for unsupported language
-let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
+let message = client.get_error_message(&24, &String::from_str(&env, "fr"));
 // Returns: None
 ```
 
@@ -622,9 +623,9 @@ let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
 // Admin sets a custom error message
 client.set_error_message(
     &admin,
-    &100,
+    &31,
     &String::from_str(&env, "en"),
-    &String::from_str(&env, "Medication record not found in database")
+    &String::from_str(&env, "Veterinarian record not found in database")
 );
 ```
 
@@ -634,14 +635,14 @@ client.set_error_message(
 // Admin adds French translations
 client.set_error_message(
     &admin,
-    &3,
+    &24,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Animal de compagnie non trouvé")
 );
 
 client.set_error_message(
     &admin,
-    &160,
+    &25,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Quota de stockage dépassé")
 );
