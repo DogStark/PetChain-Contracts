@@ -285,7 +285,9 @@ where
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let blocked = req
             .peer_addr()
-            .map(|addr| self.store.check(addr.ip()) == IpAccessDecision::Blocked)
+            // Dual-stack sockets surface IPv4 peers as `::ffff:a.b.c.d`; map them
+            // back to IPv4 so IPv4 block rules still match.
+            .map(|addr| self.store.check(addr.ip().to_canonical()) == IpAccessDecision::Blocked)
             .unwrap_or(false);
 
         if blocked {
