@@ -207,6 +207,7 @@ impl LostPetContract {
             version: STORAGE_VERSION,
             admin,
             next_id: 1,
+            index_generation: 0,
         };
         env.storage().persistent().set(&config_key(&env), &cfg);
         Ok(())
