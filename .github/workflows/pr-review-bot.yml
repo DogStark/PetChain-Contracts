@@ -1,8 +1,11 @@
-name: PR Review Bot
+name: Stellar Contracts CI
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - 'stellar-contracts/**'
+      - '.github/workflows/pr-review-bot.yml'
 
 permissions:
   pull-requests: write
@@ -41,5 +44,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ All checks passed! Code looks good.'
+              body: '✅ stellar-contracts: `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test` passed. This is a CI status check, not a code review.'
             })
