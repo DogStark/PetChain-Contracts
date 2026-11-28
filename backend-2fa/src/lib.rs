@@ -25,7 +25,8 @@ pub use content_type_guard::ContentTypeGuard;
 pub use db::PostgresTwoFactorStore;
 pub use db::{
     select_secret_provider, AwsSecretsManagerProvider, EnvSecretProvider, PoolStats,
-    PostgresFlaggedScoreStore, PostgresIpAccessStore, SecretProvider,
+    PostgresAdoptionCaseAuditStore, PostgresFlaggedScoreStore, PostgresIpAccessStore,
+    SecretProvider,
 };
 pub use error::{ApiError, ErrorResponseMiddleware, NoCacheMiddleware};
 pub use handlers::{

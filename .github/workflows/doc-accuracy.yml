@@ -1,0 +1,33 @@
+name: Doc Accuracy
+
+# Catches docs drifting from the contract (Issue #1598). Every backticked
+# alert entrypoint named in the lost-pet docs must exist as a `pub fn` in the
+# lost-pet contract source. This is a text check, not a compile or test run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  lost-pet-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check documented alert functions exist in lost-pet contract
+        run: |
+          set -euo pipefail
+          src=contracts/lost-pet/src/lib.rs
+          status=0
+          for name in $(grep -ohE '`[a-z][a-z_]*_alerts?[a-z_]*[`(]' docs/api.md contracts/lost-pet/README.md | tr -d '`(' | sort -u); do
+            if ! grep -qE "pub fn ${name}[(<]" "$src"; then
+              echo "::error::documented function '${name}' has no matching 'pub fn' in ${src}"
+              status=1
+            fi
+          done
+          exit $status

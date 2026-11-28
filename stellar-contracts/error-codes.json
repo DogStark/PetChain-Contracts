@@ -58,6 +58,7 @@
     { "code": 45, "name": "QuorumNotMet", "retry": "after_state_change" },
     { "code": 46, "name": "RateLimitExceeded", "retry": "backoff" },
     { "code": 47, "name": "ProposalNotFound", "retry": "never" },
+    { "code": 86, "name": "ProposalVetoed", "retry": "never" },
     { "code": 160, "name": "AlreadyDeleted", "retry": "treat_as_success" },
     { "code": 161, "name": "RecordAlreadyDeleted", "retry": "treat_as_success" },
     { "code": 162, "name": "RetentionPeriodNotMet", "retry": "after_state_change" },
@@ -125,7 +126,10 @@
     { "code": 224, "name": "EnrollmentSnapshotTooLarge", "retry": "never" },
     { "code": 225, "name": "InsurancePolicyInactive", "retry": "after_state_change" },
     { "code": 226, "name": "InsurancePolicyNotFound", "retry": "never" },
-    { "code": 227, "name": "BenefitClaimLimitPerPetReached", "retry": "never" }
+    { "code": 227, "name": "BenefitClaimLimitPerPetReached", "retry": "never" },
+    { "code": 228, "name": "ProposalCancelled", "retry": "treat_as_success" },
+    { "code": 229, "name": "NotProposalProposer", "retry": "never" },
+    { "code": 230, "name": "CancellationWindowClosed", "retry": "never" }
    ]
   },
   {

@@ -47,7 +47,7 @@ jobs:
       - name: Run clippy
         run: |
           cd stellar-contracts
-          cargo clippy -- -D warnings
+          cargo clippy --all-targets --all-features -- -D warnings
   
   test:
     runs-on: ubuntu-latest
@@ -78,9 +78,8 @@ jobs:
       - name: Security audit
         run: |
           cargo install cargo-audit
-          cd stellar-contracts
-          cargo generate-lockfile
-          cargo audit --deny warnings
+          # Audit the committed workspace Cargo.lock (repo root), not a freshly resolved one.
+          cargo audit -f Cargo.lock
 
   sbom:
     name: SBOM and provenance

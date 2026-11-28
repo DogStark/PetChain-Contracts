@@ -7,6 +7,7 @@
 //! [`AuthenticatedAdmin`] is defined in [`super::auth`] and re-exported here
 //! for convenience.
 use crate::dead_letter::DlqEntry;
+use crate::error::ApiError;
 use crate::ip_access::{IpAccessEntry, IpAccessStore, IpListType};
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore};
 use crate::rate_limiter::UserQuotaStore;
@@ -123,7 +124,31 @@ pub struct AdoptionCaseAuditPage {
     pub total: u64,
 }
 
-/// In-memory store for adoption case audit transitions.
+/// Storage for adoption case audit transitions. Implemented for
+/// `Mutex<AdoptionCaseAuditStore>` (in-memory, test/demo only) and
+/// [`crate::db::PostgresAdoptionCaseAuditStore`] (persists across restarts).
+pub trait AdoptionCaseAuditBackend: Send + Sync {
+    /// Record a transition. Returns the assigned event id.
+    fn record(
+        &self,
+        case_id: &str,
+        transition: &str,
+        actor: &str,
+        timestamp: u64,
+    ) -> Result<u64, String>;
+
+    /// Paginated audit view for a single case, ordered by event id ascending.
+    fn page(
+        &self,
+        case_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<AdoptionCaseAuditPage, String>;
+}
+
+/// In-memory store for adoption case audit transitions (for testing/demo
+/// purposes). Entries are lost on process restart — use
+/// `PostgresAdoptionCaseAuditStore` for persistence.
 ///
 /// Kept intentionally small and append-only so persistent state growth is
 /// bounded by the number of recorded transitions.
@@ -190,19 +215,47 @@ impl AdoptionCaseAuditStore {
     }
 }
 
+impl AdoptionCaseAuditBackend for std::sync::Mutex<AdoptionCaseAuditStore> {
+    fn record(
+        &self,
+        case_id: &str,
+        transition: &str,
+        actor: &str,
+        timestamp: u64,
+    ) -> Result<u64, String> {
+        let mut store = self
+            .lock()
+            .map_err(|_| "adoption audit store poisoned".to_string())?;
+        Ok(store.record(case_id, transition, actor, timestamp))
+    }
+
+    fn page(
+        &self,
+        case_id: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<AdoptionCaseAuditPage, String> {
+        let store = self
+            .lock()
+            .map_err(|_| "adoption audit store poisoned".to_string())?;
+        Ok(store.page(case_id, page, page_size))
+    }
+}
+
 /// Admin handlers for the adoption case audit export (Issue #1460).
 pub struct AdminAdoptionAuditHandlers {
-    store: Arc<std::sync::Mutex<AdoptionCaseAuditStore>>,
+    store: Arc<dyn AdoptionCaseAuditBackend>,
 }
 
 impl AdminAdoptionAuditHandlers {
+    /// In-memory backend (test/demo only); entries are lost on restart.
     pub fn new() -> Self {
         Self {
             store: Arc::new(std::sync::Mutex::new(AdoptionCaseAuditStore::new())),
         }
     }
 
-    pub fn with_store(store: Arc<std::sync::Mutex<AdoptionCaseAuditStore>>) -> Self {
+    pub fn with_store(store: Arc<dyn AdoptionCaseAuditBackend>) -> Self {
         Self { store }
     }
 
@@ -223,11 +276,7 @@ impl AdminAdoptionAuditHandlers {
         if actor.is_empty() || actor.len() > 64 {
             return Err("actor must be 1..=64 characters".to_string());
         }
-        let mut store = self
-            .store
-            .lock()
-            .map_err(|_| "adoption audit store poisoned".to_string())?;
-        Ok(store.record(case_id, transition, actor, timestamp))
+        self.store.record(case_id, transition, actor, timestamp)
     }
 
     /// GET /admin/adoption/cases/{case_id}/audit — paginated audit export.
@@ -250,11 +299,7 @@ impl AdminAdoptionAuditHandlers {
                 ADOPTION_AUDIT_MAX_PAGE_SIZE
             ));
         }
-        let store = self
-            .store
-            .lock()
-            .map_err(|_| "adoption audit store poisoned".to_string())?;
-        Ok(store.page(case_id, page, page_size))
+        self.store.page(case_id, page, page_size)
     }
 }
 
@@ -381,11 +426,26 @@ impl AdminRateLimitHandlers {
 
     /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
     /// Takes effect on the user's next request window.
+    ///
+    /// The quota must be positive. A zero quota would silently block all
+    /// further 2FA enrollment and record storage for the user without an
+    /// explicit disable flag, so it is rejected as a bad request. Use the
+    /// dedicated disable endpoint for intentional suspension.
     pub fn set_user_quota(
         &self,
         _admin: &AuthenticatedAdmin,
         req: SetUserQuotaRequest,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
+        if req.requests_per_minute == 0 {
+            return Err(ApiError::bad_request(
+                "quota must be a positive integer (>= 1)",
+                Some(serde_json::json!({
+                    "field": "quota",
+                    "value": req.requests_per_minute,
+                })),
+            ));
+        }
+
         self.quota_store
             .set_quota(&req.user_id, req.requests_per_minute);
         Ok(())

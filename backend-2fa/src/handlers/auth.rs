@@ -399,6 +399,10 @@ pub struct GetRecoveryLogQuery {
 ///     todo!()
 /// }
 /// ```
+///
+/// The multi-tenant flows in [`MultiTenantHandlers`](super::tenant::MultiTenantHandlers)
+/// duplicate this logic rather than sharing it. Any security fix here must be
+/// checked against that implementation too.
 pub struct TwoFactorHandlers {
     pub(crate) limiter: Arc<dyn RateLimiter>,
     pub(crate) store: Arc<dyn TwoFactorStore>,
@@ -741,7 +745,7 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup(&req.email, &self.issuer)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
-        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // Persist peppered HMAC digests only — the plaintext codes are returned to
         // the caller once below and never stored.
         let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
             .map_err(|e| ApiError::internal_error(e, None))?;
@@ -1023,6 +1027,15 @@ impl TwoFactorHandlers {
         };
         let code_index = index as i32;
 
+        let setup = TwoFactorAuth::setup("recovery", &self.issuer)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
+        // Persist peppered HMAC digests only — the plaintext codes are returned to
+        // the caller once below and never stored. This also fully rotates
+        // away any legacy plaintext codes that may have been on the record.
+        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
+            .map_err(|e| ApiError::internal_error(e, None))?;
+
         // Atomically consume the matched code. `data` may be stale if a parallel
         // request already used this code, so only the request that actually
         // removes it from storage may proceed (issue #1226).
@@ -1044,15 +1057,6 @@ impl TwoFactorHandlers {
                     ApiError::internal_error(e, None)
                 }
             })?;
-
-        let setup = TwoFactorAuth::setup("recovery", &self.issuer)
-            .map_err(|e| ApiError::internal_error(e, None))?;
-
-        // Persist Argon2id hashes only — the plaintext codes are returned to
-        // the caller once below and never stored. This also fully rotates
-        // away any legacy plaintext codes that may have been on the record.
-        let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
-            .map_err(|e| ApiError::internal_error(e, None))?;
 
         self.store
             .save(
@@ -1176,7 +1180,7 @@ impl TwoFactorHandlers {
         let setup = TwoFactorAuth::setup_with_config(&user_email, &self.issuer, config)
             .map_err(|e| ApiError::internal_error(e, None))?;
 
-        // Persist Argon2id hashes only — the plaintext codes are returned to
+        // Persist peppered HMAC digests only — the plaintext codes are returned to
         // the caller once below and never stored.
         let hashed_backup_codes = TwoFactorAuth::hash_backup_codes(&setup.backup_codes)
             .map_err(|e| ApiError::internal_error(e, None))?;

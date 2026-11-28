@@ -1,3 +1,4 @@
+use crate::dead_letter::MAX_DLQ_SIZE;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -88,7 +89,13 @@ impl HealthCheck for WebhookHealthCheck<'_> {
     }
 
     fn check(&self) -> SubsystemStatus {
-        let _ = self.manager.delivery_log_count();
+        // A full DLQ means each new permanent failure evicts an undelivered event.
+        let dlq_count = self.manager.dlq_count();
+        if dlq_count >= MAX_DLQ_SIZE {
+            return SubsystemStatus::Unhealthy(format!(
+                "dead-letter queue full ({dlq_count}/{MAX_DLQ_SIZE} entries)"
+            ));
+        }
         SubsystemStatus::Healthy
     }
 }
