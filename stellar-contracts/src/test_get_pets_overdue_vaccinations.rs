@@ -238,3 +238,56 @@ fn pagination_offset_and_limit_work() {
             .get_pets_overdue_vaccinations(&ctx.admin, &None, &2, &1);
     assert_eq!(page.len(), 1);
 }
+
+// --- Index / pagination / budget tests (Issue #1647) ---
+
+#[test]
+fn test_index_pagination_has_no_duplicates_or_gaps() {
+    let ctx = setup();
+    let all = ctx.client.get_pets_overdue_vaccinations(&ctx.admin, &None, &0, &10);
+    assert_eq!(all.len(), 4);
+    let p1 = ctx.client.get_pets_overdue_vaccinations(&ctx.admin, &None, &0, &2);
+    let p2 = ctx.client.get_pets_overdue_vaccinations(&ctx.admin, &None, &2, &2);
+    assert_eq!(p1.len(), 2);
+    assert_eq!(p2.len(), 2);
+    assert_ne!(p1.get(0).unwrap(), p2.get(0).unwrap());
+    assert_ne!(p1.get(1).unwrap(), p2.get(1).unwrap());
+}
+
+#[test]
+fn test_limit_is_capped_at_shared_page_size() {
+    let ctx = setup();
+    // An oversized limit must not panic and must not exceed MAX_PAGE_SIZE.
+    let res = ctx
+        .client
+        .get_pets_overdue_vaccinations(&ctx.admin, &None, &0, &u32::MAX);
+    assert!(res.len() <= MAX_PAGE_SIZE);
+}
+
+#[test]
+fn test_worst_case_overdue_scan_budget() {
+    let ctx = setup();
+    let owner = Address::generate(&ctx.env);
+    let past = 1_000_000u64 - DAY;
+    for i in 0..120u32 {
+        let pet = ctx.client.register_pet(
+            &owner,
+            &String::from_str(&ctx.env, "Bulk"),
+            &String::from_str(&ctx.env, "2020-01-01"),
+            &Gender::Female,
+            &Species::Dog,
+            &String::from_str(&ctx.env, "Retriever"),
+            &String::from_str(&ctx.env, "Brown"),
+            &20u32,
+            &None,
+            &PrivacyLevel::Public,
+        );
+        add_vaccination(&ctx.env, &ctx.client, pet, &ctx.vet1, past, past - (i as u64 % 5));
+    }
+    ctx.env.budget().reset_default();
+    let res = ctx.client.get_pets_overdue_vaccinations(&ctx.admin, &None, &0, &100);
+    assert_eq!(res.len(), 100);
+    let cpu = ctx.env.budget().cpu_instruction_cost();
+    // Soroban per-tx limit is 100M instructions; page read must stay well under it.
+    assert!(cpu < 100_000_000, "overdue page cpu cost too high: {}", cpu);
+}

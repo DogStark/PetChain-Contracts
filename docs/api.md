@@ -63,8 +63,9 @@ Rules:
 - Existing valid callers (page sizes within `[1, 100]`) remain fully
   compatible.
 
-This policy applies to the pet, record, vet, consent, custody, activity, and
-lost-pet alert paginated reads.
+This policy applies to the pet, record, vet, consent, custody, and activity
+paginated reads. The lost-pet alert index (`list_active_alerts`) uses its own
+tighter bound of `1..=32` with no default; see the Lost-Pet Alert Index section.
 
 ---
 
@@ -78,13 +79,14 @@ Returns a stable, cursor-paginated index of lost-pet alerts filtered by
 | Bound | Value | Meaning |
 |---|---|---|
 | Minimum page size | `1` | Smallest accepted page size |
-| Default page size | `20` | Used when the caller omits `page_size` |
-| Maximum page size | `100` | Largest accepted page size |
+| Default page size | none | `page_size` is required; there is no default |
+| Maximum page size | `32` | Largest accepted page size (`MAX_PAGE_SIZE` in `contracts/lost-pet`) |
 
 Rules:
 
-- Page sizes outside `[1, 100]` return the shared deterministic
-  `InvalidPageSize` error (see the pagination policy above).
+- Page sizes outside `[1, 32]` return the deterministic `InvalidPageSize`
+  error. This is a lost-pet-specific bound and is stricter than the general
+  pagination policy above (`[1, 100]`); clients must not assume 100.
 - The cursor is opaque and must be passed back unchanged. A `null`/absent
   cursor starts from the beginning of the index.
 - Cursors are bound to the `(region, status)` filter they were issued for.
@@ -99,24 +101,24 @@ Rules:
 
 ### Duplicate-alert detection (Issue #1471)
 
-Creating an alert for a pet that already has an active alert is rejected with
-`DuplicateAlert` and leaves state unchanged. The error carries the
-existing alert ID so callers can link to it.
+Calling `create_alert` for an owner and `pet_name` that already have an active
+alert is rejected with `DuplicateAlert` and leaves state unchanged.
 
-Resolution path for changed circumstances:
+Resolution path for changed circumstances (`contracts/lost-pet`):
 
-- `link_alert_to_existing(pet_id, existing_alert_id, new_details)` — the pet
-  owner (or an admin) may attach updated details to the existing active alert
-  instead of creating a duplicate. This emits an `AlertLinked` event and does
-  not create a new index entry.
-- `resolve_alert(alert_id)` — the owner or an admin resolves the active alert;
-  once resolved, a new alert for the same pet may be created.
-- `supersede_alert(alert_id, new_details)` — the owner or an admin replaces an
-  active alert with a new one in a single call. The old alert is resolved and
-  the new alert is indexed; both transitions emit events.
+- `resolve_alert(actor, id)`, `withdraw_alert(actor, id)`, `expire_alert(actor, id)`
+  — close the existing active alert. Once it is no longer active, a new alert
+  for the same pet may be created with `create_alert`.
+- `create_linked_alert(owner, resolver, pet_name, last_seen, region, deadline, supersedes)`
+  — creates a replacement alert in a single call. `supersedes` must be the id
+  of the owner's active alert for the same `pet_name`. That alert is resolved,
+  the new alert's `linked_to` is set to `supersedes`, and `AlertClosed` and
+  `AlertLinked` events are emitted alongside `AlertCreated`.
 
-All three entrypoints require authorization (pet owner or admin); unauthorized
-callers receive `Unauthorized` and no state is modified.
+`create_alert` and `create_linked_alert` require the `owner` to authorize the
+call. `create_linked_alert` returns `Unauthorized` if `supersedes` belongs to
+another owner, and `InvalidState` if it is not active or names a different
+pet. Failed calls leave state unchanged.
 
 ---
 
@@ -168,15 +170,12 @@ policies are rejected at acceptance with `CoverageSnapshotTooLarge`.
 | `EnrollmentReviewStarted` | Review begins |
 | `EnrollmentAccepted` | An application is accepted (snapshot stored) |
 | `EnrollmentDeclined` | An application is declined |
-| `AlertLinked` | Details are linked to an existing active alert |
-| `AlertSuperseded` | An active alert is replaced by a new one |
 
 ### New error codes
 
 | Error | Meaning |
 |---|---|
 | `InvalidCursor` | Cursor is stale, malformed, or used with a different filter |
-| `DuplicateAlert` | The pet already has an active alert |
 | `InvalidEnrollmentState` | Transition is not valid from the current state |
 | `PolicyVersionMismatch` | Decision bound to a stale policy version |
 | `CoverageSnapshotTooLarge` | Policy exceeds the snapshot item bound |
@@ -206,7 +205,7 @@ The following functions are guaranteed to have no side effects. They do not writ
 | `get_vet_stats` | Returns vet treatment/vaccination statistics |
 | `get_vet_treatment_history` | Returns paginated treatment history for a vet |
 | `get_vet_vaccination_history` | Returns paginated vaccination history for a vet |
-| `get_pets_overdue_vaccinations` | Returns pet IDs with overdue vaccinations |
+| `get_pets_overdue_vaccinations` | Returns pet IDs with overdue vaccinations. Reads a sorted due-date index (no full pet scan); `limit` is capped at 100 per page |
 | `get_admins` | Returns list of admin addresses |
 | `get_admin_threshold` | Returns multisig approval threshold |
 | `get_verified_vets` | Returns paginated list of verified vets |

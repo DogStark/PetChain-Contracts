@@ -96,6 +96,8 @@ All events below include `version: u32` set to `EVENT_SCHEMA_VERSION`.
 | `EnrollmentApplicationAcceptedEvent` | `ENROLL_APP_ACCEPTED` | An enrollment application was accepted and bound to a policy version |
 | `EnrollmentApplicationDeclinedEvent` | `ENROLL_APP_DECLINED` | An enrollment application was declined |
 | `CoverageSnapshotStoredEvent` | `COVERAGE_SNAPSHOT` | Immutable coverage/exclusion snapshot stored at enrollment |
+| `ProposalCancelledEvent` | `ProposalCancelled` | Original proposer withdrew a proposal during its timelock window (#1649) |
+| `ProposalVetoedEvent` | `ProposalVetoed` | An admin vetoed a proposal during its timelock window (#1649) |
 
 ## Insurance Enrollment Workflow Events (Issue #1470 / #1472)
 

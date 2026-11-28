@@ -11,6 +11,11 @@
 // (`sha256(tag + content)`) and are pinned here so any accidental change
 // to the tag strings, the prefixing order, or the hash algorithm is
 // caught immediately.
+//
+// Issue #1445: offline vaccination certificate verification relies on the
+// same domain-separated preimage construction. The `Certificate` domain
+// vector below pins that construction, so the offline verifier and the
+// on-chain contract are guaranteed to agree on the preimage bytes.
 use crate::{HashDomain, PetChainContract};
 use soroban_sdk::{Bytes, Env};
 
