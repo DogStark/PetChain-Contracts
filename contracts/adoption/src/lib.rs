@@ -3,9 +3,10 @@
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
 
 /// Storage schema version. Bump when the persistent layout changes.
-const STORAGE_VERSION: u32 = 1;
+const STORAGE_VERSION: u32 = 2;
 
-/// Maximum length (in bytes) accepted for free-form application notes.
+/// Maximum length (in bytes) accepted for f49
+ree-form application notes.
 const MAX_NOTES_LEN: u32 = 256;
 
 /// Maximum number of applications returned in a single paginated list call.
@@ -30,6 +31,10 @@ pub struct Application {
     pub pet_id: u64,
     pub state: ApplicationState,
     pub notes_len: u32,
+    /// SHA-256 digest of the off-chain notes, binding the on-chain record to
+    /// the exact note content submitted.  Reviewers and auditors can verify
+    /// integrity by hashing the off-chain document and comparing to this field.
+    pub notes_hash: BytesN<32>,
 }
 
 /// Paginated list result for adoption applications.
@@ -90,12 +95,37 @@ impl AdoptionContract {
         Ok(())
     }
 
+    /// Rotate the admin/reviewer authority to a new address.
+    ///
+    /// Only the current admin may call this.  The transfer is atomic: the old
+    /// admin loses authority the moment the new admin is stored.
+    pub fn transfer_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
+        Self::require_initialized(&env)?;
+        Self::require_reviewer(&env, &current_admin)?;
+        current_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"), current_admin),
+            new_admin,
+        );
+        Ok(())
+    }
+
     /// Applicant submits a new adoption application. Starts in `Submitted`.
+    ///
+    /// `notes_hash` must be the SHA-256 digest (32 bytes) of the off-chain
+    /// notes document. This binds the on-chain record to the exact content
+    /// submitted, enabling tamper detection during review and audit.
     pub fn submit_application(
         env: Env,
         applicant: Address,
         pet_id: u64,
         notes_len: u32,
+        notes_hash: BytesN<32>,
     ) -> Result<u64, Error> {
         Self::require_initialized(&env)?;
         if notes_len > MAX_NOTES_LEN {
@@ -117,6 +147,7 @@ impl AdoptionContract {
             pet_id,
             state: ApplicationState::Submitted,
             notes_len,
+            notes_hash,
         };
         env.storage()
             .persistent()
@@ -370,7 +401,11 @@ impl AdoptionContract {
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Env;
+    use soroban_sdk::{Bytes, Env};
+
+    fn zero_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &[0u8; 32])
+    }
 
     fn setup() -> (Env, AdoptionContractClient<'static>, Address, Address) {
         let env = Env::default();
@@ -387,8 +422,11 @@ mod test {
     fn happy_path_submit_review_approve() {
         let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
-        let id = client.submit_application(&applicant, &7u64, &10u32);
-        assert_eq!(client.get_application(&id).state, ApplicationState::Submitted);
+        let hash = zero_hash(&env);
+        let id = client.submit_application(&applicant, &7u64, &10u32, &hash);
+        let app = client.get_application(&id);
+        assert_eq!(app.state, ApplicationState::Submitted);
+        assert_eq!(app.notes_hash, hash);
         client.start_review(&admin, &id);
         assert_eq!(client.get_application(&id).state, ApplicationState::UnderReview);
         client.approve(&admin, &id);
@@ -417,7 +455,7 @@ mod test {
     fn applicant_can_withdraw() {
         let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32);
+        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         client.withdraw(&applicant, &id);
         assert_eq!(client.get_application(&id).state, ApplicationState::Withdrawn);
     }
@@ -427,7 +465,7 @@ mod test {
         let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let stranger = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32);
+        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         assert_eq!(client.try_start_review(&stranger, &id), Err(Ok(Error::Unauthorized)));
         assert_eq!(client.get_application(&id).state, ApplicationState::Submitted);
     }
@@ -437,7 +475,7 @@ mod test {
         let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let stranger = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32);
+        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         assert_eq!(client.try_withdraw(&stranger, &id), Err(Ok(Error::Unauthorized)));
         assert_eq!(client.get_application(&id).state, ApplicationState::Submitted);
     }
@@ -446,7 +484,7 @@ mod test {
     fn terminal_states_cannot_transition() {
         let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32);
+        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         client.decline(&admin, &id);
         assert_eq!(client.try_approve(&admin, &id), Err(Ok(Error::TerminalState)));
         assert_eq!(client.try_withdraw(&applicant, &id), Err(Ok(Error::TerminalState)));
@@ -457,7 +495,7 @@ mod test {
     fn invalid_transition_from_submitted_to_approve() {
         let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32);
+        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         assert_eq!(client.try_approve(&admin, &id), Err(Ok(Error::InvalidTransition)));
         assert_eq!(client.get_application(&id).state, ApplicationState::Submitted);
     }
@@ -466,11 +504,12 @@ mod test {
     fn notes_boundary_enforced() {
         let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
+        let hash = zero_hash(&env);
         assert_eq!(
-            client.try_submit_application(&applicant, &1u64, &(MAX_NOTES_LEN + 1)),
+            client.try_submit_application(&applicant, &1u64, &(MAX_NOTES_LEN + 1), &hash),
             Err(Ok(Error::NotesTooLong))
         );
-        let id = client.submit_application(&applicant, &1u64, &MAX_NOTES_LEN);
+        let id = client.submit_application(&applicant, &1u64, &MAX_NOTES_LEN, &hash);
         assert_eq!(client.get_application(&id).notes_len, MAX_NOTES_LEN);
     }
 
