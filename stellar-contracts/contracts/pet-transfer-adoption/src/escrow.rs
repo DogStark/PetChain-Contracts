@@ -395,10 +395,6 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
         client.transfer(&contract, &entry.buyer, &buyer_amount);
     }
 
-    // Mark terminal state before transfers
-    entry.status = EscrowStatus::Resolved;
-    env.storage().persistent().set(&key, &entry);
-
     env.events().publish(
         (Symbol::new(env, "DISPUTE_RESOLVED"), transfer_id),
         (entry.buyer.clone(), entry.seller.clone(), seller_amount, buyer_amount),
