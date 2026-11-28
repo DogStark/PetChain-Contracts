@@ -200,3 +200,16 @@ MIT
 The former `backend-2fa-implementation/` directory was an unbuildable stale stub (no `Cargo.toml`, not in the
 workspace or CI) and was removed. Its one unique piece, the advisory-lock migration runner, now lives in
 `src/migration_lock.rs`; its older traceparent parser and stub `lib.rs` were superseded by the canonical versions.
+
+### Backup-code security checklist
+
+- Set `BACKUP_CODE_PEPPER_V1` to 32 random bytes encoded as 64 hex characters.
+  Keep this secret outside the database and use a separate key for TOTP encryption.
+- To rotate, deploy the new `BACKUP_CODE_PEPPER_V<N>` key to every instance before
+  setting `BACKUP_CODE_PEPPER_VERSION=N`. Retain older keys until users replace their
+  previous code sets. The migration adds `backup_code_pepper_version` to identify
+  outstanding sets by version.
+- Existing Argon2id digests stay usable until recovery or re-enrollment issues a
+  replacement code set. A database migration cannot rehash them without their codes.
+- New backup-code digests use HMAC-SHA256 and are verified with a constant-time
+  MAC comparison.
