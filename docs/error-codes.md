@@ -229,22 +229,30 @@ do not retry. Code 54 is recoverable by restarting from the first page.
 
 ---
 
-### Proposal & Governance Errors (80-87)
+### Proposal & Governance Errors
+
+The numeric codes below are the ones emitted by the current Stellar contract.
+Codes 80–85 and 87 appeared in an older documentation table and are not emitted
+by the current contract; code 86 is restored for the veto path (issue #1649).
 
 | Code | Name | English Message | Spanish Message |
 |------|------|-----------------|-----------------|
-| 80 | `ProposalNotFound` | Proposal not found | Propuesta no encontrada |
-| 81 | `ProposalAlreadyExecuted` | Proposal already executed | Propuesta ya ejecutada |
-| 82 | `ProposalExpired` | Proposal expired | Propuesta expirada |
-| 83 | `ThresholdNotMet` | Threshold not met | Umbral no alcanzado |
-| 84 | `AdminAlreadyApproved` | Admin already approved | Administrador ya aprobó |
-| 85 | `TimelockNotExpired` | Timelock not expired | Bloqueo de tiempo no expirado |
-| 86 | `ProposalVetoed` | Proposal vetoed | Propuesta vetada |
-| 87 | `ProposalNotExecutable` | Proposal not executable | Propuesta no ejecutable |
+| 1 | `AdminAlreadyApproved` | Admin already approved / already vetoed | Administrador ya aprobó / ya vetó |
+| 16 | `InvalidState` | Proposal is not in the required state | La propuesta no está en el estado requerido |
+| 26 | `ThresholdNotMet` | Approval threshold not met | Umbral de aprobación no alcanzado |
+| 38 | `ProposalAlreadyExecuted` | Proposal already executed | Propuesta ya ejecutada |
+| 43 | `ProposalExpired` | Proposal expired | Propuesta expirada |
+| 47 | `ProposalNotFound` | Proposal not found | Propuesta no encontrada |
+| 86 | `ProposalVetoed` | Proposal vetoed by an administrator | Propuesta vetada por un administrador |
+| 228 | `ProposalCancelled` | Proposal already cancelled | Propuesta ya cancelada |
+| 229 | `NotProposalProposer` | Caller is not the original proposer | El llamador no es el proponente original |
+| 230 | `CancellationWindowClosed` | Cancellation window is closed | La ventana de cancelación está cerrada |
 
 **Description:**
 - Errors related to multisig governance and upgrade proposals
 - Occur during proposal lifecycle management
+- `NotProposalProposer` and `CancellationWindowClosed` are distinct from veto
+  errors so proposer withdrawal and administrative veto stay separate
 
 ---
 

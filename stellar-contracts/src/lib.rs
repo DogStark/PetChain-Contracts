@@ -213,6 +213,10 @@ mod governance_guard;
 // mod test_governance_double_vote;
 // #[cfg(test)]
 // mod test_governance_quorum_snapshot;
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
+mod test_governance_cancellation;
 
 // Same pattern for the domains added by Issues #1341-#1344.
 mod breeding_eligibility;
@@ -290,6 +294,8 @@ mod test_domain_separated_hashes;
 mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_emergency_notify_replay;
+#[cfg(test)]
+mod test_emergency_contact_reindex;
 #[cfg(test)]
 mod test_error_registry;
 #[cfg(test)]
@@ -419,16 +425,22 @@ const MAX_CUSTODY_CHAIN: u32 = 100;
 /// Maximum index slots inspected per `compact_consents_bounded` call.
 const MAX_CONSENT_CLEANUP_STEPS: u32 = 50;
 
+#[cfg(all(test, feature = "budget-tests"))]
+mod resource_budgets;
+
+mod domain_tag;
+use domain_tag::DomainTag;
+
 /// Canonical domain string for the chain-of-custody digest
 /// ([`PetChainContract::get_custody_chain_digest`]). The domain binds the
 /// digest to this contract so digests of identical chains from other domains
 /// cannot be confused.
-pub const CUSTODY_DIGEST_DOMAIN: &str = "petchain.custody";
+pub const CUSTODY_DIGEST_DOMAIN: &str = DomainTag::Custody.tag();
 
 /// Canonical digest format version. Bump whenever the canonical entry
 /// serialisation or digest construction changes. Consumers must only compare
 /// digests that share the same domain and version.
-pub const CUSTODY_DIGEST_VERSION: u32 = 1;
+pub const CUSTODY_DIGEST_VERSION: u32 = DomainTag::Custody.version();
 
 /// Maximum number of signers in `MultisigConfig::signers`.
 /// Practical governance cap; more signers = larger XDR + more gas for threshold checks.
@@ -825,6 +837,18 @@ pub enum ContractError {
     InsurancePolicyInactive = 225,
     InsurancePolicyNotFound = 226,
     BenefitClaimLimitPerPetReached = 227,
+
+    // --- Governance proposal lifecycle (Issue #1649) ---
+    /// Restores the previously published veto error code documented in
+    /// `docs/error-codes.md`; the code was unused by the current contract.
+    ProposalVetoed = 86,
+    /// The proposal was voluntarily withdrawn by its proposer.
+    ProposalCancelled = 228,
+    /// Only the address that created the proposal may cancel it.
+    NotProposalProposer = 229,
+    /// The proposal is not in the cancellable timelock window, or that window
+    /// has already elapsed.
+    CancellationWindowClosed = 230,
 }
 
 // --- MULTI-LANGUAGE ERROR REGISTRY (Issue #684) ---
@@ -2502,6 +2526,7 @@ pub enum ProposalState {
     Executable,      // Timelock expired, ready to execute
     Executed,        // Successfully executed
     Vetoed,          // Vetoed during timelock
+    Cancelled,       // Voluntarily withdrawn by the original proposer
 }
 
 /// Identifies a contract parameter that can be changed via governance vote.
@@ -2548,6 +2573,28 @@ pub struct MultiSigProposal {
     pub state: ProposalState,
     pub timelock_end: u64,
     pub veto_count: u32,
+}
+
+/// Emitted when the original proposer withdraws a proposal during its timelock
+/// window. Distinct from [`ProposalVetoedEvent`], which records administrative
+/// intervention.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalCancelledEvent {
+    pub version: u32,
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when an admin vetoes a proposal during its timelock window.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalVetoedEvent {
+    pub version: u32,
+    pub proposal_id: u64,
+    pub admin: Address,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -4402,6 +4449,12 @@ impl PetChainContract {
             .get(&SystemKey::Proposal(proposal_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidInput));
 
+        if proposal.state == ProposalState::Cancelled {
+            panic_with_error!(&env, ContractError::ProposalCancelled);
+        }
+        if proposal.state == ProposalState::Vetoed {
+            panic_with_error!(&env, ContractError::ProposalVetoed);
+        }
         if proposal.state != ProposalState::Pending {
             panic_with_error!(&env, ContractError::InvalidState);
         }
@@ -4460,6 +4513,12 @@ impl PetChainContract {
 
         if proposal.executed {
             panic_with_error!(&env, ContractError::InvalidState);
+        }
+        if proposal.state == ProposalState::Cancelled {
+            panic_with_error!(&env, ContractError::ProposalCancelled);
+        }
+        if proposal.state == ProposalState::Vetoed {
+            panic_with_error!(&env, ContractError::ProposalVetoed);
         }
         // Verify the action still matches what voters approved (#1209).
         // Proposals created before this commitment existed have none and skip the check.
@@ -4565,6 +4624,146 @@ impl PetChainContract {
                 }
             }
         }
+    }
+
+    /// Withdraws a proposal during the timelock window.
+    ///
+    /// Only the address recorded as `proposed_by` may cancel, and only while
+    /// the proposal is in `TimelockPending` and the ledger timestamp is still
+    /// before `timelock_end`. Cancellation is a voluntary proposer action and
+    /// is intentionally separate from [`Self::veto_proposal`].
+    ///
+    /// # Panics
+    /// - If the caller is not the original proposer.
+    /// - If the proposal does not exist.
+    /// - If the proposal is not pending execution, or its timelock has expired.
+    /// - If the proposal is already executed, cancelled or vetoed.
+    pub fn cancel_proposal(env: Env, proposer: Address, proposal_id: u64) {
+        proposer.require_auth();
+
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        if proposal.proposed_by != proposer {
+            panic_with_error!(&env, ContractError::NotProposalProposer);
+        }
+
+        match proposal.state {
+            ProposalState::TimelockPending => {}
+            ProposalState::Executed => {
+                panic_with_error!(&env, ContractError::ProposalAlreadyExecuted);
+            }
+            ProposalState::Cancelled => {
+                panic_with_error!(&env, ContractError::ProposalCancelled);
+            }
+            ProposalState::Vetoed => {
+                panic_with_error!(&env, ContractError::ProposalVetoed);
+            }
+            ProposalState::Pending | ProposalState::Executable => {
+                panic_with_error!(&env, ContractError::CancellationWindowClosed);
+            }
+        }
+
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            panic_with_error!(&env, ContractError::ProposalExpired);
+        }
+        // Execution becomes possible at exactly `timelock_end`, so the
+        // cancellation window closes at that boundary.
+        if now >= proposal.timelock_end {
+            panic_with_error!(&env, ContractError::CancellationWindowClosed);
+        }
+
+        proposal.state = ProposalState::Cancelled;
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "ProposalCancelled"), proposal_id),
+            ProposalCancelledEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id,
+                proposer,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Vetoes a proposal during its timelock window.
+    ///
+    /// Veto remains an administrative action and does not require the
+    /// proposer's approval or a change to the multisig threshold. It emits
+    /// `ProposalVetoed`, never `ProposalCancelled`.
+    pub fn veto_proposal(env: Env, admin: Address, proposal_id: u64) {
+        admin.require_auth();
+        if !Self::is_admin_address(&env, &admin) {
+            panic_with_error!(&env, ContractError::NotAnAdmin);
+        }
+
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&SystemKey::Proposal(proposal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::ProposalNotFound));
+
+        if proposal.state != ProposalState::TimelockPending {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at || now >= proposal.timelock_end {
+            panic_with_error!(&env, ContractError::InvalidState);
+        }
+        if env
+            .storage()
+            .instance()
+            .has(&SystemKey::ProposalVeto((proposal_id, admin.clone())))
+        {
+            panic_with_error!(&env, ContractError::AdminAlreadyApproved);
+        }
+
+        env.storage().instance().set(
+            &SystemKey::ProposalVeto((proposal_id, admin.clone())),
+            &true,
+        );
+        let veto_count = proposal.veto_count.saturating_add(1);
+        proposal.veto_count = veto_count;
+        proposal.state = ProposalState::Vetoed;
+        env.storage()
+            .instance()
+            .set(&SystemKey::ProposalVetoCount(proposal_id), &veto_count);
+        env.storage()
+            .instance()
+            .set(&SystemKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "ProposalVetoed"), proposal_id),
+            ProposalVetoedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id,
+                admin,
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Number of admin vetoes recorded against `proposal_id`.
+    pub fn get_proposal_veto_count(env: Env, proposal_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SystemKey::ProposalVetoCount(proposal_id))
+            .unwrap_or(0)
+    }
+
+    /// Whether `admin` has vetoed `proposal_id`.
+    pub fn has_admin_vetoed(env: Env, proposal_id: u64, admin: Address) -> bool {
+        env.storage()
+            .instance()
+            .get::<SystemKey, bool>(&SystemKey::ProposalVeto((proposal_id, admin)))
+            .unwrap_or(false)
     }
 
     /// Appends a `StatPoint` for `key`, pruning the oldest entry when the
@@ -11189,12 +11388,12 @@ impl PetChainContract {
     /// domain and every earlier version of the same domain.
     fn hash_domain_tag(domain: &HashDomain) -> &'static [u8] {
         match domain {
-            HashDomain::Evidence => b"petchain:hash:evidence:v1",
-            HashDomain::Attachment => b"petchain:hash:attachment:v1",
-            HashDomain::ClaimDocument => b"petchain:hash:claim-document:v1",
-            HashDomain::Certificate => b"petchain:hash:certificate:v1",
-            HashDomain::MedicalRecord => b"petchain:hash:medical-record:v1",
-            HashDomain::TagId => b"petchain:hash:tag-id:v1",
+            HashDomain::Evidence => DomainTag::Evidence.tag().as_bytes(),
+            HashDomain::Attachment => DomainTag::Attachment.tag().as_bytes(),
+            HashDomain::ClaimDocument => DomainTag::ClaimDocument.tag().as_bytes(),
+            HashDomain::Certificate => DomainTag::Certificate.tag().as_bytes(),
+            HashDomain::MedicalRecord => DomainTag::MedicalRecord.tag().as_bytes(),
+            HashDomain::TagId => DomainTag::TagId.tag().as_bytes(),
         }
     }
 
@@ -12532,6 +12731,93 @@ impl PetChainContract {
             };
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         }
+    }
+
+    /// Remove an emergency contact and keep priorities contiguous.
+    ///
+    /// `index` is the zero-based position in the priority-ordered contact list
+    /// (the same order returned by `get_contacts_ordered`). Remaining contacts
+    /// are reindexed as 1..=n so clients that iterate by priority never skip a
+    /// contact. If the removed contact was the primary one, the first remaining
+    /// contact is promoted. The owner's authorization is required and a failed
+    /// call leaves state unchanged.
+    pub fn remove_emergency_contact(env: Env, pet_id: u64, index: u32) {
+        let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        };
+        pet.owner.require_auth();
+
+        let key = PetChainContract::get_encryption_key(&env);
+        let c_bytes = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_emergency_contacts.ciphertext,
+            &pet.encrypted_emergency_contacts.nonce,
+            &key,
+        )
+        .unwrap_or(Bytes::new(&env));
+        let contacts =
+            Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
+
+        if index >= contacts.len() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        // Normalise to priority order first: the stored vector may be in
+        // insertion order, while clients consume the priority-ordered view.
+        let mut ordered: Vec<EmergencyContact> = Vec::new(&env);
+        for i in 0..contacts.len() {
+            let contact = contacts.get(i).unwrap();
+            let mut inserted = false;
+            for j in 0..ordered.len() {
+                if contact.priority < ordered.get(j).unwrap().priority {
+                    ordered.insert(j, contact.clone());
+                    inserted = true;
+                    break;
+                }
+            }
+            if !inserted {
+                ordered.push_back(contact);
+            }
+        }
+
+        let mut removed_was_primary = false;
+        let mut remaining: Vec<EmergencyContact> = Vec::new(&env);
+        for i in 0..ordered.len() {
+            let contact = ordered.get(i).unwrap();
+            if i == index {
+                removed_was_primary = contact.is_primary;
+                continue;
+            }
+            let mut contact = contact;
+            if removed_was_primary && remaining.is_empty() {
+                contact.is_primary = true;
+            }
+            contact.priority = remaining.len() + 1;
+            remaining.push_back(contact);
+        }
+
+        // Rejects an empty list, duplicate identities and a list without a
+        // primary contact, so an invalid removal never reaches storage.
+        PetChainContract::validate_emergency_contacts(&env, &remaining);
+
+        let contacts_bytes = remaining.to_xdr(&env);
+        let (c_nonce, c_cipher) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
+        pet.encrypted_emergency_contacts = EncryptedData {
+            nonce: c_nonce,
+            ciphertext: c_cipher,
+        };
+        pet.updated_at = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+        // Identifiers only: no private contact data is published in events.
+        env.events().publish(
+            (Symbol::new(&env, "EmergencyContactRemoved"), pet_id),
+            index,
+        );
     }
 
     pub fn get_emergency_access_logs(
@@ -16033,7 +16319,7 @@ impl PetChainContract {
     /// clients may have already anchored off-chain.
     fn canonical_medical_record_preimage(env: &Env, record: &MedicalRecord) -> Bytes {
         let mut preimage = Bytes::new(env);
-        for byte in b"petchain:medical-record:v1" {
+        for byte in DomainTag::MedicalRecordCommitment.tag().as_bytes() {
             preimage.push_back(*byte);
         }
         for byte in record.pet_id.to_be_bytes() {
