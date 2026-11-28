@@ -335,6 +335,7 @@ contract PetChainRegistry is Pausable {
     /// @notice Verify a registered vet. Only callable by admin.
     /// @param vet Address of the vet to verify.
     function verifyVet(address vet) external onlyAdmin whenNotPaused {
+        require(vets[vet].vetAddress == vet, "PetChainRegistry: not a registered vet");
         require(!vets[vet].isRevoked, "PetChainRegistry: vet is revoked");
         vets[vet].isVerified = true;
         emit VetVerified(vet);
@@ -343,6 +344,7 @@ contract PetChainRegistry is Pausable {
     /// @notice Revoke a vet's verified status. Only callable by admin.
     /// @param vet Address of the vet to revoke.
     function revokeVet(address vet) external onlyAdmin whenNotPaused {
+        require(vets[vet].vetAddress == vet, "PetChainRegistry: not a registered vet");
         vets[vet].isVerified = false;
         vets[vet].isRevoked  = true;
         emit VetRevoked(vet);
