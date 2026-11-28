@@ -60,6 +60,23 @@ jobs:
         run: cargo test --doc
         working-directory: backend-2fa
 
+  env-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check every env var read in source is documented
+        run: |
+          status=0
+          vars=$(grep -rhoE '(env::var(_os)?|env!|option_env!)\(\s*"[A-Z][A-Z0-9_]*"' backend-2fa/src backend-2fa/build.rs \
+            | grep -oE '"[A-Z][A-Z0-9_]*"' | tr -d '"' | sort -u)
+          for var in $vars; do
+            if ! grep -q "\`$var\`" docs/environment-variables.md; then
+              echo "::error file=docs/environment-variables.md::$var is read in backend-2fa/src but not documented"
+              status=1
+            fi
+          done
+          exit $status
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

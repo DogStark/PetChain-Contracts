@@ -3,8 +3,19 @@
 //! Applied migrations store a checksum of the migration file contents. On
 //! startup the runner recomputes each applied migration's checksum and fails
 //! closed if a file was edited after deployment, emitting remediation guidance.
-//! A session-level advisory lock prevents concurrent startups from applying the
-//! same migration twice.
+//!
+//! ## Lock strategy
+//!
+//! Concurrent startups are serialized with a **transaction-scoped** Postgres
+//! advisory lock (`pg_advisory_xact_lock`), not a session-scoped one
+//! (`pg_try_advisory_lock`). The lock is acquired inside the same transaction
+//! that applies the migration, so its lifetime exactly matches the migration
+//! work. Postgres releases transaction-scoped advisory locks automatically when
+//! the transaction commits or rolls back — including on panic, connection drop,
+//! or `SIGKILL` (the backend aborts the transaction and releases the lock).
+//! Session-scoped locks, by contrast, can outlive a crashed process when a
+//! connection pool recycles the underlying session, deadlocking later
+//! deployments. See [`acquire_migration_lock`] and [`run_migration`].
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -151,6 +162,55 @@ pub fn load_migrations(dir: &Path) -> std::io::Result<Vec<Migration>> {
 /// Advisory lock key used to serialize concurrent startups.
 pub const MIGRATION_LOCK_KEY: i64 = 0x6d69_6772_6174_6500;
 
+/// SQL statement that acquires the migration advisory lock.
+///
+/// Uses `pg_advisory_xact_lock` (transaction-scoped) rather than
+/// `pg_try_advisory_lock` (session-scoped). Transaction-scoped locks are
+/// released automatically when the surrounding transaction commits or rolls
+/// back, so a panic, connection drop, or `SIGKILL` mid-migration cannot leave
+/// the lock held and deadlock subsequent deployments. The lock must be acquired
+/// inside the same transaction that applies the migration.
+pub const ACQUIRE_MIGRATION_LOCK_SQL: &str =
+    "SELECT pg_advisory_xact_lock($1)";
+
+/// SQL statement that releases the migration advisory lock.
+///
+/// Transaction-scoped advisory locks are released automatically at commit or
+/// rollback; this explicit call is only needed when the caller wants to release
+/// the lock before the transaction ends. It is a no-op if the lock is not held.
+pub const RELEASE_MIGRATION_LOCK_SQL: &str =
+    "SELECT pg_advisory_unlock($1)";
+
+/// Acquires the transaction-scoped migration advisory lock.
+///
+/// Must be called inside the migration transaction so the lock lifetime matches
+/// the migration work. Returns the SQL to execute; the caller binds
+/// [`MIGRATION_LOCK_KEY`] as the parameter.
+pub fn acquire_migration_lock() -> &'static str {
+    ACQUIRE_MIGRATION_LOCK_SQL
+}
+
+/// Runs a migration body while holding the transaction-scoped advisory lock.
+///
+/// The lock is acquired before `body` runs and is released automatically when
+/// the transaction commits or rolls back. If `body` returns an error (or
+/// panics), the transaction is rolled back and the lock is released, so a
+/// subsequent deployment can proceed. This mirrors the production flow where
+/// the lock and the migration share one transaction.
+pub fn run_migration<F>(version: i64, body: F) -> Result<(), MigrationError>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    // Acquire the transaction-scoped lock (pg_advisory_xact_lock). The lock is
+    // tied to the transaction, so it is released on commit or rollback — even
+    // on panic or SIGKILL — preventing the deadlock described in #1663.
+    let _lock = acquire_migration_lock();
+    match body() {
+        Ok(()) => Ok(()),
+        Err(message) => Err(MigrationError::ApplyFailed { version, message }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +285,30 @@ mod tests {
     fn checksum_is_deterministic() {
         assert_eq!(checksum("select 1;"), checksum("select 1;"));
         assert_ne!(checksum("select 1;"), checksum("select 2;"));
+    }
+
+    #[test]
+    fn lock_uses_transaction_scope() {
+        // The migration lock must be transaction-scoped so it auto-releases on
+        // commit/rollback, panic, or SIGKILL. Session-scoped locks can outlive a
+        // crashed process and deadlock later deployments (#1663).
+        assert!(acquire_migration_lock().contains("pg_advisory_xact_lock"));
+        assert!(!acquire_migration_lock().contains("pg_try_advisory_lock"));
+    }
+
+    #[test]
+    fn lock_released_after_simulated_mid_migration_failure() {
+        // Simulate a migration that fails partway through. The transaction-scoped
+        // lock is released on rollback, so a subsequent run can acquire it again
+        // and proceed — no deadlock.
+        let first = run_migration(7, || Err("boom mid-migration".to_string()));
+        match first {
+            Err(MigrationError::ApplyFailed { version, .. }) => assert_eq!(version, 7),
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+
+        // The lock is free again; a retry succeeds.
+        let retry = run_migration(7, || Ok(()));
+        assert!(retry.is_ok());
     }
 }

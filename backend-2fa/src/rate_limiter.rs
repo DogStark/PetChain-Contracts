@@ -426,6 +426,17 @@ impl UserQuotaStore {
         let entry = m.entry(user_id.to_string()).or_insert((0, None));
         entry.1 = Some(expires_at);
     }
+
+    /// Test-only view of a stored quota, used to assert that rejected updates
+    /// do not mutate state.
+    #[cfg(test)]
+    pub fn quota(&self, user_id: &str) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .map(|(requests_per_minute, _)| *requests_per_minute)
+    }
 }
 
 impl MockRedisBackend {
@@ -579,6 +590,8 @@ pub struct InMemoryRateLimiter {
     max_failures: u32,
     window: Duration,
     lockout: Duration,
+    // Hold the same lock through the entire update or removal. A failure
+    // must never retain an entry it can update after a successful reset.
     records: Mutex<HashMap<String, AttemptRecord>>,
 }
 
@@ -1624,4 +1637,42 @@ mod redis_fallback_tests {
             _ => panic!("should be allowed after reset"),
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn concurrent_in_memory_failures_and_resets_are_serialized() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const THREADS: u32 = 8;
+    let limiter = InMemoryRateLimiter::new(THREADS + 1, 3600, 3600);
+    let barrier = std::sync::Barrier::new(THREADS as usize + 1);
+    let overcounted = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..THREADS {
+            scope.spawn(|| {
+                for _ in 0..64 {
+                    barrier.wait();
+                    let result = limiter.record_failure("shared");
+                    if result.is_blocked() || result.remaining() < 1 {
+                        overcounted.store(true, Ordering::Relaxed);
+                    }
+                    barrier.wait();
+                }
+            });
+        }
+        for _ in 0..64 {
+            limiter.record_success("shared");
+            barrier.wait();
+            limiter.record_success("shared");
+            barrier.wait();
+            let result = limiter.record_failure("shared");
+            if result.is_blocked() {
+                overcounted.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+    assert!(!overcounted.load(Ordering::Relaxed));
+    limiter.record_success("shared");
+    assert_eq!(limiter.record_failure("shared").remaining(), THREADS);
 }

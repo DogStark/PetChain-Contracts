@@ -288,19 +288,12 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let rejection = match req.peer_addr() {
-            Some(addr) if self.store.check(addr.ip()) == IpAccessDecision::Blocked => {
-                Some("IP address is blocked")
-            }
-            Some(_) => None,
-            None => {
-                tracing::warn!(
-                    path = req.path(),
-                    "peer address unavailable; rejecting request because IP blocklist cannot be evaluated"
-                );
-                Some("IP address could not be determined")
-            }
-        };
+        let blocked = req
+            .peer_addr()
+            // Dual-stack sockets surface IPv4 peers as `::ffff:a.b.c.d`; map them
+            // back to IPv4 so IPv4 block rules still match.
+            .map(|addr| self.store.check(addr.ip().to_canonical()) == IpAccessDecision::Blocked)
+            .unwrap_or(false);
 
         if let Some(message) = rejection {
             let request = req.request().clone();
