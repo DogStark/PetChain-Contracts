@@ -4,12 +4,19 @@
 -- Existing plain-text secrets in `user_two_factor.secret` must be re-encrypted
 -- before deploying application code that reads them as AES-256-GCM ciphertext.
 --
+-- Envelope format: `<hex(key_version || nonce)>:<ciphertext_hex>` (1-byte key
+-- version, 12-byte nonce). Legacy envelopes `<nonce_hex>:<ciphertext_hex>` are
+-- read as key version 1.
+--
 -- Steps:
---   1. Set TOTP_ENCRYPTION_KEY in your secret store (64 hex chars = 32 bytes).
---   2. Run the provided migration script (scripts/encrypt_existing_secrets.py)
---      which reads each row, encrypts the secret with AES-256-GCM, and writes
---      back the ciphertext in the format `<nonce_hex>:<ciphertext_hex>`.
---   3. Only then deploy the new application binary.
+--   1. Set TOTP_ENCRYPTION_KEY (64 hex chars = 32 bytes) and, optionally,
+--      TOTP_ENCRYPTION_KEY_VERSION (default 1) in your secret store.
+--   2. During key rotation, also set TOTP_ENCRYPTION_KEY_PREVIOUS (and
+--      TOTP_ENCRYPTION_KEY_PREVIOUS_VERSION) so older rows stay readable.
+--   3. Run `PostgresTwoFactorStore::reencrypt_batch` in a loop until it returns
+--      no cursor. Each call is bounded by `limit` rows and rewrites rows
+--      under the current key version.
+--   4. Only then remove TOTP_ENCRYPTION_KEY_PREVIOUS and deploy the new binary.
 --
 -- There is intentionally no automatic SQL transformation here because the
 -- encryption key is not available to the database engine.

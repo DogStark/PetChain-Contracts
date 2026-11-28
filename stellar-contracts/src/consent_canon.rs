@@ -17,6 +17,11 @@
 //! the hash, so a revoked version can never be resurrected under the same
 //! hash. Codes and bits are pinned here explicitly (never derived from enum
 //! declaration order) so reordering the enums cannot change any hash.
+//!
+//! Offline verification (Issue #1445): the consent hash preimage above is the
+//! canonical payload for offline verifiers. See `docs/offline-verification.md`
+//! for the field-level spec and test vectors. The byte layout is pinned by
+//! [`offline_consent_payload`], which must match the documented format.
 
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Vec};
@@ -121,11 +126,26 @@ pub fn canonical_consent_hash(
     scope_mask: u32,
     version: u32,
 ) -> BytesN<32> {
+    let preimage = offline_consent_payload(env, pet_id, subject, purpose, scope_mask, version);
+    env.crypto().sha256(&preimage).into()
+}
+
+/// Build the canonical preimage bytes (domain-separated, pre-hash) for a
+/// consent version. This is the exact payload an offline verifier must
+/// reconstruct before checking the signature / hash.
+pub fn offline_consent_payload(
+    env: &Env,
+    pet_id: u64,
+    subject: &Address,
+    purpose: u32,
+    scope_mask: u32,
+    version: u32,
+) -> Bytes {
     let mut preimage = Bytes::from_slice(env, CONSENT_HASH_DOMAIN);
     preimage.extend_from_slice(&pet_id.to_be_bytes());
     preimage.append(&subject.clone().to_xdr(env));
     preimage.extend_from_slice(&purpose.to_be_bytes());
     preimage.extend_from_slice(&scope_mask.to_be_bytes());
     preimage.extend_from_slice(&version.to_be_bytes());
-    env.crypto().sha256(&preimage).into()
+    preimage
 }

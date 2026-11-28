@@ -20,6 +20,9 @@
 //! and sequence number (1_000) so that ledger-timestamp-dependent calculations
 //! (age, expiry, TTL) produce the same result across every test run.
 
+// Shared fixture module: individual tests use different subsets of builders.
+#![allow(dead_code)]
+
 use crate::{Gender, PetChainContract, PetChainContractClient, PrivacyLevel, Species};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
@@ -76,7 +79,7 @@ impl<'a> TestEnv<'a> {
             max_entry_ttl: 9_999_999,
         });
 
-        let contract_id = env.register(PetChainContract, ());
+        let contract_id = env.register_contract(None, PetChainContract);
         let client = PetChainContractClient::new(&env, &contract_id);
 
         let admin1 = Address::generate(&env);
@@ -210,9 +213,9 @@ pub fn create_vet_with_license(
 /// Return a `(admin1, admin2, client)` triple backed by a fresh multisig
 /// environment, mirroring the legacy `setup()` pattern used in several test
 /// files. Prefer `TestEnv::new()` for new tests.
-pub fn create_test_admin(env: &Env) -> (Address, Address, PetChainContractClient) {
+pub fn create_test_admin(env: &Env) -> (Address, Address, PetChainContractClient<'_>) {
     env.mock_all_auths();
-    let contract_id = env.register(PetChainContract, ());
+    let contract_id = env.register_contract(None, PetChainContract);
     let client = PetChainContractClient::new(env, &contract_id);
 
     let admin1 = Address::generate(env);

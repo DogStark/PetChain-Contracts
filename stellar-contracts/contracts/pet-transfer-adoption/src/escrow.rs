@@ -117,7 +117,6 @@ pub fn bps_share(amount: i128, bps: u32) -> Result<i128, EscrowError> {
         .checked_add(remainder)
         .ok_or(EscrowError::InvalidAmount)
 }
-}
 
 /// Platform fee for `amount`, rounded down to a whole stroop.
 pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {
@@ -395,10 +394,6 @@ pub fn admin_resolve_dispute(env: &Env, transfer_id: u64, decision: DisputeDecis
     if buyer_amount > 0 {
         client.transfer(&contract, &entry.buyer, &buyer_amount);
     }
-
-    // Mark terminal state before transfers
-    entry.status = EscrowStatus::Resolved;
-    env.storage().persistent().set(&key, &entry);
 
     env.events().publish(
         (Symbol::new(env, "DISPUTE_RESOLVED"), transfer_id),

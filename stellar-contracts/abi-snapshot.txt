@@ -39,6 +39,7 @@ pub fn calculate_coi(env: Env, pet_id_a: u64, pet_id_b: u64) -> u32
 pub fn can_transition_claim_status(_env: Env, from: InsuranceClaimStatus, to: InsuranceClaimStatus,) -> bool
 pub fn cancel_grooming_schedule(env: Env, schedule_id: u64) -> bool
 pub fn cancel_pet_transfer(env: Env, id: u64)
+pub fn cancel_proposal(env: Env, proposer: Address, proposal_id: u64)
 pub fn cancel_transfer_proposal(env: Env, proposal_id: u64)
 pub fn check_breeding_eligibility(env: Env, sire_id: u64, dam_id: u64, breeding_date: u64,) -> BreedingCheck
 pub fn check_consent_access(env: Env, pet_id: u64, grantee: Address, scope: ConsentScope,) -> bool
@@ -181,6 +182,7 @@ pub fn get_pet_traits(env: Env, pet_id: u64) -> Map<String, Allele>
 pub fn get_pets_overdue_vaccinations(env: Env, caller: Address, vet_address: Option<Address>, offset: u64, limit: u32,) -> Vec<u64>
 pub fn get_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal>
 pub fn get_proposal_eligible_voters(env: Env, proposal_id: u64) -> Vec<Address>
+pub fn get_proposal_veto_count(env: Env, proposal_id: u64) -> u32
 pub fn get_purge_audit(env: Env, audit_id: u64) -> Option<PurgeAuditEntry>
 pub fn get_purge_audit_count(env: Env) -> u64
 pub fn get_purge_nonce(env: Env, caller: Address) -> u64
@@ -228,6 +230,7 @@ pub fn grant_consent_with_expiry(env: Env, pet_id: u64, owner: Address, consent_
 pub fn grant_consent_with_parent(env: Env, pet_id: u64, granter: Address, consent_type: ConsentType, grantee: Address, scope: ConsentScope, parent_consent_id: Option<u64>,) -> u64
 pub fn grant_consent_with_scope(env: Env, pet_id: u64, owner: Address, consent_type: ConsentType, grantee: Address, scope: ConsentScope,) -> u64
 pub fn grant_emergency_override(env: Env, pet_id: u64, responder: Address, reason_code: u32, duration: u64,)
+pub fn has_admin_vetoed(env: Env, proposal_id: u64, admin: Address) -> bool
 pub fn has_canonical_consent_scope(env: Env, pet_id: u64, subject: Address, purpose: ConsentType, scope: ConsentScope,) -> bool
 pub fn has_reached_milestone(env: Env, pet_id: u64, milestone_days: u64) -> bool
 pub fn init_admin(env: Env, admin: Address)
@@ -368,6 +371,7 @@ pub fn verify_health_score_provenance(env: Env, pet_id: u64, seq: u64, inputs: H
 pub fn verify_vet(env: Env, admin: Address, vet_address: Address) -> bool
 pub fn verify_vet_credential(env: Env, credential_id: u64) -> VetCredentialStatus
 pub fn verify_vet_with_expiry(env: Env, admin: Address, vet_address: Address, expires_at: Option<u64>,) -> bool
+pub fn veto_proposal(env: Env, admin: Address, proposal_id: u64)
 pub fn vote_on_dispute(env: Env, voter: Address, dispute_id: u64, vote: DisputeVote) -> bool
 # Events
 AccessExpiredEvent
@@ -403,6 +407,8 @@ PetProfileUpdatedEvent
 PetRegisteredEvent
 PolicyExpiringSoonEvent
 PolicyRenewedEvent
+ProposalCancelledEvent
+ProposalVetoedEvent
 TempVetGrantExpiredEvent
 VaccinationAddedEvent
 VaccinationExpiringSoonEvent
@@ -430,6 +436,7 @@ ContractError::BenefitInvalidTerms = 216
 ContractError::BenefitTermsAlreadyConfigured = 219
 ContractError::BenefitWaitingPeriod = 211
 ContractError::BreedingCooldownActive = 182
+ContractError::CancellationWindowClosed = 230
 ContractError::CertificateAlreadyAnchored = 6
 ContractError::CertificateExpired = 49
 ContractError::CertificateHashConflict = 51
@@ -491,6 +498,7 @@ ContractError::NotDisputeParty = 168
 ContractError::NotDisputeStakeholder = 166
 ContractError::NotInEvidencePhase = 167
 ContractError::NotPetOwner = 22
+ContractError::NotProposalProposer = 229
 ContractError::NotificationAlreadySent = 188
 ContractError::NotificationExpired = 187
 ContractError::ParentInactive = 179
@@ -500,9 +508,11 @@ ContractError::PetNotFound = 24
 ContractError::PetScopeViolation = 186
 ContractError::PolicyPetNotFound = 208
 ContractError::ProposalAlreadyExecuted = 38
+ContractError::ProposalCancelled = 228
 ContractError::ProposalExpired = 43
 ContractError::ProposalNotApproved = 44
 ContractError::ProposalNotFound = 47
+ContractError::ProposalVetoed = 86
 ContractError::PurgeConfirmationMismatch = 184
 ContractError::QuorumNotMet = 45
 ContractError::RateLimitExceeded = 46
@@ -675,7 +685,9 @@ PolicyRenewedEvent
 PremiumTier
 PrivacyLevel
 ProposalAction
+ProposalCancelledEvent
 ProposalState
+ProposalVetoedEvent
 PurgeResult
 RecurringGroomingSchedule
 ReferenceRange

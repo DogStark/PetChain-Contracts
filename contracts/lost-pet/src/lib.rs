@@ -357,11 +357,16 @@ impl LostPetContract {
     }
 
     /// Record a sighting on an active alert. Bounded by `MAX_SIGHTINGS`.
+    /// A repeat sighting from the same reporter is a no-op that emits no event,
+    /// so one address cannot exhaust the shared cap on its own.
     pub fn record_sighting(env: Env, reporter: Address, id: u64) -> Result<(), Error> {
         reporter.require_auth();
         let mut alert = load_alert(&env, id)?;
         if alert.state != AlertState::Active {
             return Err(Error::InvalidState);
+        }
+        if alert.sightings.contains(&reporter) {
+            return Ok(());
         }
         if alert.sightings.len() >= MAX_SIGHTINGS {
             return Err(Error::TooManySightings);

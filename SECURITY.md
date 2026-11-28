@@ -10,7 +10,7 @@
 
 If you discover a security vulnerability, please report it privately:
 
-1. **DO NOT** create a public GitHub issue, pull request, or discussion. Public disclosure creates unnecessary risk for users and funds.
+1. **DO NOT** create a public GitHub issue
 2. Email: [security@petchain.dog](mailto:security@petchain.dog)
 3. Include:
    - Description of the vulnerability and its potential impact

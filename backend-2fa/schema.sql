@@ -92,3 +92,12 @@ CREATE TABLE IF NOT EXISTS two_fa_lockouts (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+
+-- Migration 007: Track the pepper version of the issued backup-code set.
+ALTER TABLE user_two_factor ADD COLUMN IF NOT EXISTS backup_code_pepper_version BIGINT
+    GENERATED ALWAYS AS (
+        CASE WHEN (backup_codes::jsonb ->> 0) ~ '^hmac-sha256:[0-9]{1,10}:'
+            THEN split_part(backup_codes::jsonb ->> 0, ':', 2)::bigint
+            ELSE 0
+        END
+    ) STORED;

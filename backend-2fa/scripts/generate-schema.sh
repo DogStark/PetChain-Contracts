@@ -74,6 +74,13 @@ awk '
                 cat "$f"
                 echo ""
                 ;;
+            *)
+                # Any other up migration (e.g. 006+) is included generically so it
+                # can never be silently dropped from schema.sql
+                echo "-- $basename"
+                cat "$f"
+                echo ""
+                ;;
         esac
     done
 
