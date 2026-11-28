@@ -1,6 +1,6 @@
 # Security Policy
 
-`DogStark/PetChain-Contracts` takes the security of our smart contracts and protocol seriously. We appreciate the efforts of security researchers and community members in keeping our ecosystem safe.
+The authoritative security policy for this repository is [SECURITY.md](../SECURITY.md) at the repository root. It covers supported versions, how to report a vulnerability, response timelines, triage states, and disclosure terms.
 
 ## 1. Supported Versions
 
