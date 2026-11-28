@@ -1,68 +1,258 @@
 # Celo Contracts
 
-This directory contains the Celo-side smart contracts for the PetChain platform.
+Soroban/Celo contract modules for the PetChain platform.
 
-## Verified-Vet Capability Scopes
+## Modules
 
-Vet verification is represented as a set of explicit capability scopes rather than a single global `verified` flag. Each scope grants a narrowly-defined permission that can be checked independently by consumers (e.g. the vaccination registry, the medical-record store, and the transfer-attestation flow).
+- `pet_medical_history` — stores pet medical records with cursor-based pagination.
 
-### Capability scopes
+## Pet Medical History Pagination
 
-| Scope | Value | Grants |
-| --- | --- | --- |
-| `VACCINATION` | `1 << 0` | Ability to sign vaccination records |
-| `MEDICAL_RECORD` | `1 << 1` | Ability to write/attest medical records |
-| `TRANSFER_ATTESTATION` | `1 << 2` | Ability to attest ownership transfers |
+Medical records are returned using **cursor-based pagination** with deterministic
+ordering and bounded page sizes.
 
-Scopes are stored as a bitmask (`uint8`) per vet address. A vet may hold any combination of scopes; the empty mask (`0`) means the vet is not verified for anything.
+### Ordering
 
-### Storage layout
+Records are ordered deterministically by `(created_at, record_id)` ascending.
+This guarantees a stable, reproducible order across pages and nodes.
 
-- `mapping(address => uint8) vetScopes` — capability bitmask per vet.
-- `mapping(address => uint256) vetScopeUpdatedAt` — block timestamp of the last scope change (used for expiry/replay checks).
+### Page size
 
-Storage keys are namespaced under the existing `petchain.vet.` prefix to preserve the current storage-version conventions. No existing keys are renamed or removed; the legacy `verified` boolean is derived as `vetScopes[vet] != 0` for backward compatibility.
+- `DEFAULT_PAGE_SIZE = 20`
+- `MAX_PAGE_SIZE = 100`
+
+Requests with `limit == 0` fall back to `DEFAULT_PAGE_SIZE`; requests above
+`MAX_PAGE_SIZE` are clamped to `MAX_PAGE_SIZE`. This bounds iteration and
+persistent state growth per call.
+
+### Cursor
+
+A cursor is an opaque `u64` encoding the last returned `record_id`. Passing
+`None` starts from the beginning. The cursor is validated against the pet's
+record set; an unknown cursor returns `Error::InvalidCursor`.
 
 ### Authorization
 
-- Only the contract owner (existing `onlyOwner` modifier) may grant or revoke scopes.
-- Consumers must call `hasScope(vet, scope)` before performing a scoped action; a missing scope reverts with `UnauthorizedScope`.
-- Granting a scope that is already set is a no-op (idempotent) and does not emit an event.
+All read calls require the caller to be the pet owner or an authorized
+veterinarian, preserving the existing authorization conventions. Unauthorized
+callers receive `Error::Unauthorized` and no state is mutated.
 
 ### Error codes
 
-| Code | Name | Meaning |
-| --- | --- | --- |
-| `E01` | `UnauthorizedScope` | Caller/vet lacks the required capability scope |
-| `E02` | `InvalidScope` | Scope value is `0` or contains bits outside the defined mask |
-| `E03` | `ScopeExpired` | Scope update is older than the configured TTL for the action |
-| `E04` | `NotOwner` | Non-owner attempted to grant/revoke scopes |
+| Code | Name             | Meaning                                   |
+|------|------------------|-------------------------------------------|
+| 1    | `Unauthorized`   | Caller lacks access to the pet's records  |
+| 2    | `InvalidCursor`  | Cursor does not belong to the pet's set   |
+| 3    | `InvalidLimit`   | Limit out of accepted bounds              |
 
 ### Events
 
-- `ScopeGranted(address indexed vet, uint8 scope, uint256 timestamp)`
-- `ScopeRevoked(address indexed vet, uint8 scope, uint256 timestamp)`
+- `MedicalHistoryPage { pet_id, cursor, limit, returned }` — emitted on each
+  successful paginated read.
 
-Events are emitted only on actual state transitions (no event for idempotent grants/revokes).
+### Storage version
 
-### Bounds and limits
+The storage layout is unchanged; the existing storage-version key is preserved
+and no migration is required for this feature.
 
-- Scope masks are bounded to the defined bits (`0x07`); any higher bit reverts with `InvalidScope`.
-- Grant/revoke operate on a single vet and a single scope per call — no unbounded iteration.
-- Persistent state growth is O(number of vets), with two fixed-size slots per vet.
+### Compatibility
 
-### ABI / compatibility
+Public ABI adds the paginated read entry point and the `MedicalHistoryPage`
+event. Update compatibility fixtures when the ABI snapshot changes.
 
-- `grantScope(address vet, uint8 scope)` and `revokeScope(address vet, uint8 scope)` are additive; existing `verify(address)` / `isVerified(address)` remain and map to the full scope mask.
-- `hasScope(address vet, uint8 scope) view returns (bool)` is the new read entry point.
-- Compatibility fixtures under `contracts/celo/fixtures/` must be regenerated when the ABI changes; the derived `verified` value is preserved so existing fixtures remain valid.
+## Emergency Pause Role Separation
 
-### Tests
+Pause authority is separated from upgrade and registry administration so that
+no single role can both halt the contract and mutate its code or registry.
 
-Focused tests cover:
+### Roles
 
-- Successful grant/revoke and `hasScope` checks for each scope.
-- Unauthorized access: non-owner grant/revoke reverts with `NotOwner`; consumer action without the required scope reverts with `UnauthorizedScope`.
-- Boundary values: scope `0` and out-of-range bits revert with `InvalidScope`; full mask `0x07` is accepted.
-- Replay/expiry: stale scope updates past the TTL revert with `ScopeExpired`.
-- Failed calls leave `vetScopes` and `vetScopeUpdatedAt` unchanged (state-unchanged assertions).
+| Role          | Can pause/unpause | Can upgrade | Can edit registry |
+|---------------|-------------------|-------------|-------------------|
+| `Pauser`      | yes               | no          | no                |
+| `Upgrader`    | no                | yes         | no                |
+| `RegistryAdmin` | no              | no          | yes               |
+
+Each role is stored under its own key and checked independently. A caller
+holding one role cannot exercise another; attempts return `Error::Unauthorized`
+and leave state unchanged.
+
+### Pause / unpause
+
+- `pause(caller)` — requires `Pauser`; sets the paused flag and emits
+  `Paused { caller }`. Re-pausing an already-paused contract is a no-op that
+  returns `Error::AlreadyPaused` without mutating state.
+- `unpause(caller)` — requires `Pauser`; clears the paused flag and emits
+  `Unpaused { caller }`. Unpausing a non-paused contract returns
+  `Error::NotPaused` without mutating state.
+
+While paused, state-mutating entry points (including upgrade and registry edits)
+return `Error::Paused` and perform no writes. Read-only calls remain available.
+
+### Recovery path
+
+Unpausing requires the `Pauser` role. If the `Pauser` key is lost, recovery is
+performed by the `Upgrader` via `rotate_pauser(new_pauser)`, which is the only
+operation the `Upgrader` may perform while paused. This keeps a documented,
+bounded recovery path without granting the `Upgrader` direct pause authority.
+`rotate_pauser` emits `PauserRotated { old, new }` and rejects the zero address
+with `Error::InvalidAddress`.
+
+### Error codes (pause)
+
+| Code | Name            | Meaning                                    |
+|------|-----------------|--------------------------------------------|
+| 4    | `Paused`        | Contract is paused; mutation rejected      |
+| 5    | `AlreadyPaused` | Pause requested while already paused       |
+| 6    | `NotPaused`     | Unpause requested while not paused         |
+| 7    | `InvalidAddress`| Zero/invalid address supplied              |
+
+### Events (pause)
+
+- `Paused { caller }`
+- `Unpaused { caller }`
+- `PauserRotated { old, new }`
+
+### Storage version
+
+Role keys are added under the existing storage-version key; the version is
+bumped and a migration initializes `Pauser`, `Upgrader`, and `RegistryAdmin`
+from the prior admin key. No other layout changes are required.
+
+### Compatibility
+
+Public ABI adds `pause`, `unpause`, and `rotate_pauser` entry points plus the
+`Paused`, `Unpaused`, and `PauserRotated` events. Update compatibility fixtures
+when the ABI snapshot changes.
+
+## Two-Step Ownership Transfer
+
+Ownership changes require explicit recipient acceptance. The current owner
+proposes a recipient; ownership only moves once that recipient accepts. This
+prevents transfers to wrong or unreachable addresses.
+
+### Flow
+
+- `propose_owner(caller, new_owner)` — requires `caller == current owner`;
+  stores a pending transfer `{ new_owner, expires_at }` and emits
+  `OwnershipProposed { current, new_owner, expires_at }`. Proposing while a
+  pending transfer exists overwrites it (bounded to a single pending slot).
+- `accept_owner(caller)` — requires `caller == pending.new_owner` and
+  `ledger_time <= pending.expires_at`. On success, the prior owner is appended
+  to the owner history, ownership moves to `caller`, the pending slot is
+  cleared, and `OwnershipTransferred { previous, new_owner }` is emitted.
+- `cancel_owner_transfer(caller)` — requires `caller == current owner`; clears
+  the pending slot and emits `OwnershipTransferCancelled { current }`.
+- `owner_history()` — read-only view returning the bounded, append-only list of
+  prior owners (oldest first).
+
+### Expiry
+
+Pending transfers carry an `expires_at` ledger timestamp. Proposals with a
+zero or past deadline are rejected with `Error::InvalidDeadline`. Accepting an
+expired proposal returns `Error::TransferExpired` and leaves state unchanged;
+re-proposing replaces the expired slot. This bounds how long a stale proposal
+can be replayed.
+
+### Bounded history
+
+Owner history is append-only and capped at `MAX_OWNER_HISTORY = 32` entries.
+When the cap is reached the oldest entry is dropped, keeping persistent state
+growth bounded while retaining a verifiable recent chain of prior owners.
+
+### Authorization
+
+Only the current owner may propose or cancel; only the nominated recipient may
+accept. Unauthorized callers receive `Error::Unauthorized` and no state is
+mutated. Replay of an already-accepted or cancelled proposal fails because the
+pending slot is cleared on success.
+
+### Error codes (ownership)
+
+| Code | Name               | Meaning                                        |
+|------|--------------------|------------------------------------------------|
+| 8    | `NoPendingTransfer`| No pending ownership transfer to act on        |
+| 9    | `TransferExpired`  | Pending transfer deadline has passed           |
+| 10   | `InvalidDeadline`  | Proposed deadline is zero or in the past       |
+
+### Events (ownership)
+
+- `OwnershipProposed { current, new_owner, expires_at }`
+- `OwnershipTransferred { previous, new_owner }`
+- `OwnershipTransferCancelled { current }`
+
+### Storage version
+
+Ownership adds a pending-transfer key and an owner-history key under the
+existing storage-version key; the version is bumped and a migration seeds the
+history with the current owner. No other layout changes are required.
+
+### Compatibility
+
+Public ABI adds `propose_owner`, `accept_owner`, `cancel_owner_transfer`, and
+`owner_history` entry points plus the `OwnershipProposed`,
+`OwnershipTransferred`, and `OwnershipTransferCancelled` events. Update
+compatibility fixtures when the ABI snapshot changes.
+
+## Celo Cross-Chain Pet Identifier Mapping
+
+An explicit mapping from Celo pet identifiers to canonical PetChain identifiers
+lets off-chain Celo records resolve to a single canonical pet. Both directions
+are stored so uniqueness can be enforced in either direction.
+
+### Mapping rules
+
+- `set_pet_mapping(caller, celo_pet_id, canonical_pet_id)` — requires the
+  `RegistryAdmin` role (preserving existing authorization conventions). Stores
+  `celo_pet_id -> canonical_pet_id` and `canonical_pet_id -> celo_pet_id` and
+  emits `PetMappingSet { celo_pet_id, canonical_pet_id }`.
+- A `celo_pet_id` maps to at most one canonical id. Re-mapping a `celo_pet_id`
+  to a *different* canonical id returns `Error::MappingConflict` and leaves
+  state unchanged; re-mapping to the *same* canonical id is an idempotent no-op.
+- A `canonical_pet_id` cannot be double-mapped to a different `celo_pet_id`;
+  this also returns `Error::MappingConflict` without mutating state.
+- `revoke_pet_mapping(caller, celo_pet_id)` — requires `RegistryAdmin`; clears
+  both directions of the mapping and emits `PetMappingRevoked { celo_pet_id,
+  canonical_pet_id }`. Revoking a missing mapping returns
+  `Error::MappingNotFound` and leaves state unchanged (explicit error, not a
+  silent no-op).
+- `canonical_for(celo_pet_id)` / `celo_for(canonical_pet_id)` — read-only
+  lookups returning `Option<u64>`; missing entries return `None`.
+
+### Bounds
+
+Identifiers are `u64`; the zero id is rejected with `Error::InvalidPetId` to
+keep the mapping space well-defined. Each mapping occupies exactly two storage
+slots, so persistent state growth is bounded by the number of live mappings and
+fully reclaimed on revocation. No iteration over the mapping set is performed.
+
+### Authorization
+
+Only `RegistryAdmin` may set or revoke mappings. Unauthorized callers receive
+`Error::Unauthorized` and no state is mutated. While the contract is paused,
+set/revoke return `Error::Paused` and perform no writes; reads remain available.
+
+### Error codes (mapping)
+
+| Code | Name              | Meaning                                          |
+|------|-------------------|--------------------------------------------------|
+| 11   | `MappingConflict` | Id already mapped to a different counterpart     |
+| 12   | `MappingNotFound` | No mapping exists for the supplied id            |
+| 13   | `InvalidPetId`    | Zero/invalid pet identifier supplied             |
+
+### Events (mapping)
+
+- `PetMappingSet { celo_pet_id, canonical_pet_id }`
+- `PetMappingRevoked { celo_pet_id, canonical_pet_id }`
+
+### Storage version
+
+Mapping keys are added under the existing storage-version key; the version is
+bumped and a migration initializes the (empty) mapping tables. No other layout
+changes are required.
+
+### Compatibility
+
+Public ABI adds `set_pet_mapping`, `revoke_pet_mapping`, `canonical_for`, and
+`celo_for` entry points plus the `PetMappingSet` and `PetMappingRevoked`
+events. Update compatibility fixtures when the ABI snapshot changes.

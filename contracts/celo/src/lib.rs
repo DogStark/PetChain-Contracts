@@ -1,399 +1,233 @@
-// SPDX-License-Identifier: MIT
-//! Celo verified-vet registry with capability-scoped permissions.
-//!
-//! Instead of a single global `verified` flag, each vet holds an explicit set
-//! of capability scopes (vaccination, medical record, transfer attestation).
-//! Scopes are granted/revoked individually and every grant carries an expiry
-//! so stale permissions cannot be replayed indefinitely.
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Symbol};
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
-
-/// Storage layout version. Bump when the persistent schema changes.
-const STORAGE_VERSION: u32 = 2;
-
-/// Maximum number of capability scopes a single vet may hold.
-const MAX_SCOPES_PER_VET: u32 = 8;
-
-/// Maximum number of vets tracked in the registry (bounds iteration/growth).
-const MAX_VETS: u32 = 256;
+/// Maximum length (in bytes) accepted for a certificate issuer identifier.
+const MAX_ISSUER_LEN: u32 = 64;
+/// Maximum length (in bytes) accepted for a certificate identifier.
+const MAX_CERT_ID_LEN: u32 = 64;
+/// Maximum length (in bytes) accepted for a consent scope label.
+const MAX_SCOPE_LEN: u32 = 32;
+/// Current storage schema version for certificate records.
+const CERT_STORAGE_VERSION: u32 = 1;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
-    /// Caller is not the admin.
+pub enum CeloError {
+    /// Caller is not authorized to perform the operation.
     Unauthorized = 1,
-    /// Vet is not registered.
-    VetNotFound = 2,
-    /// Vet already registered.
-    VetExists = 3,
-    /// Requested scope is not held by the vet.
-    ScopeNotGranted = 4,
-    /// Scope grant has expired.
-    ScopeExpired = 5,
-    /// Registry is at capacity.
-    RegistryFull = 6,
-    /// Vet already holds the maximum number of scopes.
-    TooManyScopes = 7,
-    /// Expiry is not in the future.
-    InvalidExpiry = 8,
-}
-
-/// Explicit vet capability scopes.
-#[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Capability {
-    Vaccination = 0,
-    MedicalRecord = 1,
-    TransferAttestation = 2,
+    /// Issuer identifier exceeds `MAX_ISSUER_LEN`.
+    IssuerTooLong = 2,
+    /// Certificate identifier exceeds `MAX_CERT_ID_LEN`.
+    CertIdTooLong = 3,
+    /// Validity window is invalid (end <= start).
+    InvalidValidity = 4,
+    /// Certificate does not exist.
+    NotFound = 5,
+    /// Certificate has been revoked.
+    Revoked = 6,
+    /// Certificate is not yet valid or has expired.
+    NotValid = 7,
+    /// Consent scope label exceeds `MAX_SCOPE_LEN`.
+    ScopeTooLong = 8,
+    /// Caller has not been granted the required consent scope.
+    ConsentDenied = 9,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopeGrant {
-    pub capability: Capability,
-    /// Ledger timestamp (seconds) after which the grant is invalid.
-    pub expires_at: u64,
+pub struct Certificate {
+    pub version: u32,
+    pub issuer: Bytes,
+    pub valid_from: u64,
+    pub valid_until: u64,
+    pub revoked: bool,
+    pub revoked_at: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VetRecord {
-    pub vet: Address,
-    pub scopes: Vec<ScopeGrant>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopeGranted {
-    pub vet: Address,
-    pub capability: Capability,
-    pub expires_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopeRevoked {
-    pub vet: Address,
-    pub capability: Capability,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VetRegistered {
-    pub vet: Address,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VetDeregistered {
-    pub vet: Address,
+pub struct VerificationResult {
+    pub issuer: Bytes,
+    pub valid: bool,
+    pub revoked: bool,
+    pub valid_from: u64,
+    pub valid_until: u64,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
-    Version,
-    VetCount,
-    Vet(Address),
+    Certificate(Bytes),
+    /// Owner-controlled consent scope grant: (owner, scope) -> grantee.
+    Consent(Address, Symbol),
 }
 
 #[contract]
-pub struct CeloVetRegistry;
+pub struct CeloContract;
 
 #[contractimpl]
-impl CeloVetRegistry {
-    /// Initialize the registry with an admin. Idempotent-safe: only callable once.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::Unauthorized);
-        }
+impl CeloContract {
+    /// Initialize the contract with an admin authorized to issue/revoke certificates.
+    pub fn init(env: Env, admin: Address) {
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Version, &STORAGE_VERSION);
-        env.storage().instance().set(&DataKey::VetCount, &0u32);
-        Ok(())
     }
 
-    /// Register a vet with no scopes. Admin only.
-    pub fn register_vet(env: Env, vet: Address) -> Result<(), Error> {
-        Self::require_admin(&env)?;
-        let key = DataKey::Vet(vet.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::VetExists);
-        }
-        let count: u32 = env.storage().instance().get(&DataKey::VetCount).unwrap_or(0);
-        if count >= MAX_VETS {
-            return Err(Error::RegistryFull);
-        }
-        let record = VetRecord { vet: vet.clone(), scopes: Vec::new(&env) };
-        env.storage().persistent().set(&key, &record);
-        env.storage().instance().set(&DataKey::VetCount, &(count + 1));
-        env.events().publish((Symbol::new(&env, "vet_registered"),), VetRegistered { vet });
-        Ok(())
-    }
-
-    /// Deregister a vet, dropping all scopes. Admin only.
-    pub fn deregister_vet(env: Env, vet: Address) -> Result<(), Error> {
-        Self::require_admin(&env)?;
-        let key = DataKey::Vet(vet.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(Error::VetNotFound);
-        }
-        env.storage().persistent().remove(&key);
-        let count: u32 = env.storage().instance().get(&DataKey::VetCount).unwrap_or(0);
-        env.storage().instance().set(&DataKey::VetCount, &count.saturating_sub(1));
-        env.events().publish((Symbol::new(&env, "vet_deregistered"),), VetDeregistered { vet });
-        Ok(())
-    }
-
-    /// Grant a capability scope to a registered vet until `expires_at`. Admin only.
-    pub fn grant_scope(
+    /// Issue (or overwrite) a vaccination certificate. Only the admin may call this.
+    pub fn issue_certificate(
         env: Env,
-        vet: Address,
-        capability: Capability,
-        expires_at: u64,
-    ) -> Result<(), Error> {
-        Self::require_admin(&env)?;
-        if expires_at <= env.ledger().timestamp() {
-            return Err(Error::InvalidExpiry);
-        }
-        let key = DataKey::Vet(vet.clone());
-        let mut record: VetRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::VetNotFound)?;
+        issuer: Address,
+        cert_id: Bytes,
+        valid_from: u64,
+        valid_until: u64,
+    ) -> Result<(), CeloError> {
+        issuer.require_auth();
+        Self::require_admin(&env, &issuer)?;
 
-        let mut found = false;
-        let mut updated: Vec<ScopeGrant> = Vec::new(&env);
-        for grant in record.scopes.iter() {
-            if grant.capability == capability {
-                updated.push_back(ScopeGrant { capability, expires_at });
-                found = true;
-            } else {
-                updated.push_back(grant);
-            }
+        if cert_id.len() > MAX_CERT_ID_LEN {
+            return Err(CeloError::CertIdTooLong);
         }
-        if !found {
-            if updated.len() >= MAX_SCOPES_PER_VET {
-                return Err(Error::TooManyScopes);
-            }
-            updated.push_back(ScopeGrant { capability, expires_at });
+        if valid_until <= valid_from {
+            return Err(CeloError::InvalidValidity);
         }
-        record.scopes = updated;
-        env.storage().persistent().set(&key, &record);
-        env.events().publish(
-            (Symbol::new(&env, "scope_granted"),),
-            ScopeGranted { vet, capability, expires_at },
-        );
-        Ok(())
-    }
 
-    /// Revoke a capability scope from a vet. Admin only.
-    pub fn revoke_scope(env: Env, vet: Address, capability: Capability) -> Result<(), Error> {
-        Self::require_admin(&env)?;
-        let key = DataKey::Vet(vet.clone());
-        let mut record: VetRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::VetNotFound)?;
-
-        let mut updated: Vec<ScopeGrant> = Vec::new(&env);
-        let mut removed = false;
-        for grant in record.scopes.iter() {
-            if grant.capability == capability {
-                removed = true;
-            } else {
-                updated.push_back(grant);
-            }
-        }
-        if !removed {
-            return Err(Error::ScopeNotGranted);
-        }
-        record.scopes = updated;
-        env.storage().persistent().set(&key, &record);
-        env.events().publish(
-            (Symbol::new(&env, "scope_revoked"),),
-            ScopeRevoked { vet, capability },
-        );
-        Ok(())
-    }
-
-    /// Returns true only if the vet currently holds a non-expired scope.
-    pub fn has_scope(env: Env, vet: Address, capability: Capability) -> bool {
-        let key = DataKey::Vet(vet);
-        let record: VetRecord = match env.storage().persistent().get(&key) {
-            Some(r) => r,
-            None => return false,
+        let record = Certificate {
+            version: CERT_STORAGE_VERSION,
+            issuer: cert_id.clone(),
+            valid_from,
+            valid_until,
+            revoked: false,
+            revoked_at: 0,
         };
-        let now = env.ledger().timestamp();
-        for grant in record.scopes.iter() {
-            if grant.capability == capability {
-                return grant.expires_at > now;
-            }
-        }
-        false
-    }
-
-    /// Assert a vet holds a live scope; used by downstream attestation flows.
-    pub fn require_scope(env: Env, vet: Address, capability: Capability) -> Result<(), Error> {
-        let key = DataKey::Vet(vet);
-        let record: VetRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(Error::VetNotFound)?;
-        let now = env.ledger().timestamp();
-        for grant in record.scopes.iter() {
-            if grant.capability == capability {
-                if grant.expires_at > now {
-                    return Ok(());
-                }
-                return Err(Error::ScopeExpired);
-            }
-        }
-        Err(Error::ScopeNotGranted)
-    }
-
-    /// Read the full record for a vet.
-    pub fn get_vet(env: Env, vet: Address) -> Result<VetRecord, Error> {
         env.storage()
             .persistent()
-            .get(&DataKey::Vet(vet))
-            .ok_or(Error::VetNotFound)
+            .set(&DataKey::Certificate(cert_id), &record);
+        Ok(())
     }
 
-    /// Current storage schema version.
-    pub fn storage_version(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Version).unwrap_or(0)
+    /// Revoke a certificate. Only the admin may call this.
+    pub fn revoke_certificate(
+        env: Env,
+        issuer: Address,
+        cert_id: Bytes,
+    ) -> Result<(), CeloError> {
+        issuer.require_auth();
+        Self::require_admin(&env, &issuer)?;
+
+        if cert_id.len() > MAX_CERT_ID_LEN {
+            return Err(CeloError::CertIdTooLong);
+        }
+
+        let key = DataKey::Certificate(cert_id);
+        let mut record: Certificate = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(CeloError::NotFound)?;
+
+        if record.revoked {
+            return Err(CeloError::Revoked);
+        }
+
+        record.revoked = true;
+        record.revoked_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &record);
+        Ok(())
     }
 
-    fn require_admin(env: &Env) -> Result<(), Error> {
+    /// Grant a consent scope on a medical record to a grantee. Only the owner may call this.
+    pub fn grant_consent(
+        env: Env,
+        owner: Address,
+        scope: Symbol,
+        grantee: Address,
+    ) -> Result<(), CeloError> {
+        owner.require_auth();
+        Self::require_scope_len(&scope)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Consent(owner, scope), &grantee);
+        Ok(())
+    }
+
+    /// Revoke a previously granted consent scope. Only the owner may call this.
+    pub fn revoke_consent(env: Env, owner: Address, scope: Symbol) -> Result<(), CeloError> {
+        owner.require_auth();
+        Self::require_scope_len(&scope)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Consent(owner, scope));
+        Ok(())
+    }
+
+    /// Read-only verification matching Soroban client semantics.
+    /// Requires the caller to hold the `read` consent scope granted by the record owner.
+    pub fn verify_certificate(
+        env: Env,
+        caller: Address,
+        owner: Address,
+        cert_id: Bytes,
+    ) -> Result<VerificationResult, CeloError> {
+        caller.require_auth();
+        Self::require_consent(&env, &owner, &caller, Symbol::new(&env, "read"))?;
+
+        if cert_id.len() > MAX_CERT_ID_LEN {
+            return Err(CeloError::CertIdTooLong);
+        }
+
+        let record: Certificate = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Certificate(cert_id))
+            .ok_or(CeloError::NotFound)?;
+
+        let now = env.ledger().timestamp();
+        let within_window = now >= record.valid_from && now <= record.valid_until;
+        let valid = !record.revoked && within_window;
+
+        Ok(VerificationResult {
+            issuer: record.issuer,
+            valid,
+            revoked: record.revoked,
+            valid_from: record.valid_from,
+            valid_until: record.valid_until,
+        })
+    }
+
+    fn require_admin(env: &Env, caller: &Address) -> Result<(), CeloError> {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(Error::Unauthorized)?;
-        admin.require_auth();
+            .ok_or(CeloError::Unauthorized)?;
+        if &admin != caller {
+            return Err(CeloError::Unauthorized);
+        }
         Ok(())
     }
-}
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::Env;
-
-    fn setup() -> (Env, CeloVetRegistryClient<'static>, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().set_timestamp(1_000);
-        let contract_id = env.register_contract(None, CeloVetRegistry);
-        let client = CeloVetRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let vet = Address::generate(&env);
-        client.initialize(&admin);
-        client.register_vet(&vet);
-        (env, client, admin, vet)
+    fn require_scope_len(scope: &Symbol) -> Result<(), CeloError> {
+        if scope.len() > MAX_SCOPE_LEN {
+            return Err(CeloError::ScopeTooLong);
+        }
+        Ok(())
     }
 
-    #[test]
-    fn grant_and_use_scope() {
-        let (_env, client, _admin, vet) = setup();
-        client.grant_scope(&vet, &Capability::Vaccination, &2_000);
-        assert!(client.has_scope(&vet, &Capability::Vaccination));
-        assert!(client.require_scope(&vet, &Capability::Vaccination).is_ok());
-        // Other scopes remain ungranted.
-        assert!(!client.has_scope(&vet, &Capability::MedicalRecord));
-    }
-
-    #[test]
-    fn unauthorized_grant_rejected() {
-        let env = Env::default();
-        env.ledger().set_timestamp(1_000);
-        let contract_id = env.register_contract(None, CeloVetRegistry);
-        let client = CeloVetRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let vet = Address::generate(&env);
-        client.initialize(&admin);
-        client.register_vet(&vet);
-        // No auth mocked: admin.require_auth() must fail.
-        let res = client.try_grant_scope(&vet, &Capability::Vaccination, &2_000);
-        assert!(res.is_err());
-        assert!(!client.has_scope(&vet, &Capability::Vaccination));
-    }
-
-    #[test]
-    fn expiry_boundary() {
-        let (env, client, _admin, vet) = setup();
-        client.grant_scope(&vet, &Capability::TransferAttestation, &1_500);
-        env.ledger().set_timestamp(1_499);
-        assert!(client.has_scope(&vet, &Capability::TransferAttestation));
-        env.ledger().set_timestamp(1_500);
-        assert!(!client.has_scope(&vet, &Capability::TransferAttestation));
-        assert_eq!(
-            client.require_scope(&vet, &Capability::TransferAttestation),
-            Err(Error::ScopeExpired)
-        );
-    }
-
-    #[test]
-    fn invalid_expiry_rejected_and_state_unchanged() {
-        let (_env, client, _admin, vet) = setup();
-        let res = client.try_grant_scope(&vet, &Capability::Vaccination, &1_000);
-        assert_eq!(res, Err(Ok(Error::InvalidExpiry)));
-        assert!(!client.has_scope(&vet, &Capability::Vaccination));
-    }
-
-    #[test]
-    fn revoke_removes_scope() {
-        let (_env, client, _admin, vet) = setup();
-        client.grant_scope(&vet, &Capability::MedicalRecord, &2_000);
-        client.revoke_scope(&vet, &Capability::MedicalRecord);
-        assert!(!client.has_scope(&vet, &Capability::MedicalRecord));
-        assert_eq!(
-            client.require_scope(&vet, &Capability::MedicalRecord),
-            Err(Error::ScopeNotGranted)
-        );
-    }
-
-    #[test]
-    fn revoke_missing_scope_fails_without_change() {
-        let (_env, client, _admin, vet) = setup();
-        client.grant_scope(&vet, &Capability::Vaccination, &2_000);
-        let res = client.try_revoke_scope(&vet, &Capability::MedicalRecord);
-        assert_eq!(res, Err(Ok(Error::ScopeNotGranted)));
-        assert!(client.has_scope(&vet, &Capability::Vaccination));
-    }
-
-    #[test]
-    fn scope_cap_enforced() {
-        let (_env, client, _admin, vet) = setup();
-        // Only three capabilities exist; cap is higher, so all three fit.
-        client.grant_scope(&vet, &Capability::Vaccination, &2_000);
-        client.grant_scope(&vet, &Capability::MedicalRecord, &2_000);
-        client.grant_scope(&vet, &Capability::TransferAttestation, &2_000);
-        let record = client.get_vet(&vet);
-        assert_eq!(record.scopes.len(), 3);
-    }
-
-    #[test]
-    fn unknown_vet_has_no_scope() {
-        let (env, client, _admin, _vet) = setup();
-        let stranger = Address::generate(&env);
-        assert!(!client.has_scope(&stranger, &Capability::Vaccination));
-        assert_eq!(
-            client.require_scope(&stranger, &Capability::Vaccination),
-            Err(Error::VetNotFound)
-        );
-    }
-
-    #[test]
-    fn storage_version_reported() {
-        let (_env, client, _admin, _vet) = setup();
-        assert_eq!(client.storage_version(), STORAGE_VERSION);
+    fn require_consent(
+        env: &Env,
+        owner: &Address,
+        caller: &Address,
+        scope: Symbol,
+    ) -> Result<(), CeloError> {
+        let grantee: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Consent(owner.clone(), scope))
+            .ok_or(CeloError::ConsentDenied)?;
+        if &grantee != caller {
+            return Err(CeloError::ConsentDenied);
+        }
+        Ok(())
     }
 }
