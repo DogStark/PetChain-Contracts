@@ -7,6 +7,7 @@
 //! [`AuthenticatedAdmin`] is defined in [`super::auth`] and re-exported here
 //! for convenience.
 use crate::dead_letter::DlqEntry;
+use crate::error::ApiError;
 use crate::ip_access::{IpAccessEntry, IpAccessStore, IpListType};
 use crate::leaderboard::{FlaggedScoreStore, FlaggedScoreSubmission, InMemoryFlaggedScoreStore};
 use crate::rate_limiter::UserQuotaStore;
@@ -381,11 +382,26 @@ impl AdminRateLimitHandlers {
 
     /// POST /admin/rate-limits/quota — set per-user requests-per-minute limit.
     /// Takes effect on the user's next request window.
+    ///
+    /// The quota must be positive. A zero quota would silently block all
+    /// further 2FA enrollment and record storage for the user without an
+    /// explicit disable flag, so it is rejected as a bad request. Use the
+    /// dedicated disable endpoint for intentional suspension.
     pub fn set_user_quota(
         &self,
         _admin: &AuthenticatedAdmin,
         req: SetUserQuotaRequest,
-    ) -> Result<(), String> {
+    ) -> Result<(), ApiError> {
+        if req.requests_per_minute == 0 {
+            return Err(ApiError::bad_request(
+                "quota must be a positive integer (>= 1)",
+                Some(serde_json::json!({
+                    "field": "quota",
+                    "value": req.requests_per_minute,
+                })),
+            ));
+        }
+
         self.quota_store
             .set_quota(&req.user_id, req.requests_per_minute);
         Ok(())

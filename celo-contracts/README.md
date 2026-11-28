@@ -309,3 +309,17 @@ fixture still parses after a v2 schema ships.
 - Event schema snapshot check: CI compares the documented event schema against a
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
+
+## Cross-Chain Pet Identifier Mapping (#1501)
+
+Explicit 1-to-1 mapping from Celo `petId` records to normalized canonical PetChain identifiers with permanent revocation tombstones.
+
+### ABI & Storage Layout (`CROSS_CHAIN_MAPPING_VERSION = 1`)
+- **`CrossChainPetMapping` struct**: `{ uint256 petId, string canonicalPetChainId, uint16 schemaVersion, uint64 version, uint256 linkedAt, bool active, bool revoked }` stored in `_petCrossChainMapping[petId]`, with O(1) reverse lookup `_canonicalHashToPetId[keccak256(normalizedId)]` and replay tombstone `_revokedCanonicalHashes[keccak256(normalizedId)]` (no unbounded array iteration).
+- **`linkCrossChainPetId(uint256 petId, string canonicalPetChainId) returns (string normalizedId)`**: Authorized for `pets[petId].owner` or `admin` when not paused; normalizes via `normalizeIdentifier` (`1..64` printable uppercase ASCII bytes, spaces stripped), enforces 1-to-1 uniqueness, rejects tombstoned hashes, and increments per-pet `version`.
+- **`revokeCrossChainPetId(uint256 petId)`**: Authorized for `pets[petId].owner` or `admin` when not paused; clears reverse lookup and permanently sets `_revokedCanonicalHashes[idHash] = true` so the canonical ID can never be replayed on any pet.
+- **Read views**: `getCrossChainPetMapping(petId)`, `resolvePetIdByCanonicalId(canonicalPetChainId)`, `isCanonicalPetIdRevoked(canonicalPetChainId)`.
+
+### Events & Revert Reasons
+- **Events**: `CrossChainPetIdLinked(uint256 indexed petId, string canonicalPetChainId, uint64 version, address indexed linkedBy)` and `CrossChainPetIdRevoked(uint256 indexed petId, string canonicalPetChainId, uint64 version, address indexed revokedBy)`.
+- **Revert strings**: `"PetChainRegistry: pet does not exist"`, `"PetChainRegistry: pet inactive"`, `"PetChainRegistry: not authorized to link"`, `"PetChainRegistry: not authorized to revoke"`, `"PetChainRegistry: invalid identifier character"`, `"PetChainRegistry: invalid identifier length"`, `"PetChainRegistry: canonical id revoked"`, `"PetChainRegistry: canonical id already mapped"`, `"PetChainRegistry: pet already has active mapping"`, `"PetChainRegistry: no active mapping"`, plus OpenZeppelin `EnforcedPause()`.

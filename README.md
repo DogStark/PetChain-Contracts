@@ -14,15 +14,16 @@ budget snapshots.
 | Workflow | Representative worst-case call | Budgeted resources |
 | --- | --- | --- |
 | Registration | Register a pet with the maximum allowed metadata fields | instructions, memory, storage |
-| Record | Append a health record to a pet at the maximum record count | instructions, memory, storage |
+| Record | Append a record with maximum-length text fields to a pet with 49 records | instructions, memory, storage |
 | Consent | Grant consent to the maximum number of authorized parties | instructions, memory, storage |
-| Claim | Submit and settle a claim with the largest allowed payload | instructions, memory, storage |
-| Pagination | Page through the largest supported result set | instructions, memory |
+| Claim | Submit and settle a claim with a 1,000-byte description | instructions, memory, storage |
+| Pagination | Read a 50-record page | instructions, memory, storage |
 
 ### Budget snapshots
 
-Each workflow has a committed budget snapshot under `contracts/test/budgets/`. A snapshot
-records the measured `instructions`, `memory`, and `storage` values for that workflow.
+The budget test reads one JSON snapshot per workflow from `contracts/test/budgets/`.
+Each snapshot records Soroban host instructions, memory bytes, and net ledger-entry XDR
+bytes added. The initial measurements are pending a buildable contract test suite.
 
 ### Running the checks in CI
 
@@ -41,19 +42,22 @@ so the regression can be attributed without re-running the suite locally.
 Budgets are intentional baselines, not auto-generated values. To update a snapshot after a
 reviewed change:
 
-1. Run the budget tests with the baseline-update flag enabled.
-2. Review the diff in `contracts/test/budgets/` to confirm the increase is expected.
-3. Commit the updated snapshot together with the change that caused it.
+From the repository root, run:
+
+```sh
+UPDATE_RESOURCE_BUDGET_BASELINE=1 cargo test --locked -p petchain-stellar --lib --features budget-tests resource_budget_workflows
+```
+
+Review the JSON files in `contracts/test/budgets/` and commit the measured values
+with the corresponding change.
 
 Snapshots must only be raised deliberately; an unexplained increase should be treated as a
 regression and investigated before merging.
 
 ### Fixtures
 
-Budget tests use bounded, realistic fixtures: the largest inputs the contracts are expected
-to accept (maximum metadata fields, record counts, consent parties, claim payloads, and
-page sizes). Fixtures are capped so the tests stay deterministic and fast while still
-exercising the worst case for each workflow.
+Fixtures use contract limits where defined and fixed sizes for unbounded inputs.
+The measurements cover native Soroban test-host calls.
 
 ## Soroban Error Registry
 
@@ -579,8 +583,8 @@ MIT
 <!-- handsoff-issue-1492 -->
 - #1492: [Contracts] Add pedigree export with consented fields
 
-<!-- handsoff-issue-1640 -->
-- #1640: [Contracts] Insurance benefit section count bound (32) is not enforced at `create_enrollment_draft`
+<!-- handsoff-issue-1493 -->
+- #1493: [Contracts] Add Celo registry pet profile versioning
 
-<!-- handsoff-issue-1643 -->
-- #1643: [Contracts] `purge_deleted_records_bounded` does not emit a progress event — large purges are unobservable
+<!-- handsoff-issue-1495 -->
+- #1495: [Contracts] Add Celo medical record amendment chain
