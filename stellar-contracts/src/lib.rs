@@ -291,6 +291,8 @@ mod test_emergency_notify_rate_limit;
 #[cfg(test)]
 mod test_emergency_notify_replay;
 #[cfg(test)]
+mod test_emergency_contact_reindex;
+#[cfg(test)]
 mod test_error_registry;
 #[cfg(test)]
 mod test_get_pets_overdue_vaccinations;
@@ -12723,6 +12725,93 @@ impl PetChainContract {
             };
             env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
         }
+    }
+
+    /// Remove an emergency contact and keep priorities contiguous.
+    ///
+    /// `index` is the zero-based position in the priority-ordered contact list
+    /// (the same order returned by `get_contacts_ordered`). Remaining contacts
+    /// are reindexed as 1..=n so clients that iterate by priority never skip a
+    /// contact. If the removed contact was the primary one, the first remaining
+    /// contact is promoted. The owner's authorization is required and a failed
+    /// call leaves state unchanged.
+    pub fn remove_emergency_contact(env: Env, pet_id: u64, index: u32) {
+        let Some(mut pet) = env
+            .storage()
+            .instance()
+            .get::<_, Pet>(&DataKey::Pet(pet_id))
+        else {
+            panic_with_error!(&env, ContractError::PetNotFound);
+        };
+        pet.owner.require_auth();
+
+        let key = PetChainContract::get_encryption_key(&env);
+        let c_bytes = decrypt_sensitive_data(
+            &env,
+            &pet.encrypted_emergency_contacts.ciphertext,
+            &pet.encrypted_emergency_contacts.nonce,
+            &key,
+        )
+        .unwrap_or(Bytes::new(&env));
+        let contacts =
+            Vec::<EmergencyContact>::from_xdr(&env, &c_bytes).unwrap_or(Vec::new(&env));
+
+        if index >= contacts.len() {
+            panic_with_error!(&env, ContractError::InvalidInput);
+        }
+
+        // Normalise to priority order first: the stored vector may be in
+        // insertion order, while clients consume the priority-ordered view.
+        let mut ordered: Vec<EmergencyContact> = Vec::new(&env);
+        for i in 0..contacts.len() {
+            let contact = contacts.get(i).unwrap();
+            let mut inserted = false;
+            for j in 0..ordered.len() {
+                if contact.priority < ordered.get(j).unwrap().priority {
+                    ordered.insert(j, contact.clone());
+                    inserted = true;
+                    break;
+                }
+            }
+            if !inserted {
+                ordered.push_back(contact);
+            }
+        }
+
+        let mut removed_was_primary = false;
+        let mut remaining: Vec<EmergencyContact> = Vec::new(&env);
+        for i in 0..ordered.len() {
+            let contact = ordered.get(i).unwrap();
+            if i == index {
+                removed_was_primary = contact.is_primary;
+                continue;
+            }
+            let mut contact = contact;
+            if removed_was_primary && remaining.is_empty() {
+                contact.is_primary = true;
+            }
+            contact.priority = remaining.len() + 1;
+            remaining.push_back(contact);
+        }
+
+        // Rejects an empty list, duplicate identities and a list without a
+        // primary contact, so an invalid removal never reaches storage.
+        PetChainContract::validate_emergency_contacts(&env, &remaining);
+
+        let contacts_bytes = remaining.to_xdr(&env);
+        let (c_nonce, c_cipher) = encrypt_sensitive_data(&env, &contacts_bytes, &key);
+        pet.encrypted_emergency_contacts = EncryptedData {
+            nonce: c_nonce,
+            ciphertext: c_cipher,
+        };
+        pet.updated_at = env.ledger().timestamp();
+        env.storage().instance().set(&DataKey::Pet(pet_id), &pet);
+
+        // Identifiers only: no private contact data is published in events.
+        env.events().publish(
+            (Symbol::new(&env, "EmergencyContactRemoved"), pet_id),
+            index,
+        );
     }
 
     pub fn get_emergency_access_logs(
