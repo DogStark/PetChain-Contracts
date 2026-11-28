@@ -798,6 +798,17 @@ impl WebhookManager {
         // On permanent failure, push the payload to the Dead-Letter Queue
         // so it can be inspected and replayed later.
         if !success {
+            // Logged before the in-memory push so the event stays recoverable from
+            // log aggregation across restarts (the DLQ itself is not persisted).
+            tracing::error!(
+                event_type = %event_str,
+                user_id = %user_str,
+                url = %url,
+                attempts = attempt,
+                error = %last_error.as_deref().unwrap_or("unknown error"),
+                body = %body,
+                "webhook dead-lettered after exhausting retries"
+            );
             if let Ok(payload) = serde_json::from_str::<crate::webhooks::WebhookPayload>(body) {
                 let dlq_id = dlq_next_id.fetch_add(1, Ordering::Relaxed);
                 let entry = DlqEntry::new(
