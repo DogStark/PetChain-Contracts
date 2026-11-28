@@ -237,6 +237,11 @@ use std::sync::Arc;
 /// `X-Forwarded-For`), since that header can be spoofed by the client unless
 /// a trusted proxy strips/overwrites it — deployments behind a proxy should
 /// terminate TLS there and forward the real peer address instead.
+///
+/// Policy for requests with no peer address (Unix sockets, some proxy setups):
+/// they are rejected with `403` and logged at `warn`. The blocklist cannot be
+/// evaluated without an address, so failing open would silently disable IP
+/// blocking; a misconfigured deployment surfaces as rejected traffic instead.
 pub struct IpAccessMiddleware {
     store: Arc<dyn IpAccessStore>,
 }
@@ -290,9 +295,9 @@ where
             .map(|addr| self.store.check(addr.ip().to_canonical()) == IpAccessDecision::Blocked)
             .unwrap_or(false);
 
-        if blocked {
+        if let Some(message) = rejection {
             let request = req.request().clone();
-            let error = ApiError::forbidden("IP address is blocked", None);
+            let error = ApiError::forbidden(message, None);
             let response = HttpResponse::Forbidden().json(error).map_into_boxed_body();
             return Box::pin(async move { Ok(ServiceResponse::new(request, response)) });
         }
