@@ -94,55 +94,139 @@ pub fn select_secret_provider() -> Result<Box<dyn SecretProvider>, String> {
     }
 }
 
-/// Encrypt `plaintext` with AES-256-GCM using `key` (32 raw bytes, hex-encoded in env).
-/// Returns `nonce_hex || ":" || ciphertext_hex`.
-pub fn encrypt_secret(plaintext: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
-    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+/// AES-256 key tagged with the version byte written into every envelope.
+pub type VersionedKey = (u8, [u8; 32]);
+
+/// Key version assumed for legacy envelopes written before versioning (no version byte).
+const LEGACY_KEY_VERSION: u8 = 1;
+
+/// Typed failures from envelope decryption.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SecretEnvelopeError {
+    Malformed,
+    UnknownKeyVersion(u8),
+    AuthenticationFailed(u8),
+}
+
+impl std::fmt::Display for SecretEnvelopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Malformed => write!(f, "malformed encrypted secret envelope"),
+            Self::UnknownKeyVersion(v) => {
+                write!(f, "encrypted secret uses unloaded key version {v}")
+            }
+            Self::AuthenticationFailed(v) => {
+                write!(f, "encrypted secret failed authentication under key version {v}")
+            }
+        }
+    }
+}
+
+/// Encrypt `plaintext` with AES-256-GCM under `key`.
+/// Envelope: `hex(version || nonce) ":" hex(ciphertext)` (version is 1 byte, nonce 12 bytes).
+pub fn encrypt_secret(plaintext: &str, key: &VersionedKey) -> Result<String, String> {
+    let (version, key_bytes) = key;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
+    let mut header = [0u8; 13];
+    header[0] = *version;
+    OsRng.fill_bytes(&mut header[1..]);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(Nonce::from_slice(&header[1..]), plaintext.as_bytes())
         .map_err(|e| format!("encrypt error: {e}"))?;
-    Ok(format!(
-        "{}:{}",
-        hex::encode(nonce_bytes),
-        hex::encode(ciphertext)
-    ))
+    Ok(format!("{}:{}", hex::encode(header), hex::encode(ciphertext)))
 }
 
-/// Decrypt a value produced by `encrypt_secret`.
-pub fn decrypt_secret(encrypted: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
-    let (nonce_hex, ct_hex) = encrypted
+/// Decrypt an envelope produced by `encrypt_secret`, selecting the key by its version byte.
+/// Legacy 12-byte-nonce envelopes are read with `LEGACY_KEY_VERSION`.
+pub fn decrypt_secret(
+    encrypted: &str,
+    keys: &[VersionedKey],
+) -> Result<String, SecretEnvelopeError> {
+    let (header_hex, ct_hex) = encrypted
         .split_once(':')
-        .ok_or("invalid encrypted format")?;
-    let nonce_bytes = hex::decode(nonce_hex).map_err(|e| e.to_string())?;
-    let ct = hex::decode(ct_hex).map_err(|e| e.to_string())?;
-    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+        .ok_or(SecretEnvelopeError::Malformed)?;
+    let header = hex::decode(header_hex).map_err(|_| SecretEnvelopeError::Malformed)?;
+    let (version, nonce) = match header.len() {
+        13 => (header[0], &header[1..]),
+        12 => (LEGACY_KEY_VERSION, &header[..]),
+        _ => return Err(SecretEnvelopeError::Malformed),
+    };
+    let ct = hex::decode(ct_hex).map_err(|_| SecretEnvelopeError::Malformed)?;
+    let (_, key_bytes) = keys
+        .iter()
+        .find(|(v, _)| *v == version)
+        .ok_or(SecretEnvelopeError::UnknownKeyVersion(version))?;
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
     let plaintext = cipher
-        .decrypt(nonce, ct.as_ref())
-        .map_err(|_| "decrypt error: authentication tag mismatch".to_string())?;
-    String::from_utf8(plaintext).map_err(|e| e.to_string())
+        .decrypt(Nonce::from_slice(nonce), ct.as_ref())
+        .map_err(|_| SecretEnvelopeError::AuthenticationFailed(version))?;
+    String::from_utf8(plaintext).map_err(|_| SecretEnvelopeError::Malformed)
 }
 
-/// Load the 32-byte AES key from the secret provider (key name `TOTP_ENCRYPTION_KEY`).
-/// The env var / secret must be exactly 64 hex characters (32 bytes).
-fn load_encryption_key(provider: &dyn SecretProvider) -> Result<[u8; 32], String> {
-    let hex_key = provider.get_secret("TOTP_ENCRYPTION_KEY")?;
+/// Load a 32-byte AES key (64 hex chars) from the secret provider under `name`,
+/// tagged with its version from `<name>_VERSION` (defaults to `default_version`).
+fn load_encryption_key(
+    provider: &dyn SecretProvider,
+    name: &str,
+    default_version: u8,
+) -> Result<VersionedKey, String> {
+    let hex_key = provider.get_secret(name)?;
     let bytes = hex::decode(hex_key.trim()).map_err(|e| format!("invalid key hex: {e}"))?;
-    bytes
+    let key: [u8; 32] = bytes
         .try_into()
-        .map_err(|_| "TOTP_ENCRYPTION_KEY must be 32 bytes (64 hex chars)".to_string())
+        .map_err(|_| format!("{name} must be 32 bytes (64 hex chars)"))?;
+    let version = provider
+        .get_secret(&format!("{name}_VERSION"))
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default_version);
+    Ok((version, key))
+}
+
+/// Load the current key (`TOTP_ENCRYPTION_KEY`, first) and optionally the previous
+/// key (`TOTP_ENCRYPTION_KEY_PREVIOUS`) still needed to read rows not yet re-encrypted.
+fn load_encryption_keys(provider: &dyn SecretProvider) -> Vec<VersionedKey> {
+    let mut keys = Vec::new();
+    if let Ok(current) =
+        load_encryption_key(provider, "TOTP_ENCRYPTION_KEY", LEGACY_KEY_VERSION)
+    {
+        let previous_version = current.0.saturating_sub(1);
+        keys.push(current);
+        if let Ok(previous) =
+            load_encryption_key(provider, "TOTP_ENCRYPTION_KEY_PREVIOUS", previous_version)
+        {
+            keys.push(previous);
+        }
+    }
+    keys
+}
+
+/// Re-encrypt `encrypted` under `current` if it is not already at that key version.
+/// Used by the bounded rotation migration in [`PostgresTwoFactorStore::reencrypt_batch`].
+pub fn reencrypt_secret(
+    encrypted: &str,
+    current: &VersionedKey,
+    keys: &[VersionedKey],
+) -> Result<Option<String>, String> {
+    let header = encrypted
+        .split_once(':')
+        .and_then(|(h, _)| hex::decode(h).ok())
+        .ok_or_else(|| SecretEnvelopeError::Malformed.to_string())?;
+    let version = if header.len() == 13 { header[0] } else { LEGACY_KEY_VERSION };
+    if version == current.0 {
+        return Ok(None);
+    }
+    let plaintext = decrypt_secret(encrypted, keys).map_err(|e| e.to_string())?;
+    encrypt_secret(&plaintext, current).map(Some)
 }
 
 #[derive(Debug)]
 pub struct PostgresTwoFactorStore {
     pool: PgPool,
     runtime: Arc<Runtime>,
-    enc_key: Option<[u8; 32]>,
+    /// Current key first (used for writes), then any previous keys (read-only).
+    /// Empty means secrets are stored in plain text.
+    enc_keys: Vec<VersionedKey>,
 }
 
 impl PostgresTwoFactorStore {
@@ -190,7 +274,7 @@ impl PostgresTwoFactorStore {
         Ok(Self {
             pool,
             runtime,
-            enc_key: None,
+            enc_keys: Vec::new(),
         })
     }
 
@@ -202,9 +286,7 @@ impl PostgresTwoFactorStore {
     ) -> Result<Self, String> {
         let database_url = provider.get_secret(secret_key)?;
         let mut store = PostgresTwoFactorStore::connect(&database_url)?;
-        if let Ok(key) = load_encryption_key(provider) {
-            store.enc_key = Some(key);
-        }
+        store.enc_keys = load_encryption_keys(provider);
         Ok(store)
     }
 
@@ -213,8 +295,52 @@ impl PostgresTwoFactorStore {
         Ok(Self {
             pool,
             runtime,
-            enc_key: None,
+            enc_keys: Vec::new(),
         })
+    }
+
+    /// Rotation step: re-encrypt rows after `after_user_id` (up to `limit`) that are not
+    /// yet under the current key version. Returns the cursor for the next batch (`None`
+    /// once the table is exhausted) and the number of rows rewritten. Loop until `None`.
+    pub fn reencrypt_batch(
+        &self,
+        after_user_id: &str,
+        limit: i64,
+    ) -> Result<(Option<String>, u64), String> {
+        let current = self
+            .enc_keys
+            .first()
+            .ok_or_else(|| "TOTP_ENCRYPTION_KEY not configured".to_string())?;
+        let rows = self.with_retry(|| {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT user_id, secret FROM user_two_factor WHERE user_id > $1 ORDER BY user_id LIMIT $2",
+            )
+            .bind(after_user_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+        })?;
+        let Some((last_id, _)) = rows.last() else {
+            return Ok((None, 0));
+        };
+        let next_cursor = Some(last_id.clone());
+        let mut rewritten = 0;
+        for (user_id, secret) in &rows {
+            if let Some(new_secret) = reencrypt_secret(secret, current, &self.enc_keys)? {
+                // Compare-and-set on the old value so a concurrent write is never clobbered.
+                self.with_retry(|| {
+                    sqlx::query(
+                        "UPDATE user_two_factor SET secret = $1, updated_at = CURRENT_TIMESTAMP \
+                         WHERE user_id = $2 AND secret = $3",
+                    )
+                    .bind(&new_secret)
+                    .bind(user_id)
+                    .bind(secret)
+                    .execute(&self.pool)
+                })?;
+                rewritten += 1;
+            }
+        }
+        Ok((next_cursor, rewritten))
     }
 
     fn block_on<F, T>(&self, future: F) -> Result<T, String>
@@ -312,7 +438,7 @@ impl PostgresTwoFactorStore {
     pub async fn save_async(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
         let user_id = user_id.to_string();
-        let secret = match &self.enc_key {
+        let secret = match self.enc_keys.first() {
             Some(key) => encrypt_secret(&data.secret, key)?,
             None => data.secret.clone(),
         };
@@ -360,9 +486,10 @@ impl PostgresTwoFactorStore {
 
         let (raw_secret, backup_codes, enabled, algorithm) =
             row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
-        let secret = match &self.enc_key {
-            Some(key) => decrypt_secret(&raw_secret, key).unwrap_or(raw_secret),
-            None => raw_secret,
+        let secret = if self.enc_keys.is_empty() {
+            raw_secret
+        } else {
+            decrypt_secret(&raw_secret, &self.enc_keys).map_err(|e| e.to_string())?
         };
         let backup_codes = serde_json::from_str(&backup_codes).map_err(|e| e.to_string())?;
 
@@ -472,7 +599,7 @@ impl TwoFactorStore for PostgresTwoFactorStore {
     fn save(&self, user_id: &str, data: TwoFactorData) -> Result<(), String> {
         let backup_codes = serde_json::to_string(&data.backup_codes).map_err(|e| e.to_string())?;
         let user_id = user_id.to_string();
-        let secret = match &self.enc_key {
+        let secret = match self.enc_keys.first() {
             Some(key) => encrypt_secret(&data.secret, key)?,
             None => data.secret.clone(),
         };
@@ -516,9 +643,10 @@ impl TwoFactorStore for PostgresTwoFactorStore {
 
         let (raw_secret, backup_codes, enabled, algorithm) =
             row.ok_or_else(|| format!("No 2FA data found for user: {}", user_id))?;
-        let secret = match &self.enc_key {
-            Some(key) => decrypt_secret(&raw_secret, key).unwrap_or(raw_secret),
-            None => raw_secret,
+        let secret = if self.enc_keys.is_empty() {
+            raw_secret
+        } else {
+            decrypt_secret(&raw_secret, &self.enc_keys).map_err(|e| e.to_string())?
         };
         let backup_codes = serde_json::from_str(&backup_codes).map_err(|e| e.to_string())?;
 
@@ -1777,8 +1905,8 @@ mod tests {
     // AES-256-GCM encryption tests (#832)
     // -----------------------------------------------------------------------
 
-    fn test_key() -> [u8; 32] {
-        [0x42u8; 32]
+    fn test_key() -> VersionedKey {
+        (1, [0x42u8; 32])
     }
 
     #[test]
@@ -1786,7 +1914,7 @@ mod tests {
         let key = test_key();
         let plaintext = "JBSWY3DPEHPK3PXP";
         let encrypted = encrypt_secret(plaintext, &key).unwrap();
-        let decrypted = decrypt_secret(&encrypted, &key).unwrap();
+        let decrypted = decrypt_secret(&encrypted, &[key]).unwrap();
         assert_eq!(decrypted, plaintext);
         // ciphertext must differ from plaintext
         assert_ne!(encrypted, plaintext);
@@ -1801,7 +1929,7 @@ mod tests {
         let mut ct_bytes = hex::decode(ct_hex).unwrap();
         ct_bytes[0] ^= 0xFF;
         let tampered = format!("{}:{}", nonce_hex, hex::encode(ct_bytes));
-        let result = decrypt_secret(&tampered, &key);
+        let result = decrypt_secret(&tampered, &[key]);
         assert!(result.is_err(), "tampered ciphertext must fail decryption");
     }
 
@@ -1814,7 +1942,7 @@ mod tests {
         // Must not be stored in plain text
         assert!(!encrypted.contains(secret));
         // Must round-trip correctly
-        assert_eq!(decrypt_secret(&encrypted, &key).unwrap(), secret);
+        assert_eq!(decrypt_secret(&encrypted, &[key]).unwrap(), secret);
     }
 
     /// Issue #1042 — `connect()` must time out quickly on an unreachable host
