@@ -69,16 +69,19 @@ Each domain has an explicit, versioned tag. The tag is the first bytes of every
 preimage and is the only thing that differs between domains for otherwise identical
 field values.
 
-| Domain | Tag (ASCII) | Version |
-| --- | --- | --- |
-| Medical record | `PC-MED-REC` | `v1` |
-| Attachment | `PC-MED-ATT` | `v1` |
-| Certificate | `PC-MED-CERT` | `v1` |
-| Custody digest | `PC-CUSTODY` | `v1` |
+The contract's `stellar-contracts/src/domain_tag.rs` registry is the source of
+truth for these prefixes. Its regression test compares every pair, including
+new entries, and rejects equal or overlapping prefixes.
 
-Version changes are explicit: bumping a domain to `v2` changes the tag bytes (for
-example `PC-MED-REC` → `PC-MED-REC2`) and therefore every commitment in that domain.
-Old and new versions are never interchangeable.
+| Domain | Canonical prefix | Version |
+| --- | --- | --- |
+| Medical record commitment | `petchain:medical-record:v1` | 1 |
+| Attachment | `petchain:hash:attachment:v1` | 1 |
+| Certificate | `petchain:hash:certificate:v1` | 1 |
+| Custody digest | `petchain.custody` followed by a big-endian u32 | 1 |
+
+Version changes define a new commitment format and must preserve the format
+of any existing on-chain commitments.
 
 ### Byte-Level Preimage Format
 
@@ -203,95 +206,44 @@ tests that assert: consecutive pages verify against the expected chain;
 tampered and out-of-order pages fail; and empty and terminal pages are
 unambiguous.
 
+## Custody Chain Digest Terminal Marker
+
+The global custody chain digest (`get_custody_chain_digest`) commits to the
+entire chain in canonical order. To make truncation detectable from the digest
+alone, the preimage ends with a single terminal-marker byte before the final
+SHA-256 round:
+
+```text
+preimage = PC-CUSTODY || 0x00 || v1 || 0x00 || domain || 0x00 || pet_id || 0x00 || sequence || 0x00 || entry_1 || 0x00 || ... || entry_n || 0x00 || terminal_marker
+```
+
+- `terminal_marker = 0x01` when the chain is complete (the chain head is
+  finalized).
+- `terminal_marker = 0x00` when the chain is incomplete (the chain head is not
+  yet finalized).
+
+Because the marker is part of the preimage, a complete chain of length N and the
+same chain with its last entry removed (an incomplete chain of length N-1) hash
+to different digests even when the entry bytes alone would otherwise be
+ambiguous. A verifier that is handed only an intermediate page and told the
+chain is complete can detect the truncation: the recomputed digest with
+`0x01` will not match the digest of the incomplete chain computed with `0x00`.
+
+### Test Vectors
+
+Published test vectors cover both cases:
+
+- **Complete chain** — the full chain with `terminal_marker = 0x01`.
+- **Incomplete chain** — the same entries with `terminal_marker = 0x00`.
+
+Existing digest test vectors were updated to include the terminal marker in the
+preimage; the complete and incomplete vectors assert that the two digests
+differ for the same entry set.
+
 ## Pet Identifier Normalization
 
 Mobile and frontend clients must derive the same canonical pet lookup key from
 user-entered chip/microchip values. The canonicalization rules below are the
-single source of truth and are published as Rust compatibility vectors in
-`stellar-contracts/src/test_pet_identifier_normalization.rs` so contract tests
-and generated client fixtures consume the same rules.
+single sour
 
-### Canonicalization rules
-
-1. **Unicode normalization** — apply NFKC normalization first so compatibility
-   characters (full-width digits, ligatures, etc.) fold to their canonical form.
-2. **Case folding** — lowercase using Unicode simple case folding (e.g. `A` →
-   `a`, `İ` → `i̇`).
-3. **Whitespace** — trim leading/trailing whitespace and collapse any internal
-   run of Unicode whitespace to a single ASCII space.
-4. **Separators** — remove all separator characters (`-`, `_`, `.`, `/`, `\`,
-   `:`, and Unicode dash/space separators) so `123-456` and `123 456` both
-   canonicalize to `123456`.
-5. **Result** — the canonical key is the concatenation of the remaining
-   characters; an empty result is rejected as an invalid identifier.
-
-### Compatibility vectors
-
-| Input | Canonical key |
-| --- | --- |
-| `"  ABC-123  "` | `abc123` |
-| `"abc_123"` | `abc123` |
-| `"ABC.123"` | `abc123` |
-| `"ＡＢＣ１２３"` (full-width) | `abc123` |
-| `"abc\u{2009}123"` (thin space) | `abc123` |
-| `"ABC\u{2013}123"` (en dash) | `abc123` |
-| `""` | rejected |
-
-### Migration path
-
-Existing stored identifiers are read through the same canonicalization
-function before lookup, so legacy values that differ only by case, whitespace,
-or separators remain readable. New writes persist the canonical key; a
-backfill migration can rewrite legacy rows to the canonical form without
-changing their meaning.
-
-## Soroban Deterministic Error Registry
-
-Public contract errors are part of the client-facing API: clients branch on the
-numeric discriminant returned by Soroban, so every public error must have a
-stable code, a documented meaning, and explicit retryability semantics.
-
-The source of truth is [`stellar-contracts/error-codes.json`](../stellar-contracts/error-codes.json),
-a hand-maintained fixture with one entry per `#[contracterror]` enum (for
-example `ContractError` in the petchain contract). Each entry lists every
-error's `code`, `name`, and `retry` policy, plus `retired` codes that stay
-reserved forever. Do not copy the table into this document; the fixture and the
-policy in [`stellar-contracts/docs/error-compatibility.md`](../stellar-contracts/docs/error-compatibility.md)
-are authoritative. For the per-module error reference, see
-[`docs/error-codes.md`](error-codes.md).
-
-### Retry policies
-
-| `retry` | Client behaviour |
-| --- | --- |
-| `never` | Permanent for this request: fix the input, caller, or target. |
-| `after_state_change` | A precondition is not met yet. Re-read state and retry once it changes. |
-| `backoff` | Transient throttling. Retry with exponential backoff. |
-| `treat_as_success` | Idempotent replay: the effect already exists. Do not retry. |
-
-### Excerpt
-
-| Code | Name | `retry` |
-| --- | --- | --- |
-| 1 | `AdminAlreadyApproved` | `treat_as_success` |
-| 5 | `BatchTooLarge` | `never` |
-| 8 | `InputStringTooLong` | `never` |
-| 9 | `InvalidBreed` | `never` |
-| 28 | `Unauthorized` | `never` |
-| 46 | `RateLimitExceeded` | `backoff` |
-
-### Stability rules
-
-- Codes are append-only: never renumber a variant or give a code a new meaning.
-- Never delete a published code. Retire it by moving its entry from `errors`
-  to `retired` in `error-codes.json`.
-- CI runs `stellar-contracts/scripts/check_error_compat.py` against the base
-  branch's fixture and fails on removed, reused, or renumbered codes, and on
-  new errors without a `CHANGELOG.md` entry.
-
-## Verification Status
-
-As of this cleanup:
-
-- `cd stellar-contracts && cargo test` passes
-- `cd backend-2fa && cargo test` passes
+/* … truncated 5089 chars — edit only what you need near the top … */

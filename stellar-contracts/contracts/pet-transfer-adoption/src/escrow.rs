@@ -117,7 +117,6 @@ pub fn bps_share(amount: i128, bps: u32) -> Result<i128, EscrowError> {
         .checked_add(remainder)
         .ok_or(EscrowError::InvalidAmount)
 }
-}
 
 /// Platform fee for `amount`, rounded down to a whole stroop.
 pub fn compute_platform_fee(amount: i128, fee_bps: u32) -> Result<i128, EscrowError> {

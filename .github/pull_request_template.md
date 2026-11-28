@@ -21,6 +21,13 @@ Closes #[issue_id]
 - [ ] Performance improvement
 - [ ] Security fix
 
+## Contract Changes
+
+<!-- If this PR says it adds or changes contract functionality, it must touch the matching src/*.rs file. Docs-only changes must not claim new entry points. -->
+
+- [ ] Every new or changed entry point, error, storage key, or event is in `src/*.rs`
+- [ ] Any README or docs changes match the code in this PR (N/A if no contract changes)
+
 ## Testing Done
 
 <!-- Describe the tests you ran and how to reproduce them. -->

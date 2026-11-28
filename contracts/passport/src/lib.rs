@@ -32,7 +32,7 @@ pub enum PassportField {
 const STORAGE_VERSION: u32 = 1;
 /// Maximum number of selectable fields (bounded iteration / state growth).
 const MAX_FIELDS: u32 = 6;
-/// Maximum number of snapshots retained per owner (bounded persistent growth).
+/// Maximum number of unrevoked snapshots per owner. Revocation frees headroom.
 const MAX_SNAPSHOTS: u32 = 64;
 
 #[contracttype]
@@ -406,6 +406,16 @@ impl PassportContract {
         env.storage()
             .persistent()
             .set(&DataKey::SnapshotRevoked(owner.clone(), version), &revocation);
+
+        // Revoked snapshots no longer count against the live cap; the audit record stays.
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SnapshotCount(owner.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SnapshotCount(owner.clone()), &count.saturating_sub(1));
 
         env.events().publish(
             (symbol_short!("snap_revoke"), owner),
