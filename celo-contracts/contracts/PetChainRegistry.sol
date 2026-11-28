@@ -445,6 +445,14 @@ contract PetChainRegistry is Pausable {
     // -------------------------------------------------------------------------
 
     /// @notice Add a medical record for a pet. Only callable by verified vets.
+    /// @dev    Gas cost: diagnosis, treatment and notes are written in full to contract
+    ///         storage (up to 3 x MAX_LONG_LEN bytes), on top of the commitment hash in
+    ///         `medicalRecordCommitments`. Each new 32-byte slot costs ~20k gas (SSTORE,
+    ///         zero to non-zero), so a record with three full-length strings costs on the
+    ///         order of 2M gas for storage alone. The commitment alone is not enough today:
+    ///         `verifyMedicalRecordCommitment` and `getPetRecords*` read the stored text.
+    ///         Hash-only storage with content off-chain (e.g. IPFS) would change the record
+    ///         layout and verification flow, so it is a breaking change, not a drop-in fix.
     /// @param petId      ID of the pet.
     /// @param recordType Category of the record.
     /// @param diagnosis  Diagnosis text (1–MAX_LONG_LEN bytes).
