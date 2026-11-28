@@ -75,6 +75,7 @@ enum DataKey {
 const EVT_REGISTERED: Symbol = symbol_short!("reg_vet");
 const EVT_VERIFIED: Symbol = symbol_short!("ver_vet");
 const EVT_REVOKED: Symbol = symbol_short!("rev_vet");
+const EVT_ADMIN_TRANSFERRED: Symbol = symbol_short!("adm_xfer");
 
 /// ======================================================
 /// ERRORS
@@ -116,7 +117,7 @@ fn validate_len(env: &Env, s: &String, max: u32) {
     }
 }
 
-fn require_admin(env: &Env) {
+fn require_admin(env: &Env) -> Address {
     let admin: Address = env
         .storage()
         .instance()
@@ -124,6 +125,7 @@ fn require_admin(env: &Env) {
         .unwrap_or_else(|| panic_with_error!(env, ContractError::Unauthorized));
 
     admin.require_auth();
+    admin
 }
 
 fn get_vet(env: &Env, vet_address: &Address) -> Vet {
@@ -165,8 +167,10 @@ impl VetRegistryContract {
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) {
-        require_admin(&env);
+        let old_admin = require_admin(&env);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish((EVT_ADMIN_TRANSFERRED,), (old_admin, new_admin));
     }
 
     /// ----------------------------------
