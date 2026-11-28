@@ -26,6 +26,7 @@ pub enum BreedingError {
     StringTooLong = 12,
     InvalidDepth = 13,
     ConsentRequired = 14,
+    SelfPairReservation = 15,
 }
 
 #[contracttype]
@@ -264,6 +265,10 @@ impl PetChainBreedingContract {
         end_ledger: u32,
     ) -> Result<u64, BreedingError> {
         breeder.require_auth();
+
+        if dam_id == sire_id {
+            return Err(BreedingError::SelfPairReservation);
+        }
 
         let current_ledger = env.ledger().sequence();
         if start_ledger >= end_ledger || end_ledger <= current_ledger {
@@ -638,6 +643,18 @@ mod tests {
         // State remains uncompleted
         let record = client.get_follow_up_obligation(&oblig_id);
         assert!(!record.completed);
+    }
+
+    #[test]
+    fn test_reserve_breeding_pair_rejects_same_pet_as_dam_and_sire() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_sequence_number(100);
+
+        let (client, breeder) = setup_client(&env);
+
+        let result = client.try_reserve_breeding_pair(&breeder, &42, &42, &200, &300);
+        assert_eq!(result, Err(Ok(BreedingError::SelfPairReservation)));
     }
 
     #[test]

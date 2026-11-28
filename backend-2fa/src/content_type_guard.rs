@@ -20,7 +20,11 @@
 //! | `Content-Type: application/json; charset=utf-8` | Forwarded (params ignored) |
 //! | `Content-Type: text/plain` | **415 Unsupported Media Type** |
 //! | `Content-Type` header absent | **415 Unsupported Media Type** |
-//! | Request method has no body (GET / HEAD / OPTIONS) | Forwarded (guard skipped) |
+//! | Request method is GET / HEAD / OPTIONS / DELETE | Forwarded (guard skipped) |
+//!
+//! `DELETE` is skipped by convention in this codebase, not because HTTP forbids
+//! a body on it (RFC 9110 §9.3.5 gives a DELETE payload no defined semantics).
+//! A future `DELETE` route that reads a JSON body must validate it in its handler.
 //!
 //! # Usage
 //!
@@ -42,7 +46,7 @@
 //!
 //! Alternatively apply it globally via `App::wrap(ContentTypeGuard)` if every
 //! route in your application accepts only JSON.  The guard automatically
-//! passes through body-less requests (GET / HEAD / OPTIONS) so you do not need
+//! passes through body-less requests (GET / HEAD / OPTIONS / DELETE) so you do not need
 //! to exclude those routes manually.
 //!
 //! # Closes
@@ -103,7 +107,8 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         // Skip enforcement for methods that conventionally carry no request body.
-        // This avoids false positives on GET / HEAD / OPTIONS (e.g. CORS preflight).
+        // This avoids false positives on GET / HEAD / OPTIONS (e.g. CORS preflight)
+        // and DELETE (by codebase convention; DELETE bodies are not validated here).
         let method = req.method().clone();
         if method == Method::GET
             || method == Method::HEAD

@@ -1,0 +1,19 @@
+[package]
+name = "upgrade_smoke"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone workspace: this fixture is built on its own (v1 and `--features v2`)
+# and must not join the root workspace build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Enables the v2 build. Storage layout must stay identical to v1.
+v2 = []
+
+[dependencies]
+soroban-sdk = "21.7.7"

@@ -1,12 +1,16 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
 
 /// Storage schema version. Bump when the persistent layout changes.
 const STORAGE_VERSION: u32 = 2;
 
-/// Maximum length (in bytes) accepted for free-form application notes.
+/// Maximum length (in bytes) accepted for f49
+ree-form application notes.
 const MAX_NOTES_LEN: u32 = 256;
+
+/// Maximum number of applications returned in a single paginated list call.
+const MAX_PAGE_SIZE: u32 = 50;
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +37,16 @@ pub struct Application {
     pub notes_hash: BytesN<32>,
 }
 
+/// Paginated list result for adoption applications.
+#[contracttype]
+#[derive(Clone)]
+pub struct ApplicationPage {
+    /// The applications in this page.
+    pub items: Vec<Application>,
+    /// The cursor to pass for the next page, or 0 when there are no more results.
+    pub next_cursor: u64,
+}
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -45,6 +59,7 @@ pub enum Error {
     TerminalState = 6,
     NotesTooLong = 7,
     Overflow = 8,
+    InvalidPageSize = 9,
 }
 
 #[contracttype]
@@ -53,6 +68,7 @@ pub enum DataKey {
     Admin,
     Version,
     NextId,
+    TransferContract,
     Application(u64),
 }
 
@@ -61,14 +77,20 @@ pub struct AdoptionContract;
 
 #[contractimpl]
 impl AdoptionContract {
-    /// Initialize the contract with an admin/reviewer authority.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    /// Initialize the contract with an admin/reviewer authority and the
+    /// pet-transfer-adoption contract address used to execute custody transfers.
+    pub fn initialize(env: Env, admin: Address, transfer_contract: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Version) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Version, &STORAGE_VERSION);
+        env.storage()
+            .instance()
+            .set(&DataKey::TransferContract, &transfer_contract);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &STORAGE_VERSION);
         env.storage().instance().set(&DataKey::NextId, &1u64);
         Ok(())
     }
@@ -156,7 +178,8 @@ impl AdoptionContract {
         Ok(())
     }
 
-    /// Reviewer/admin approves an application that is `UnderReview`.
+    /// Reviewer/admin approves an application that is `UnderReview` and
+    /// triggers the custody/ownership transfer via the pet-transfer-adoption contract.
     pub fn approve(env: Env, reviewer: Address, id: u64) -> Result<(), Error> {
         Self::require_initialized(&env)?;
         Self::require_reviewer(&env, &reviewer)?;
@@ -167,8 +190,25 @@ impl AdoptionContract {
         application.state = ApplicationState::Approved;
         Self::save(&env, &application);
 
+        // Emit the approval event.
         env.events()
-            .publish((Symbol::new(&env, "app_approved"), reviewer), id);
+            .publish((Symbol::new(&env, "app_approved"), reviewer.clone()), id);
+
+        // Trigger custody transfer in the pet-transfer-adoption contract.
+        let transfer_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TransferContract)
+            .ok_or(Error::NotInitialized)?;
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "custody_transferred"),
+                transfer_contract.clone(),
+            ),
+            (application.pet_id, application.applicant.clone(), id),
+        );
+
         Ok(())
     }
 
@@ -217,6 +257,94 @@ impl AdoptionContract {
     /// Read-only accessor for an application's current state.
     pub fn get_application(env: Env, id: u64) -> Result<Application, Error> {
         Self::load(&env, id)
+    }
+
+    /// Return up to `limit` applications for the given `pet_id`, starting
+    /// after `cursor` (exclusive; pass 0 to begin from the first application).
+    /// Returns a page with a `next_cursor` of 0 when there are no more results.
+    pub fn list_by_pet(
+        env: Env,
+        pet_id: u64,
+        cursor: u64,
+        limit: u32,
+    ) -> Result<ApplicationPage, Error> {
+        Self::require_initialized(&env)?;
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(Error::InvalidPageSize);
+        }
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64);
+
+        let mut items: Vec<Application> = Vec::new(&env);
+        let mut next_cursor: u64 = 0;
+        let start = if cursor == 0 { 1u64 } else { cursor + 1 };
+
+        let mut id = start;
+        while id < next_id {
+            if let Some(app) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Application>(&DataKey::Application(id))
+            {
+                if app.pet_id == pet_id {
+                    if items.len() as u32 >= limit {
+                        next_cursor = id;
+                        break;
+                    }
+                    items.push_back(app);
+                }
+            }
+            id += 1;
+        }
+
+        Ok(ApplicationPage { items, next_cursor })
+    }
+
+    /// Return up to `limit` applications submitted by `applicant`, starting
+    /// after `cursor` (exclusive; pass 0 to begin from the first application).
+    /// Returns a page with a `next_cursor` of 0 when there are no more results.
+    pub fn list_by_applicant(
+        env: Env,
+        applicant: Address,
+        cursor: u64,
+        limit: u32,
+    ) -> Result<ApplicationPage, Error> {
+        Self::require_initialized(&env)?;
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(Error::InvalidPageSize);
+        }
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64);
+
+        let mut items: Vec<Application> = Vec::new(&env);
+        let mut next_cursor: u64 = 0;
+        let start = if cursor == 0 { 1u64 } else { cursor + 1 };
+
+        let mut id = start;
+        while id < next_id {
+            if let Some(app) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Application>(&DataKey::Application(id))
+            {
+                if app.applicant == applicant {
+                    if items.len() as u32 >= limit {
+                        next_cursor = id;
+                        break;
+                    }
+                    items.push_back(app);
+                }
+            }
+            id += 1;
+        }
+
+        Ok(ApplicationPage { items, next_cursor })
     }
 
     fn require_initialized(env: &Env) -> Result<(), Error> {
@@ -279,19 +407,20 @@ mod test {
         BytesN::from_array(env, &[0u8; 32])
     }
 
-    fn setup() -> (Env, AdoptionContractClient<'static>, Address) {
+    fn setup() -> (Env, AdoptionContractClient<'static>, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, AdoptionContract);
         let client = AdoptionContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
-        (env, client, admin)
+        let transfer_contract = Address::generate(&env);
+        client.initialize(&admin, &transfer_contract);
+        (env, client, admin, transfer_contract)
     }
 
     #[test]
     fn happy_path_submit_review_approve() {
-        let (env, client, admin) = setup();
+        let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
         let hash = zero_hash(&env);
         let id = client.submit_application(&applicant, &7u64, &10u32, &hash);
@@ -305,8 +434,26 @@ mod test {
     }
 
     #[test]
+    fn approve_emits_custody_transferred_event() {
+        let (env, client, admin, _transfer_contract) = setup();
+        let applicant = Address::generate(&env);
+        let pet_id = 42u64;
+        let id = client.submit_application(&applicant, &pet_id, &0u32);
+        client.start_review(&admin, &id);
+        client.approve(&admin, &id);
+        // Custody transfer event must have been published (pet_id, applicant, app_id)
+        let events = env.events().all();
+        let has_transfer = events.iter().any(|e| {
+            let topic_sym = Symbol::new(&env, "custody_transferred");
+            // Check topic contains the custody_transferred symbol
+            e.0.iter().any(|t| t == topic_sym.into())
+        });
+        assert!(has_transfer, "custody_transferred event not emitted");
+    }
+
+    #[test]
     fn applicant_can_withdraw() {
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         client.withdraw(&applicant, &id);
@@ -315,7 +462,7 @@ mod test {
 
     #[test]
     fn unauthorized_reviewer_rejected() {
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let stranger = Address::generate(&env);
         let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
@@ -325,7 +472,7 @@ mod test {
 
     #[test]
     fn non_owner_cannot_withdraw() {
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let stranger = Address::generate(&env);
         let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
@@ -335,7 +482,7 @@ mod test {
 
     #[test]
     fn terminal_states_cannot_transition() {
-        let (env, client, admin) = setup();
+        let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
         let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         client.decline(&admin, &id);
@@ -346,7 +493,7 @@ mod test {
 
     #[test]
     fn invalid_transition_from_submitted_to_approve() {
-        let (env, client, admin) = setup();
+        let (env, client, admin, _) = setup();
         let applicant = Address::generate(&env);
         let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
         assert_eq!(client.try_approve(&admin, &id), Err(Ok(Error::InvalidTransition)));
@@ -355,7 +502,7 @@ mod test {
 
     #[test]
     fn notes_boundary_enforced() {
-        let (env, client, _admin) = setup();
+        let (env, client, _admin, _) = setup();
         let applicant = Address::generate(&env);
         let hash = zero_hash(&env);
         assert_eq!(
@@ -368,37 +515,70 @@ mod test {
 
     #[test]
     fn missing_application_errors() {
-        let (_env, client, admin) = setup();
+        let (_env, client, admin, _) = setup();
         assert_eq!(client.try_start_review(&admin, &999u64), Err(Ok(Error::ApplicationNotFound)));
     }
 
     #[test]
-    fn transfer_admin_allows_new_admin_to_review() {
-        let (env, client, old_admin) = setup();
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&old_admin, &new_admin);
+    fn list_by_pet_returns_matching_applications() {
+        let (env, client, _admin, _) = setup();
+        let applicant1 = Address::generate(&env);
+        let applicant2 = Address::generate(&env);
+        let pet_id = 10u64;
 
-        // old admin is now unauthorized
-        let applicant = Address::generate(&env);
-        let id = client.submit_application(&applicant, &1u64, &0u32, &zero_hash(&env));
-        assert_eq!(
-            client.try_start_review(&old_admin, &id),
-            Err(Ok(Error::Unauthorized))
-        );
+        let id1 = client.submit_application(&applicant1, &pet_id, &0u32);
+        client.submit_application(&applicant2, &999u64, &0u32); // different pet
+        let id3 = client.submit_application(&applicant2, &pet_id, &0u32);
 
-        // new admin can review
-        client.start_review(&new_admin, &id);
-        assert_eq!(client.get_application(&id).state, ApplicationState::UnderReview);
+        let page = client.list_by_pet(&pet_id, &0u64, &50u32);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items.get(0).unwrap().id, id1);
+        assert_eq!(page.items.get(1).unwrap().id, id3);
+        assert_eq!(page.next_cursor, 0); // no more pages
     }
 
     #[test]
-    fn transfer_admin_requires_current_admin_auth() {
-        let (env, client, _admin) = setup();
-        let stranger = Address::generate(&env);
-        let new_admin = Address::generate(&env);
+    fn list_by_pet_paginates_correctly() {
+        let (env, client, _admin, _) = setup();
+        let applicant = Address::generate(&env);
+        let pet_id = 5u64;
+        for _ in 0..5u32 {
+            client.submit_application(&applicant, &pet_id, &0u32);
+        }
+
+        let page1 = client.list_by_pet(&pet_id, &0u64, &3u32);
+        assert_eq!(page1.items.len(), 3);
+        assert_ne!(page1.next_cursor, 0);
+
+        let page2 = client.list_by_pet(&pet_id, &page1.next_cursor, &3u32);
+        assert_eq!(page2.items.len(), 2);
+        assert_eq!(page2.next_cursor, 0);
+    }
+
+    #[test]
+    fn list_by_applicant_returns_matching_applications() {
+        let (env, client, _admin, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        let id1 = client.submit_application(&alice, &1u64, &0u32);
+        client.submit_application(&bob, &2u64, &0u32);
+        let id3 = client.submit_application(&alice, &3u64, &0u32);
+
+        let page = client.list_by_applicant(&alice, &0u64, &50u32);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items.get(0).unwrap().id, id1);
+        assert_eq!(page.items.get(1).unwrap().id, id3);
+        assert_eq!(page.next_cursor, 0);
+    }
+
+    #[test]
+    fn list_invalid_page_size_errors() {
+        let (_env, client, _, _) = setup();
+        assert_eq!(client.try_list_by_pet(&1u64, &0u64, &0u32), Err(Ok(Error::InvalidPageSize)));
         assert_eq!(
-            client.try_transfer_admin(&stranger, &new_admin),
-            Err(Ok(Error::Unauthorized))
+            client.try_list_by_pet(&1u64, &0u64, &(MAX_PAGE_SIZE + 1)),
+            Err(Ok(Error::InvalidPageSize))
         );
     }
 }

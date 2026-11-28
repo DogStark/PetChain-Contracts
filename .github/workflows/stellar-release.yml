@@ -214,6 +214,12 @@ jobs:
         working-directory: stellar-contracts
         run: bash scripts/clean_checkout_test.sh
 
+      - name: Download release artifacts from build-and-verify
+        uses: actions/download-artifact@v7
+        with:
+          name: stellar-release-${{ github.ref_name }}
+          path: stellar-contracts/release-artifacts
+
       - name: Verify release checksums against provenance
         working-directory: stellar-contracts
         run: bash scripts/verify_release.sh ${{ github.ref_name }}

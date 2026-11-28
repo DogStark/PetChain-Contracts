@@ -1912,3 +1912,72 @@ fn test_upgrade_algorithm_user_not_found() {
     assert_eq!(err.code, "NOT_FOUND");
     assert!(err.message.contains("not configured"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1648 — per-user quota must be positive
+// ---------------------------------------------------------------------------
+
+mod quota_validation_tests {
+    use crate::handlers::{AdminRateLimitHandlers, AuthenticatedAdmin, SetUserQuotaRequest};
+    use crate::rate_limiter::UserQuotaStore;
+    use actix_web::ResponseError;
+    use std::sync::Arc;
+
+    fn admin() -> AuthenticatedAdmin {
+        AuthenticatedAdmin::new("admin-1")
+    }
+
+    fn request(user_id: &str, quota: u32) -> SetUserQuotaRequest {
+        SetUserQuotaRequest {
+            user_id: user_id.to_string(),
+            requests_per_minute: quota,
+        }
+    }
+
+    #[test]
+    fn zero_quota_is_rejected_with_http_400_and_does_not_mutate_existing_quota() {
+        let store = Arc::new(UserQuotaStore::new());
+        store.set_quota("user-1", 100);
+        let handlers = AdminRateLimitHandlers::new(store.clone());
+
+        let err = handlers
+            .set_user_quota(&admin(), request("user-1", 0))
+            .expect_err("a zero quota must be rejected");
+
+        assert_eq!(err.code, "BAD_REQUEST");
+        assert_eq!(err.status_code(), actix_web::http::StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("positive"));
+        assert_eq!(
+            err.details
+                .as_ref()
+                .and_then(|d| d.get("field"))
+                .and_then(|v| v.as_str()),
+            Some("quota")
+        );
+        assert_eq!(store.quota("user-1"), Some(100));
+    }
+
+    #[test]
+    fn zero_quota_does_not_create_a_store_entry() {
+        let store = Arc::new(UserQuotaStore::new());
+        let handlers = AdminRateLimitHandlers::new(store.clone());
+
+        assert!(handlers
+            .set_user_quota(&admin(), request("new-user", 0))
+            .is_err());
+        assert_eq!(store.quota("new-user"), None);
+    }
+
+    #[test]
+    fn positive_quota_is_accepted() {
+        let store = Arc::new(UserQuotaStore::new());
+        let handlers = AdminRateLimitHandlers::new(store.clone());
+
+        for quota in [1, 42, u32::MAX] {
+            handlers
+                .set_user_quota(&admin(), request("user-1", quota))
+                .expect("positive quotas must be accepted");
+            assert_eq!(store.quota("user-1"), Some(quota));
+        }
+    }
+}

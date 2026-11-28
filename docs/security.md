@@ -1,6 +1,6 @@
 # Security Policy
 
-`DogStark/PetChain-Contracts` takes the security of our smart contracts and protocol seriously. We appreciate the efforts of security researchers and community members in keeping our ecosystem safe.
+The authoritative security policy for this repository is [SECURITY.md](../SECURITY.md) at the repository root. It covers supported versions, how to report a vulnerability, response timelines, triage states, and disclosure terms.
 
 ## 1. Supported Versions
 
@@ -20,8 +20,7 @@ We apply security updates and bug fixes to the following active versions:
 
 Please submit all vulnerability reports privately using one of the following channels:
 
-* **Email:** [security@petchain.dog](mailto:security@petchain.dog) *(Update with your team's security email address)*
-* **Encrypted Reporting:** [Insert PGP Key or Security Portal Link if applicable]
+* **Email:** [security@petchain.dog](mailto:security@petchain.dog)
 
 ### What to Include in Your Report
 
