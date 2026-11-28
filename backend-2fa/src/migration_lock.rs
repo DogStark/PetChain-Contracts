@@ -87,7 +87,9 @@ pub struct MigrationRunner<E: SqlExecutor> {
 }
 
 impl<E: SqlExecutor> MigrationRunner<E> {
-    pub fn new(executor: E, migrations: Vec<Migration>) -> Self {
+    pub fn new(executor: E, mut migrations: Vec<Migration>) -> Self {
+        // Apply in ascending version order regardless of the caller's Vec order.
+        migrations.sort_by_key(|m| m.version);
         Self {
             executor,
             migrations,
