@@ -5,5 +5,5 @@ stellar-contracts/Cargo.lock
 test_snapshots/test/test
 ISSUES.md
 node_modules
-.env
 somzilla.md
+config.bat

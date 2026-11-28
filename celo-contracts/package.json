@@ -7,8 +7,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "lint": "solhint 'contracts/**/*.sol'",
-    "gas:snapshot": "hardhat test test/gas.registry.test.js",
-    "gas:check": "hardhat test test/gas.registry.test.js",
+    "gas:snapshot": "REPORT_GAS=true GAS_REPORT_FILE=gas-snapshot.txt hardhat test",
+    "gas:check": "REPORT_GAS=true GAS_REPORT_FILE=/tmp/celo-gas-current.txt hardhat test && diff -u gas-snapshot.txt /tmp/celo-gas-current.txt",
     "license:check": "node scripts/check-licenses.js",
     "license:check:json": "node scripts/check-licenses.js --json",
     "dep-policy:test-fixtures": "node scripts/test-dep-policy-fixtures.js"

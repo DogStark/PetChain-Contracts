@@ -155,7 +155,10 @@ impl MedicationContract {
     }
 
     /// Fetch a stored schedule for the owner.
+    ///
+    /// Authorization: only the schedule's owner may read it.
     pub fn get_schedule(env: Env, owner: Address, id: u64) -> Result<DoseSchedule, MedicationError> {
+        owner.require_auth();
         let key = DataKey { owner, id };
         env.storage()
             .persistent()
@@ -214,8 +217,9 @@ impl MedicationContract {
     /// Returns true when the schedule is eligible for refills.
     ///
     /// A schedule is eligible only while it exists and has not been
-    /// discontinued.
+    /// discontinued. Authorization: only the schedule's owner may query it.
     pub fn is_refill_eligible(env: Env, owner: Address, id: u64) -> bool {
+        owner.require_auth();
         let key = DataKey {
             owner: owner.clone(),
             id,

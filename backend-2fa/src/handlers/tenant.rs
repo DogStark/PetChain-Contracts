@@ -100,6 +100,10 @@ fn validate_tenant_config(config: &TenantConfig) -> Result<(), ApiError> {
 /// Handlers that operate within a single tenant's namespace.
 /// All user data is scoped to the tenant; cross-tenant access is rejected
 /// at the `TenantScopedStore` level.
+///
+/// The enroll/verify/disable flows here are a separate implementation of the
+/// ones in [`TwoFactorHandlers`](super::auth::TwoFactorHandlers), not a shared
+/// one. Any security fix to either must be checked against the other.
 pub struct MultiTenantHandlers {
     store: TenantScopedStore,
     limiter: Arc<dyn RateLimiter>,

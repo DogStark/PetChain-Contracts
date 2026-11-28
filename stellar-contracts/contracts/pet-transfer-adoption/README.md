@@ -144,6 +144,8 @@ Returns the current pending transfer, or `None` if there is no active transfer.
 
 ## Error Codes
 
+The full registry for this contract's `ContractError` and `EscrowError` enums, and for `vet-registry`, is in [Registered Error Enums](../../../docs/error-codes.md#registered-error-enums-error-codesjson). The table below describes the transfer and custody errors.
+
 | Code | Error | Meaning |
 |---|---|---|
 | 1 | `PetNotFound` | The requested pet does not exist. |
@@ -155,7 +157,8 @@ Returns the current pending transfer, or `None` if there is no active transfer.
 | 7 | `MissingOwnershipRecord` | The latest ownership record could not be loaded. |
 | 8 | `TransferNotExpired` | `reclaim_transfer` was called before the expiry window elapsed. |
 | 9 | `StaleCancellation` | The sender tried to cancel a transfer after the pet owner had changed. |
-| 32 | `InputStringTooLong` | A string argument exceeded its maximum allowed length. |
+| 33 | `InputStringTooLong` | A string argument exceeded its maximum allowed length. |
+| 34 | `AdoptionNotExpired` | An adoption was expired before its expiry window elapsed. |
 | 35 | `CustodyNotConfirmed` | `finalize_transfer` was called before both parties confirmed custody. |
 | 36 | `CustodyAlreadyConfirmed` | The caller already confirmed custody, or both parties have confirmed and the transfer can no longer be cancelled. |
 | 37 | `CustodyConfirmationExpired` | `confirm_custody` was called after the confirmation window closed. |
