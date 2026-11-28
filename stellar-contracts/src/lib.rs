@@ -413,16 +413,22 @@ const MAX_CUSTODY_CHAIN: u32 = 100;
 /// Maximum index slots inspected per `compact_consents_bounded` call.
 const MAX_CONSENT_CLEANUP_STEPS: u32 = 50;
 
+#[cfg(all(test, feature = "budget-tests"))]
+mod resource_budgets;
+
+mod domain_tag;
+use domain_tag::DomainTag;
+
 /// Canonical domain string for the chain-of-custody digest
 /// ([`PetChainContract::get_custody_chain_digest`]). The domain binds the
 /// digest to this contract so digests of identical chains from other domains
 /// cannot be confused.
-pub const CUSTODY_DIGEST_DOMAIN: &str = "petchain.custody";
+pub const CUSTODY_DIGEST_DOMAIN: &str = DomainTag::Custody.tag();
 
 /// Canonical digest format version. Bump whenever the canonical entry
 /// serialisation or digest construction changes. Consumers must only compare
 /// digests that share the same domain and version.
-pub const CUSTODY_DIGEST_VERSION: u32 = 1;
+pub const CUSTODY_DIGEST_VERSION: u32 = DomainTag::Custody.version();
 
 /// Maximum number of signers in `MultisigConfig::signers`.
 /// Practical governance cap; more signers = larger XDR + more gas for threshold checks.
@@ -11183,12 +11189,12 @@ impl PetChainContract {
     /// domain and every earlier version of the same domain.
     fn hash_domain_tag(domain: &HashDomain) -> &'static [u8] {
         match domain {
-            HashDomain::Evidence => b"petchain:hash:evidence:v1",
-            HashDomain::Attachment => b"petchain:hash:attachment:v1",
-            HashDomain::ClaimDocument => b"petchain:hash:claim-document:v1",
-            HashDomain::Certificate => b"petchain:hash:certificate:v1",
-            HashDomain::MedicalRecord => b"petchain:hash:medical-record:v1",
-            HashDomain::TagId => b"petchain:hash:tag-id:v1",
+            HashDomain::Evidence => DomainTag::Evidence.tag().as_bytes(),
+            HashDomain::Attachment => DomainTag::Attachment.tag().as_bytes(),
+            HashDomain::ClaimDocument => DomainTag::ClaimDocument.tag().as_bytes(),
+            HashDomain::Certificate => DomainTag::Certificate.tag().as_bytes(),
+            HashDomain::MedicalRecord => DomainTag::MedicalRecord.tag().as_bytes(),
+            HashDomain::TagId => DomainTag::TagId.tag().as_bytes(),
         }
     }
 
@@ -16027,7 +16033,7 @@ impl PetChainContract {
     /// clients may have already anchored off-chain.
     fn canonical_medical_record_preimage(env: &Env, record: &MedicalRecord) -> Bytes {
         let mut preimage = Bytes::new(env);
-        for byte in b"petchain:medical-record:v1" {
+        for byte in DomainTag::MedicalRecordCommitment.tag().as_bytes() {
             preimage.push_back(*byte);
         }
         for byte in record.pet_id.to_be_bytes() {

@@ -69,16 +69,19 @@ Each domain has an explicit, versioned tag. The tag is the first bytes of every
 preimage and is the only thing that differs between domains for otherwise identical
 field values.
 
-| Domain | Tag (ASCII) | Version |
-| --- | --- | --- |
-| Medical record | `PC-MED-REC` | `v1` |
-| Attachment | `PC-MED-ATT` | `v1` |
-| Certificate | `PC-MED-CERT` | `v1` |
-| Custody digest | `PC-CUSTODY` | `v1` |
+The contract's `stellar-contracts/src/domain_tag.rs` registry is the source of
+truth for these prefixes. Its regression test compares every pair, including
+new entries, and rejects equal or overlapping prefixes.
 
-Version changes are explicit: bumping a domain to `v2` changes the tag bytes (for
-example `PC-MED-REC` → `PC-MED-REC2`) and therefore every commitment in that domain.
-Old and new versions are never interchangeable.
+| Domain | Canonical prefix | Version |
+| --- | --- | --- |
+| Medical record commitment | `petchain:medical-record:v1` | 1 |
+| Attachment | `petchain:hash:attachment:v1` | 1 |
+| Certificate | `petchain:hash:certificate:v1` | 1 |
+| Custody digest | `petchain.custody` followed by a big-endian u32 | 1 |
+
+Version changes define a new commitment format and must preserve the format
+of any existing on-chain commitments.
 
 ### Byte-Level Preimage Format
 
