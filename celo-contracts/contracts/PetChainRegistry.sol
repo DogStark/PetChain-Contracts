@@ -397,6 +397,9 @@ contract PetChainRegistry is Pausable {
         require(to != from, "PetChainRegistry: self transfer");
 
         // All validation above; state writes below (issue #1326).
+        if (pendingPetTransfers[petId].active) {
+            pendingPetTransfers[petId].active = false;
+        }
         _removeOwnerPet(from, petId);
         pets[petId].owner = to;
         _ownerPets[to].push(petId);
