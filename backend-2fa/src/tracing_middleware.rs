@@ -46,6 +46,12 @@ impl TraceContext {
         let parent_span_id = parts[2];
         let flags = parts[3];
 
+        // W3C Trace Context version 00 is the only version this middleware
+        // understands. Do not propagate a context with an unknown version.
+        if version != "00" {
+            return None;
+        }
+
         // Validate format: version (2 hex), trace_id (32 hex), parent_span_id (16 hex), flags (2 hex)
         if version.len() != 2
             || trace_id.len() != 32
@@ -173,11 +179,10 @@ where
 
         // Parse traceparent header for W3C Trace Context propagation.
         // Use synthesize_trace_context which respects TRACE_CONTEXT_AUTOGENERATE.
-        let trace_context = synthesize_trace_context(
+        let trace_context = trace_context_from_header(
             req.headers()
                 .get(TRACEPARENT_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(TraceContext::parse),
+                .and_then(|v| v.to_str().ok()),
         );
 
         if let Some(tc) = &trace_context {
@@ -246,6 +251,29 @@ fn autogenerate_trace_context_enabled() -> bool {
     std::env::var("TRACE_CONTEXT_AUTOGENERATE").as_deref() != Ok("0")
 }
 
+/// Parse and validate an incoming traceparent before deciding what to propagate.
+/// Unknown (but syntactically valid) versions are explicitly warned about and
+/// discarded; synthesis then creates a fresh version-00 context when enabled.
+fn trace_context_from_header(header: Option<&str>) -> Option<TraceContext> {
+    let incoming = header.and_then(|value| {
+        let version = value.split('-').next().unwrap_or_default();
+        if version.len() == 2
+            && version.chars().all(|character| character.is_ascii_hexdigit())
+            && version != "00"
+        {
+            tracing::warn!(
+                traceparent_version = %version,
+                "Ignoring traceparent with unsupported version"
+            );
+            return None;
+        }
+
+        TraceContext::parse(value)
+    });
+
+    synthesize_trace_context(incoming)
+}
+
 /// Given an already-parsed trace context (from an incoming header or `None`),
 /// decide what to propagate:
 /// - If a parsed context exists, return it as-is.
@@ -290,6 +318,38 @@ mod tests {
         // Ensure TraceContext::parse accepts it
         let header = format!("00-{trace_id}-0000000000000000-01");
         assert!(TraceContext::parse(&header).is_some());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_traceparent_versions() {
+        let unknown_version =
+            "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(unknown_version).is_none());
+
+        let future_version =
+            "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        assert!(TraceContext::parse(future_version).is_none());
+    }
+
+    #[test]
+    fn unsupported_traceparent_version_generates_fresh_context() {
+        let previous = std::env::var("TRACE_CONTEXT_AUTOGENERATE").ok();
+        std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE");
+
+        let incoming =
+            "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let generated = trace_context_from_header(Some(incoming))
+            .expect("unsupported version should fall back to a generated context");
+
+        assert_eq!(generated.trace_id.len(), 32);
+        assert_ne!(generated.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(generated.parent_span_id, "0000000000000000");
+        assert_eq!(generated.flags, "01");
+
+        match previous {
+            Some(value) => std::env::set_var("TRACE_CONTEXT_AUTOGENERATE", value),
+            None => std::env::remove_var("TRACE_CONTEXT_AUTOGENERATE"),
+        }
     }
 
     #[test]

@@ -745,7 +745,7 @@ components:
           example: user_abc123
         quota:
           type: integer
-          description: Maximum number of storage entries
+          description: Maximum number of storage entries. Must be at least 1; use the explicit disable endpoint to suspend a user.
           minimum: 1
           example: 5000
 

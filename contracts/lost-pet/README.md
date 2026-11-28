@@ -1,139 +1,104 @@
 # Lost-Pet Contract
 
-Soroban contract module for public lost-pet alerts.
+Soroban contract module for public lost-pet alerts. This README describes only
+what is implemented in `src/lib.rs`.
 
-## Privacy-preserving location cells
+## Entry points
 
-Public lost-pet alerts store only a **coarse geospatial cell** so that a pet's
-approximate area can be shared without exposing the owner's precise location.
-Precise coordinates are kept **owner-only** and are only readable when the owner
-has explicitly granted consent.
-
-### Storage layout
-
-| Key | Value | Visibility |
-| --- | --- | --- |
-| `Cell(pet_id)` | coarse cell id (bounded integer) | public |
-| `Precise(pet_id)` | precise coordinates | owner-only, consent-gated |
-| `Consent(pet_id, viewer)` | consent flag | owner-managed |
-
-Storage-version conventions are preserved: new entries are written under the
-existing versioned key namespace and existing keys are not migrated in place.
-
-### Authorization
-
-- Writing a cell or precise coordinates requires the pet owner's authorization.
-- Reading precise coordinates requires the owner's authorization **and** an
-explicit consent entry for the caller.
-- Reading a coarse cell is public and requires no authorization.
-
-### Bounds and limits
-
-- Cell ids are bounded to the valid cell range; out-of-range values are rejected.
-- Iteration over cells is bounded to a fixed maximum per call.
-- Persistent state growth is bounded by one cell and at most one precise record
-  per pet, plus one consent entry per granted viewer.
-
-## Active-alert index and pagination
-
-Active alerts are listed through a stable, cursor-based index keyed by region
-and status. The index is append-only per alert and never rewrites existing
-entries, so cursors remain valid across concurrent writes.
-
-### `list_active_alerts`
-
-`list_active_alerts(region, status, cursor, page_size)` returns a bounded page
-of active alerts for the given region and status.
-
-- `page_size` is bounded to a fixed maximum; larger values are rejected with
-  `PageSizeOutOfRange` and zero is rejected as well.
-- The returned cursor is **opaque**: callers must pass it back unmodified and
-  must not parse or construct cursors themselves.
-- A cursor is bound to the index **generation** it was issued under. Any
-  operation that changes the index generation (for example a region/status
-  reindex) invalidates outstanding cursors; a stale cursor is rejected with
-  `CursorInvalid` rather than silently returning shifted results.
-- Iteration per call is bounded to `page_size` entries, so a single call can
-  never scan the whole index.
-- A `None` cursor starts from the beginning of the index for that
-  region/status pair.
-
-### Duplicate-alert detection
-
-While an owner has an active alert for a `pet_name`, `create_alert` with the
-same `(owner, pet_name)` is rejected with `DuplicateAlert`; state is unchanged.
-
-Changed circumstances have two resolution paths:
-
-1. Close the earlier alert with `resolve_alert`, `withdraw_alert` or
-   `expire_alert`, then call `create_alert` for the same pet.
-2. Call `create_linked_alert(owner, resolver, pet_name, last_seen, region, deadline, supersedes)`.
-   `supersedes` must be the owner's active alert for the same `pet_name`. That
-   alert is resolved, the new alert's `linked_to` is set to `supersedes`, and
-   `AlertClosed` and `AlertLinked` events are emitted.
-
-Either path keeps at most one active alert per `(owner, pet_name)` in the index.
-
-### Storage layout (alerts)
-
-| Key | Value | Visibility |
-| --- | --- | --- |
-| `AlertIndex(region, status, seq)` | alert id | public |
-| `AlertIndexGeneration(region, status)` | generation counter | public |
-| `ActiveAlertByPet(pet_id)` | active alert id | public |
-
-Storage-version conventions are preserved: new entries are written under the
-existing versioned key namespace and existing keys are not migrated in place.
-
-### Bounds and limits
-
-- `page_size` is bounded to a fixed maximum per call.
-- At most one active alert per pet is tracked in `ActiveAlertByPet`.
-- Index growth is bounded by the number of active alerts; resolved alerts are
-  removed from the active index.
-
-### Error codes
-
-| Code | Meaning |
+| Function | Purpose |
 | --- | --- |
-| `CellOutOfRange` | Provided cell id is outside the valid range |
-| `NotOwner` | Caller is not the pet owner |
-| `ConsentRequired` | Precise coordinates requested without consent |
-| `AlreadySet` | Cell already set for this pet (replay protection) |
-| `Expired` | Consent or alert has expired |
-| `PageSizeOutOfRange` | Requested page size is zero or above the maximum |
-| `CursorInvalid` | Cursor is malformed or bound to a stale generation |
-| `DuplicateAlert` | An active alert already exists for this owner and pet name |
+| `initialize(admin)` | One-time setup. Writes the config with `next_id = 1`. |
+| `create_alert(owner, resolver, pet_name, last_seen, region, deadline)` | Creates an `Active` alert and returns its id. |
+| `create_linked_alert(owner, resolver, pet_name, last_seen, region, deadline, supersedes)` | Resolves an earlier active alert of the same owner and pet, then creates a new alert linked to it. |
+| `record_sighting(reporter, id)` | Appends a sighting to an `Active` alert. |
+| `resolve_alert(actor, id)` | Owner or resolver marks an `Active` alert `Resolved`. |
+| `withdraw_alert(actor, id)` | Owner marks an `Active` alert `Withdrawn`. |
+| `expire_alert(actor, id)` | Anyone marks an `Active` alert `Expired` once `deadline` has passed. |
+| `get_alert(id)` | Returns the `Alert` record. |
+| `list_active_alerts(region, status, cursor, limit)` | Returns one page of alert ids for a `(region, status)` pair. |
 
-### Events
+## Alert lifecycle
 
-- `cell_set` — emitted when a coarse cell is written.
-- `consent_granted` / `consent_revoked` — emitted on consent changes.
-- `alert_indexed` — emitted when an alert is added to the active index.
-- `alert_resolved` — emitted when an active alert is resolved or cancelled.
-- `alert_index_reindexed` — emitted when the index generation is bumped.
+`AlertState` is `Active`, `Resolved`, `Expired`, or `Withdrawn`. Only `Active`
+alerts can change state. The `Resolved`, `Expired`, and `Withdrawn` transitions
+are idempotent: repeating one returns `Ok` and emits no event.
 
-### ABI / storage changes
+## Listing alerts
 
-- Added `set_cell`, `get_cell`, `grant_consent`, `revoke_consent`, and
-  `get_precise` entry points.
-- Added `list_active_alerts` entry point with cursor-based pagination.
-- Added the `Cell`, `Precise`, and `Consent` storage keys described above.
-- Added the `AlertIndex`, `AlertIndexGeneration`, and `ActiveAlertByPet`
-  storage keys described above.
-- Compatibility fixtures must be updated when these public interfaces change.
+`list_active_alerts(region, status, cursor, limit)` returns `(Vec<u64>, Option<PageCursor>)`.
 
-### Tests
+- `limit` must be between 1 and 32 inclusive. Otherwise the call fails with `InvalidPageSize`.
+- `region` longer than 64 bytes fails with `RegionTooLong`.
+- Pass `None` as the cursor to start from the beginning. Results are in ascending id order.
+- `next_cursor` is `None` on the last page. Otherwise, pass it back unchanged.
+- The cursor records the index generation it was issued under. `create_alert` and
+  `create_linked_alert` bump that generation, so a cursor issued before a new alert
+  is created fails with `InvalidCursor`. Callers should restart from `None` after such an error.
+- Each call walks ids forward from the cursor until the page is full or it reaches
+  the latest id. Sparse matches therefore cost more storage reads per page.
 
-Focused tests cover successful use, unauthorized access, boundary values for
-cell ids, and replay/expiry behavior. Failed calls are asserted to leave state
-unchanged.
+## Duplicate detection
 
-Additional focused tests cover:
+The contract tracks at most one alert per `(owner, pet_name)` in the `pet` index.
+While that pet has a stored alert, `create_alert` fails with `DuplicateAlert`.
+The check ignores the alert's state.
 
-- Pagination: successful multi-page listing, `page_size` boundary values
-  (zero, maximum, maximum + 1), and stale-cursor rejection after a generation
-  bump.
-- Duplicate detection: rejection of a repeated alert while an earlier alert is
-  active, the resolve-then-resubmit resolution path, and unchanged state after
-  a rejected duplicate submission.
+- `create_linked_alert` is the supported way to replace an alert. It requires the
+  caller to own the earlier alert, that alert to be `Active`, and the same `pet_name`.
+  It then resolves the earlier alert and links the new one to it (`linked_to`).
+- **Known gap:** `resolve_alert`, `withdraw_alert`, and `expire_alert` do not clear
+  the `pet` index entry. After any of them, `create_alert` for the same owner and
+  pet still fails with `DuplicateAlert`, and `create_linked_alert` fails with
+  `InvalidState` because its predecessor is no longer `Active`. No new alert can
+  be created for that pet until the index is fixed in code.
+
+## Bounds
+
+| Limit | Value |
+| --- | --- |
+| `pet_name`, `last_seen` length | 256 bytes |
+| `region` length | 64 bytes |
+| Sightings per alert | 32 |
+| `list_active_alerts` `limit` | 1 to 32 |
+
+## Storage keys
+
+| Key | Value | Notes |
+| --- | --- | --- |
+| `config` | `Config { version, admin, next_id, index_generation }` | `version` must equal `STORAGE_VERSION` (2). |
+| `alert(id)` | `Alert` | Full alert record. |
+| `idx(region, state, id)` | `id` | Present only while the alert is in that region and state. |
+| `pet(owner, pet_name)` | alert id | See the known gap under Duplicate detection. |
+
+## Errors
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `NotInitialized` | Config missing |
+| 3 | `Unauthorized` | Caller lacks the role for the action |
+| 4 | `NotFound` | No alert with that id |
+| 5 | `InvalidState` | Alert not in a state that allows the action |
+| 6 | `InvalidDeadline` | Deadline not in the future, or expiry before deadline |
+| 7 | `TextTooLong` | `pet_name` or `last_seen` too long |
+| 8 | `TooManySightings` | Alert already has 32 sightings |
+| 9 | `InvalidVersion` | Stored config version does not match |
+| 10 | `InvalidPageSize` | `limit` is 0 or above 32 |
+| 11 | `InvalidCursor` | Cursor generation is stale |
+| 12 | `DuplicateAlert` | An alert already exists for this owner and pet |
+| 13 | `RegionTooLong` | `region` longer than 64 bytes |
+
+## Events
+
+| Topic | Data | Emitted by |
+| --- | --- | --- |
+| `alert_created`, id | `AlertCreated { id, owner, deadline }` | `create_alert`, `create_linked_alert` |
+| `alert_linked`, id | `AlertLinked { id, supersedes, owner }` | `create_linked_alert` |
+| `alert_closed`, id | `AlertClosed { id, state, actor }` | `resolve_alert`, `withdraw_alert`, `expire_alert`, and the superseded alert in `create_linked_alert` |
+| `sighting`, id | `SightingRecorded { id, reporter }` | `record_sighting` |
+
+## Not implemented
+
+Location privacy is not implemented. There are no location cells, precise
+coordinates, or consent entries. Clients must not rely on `set_cell`, `get_cell`,
+`grant_consent`, `revoke_consent`, or `get_precise`.

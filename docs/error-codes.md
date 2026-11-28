@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a comprehensive reference for all error codes in the PetChain Soroban smart contract, including multi-language support for error messages.
+This document provides a reference for error codes in the PetChain Soroban smart contracts, including multi-language support for error messages. The [Registered Error Enums](#registered-error-enums-error-codesjson) section lists every error enum in `stellar-contracts/error-codes.json`, including `pet-transfer-adoption` and `vet-registry`. The legacy tables below cover only part of the `petchain` enum.
 
 ## Multi-Language Error Registry (Issue #684)
 
@@ -49,6 +49,7 @@ Additional languages can be added by admins using the `set_error_message` functi
 
 ---
 
+<!-- BEGIN GENERATED ERROR CODES: stellar-contracts/scripts/generate_error_docs.py -->
 ## Error Code Reference
 
 ### Authorization & Admin Errors (1-20)
@@ -229,22 +230,30 @@ do not retry. Code 54 is recoverable by restarting from the first page.
 
 ---
 
-### Proposal & Governance Errors (80-87)
+### Proposal & Governance Errors
+
+The numeric codes below are the ones emitted by the current Stellar contract.
+Codes 80–85 and 87 appeared in an older documentation table and are not emitted
+by the current contract; code 86 is restored for the veto path (issue #1649).
 
 | Code | Name | English Message | Spanish Message |
 |------|------|-----------------|-----------------|
-| 80 | `ProposalNotFound` | Proposal not found | Propuesta no encontrada |
-| 81 | `ProposalAlreadyExecuted` | Proposal already executed | Propuesta ya ejecutada |
-| 82 | `ProposalExpired` | Proposal expired | Propuesta expirada |
-| 83 | `ThresholdNotMet` | Threshold not met | Umbral no alcanzado |
-| 84 | `AdminAlreadyApproved` | Admin already approved | Administrador ya aprobó |
-| 85 | `TimelockNotExpired` | Timelock not expired | Bloqueo de tiempo no expirado |
-| 86 | `ProposalVetoed` | Proposal vetoed | Propuesta vetada |
-| 87 | `ProposalNotExecutable` | Proposal not executable | Propuesta no ejecutable |
+| 1 | `AdminAlreadyApproved` | Admin already approved / already vetoed | Administrador ya aprobó / ya vetó |
+| 16 | `InvalidState` | Proposal is not in the required state | La propuesta no está en el estado requerido |
+| 26 | `ThresholdNotMet` | Approval threshold not met | Umbral de aprobación no alcanzado |
+| 38 | `ProposalAlreadyExecuted` | Proposal already executed | Propuesta ya ejecutada |
+| 43 | `ProposalExpired` | Proposal expired | Propuesta expirada |
+| 47 | `ProposalNotFound` | Proposal not found | Propuesta no encontrada |
+| 86 | `ProposalVetoed` | Proposal vetoed by an administrator | Propuesta vetada por un administrador |
+| 228 | `ProposalCancelled` | Proposal already cancelled | Propuesta ya cancelada |
+| 229 | `NotProposalProposer` | Caller is not the original proposer | El llamador no es el proponente original |
+| 230 | `CancellationWindowClosed` | Cancellation window is closed | La ventana de cancelación está cerrada |
 
 **Description:**
 - Errors related to multisig governance and upgrade proposals
 - Occur during proposal lifecycle management
+- `NotProposalProposer` and `CancellationWindowClosed` are distinct from veto
+  errors so proposer withdrawal and administrative veto stay separate
 
 ---
 
@@ -363,21 +372,248 @@ do not retry. Code 54 is recoverable by restarting from the first page.
 
 ---
 
+## Registered Error Enums (`error-codes.json`)
+
+`stellar-contracts/error-codes.json` is the authoritative registry of every `#[contracterror]` enum in `stellar-contracts`. The tables below list all five registered enums. Codes are scoped per enum, so the same number in two enums means two different errors. Always read the contract and enum name together.
+
+The retry column follows the policy in [`stellar-contracts/docs/error-compatibility.md`](../stellar-contracts/docs/error-compatibility.md):
+
+| `retry` | Client behaviour |
+|---|---|
+| `never` | Permanent for this request: fix the input, caller, or target. |
+| `after_state_change` | A precondition is not met yet. Re-read state and retry once it changes. |
+| `backoff` | Transient throttling. Retry with exponential backoff. |
+| `treat_as_success` | Idempotent replay: the effect already exists. Do not retry. |
+
+### `petchain::ContractError` (114 variants)
+
+Source: `stellar-contracts/src/lib.rs`
+
+| Code | Name | Retry |
+|---|---|---|
+| 1 | `AdminAlreadyApproved` | `treat_as_success` |
+| 2 | `AdminAlreadySet` | `never` |
+| 3 | `AdminNotInitialized` | `after_state_change` |
+| 4 | `AdminsNotSet` | `after_state_change` |
+| 5 | `BatchTooLarge` | `never` |
+| 6 | `CertificateAlreadyAnchored` | `treat_as_success` |
+| 7 | `CounterOverflow` | `never` |
+| 8 | `InputStringTooLong` | `never` |
+| 9 | `InvalidBreed` | `never` |
+| 10 | `InvalidCallerNonce` | `after_state_change` |
+| 11 | `InvalidCertificateHash` | `never` |
+| 12 | `InvalidInput` | `never` |
+| 13 | `InvalidIpfsHash` | `never` |
+| 14 | `InvalidPetName` | `never` |
+| 15 | `InvalidRating` | `never` |
+| 16 | `InvalidState` | `after_state_change` |
+| 17 | `InvalidThreshold` | `never` |
+| 18 | `InvokerNotInAdminList` | `never` |
+| 19 | `LicenseAlreadyRegistered` | `never` |
+| 20 | `NoAdminsConfigured` | `after_state_change` |
+| 21 | `NotAnAdmin` | `never` |
+| 22 | `NotPetOwner` | `never` |
+| 23 | `PetAlreadyHasLinkedTag` | `never` |
+| 24 | `PetNotFound` | `never` |
+| 25 | `StorageQuotaExceeded` | `after_state_change` |
+| 26 | `ThresholdNotMet` | `after_state_change` |
+| 27 | `TooManyItems` | `never` |
+| 28 | `Unauthorized` | `never` |
+| 29 | `VaccinationNotFound` | `never` |
+| 30 | `VetAlreadyRegistered` | `never` |
+| 31 | `VetNotFound` | `never` |
+| 32 | `VetNotVerified` | `after_state_change` |
+| 33 | `VeterinarianNotVerified` | `after_state_change` |
+| 34 | `SlotAlreadyBooked` | `never` |
+| 35 | `DuplicateActivity` | `treat_as_success` |
+| 36 | `InbreedingThresholdExceeded` | `never` |
+| 37 | `SelfBreeding` | `never` |
+| 38 | `ProposalAlreadyExecuted` | `treat_as_success` |
+| 39 | `InvalidNonce` | `after_state_change` |
+| 40 | `RollbackWindowExpired` | `never` |
+| 41 | `NoPreviousUpgrade` | `never` |
+| 43 | `ProposalExpired` | `never` |
+| 44 | `ProposalNotApproved` | `after_state_change` |
+| 45 | `QuorumNotMet` | `after_state_change` |
+| 46 | `RateLimitExceeded` | `backoff` |
+| 47 | `ProposalNotFound` | `never` |
+| 160 | `AlreadyDeleted` | `treat_as_success` |
+| 161 | `RecordAlreadyDeleted` | `treat_as_success` |
+| 162 | `RetentionPeriodNotMet` | `after_state_change` |
+| 163 | `RecordNotFound` | `never` |
+| 164 | `DisputeNotFound` | `never` |
+| 165 | `DisputeNotOpenForVoting` | `after_state_change` |
+| 166 | `NotDisputeStakeholder` | `never` |
+| 167 | `NotInEvidencePhase` | `never` |
+| 168 | `NotDisputeParty` | `never` |
+| 169 | `InvalidTimestamp` | `never` |
+| 170 | `StaleMigration` | `treat_as_success` |
+| 171 | `VetCredentialsExpired` | `after_state_change` |
+| 172 | `CertificateNotFound` | `never` |
+| 173 | `CertificateRevoked` | `never` |
+| 174 | `CertificateExpired` | `never` |
+| 175 | `CertificateHashConflict` | `never` |
+| 176 | `NonceReused` | `after_state_change` |
+| 177 | `NotificationExpired` | `never` |
+| 178 | `NotificationAlreadySent` | `treat_as_success` |
+| 179 | `UnknownEmergencyRecipient` | `never` |
+| 180 | `ConsentNotFound` | `never` |
+| 181 | `ConsentVersionMismatch` | `after_state_change` |
+| 182 | `IssuerAlreadyRegistered` | `never` |
+| 183 | `IssuerNotFound` | `never` |
+| 184 | `IssuerRevoked` | `never` |
+| 185 | `IssuerKeyVersionNotFound` | `never` |
+| 186 | `IssuerKeyVersionInactive` | `never` |
+| 187 | `IssuerKeyReused` | `never` |
+| 188 | `RevokedConsentReplay` | `never` |
+| 189 | `EnrollmentNotFound` | `never` |
+| 190 | `InvalidEnrollmentState` | `after_state_change` |
+| 191 | `EnrollmentAlreadyExists` | `treat_as_success` |
+| 192 | `EnrollmentNotExpired` | `after_state_change` |
+| 193 | `PolicyVersionNotFound` | `never` |
+| 194 | `PolicyVersionMismatch` | `after_state_change` |
+| 195 | `CoverageSnapshotNotFound` | `never` |
+| 196 | `CoverageSnapshotMismatch` | `never` |
+| 197 | `TooManyCoverageItems` | `never` |
+| 198 | `TooManyExclusionItems` | `never` |
+| 199 | `InvalidCoverageAmount` | `never` |
+| 200 | `ClaimNotFound` | `never` |
+| 201 | `ClaimInvalidStatus` | `after_state_change` |
+| 202 | `ClaimNotRejected` | `never` |
+| 203 | `AppealWindowExpired` | `never` |
+| 204 | `ClaimAlreadyAppealed` | `never` |
+| 205 | `ClaimNotUnderAppeal` | `never` |
+| 206 | `ReviewerCannotBeOriginal` | `never` |
+| 207 | `ClaimDocumentLimitReached` | `never` |
+| 208 | `PolicyPetNotFound` | `never` |
+| 209 | `BenefitConditionNotFound` | `never` |
+| 210 | `BenefitConditionLimitReached` | `never` |
+| 211 | `BenefitWaitingPeriod` | `after_state_change` |
+| 212 | `BenefitInvalidServiceDate` | `never` |
+| 213 | `BenefitCoverageLimitExceeded` | `never` |
+| 214 | `BenefitClaimNotPending` | `never` |
+| 215 | `BenefitClaimAlreadyFinalized` | `never` |
+| 216 | `BenefitInvalidTerms` | `never` |
+| 217 | `BenefitClaimLimitReached` | `never` |
+| 218 | `BenefitClaimMustUseSettlement` | `never` |
+| 219 | `BenefitTermsAlreadyConfigured` | `never` |
+| 220 | `EnrollmentNotFound` | `never` |
+| 221 | `EnrollmentInvalidTransition` | `after_state_change` |
+| 222 | `EnrollmentAlreadyDecided` | `never` |
+| 223 | `EnrollmentLimitReached` | `never` |
+| 224 | `EnrollmentSnapshotTooLarge` | `never` |
+| 225 | `InsurancePolicyInactive` | `after_state_change` |
+| 226 | `InsurancePolicyNotFound` | `never` |
+| 227 | `BenefitClaimLimitPerPetReached` | `never` |
+
+Note: `EnrollmentNotFound` appears twice in this enum (codes 189 and 220) with the same name. Clients should match on the code, not the name.
+
+### `petchain::PetChainError` (5 variants)
+
+Source: `stellar-contracts/src/lib.rs`
+
+| Code | Name | Retry |
+|---|---|---|
+| 1 | `NonceReused` | `after_state_change` |
+| 2 | `SelfLineage` | `never` |
+| 3 | `CircularLineage` | `never` |
+| 4 | `KeywordTooLong` | `never` |
+| 5 | `TooManySearchTokens` | `never` |
+
+### `pet-transfer-adoption::ContractError` (34 variants)
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/lib.rs`
+
+| Code | Name | Retry |
+|---|---|---|
+| 1 | `PetNotFound` | `never` |
+| 2 | `Unauthorized` | `never` |
+| 3 | `TransferAlreadyPending` | `after_state_change` |
+| 4 | `NoPendingTransfer` | `never` |
+| 5 | `InvalidRecipient` | `never` |
+| 6 | `EmptyOwnershipHistory` | `never` |
+| 7 | `MissingOwnershipRecord` | `never` |
+| 8 | `TransferNotExpired` | `after_state_change` |
+| 9 | `StaleCancellation` | `never` |
+| 10 | `EmptyBatch` | `never` |
+| 11 | `BatchOwnerMismatch` | `never` |
+| 12 | `NoEscrowedTransfer` | `never` |
+| 13 | `DisputeWindowNotElapsed` | `after_state_change` |
+| 14 | `TransferAlreadyDisputed` | `never` |
+| 15 | `AlreadyInitialized` | `treat_as_success` |
+| 16 | `InvalidThreshold` | `never` |
+| 17 | `NotMultisigAdmin` | `never` |
+| 18 | `ThresholdNotMet` | `after_state_change` |
+| 19 | `UntrustedContract` | `never` |
+| 20 | `NoPendingAdoption` | `never` |
+| 21 | `WaitingPeriodNotElapsed` | `after_state_change` |
+| 22 | `AdoptionAlreadyCompleted` | `treat_as_success` |
+| 23 | `AdoptionNotConfigurable` | `never` |
+| 24 | `InvalidWaitingPeriod` | `never` |
+| 25 | `AdoptionConfigNotFound` | `never` |
+| 26 | `BatchTooLarge` | `never` |
+| 27 | `InvalidBatch` | `never` |
+| 28 | `OrganizationApprovalRequired` | `after_state_change` |
+| 29 | `AdoptionRejected` | `never` |
+| 30 | `InvalidApprover` | `never` |
+| 31 | `InvalidTimeoutDays` | `never` |
+| 32 | `AdopterApprovalRequired` | `after_state_change` |
+| 33 | `InputStringTooLong` | `never` |
+| 34 | `AdoptionNotExpired` | `after_state_change` |
+
+**Not yet registered:** the source enum also defines `CustodyNotConfirmed` (35), `CustodyAlreadyConfirmed` (36), `CustodyConfirmationExpired` (37) and `TransferNotDisputed` (38), which are documented in [`contracts/pet-transfer-adoption/README.md`](../stellar-contracts/contracts/pet-transfer-adoption/README.md#error-codes). They are missing from `error-codes.json`, so they have no retry guidance in the registry yet.
+
+### `pet-transfer-adoption::EscrowError` (8 variants)
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/escrow.rs`
+
+| Code | Name | Retry |
+|---|---|---|
+| 1 | `FeeBpsTooHigh` | `never` |
+| 2 | `InvalidAmount` | `never` |
+| 3 | `EscrowAlreadyExists` | `never` |
+| 4 | `EscrowNotFound` | `never` |
+| 5 | `InvalidEscrowState` | `never` |
+| 6 | `Unauthorized` | `never` |
+| 7 | `EscrowNotExpired` | `after_state_change` |
+| 8 | `InvalidTokenAddress` | `never` |
+
+### `vet-registry::ContractError` (12 variants)
+
+Source: `stellar-contracts/contracts/pet-transfer-adoption/src/vet_registry.rs`
+
+| Code | Name | Retry |
+|---|---|---|
+| 0 | `AlreadyInitialized` | `treat_as_success` |
+| 1 | `Unauthorized` | `never` |
+| 2 | `VetAlreadyRegistered` | `never` |
+| 3 | `VetNotFound` | `never` |
+| 4 | `LicenseAlreadyUsed` | `never` |
+| 5 | `VetNotVerified` | `after_state_change` |
+| 6 | `InputTooLong` | `never` |
+| 7 | `VetAlreadyVerified` | `treat_as_success` |
+| 8 | `StaleMigration` | `treat_as_success` |
+| 9 | `InvalidMigrationTarget` | `never` |
+| 10 | `InvalidPageLimit` | `never` |
+| 11 | `InvalidCursor` | `never` |
+
+---
+
 ## Usage Examples
 
 ### Example 1: Query Error Message
 
 ```rust
 // Get error message in English
-let message = client.get_error_message(&3, &String::from_str(&env, "en"));
+let message = client.get_error_message(&24, &String::from_str(&env, "en"));
 // Returns: Some("Pet not found")
 
 // Get error message in Spanish
-let message = client.get_error_message(&3, &String::from_str(&env, "es"));
+let message = client.get_error_message(&24, &String::from_str(&env, "es"));
 // Returns: Some("Mascota no encontrada")
 
 // Get error message for unsupported language
-let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
+let message = client.get_error_message(&24, &String::from_str(&env, "fr"));
 // Returns: None
 ```
 
@@ -387,9 +623,9 @@ let message = client.get_error_message(&3, &String::from_str(&env, "fr"));
 // Admin sets a custom error message
 client.set_error_message(
     &admin,
-    &100,
+    &31,
     &String::from_str(&env, "en"),
-    &String::from_str(&env, "Medication record not found in database")
+    &String::from_str(&env, "Veterinarian record not found in database")
 );
 ```
 
@@ -399,14 +635,14 @@ client.set_error_message(
 // Admin adds French translations
 client.set_error_message(
     &admin,
-    &3,
+    &24,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Animal de compagnie non trouvé")
 );
 
 client.set_error_message(
     &admin,
-    &160,
+    &25,
     &String::from_str(&env, "fr"),
     &String::from_str(&env, "Quota de stockage dépassé")
 );
@@ -572,6 +808,18 @@ match client.try_add_medical_record(...) {
 **Topics:** `("AlertResolved", alert_id)`  
 **Data:** `(pet_id, status)`
 
+### TrialPeriodExpired
+**Emitted when:** The first interaction with a trial-period adoption after `trial_expires_at` settles the trial. Emitted at most once per adoption.  
+**Topics:** `("TrialPeriodExpired", pet_id, adoption_id)`  
+**Data:** `TrialPeriodExpiredEvent { version, pet_id, adoption_id, outcome, new_owner, previous_owner, timestamp }`
+
+`outcome` is `Converted` (the adoption becomes permanent and `new_owner` is the
+adopter) or `Reversed` (the pet returns to `previous_owner`). `new_owner` always
+carries the resulting ownership state, and `previous_owner` is always present so
+integrators can reconcile both sides of the transition. The event contains no
+personal documents or private contact details. Before expiry, `settle_adoption_trial`
+and `get_adoption_trial` are no-ops with respect to this event.
+
 ---
 
 ## Storage Structure
@@ -698,4 +946,4 @@ For questions or issues related to error messages:
 
 **Last Updated:** 2024  
 **Issues:** #684, #1469, #1471  
-**Status:** ✅ Complete
+**Status:** Registered enums documented from `error-codes.json` (see [Registered Error Enums](#registered-error-enums-error-codesjson)). The legacy flat-numbered tables above are not yet reconciled with the registry; where they disagree, `error-codes.json` is authoritative.

@@ -33,6 +33,24 @@ The digest is a SHA-256 hash chain over the entries in canonical order:
 
 sequence is the number of entries hashed, so appending an entry changes the
 digest and reordering entries cannot reproduce it.
+
+Offline verification (issue #1445)
+----------------------------------
+The same preimage format is used for offline verification of vaccination
+certificates. Certificate payloads use the domain tag "PC-VACC-CERT" with
+version 1, and are encoded as:
+
+    cert_payload = u32be(len(domain)) || domain
+                   || u32be(1)                  (version)
+                   || u64be(pet_id)
+                   || u32be(len(vaccine)) || vaccine
+                   || u64be(administered_at)
+                   || u64be(valid_until)
+                   || u32be(len(administrator_xdr)) || administrator_xdr
+
+All integers are big-endian; strings are UTF-8 with explicit length prefixes;
+there are no separators beyond length prefixes. The verifier signs/hashes
+sha256(cert_payload).
 """
 
 import hashlib
@@ -113,6 +131,42 @@ def digest(pet_id: int, entries: list[bytes]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Vaccination certificate offline payload (issue #1445)
+# ---------------------------------------------------------------------------
+
+CERT_DOMAIN = b"PC-VACC-CERT"
+CERT_VERSION = 1
+
+
+def _lp(data: bytes) -> bytes:
+    """Length-prefixed bytes: u32be(len) || data."""
+    return struct.pack(">I", len(data)) + data
+
+
+def cert_payload(
+    pet_id: int,
+    vaccine: str,
+    administered_at: int,
+    valid_until: int,
+    administrator_key: str,
+) -> bytes:
+    """Canonical vaccination certificate payload for offline verification."""
+    return (
+        _lp(CERT_DOMAIN)
+        + struct.pack(">I", CERT_VERSION)
+        + struct.pack(">Q", pet_id)
+        + _lp(vaccine.encode("utf-8"))
+        + struct.pack(">Q", administered_at)
+        + struct.pack(">Q", valid_until)
+        + _lp(address_xdr(administrator_key))
+    )
+
+
+def cert_digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # Published vectors
 # ---------------------------------------------------------------------------
 
@@ -141,3 +195,14 @@ print(f"three entries (pet 1):      {digest(1, [e_1, e_2, e_3])}")
 print(f"reordered 2 entries (pet 1):{digest(1, [e_2, e_1])}")
 print(f"tampered 'to' (pet 1):      {digest(1, [e_1, e_2_tampered])}")
 print(f"two entries, pet 7:         {digest(7, [e_1, e_2])}")
+
+print("== vaccination certificate vectors (issue #1445) ==")
+cert_1 = cert_payload(1, "Rabies", 1_700_000_000, 1_731_536_000, A0)
+cert_2 = cert_payload(7, "Parvovirus", 1_710_000_000, 1_741_536_000, A1)
+cert_3 = cert_payload(42, "FVRCP", 1_720_000_000, 1_751_536_000, A2)
+print(f"cert payload 1 hex:  {cert_1.hex()}")
+print(f"cert digest 1:       {cert_digest(cert_1)}")
+print(f"cert payload 2 hex:  {cert_2.hex()}")
+print(f"cert digest 2:       {cert_digest(cert_2)}")
+print(f"cert payload 3 hex:  {cert_3.hex()}")
+print(f"cert digest 3:       {cert_digest(cert_3)}")
