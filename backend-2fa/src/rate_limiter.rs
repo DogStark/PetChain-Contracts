@@ -426,6 +426,17 @@ impl UserQuotaStore {
         let entry = m.entry(user_id.to_string()).or_insert((0, None));
         entry.1 = Some(expires_at);
     }
+
+    /// Test-only view of a stored quota, used to assert that rejected updates
+    /// do not mutate state.
+    #[cfg(test)]
+    pub fn quota(&self, user_id: &str) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .get(user_id)
+            .map(|(requests_per_minute, _)| *requests_per_minute)
+    }
 }
 
 impl MockRedisBackend {
