@@ -792,154 +792,132 @@ contract PetChainRegistry is Pausable {
 
 
     // -------------------------------------------------------------------------
-    // Ownership transfer acceptance & history (issue #1500)
+    // Cross-chain pet identifier mapping (issue #1501)
     // -------------------------------------------------------------------------
 
-    uint16 public constant OWNERSHIP_TRANSFER_SCHEMA_VERSION = 1;
-    uint256 public constant MIN_TRANSFER_TTL = 60;
-    uint256 public constant MAX_TRANSFER_TTL = 30 days;
-    uint256 public constant MAX_OWNER_HISTORY = 64;
+    /// @notice Storage schema version for cross-chain identifier mappings.
+    uint16 public constant CROSS_CHAIN_MAPPING_VERSION = 1;
 
-    struct PendingPetTransfer {
-        address from;
-        address to;
+    struct CrossChainPetMapping {
+        uint256 petId;
+        string  canonicalPetChainId;
         uint16  schemaVersion;
-        uint256 proposedAt;
-        uint256 expiresAt;
-        uint64  nonce;
+        uint64  version;
+        uint256 linkedAt;
         bool    active;
+        bool    revoked;
     }
 
-    struct OwnershipHistoryEntry {
-        address previousOwner;
-        address newOwner;
-        uint16  schemaVersion;
-        uint256 transferredAt;
-        uint64  transferSequence;
-    }
+    mapping(uint256 => CrossChainPetMapping) private _petCrossChainMapping;
+    mapping(bytes32 => uint256) private _canonicalHashToPetId;
+    mapping(bytes32 => bool) private _revokedCanonicalHashes;
 
-    mapping(uint256 => PendingPetTransfer) public pendingPetTransfers;
-    mapping(uint256 => OwnershipHistoryEntry[]) private _petOwnershipHistory;
-
-    event PetTransferProposed(
+    event CrossChainPetIdLinked(
         uint256 indexed petId,
-        address indexed from,
-        address indexed to,
-        uint256 expiresAt,
-        uint64 nonce
+        string canonicalPetChainId,
+        uint64 version,
+        address indexed linkedBy
     );
 
-    event PetTransferAccepted(
+    event CrossChainPetIdRevoked(
         uint256 indexed petId,
-        address indexed from,
-        address indexed to,
-        uint64 transferSequence
+        string canonicalPetChainId,
+        uint64 version,
+        address indexed revokedBy
     );
 
-    event PetTransferCancelled(
-        uint256 indexed petId,
-        address indexed from,
-        address indexed to,
-        uint64 nonce
-    );
-
-    /// @notice Propose a two-step pet ownership transfer with an explicit expiry window.
-    function proposePetTransfer(
-        uint256 petId,
-        address to,
-        uint256 ttlSeconds
-    ) external onlyPetOwner(petId) whenNotPaused returns (uint64 nonce) {
+    /// @notice Link a Celo `petId` to a canonical PetChain identifier.
+    /// @dev    Preserves authorization (pet owner or admin), normalizes the identifier
+    ///         to printable uppercase ASCII (1..MAX_SHORT_LEN), enforces 1-to-1 uniqueness,
+    ///         and forbids reusing any previously revoked canonical identifier.
+    function linkCrossChainPetId(uint256 petId, string calldata canonicalPetChainId)
+        external
+        whenNotPaused
+        returns (string memory normalizedId)
+    {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
         require(pets[petId].active, "PetChainRegistry: pet inactive");
-        require(to != address(0), "PetChainRegistry: zero address");
-        require(to != msg.sender, "PetChainRegistry: self transfer");
         require(
-            ttlSeconds >= MIN_TRANSFER_TTL && ttlSeconds <= MAX_TRANSFER_TTL,
-            "PetChainRegistry: invalid transfer ttl"
-        );
-        require(
-            _petOwnershipHistory[petId].length < MAX_OWNER_HISTORY,
-            "PetChainRegistry: ownership history limit reached"
+            msg.sender == pets[petId].owner || msg.sender == admin,
+            "PetChainRegistry: not authorized to link"
         );
 
-        PendingPetTransfer storage pending = pendingPetTransfers[petId];
-        nonce = pending.nonce + 1;
-        uint256 expiresAt = block.timestamp + ttlSeconds;
+        normalizedId = normalizeIdentifier(canonicalPetChainId);
+        bytes32 idHash = keccak256(bytes(normalizedId));
 
-        pendingPetTransfers[petId] = PendingPetTransfer({
-            from: msg.sender,
-            to: to,
-            schemaVersion: OWNERSHIP_TRANSFER_SCHEMA_VERSION,
-            proposedAt: block.timestamp,
-            expiresAt: expiresAt,
-            nonce: nonce,
-            active: true
+        require(!_revokedCanonicalHashes[idHash], "PetChainRegistry: canonical id revoked");
+        uint256 existingPet = _canonicalHashToPetId[idHash];
+        require(existingPet == 0, "PetChainRegistry: canonical id already mapped");
+
+        CrossChainPetMapping storage current = _petCrossChainMapping[petId];
+        require(!current.active, "PetChainRegistry: pet already has active mapping");
+
+        uint64 nextVersion = current.version + 1;
+        _canonicalHashToPetId[idHash] = petId;
+        _petCrossChainMapping[petId] = CrossChainPetMapping({
+            petId: petId,
+            canonicalPetChainId: normalizedId,
+            schemaVersion: CROSS_CHAIN_MAPPING_VERSION,
+            version: nextVersion,
+            linkedAt: block.timestamp,
+            active: true,
+            revoked: false
         });
 
-        emit PetTransferProposed(petId, msg.sender, to, expiresAt, nonce);
+        emit CrossChainPetIdLinked(petId, normalizedId, nextVersion, msg.sender);
     }
 
-    /// @notice Accept a pending pet ownership transfer before its expiry deadline.
-    function acceptPetTransfer(uint256 petId) external whenNotPaused {
-        PendingPetTransfer storage pending = pendingPetTransfers[petId];
-        require(pending.active, "PetChainRegistry: no pending transfer");
-        require(msg.sender == pending.to, "PetChainRegistry: not transfer recipient");
-        require(block.timestamp <= pending.expiresAt, "PetChainRegistry: transfer expired");
-        require(pets[petId].active, "PetChainRegistry: pet inactive");
-        require(pets[petId].owner == pending.from, "PetChainRegistry: stale transfer owner");
+    /// @notice Revoke an active cross-chain identifier mapping for `petId`.
+    /// @dev    Marks the canonical identifier hash as permanently revoked so it
+    ///         cannot be replayed or reassigned to another pet.
+    function revokeCrossChainPetId(uint256 petId) external whenNotPaused {
+        require(pets[petId].petId != 0, "PetChainRegistry: pet does not exist");
         require(
-            _petOwnershipHistory[petId].length < MAX_OWNER_HISTORY,
-            "PetChainRegistry: ownership history limit reached"
+            msg.sender == pets[petId].owner || msg.sender == admin,
+            "PetChainRegistry: not authorized to revoke"
         );
 
-        address from = pending.from;
-        address to = pending.to;
-        uint64 seq = uint64(_petOwnershipHistory[petId].length + 1);
+        CrossChainPetMapping storage current = _petCrossChainMapping[petId];
+        require(current.active, "PetChainRegistry: no active mapping");
 
-        pending.active = false;
-        _removeOwnerPet(from, petId);
-        pets[petId].owner = to;
-        _ownerPets[to].push(petId);
+        string memory prevCanonical = current.canonicalPetChainId;
+        bytes32 idHash = keccak256(bytes(prevCanonical));
 
-        _petOwnershipHistory[petId].push(OwnershipHistoryEntry({
-            previousOwner: from,
-            newOwner: to,
-            schemaVersion: OWNERSHIP_TRANSFER_SCHEMA_VERSION,
-            transferredAt: block.timestamp,
-            transferSequence: seq
-        }));
+        delete _canonicalHashToPetId[idHash];
+        _revokedCanonicalHashes[idHash] = true;
+        current.active = false;
+        current.revoked = true;
 
-        emit PetTransferAccepted(petId, from, to, seq);
-        emit PetTransferred(petId, from, to);
+        emit CrossChainPetIdRevoked(petId, prevCanonical, current.version, msg.sender);
     }
 
-    /// @notice Cancel an active pending pet ownership transfer.
-    function cancelPetTransfer(uint256 petId) external onlyPetOwner(petId) whenNotPaused {
-        PendingPetTransfer storage pending = pendingPetTransfers[petId];
-        require(pending.active, "PetChainRegistry: no pending transfer");
-        address to = pending.to;
-        uint64 nonce = pending.nonce;
-        pending.active = false;
-        emit PetTransferCancelled(petId, msg.sender, to, nonce);
+    /// @notice Retrieve the cross-chain identifier mapping for a Celo `petId`.
+    function getCrossChainPetMapping(uint256 petId)
+        external
+        view
+        returns (CrossChainPetMapping memory)
+    {
+        return _petCrossChainMapping[petId];
     }
 
-    /// @notice Return a bounded page of prior ownership transitions for `petId`.
-    function getPetOwnershipHistory(
-        uint256 petId,
-        uint256 offset,
-        uint256 limit
-    ) external view returns (OwnershipHistoryEntry[] memory page) {
-        OwnershipHistoryEntry[] storage all = _petOwnershipHistory[petId];
-        uint256 total = all.length;
-        if (offset >= total || limit == 0) {
-            return new OwnershipHistoryEntry[](0);
-        }
-        uint256 end = offset + limit;
-        if (end > total) end = total;
-        uint256 size = end - offset;
-        page = new OwnershipHistoryEntry[](size);
-        for (uint256 i = 0; i < size; i++) {
-            page[i] = all[offset + i];
-        }
+    /// @notice Resolve a canonical PetChain identifier to its linked Celo `petId` (0 if unmapped).
+    function resolvePetIdByCanonicalId(string calldata canonicalPetChainId)
+        external
+        view
+        returns (uint256)
+    {
+        bytes32 idHash = keccak256(bytes(normalizeIdentifier(canonicalPetChainId)));
+        return _canonicalHashToPetId[idHash];
+    }
+
+    /// @notice Check whether a canonical PetChain identifier has been permanently revoked.
+    function isCanonicalPetIdRevoked(string calldata canonicalPetChainId)
+        external
+        view
+        returns (bool)
+    {
+        bytes32 idHash = keccak256(bytes(normalizeIdentifier(canonicalPetChainId)));
+        return _revokedCanonicalHashes[idHash];
     }
 
 }

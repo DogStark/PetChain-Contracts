@@ -310,15 +310,16 @@ fixture still parses after a v2 schema ships.
   checked-in snapshot and fails when a topic, version, or payload field drifts
   without a matching version bump.
 
-## Two-Step Pet Ownership Transfer Acceptance (#1500)
+## Cross-Chain Pet Identifier Mapping (#1501)
 
-Two-step ownership transfer workflow requiring explicit recipient acceptance prior to a bounded TTL deadline and retaining a bounded, paginated history of accepted ownership transitions.
+Explicit 1-to-1 mapping from Celo `petId` records to normalized canonical PetChain identifiers with permanent revocation tombstones.
 
-### ABI & Storage Layout (`OWNERSHIP_TRANSFER_SCHEMA_VERSION = 1`)
-- **`PendingPetTransfer` struct**: `{ address from, address to, uint16 schemaVersion, uint256 proposedAt, uint256 expiresAt, uint64 nonce, bool active }` stored in `pendingPetTransfers[petId]` (`MIN_TRANSFER_TTL = 60`, `MAX_TRANSFER_TTL = 30 days`). Direct `transferPet` clears any active pending offer to prevent ABA stale-offer replay.
-- **`OwnershipHistoryEntry` struct**: `{ address previousOwner, address newOwner, uint16 schemaVersion, uint256 transferredAt, uint64 transferSequence }` stored in `_petOwnershipHistory[petId]`, bounded at `MAX_OWNER_HISTORY = 64` transitions per pet.
-- **Methods**: `proposePetTransfer(petId, to, ttlSeconds) returns (uint64 nonce)`, `acceptPetTransfer(petId)`, `cancelPetTransfer(petId)`, and paginated `getPetOwnershipHistory(petId, offset, limit)`.
+### ABI & Storage Layout (`CROSS_CHAIN_MAPPING_VERSION = 1`)
+- **`CrossChainPetMapping` struct**: `{ uint256 petId, string canonicalPetChainId, uint16 schemaVersion, uint64 version, uint256 linkedAt, bool active, bool revoked }` stored in `_petCrossChainMapping[petId]`, with O(1) reverse lookup `_canonicalHashToPetId[keccak256(normalizedId)]` and replay tombstone `_revokedCanonicalHashes[keccak256(normalizedId)]` (no unbounded array iteration).
+- **`linkCrossChainPetId(uint256 petId, string canonicalPetChainId) returns (string normalizedId)`**: Authorized for `pets[petId].owner` or `admin` when not paused; normalizes via `normalizeIdentifier` (`1..64` printable uppercase ASCII bytes, spaces stripped), enforces 1-to-1 uniqueness, rejects tombstoned hashes, and increments per-pet `version`.
+- **`revokeCrossChainPetId(uint256 petId)`**: Authorized for `pets[petId].owner` or `admin` when not paused; clears reverse lookup and permanently sets `_revokedCanonicalHashes[idHash] = true` so the canonical ID can never be replayed on any pet.
+- **Read views**: `getCrossChainPetMapping(petId)`, `resolvePetIdByCanonicalId(canonicalPetChainId)`, `isCanonicalPetIdRevoked(canonicalPetChainId)`.
 
 ### Events & Revert Reasons
-- **Events**: `PetTransferProposed(uint256 indexed petId, address indexed from, address indexed to, uint256 expiresAt, uint64 nonce)`, `PetTransferAccepted(uint256 indexed petId, address indexed from, address indexed to, uint64 transferSequence)` (alongside `PetTransferred`), and `PetTransferCancelled(uint256 indexed petId, address indexed from, address indexed to, uint64 nonce)`.
-- **Revert strings**: `"PetChainRegistry: not pet owner"`, `"PetChainRegistry: pet inactive"`, `"PetChainRegistry: zero address"`, `"PetChainRegistry: self transfer"`, `"PetChainRegistry: invalid transfer ttl"`, `"PetChainRegistry: ownership history limit reached"`, `"PetChainRegistry: no pending transfer"`, `"PetChainRegistry: not transfer recipient"`, `"PetChainRegistry: transfer expired"`, `"PetChainRegistry: stale transfer owner"`, plus OpenZeppelin `EnforcedPause()`.
+- **Events**: `CrossChainPetIdLinked(uint256 indexed petId, string canonicalPetChainId, uint64 version, address indexed linkedBy)` and `CrossChainPetIdRevoked(uint256 indexed petId, string canonicalPetChainId, uint64 version, address indexed revokedBy)`.
+- **Revert strings**: `"PetChainRegistry: pet does not exist"`, `"PetChainRegistry: pet inactive"`, `"PetChainRegistry: not authorized to link"`, `"PetChainRegistry: not authorized to revoke"`, `"PetChainRegistry: invalid identifier character"`, `"PetChainRegistry: invalid identifier length"`, `"PetChainRegistry: canonical id revoked"`, `"PetChainRegistry: canonical id already mapped"`, `"PetChainRegistry: pet already has active mapping"`, `"PetChainRegistry: no active mapping"`, plus OpenZeppelin `EnforcedPause()`.
